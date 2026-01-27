@@ -1,0 +1,42 @@
+[runtime]
+log_level = "INFO"
+# Increase for debugging: "DEBUG"
+
+[normalize]
+# Use snake_case for all column names
+naming = "snake_case"
+
+[load]
+# Fail fast on errors
+raise_on_failed_jobs = true
+# Reduce workers to avoid exhausting Supabase connection pool
+workers = 5
+
+[destination.postgres]
+# Use smaller file chunks to avoid timeout on large inserts
+# This controls max rows per INSERT statement
+loader_file_format = "insert_values"
+
+[normalize.data_writer]
+# Max items per normalized file (smaller = faster uploads)
+# 2000 rows per file for plays table with many columns
+file_max_items = 2000
+
+[sources.cfbd]
+# CFBD API base URL
+base_url = "https://api.collegefootballdata.com"
+
+# Rate limiting (Tier 3: 75,000 calls/month)
+monthly_budget = 75000
+calls_per_second = 10
+
+# Year ranges by data type
+[sources.cfbd.year_ranges]
+games = { start = 1869, end = 2026 }
+plays = { start = 2004, end = 2026 }
+stats = { start = 2004, end = 2026 }
+ratings = { start = 2015, end = 2026 }
+recruiting = { start = 2000, end = 2026 }
+betting = { start = 2013, end = 2026 }
+draft = { start = 2000, end = 2026 }
+metrics = { start = 2014, end = 2026 }

@@ -36,6 +36,7 @@ def games_source(
     return [
         games_resource(years),
         drives_resource(years),
+        game_media_resource(years),
     ]
 
 

@@ -1,0 +1,2081 @@
+<string>:10: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+{
+  "timestamp": "2026-01-27T20:40:36.932433",
+  "tables": {
+    "ref.coaches": {
+      "row_count": 1790,
+      "columns": [
+        {
+          "name": "first_name",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "last_name",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "hire_date",
+          "type": "timestamp with time zone",
+          "nullable": "YES"
+        }
+      ]
+    },
+    "ref.coaches__seasons": {
+      "row_count": 12402,
+      "columns": [
+        {
+          "name": "school",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "year",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "games",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "wins",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "losses",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "ties",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "preseason_rank",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "postseason_rank",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "srs",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_parent_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_list_idx",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "sp_overall",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "sp_offense",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "sp_defense",
+          "type": "double precision",
+          "nullable": "YES"
+        }
+      ]
+    },
+    "ref.conferences": {
+      "row_count": 106,
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "name",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "short_name",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "classification",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "abbreviation",
+          "type": "character varying",
+          "nullable": "YES"
+        }
+      ]
+    },
+    "ref.play_types": {
+      "row_count": 49,
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "text",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "abbreviation",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        }
+      ]
+    },
+    "ref.teams": {
+      "row_count": 1899,
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "school",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "mascot",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "abbreviation",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "conference",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "classification",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "color",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "alternate_color",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "twitter",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "location__id",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "location__name",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "location__city",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "location__state",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "location__zip",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "location__country_code",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "location__timezone",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "location__latitude",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "location__longitude",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "location__elevation",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "location__capacity",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "location__construction_year",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "location__grass",
+          "type": "boolean",
+          "nullable": "YES"
+        },
+        {
+          "name": "location__dome",
+          "type": "boolean",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "division",
+          "type": "character varying",
+          "nullable": "YES"
+        }
+      ]
+    },
+    "ref.teams__alternate_names": {
+      "row_count": 1852,
+      "columns": [
+        {
+          "name": "value",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_parent_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_list_idx",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        }
+      ]
+    },
+    "ref.teams__logos": {
+      "row_count": 1517,
+      "columns": [
+        {
+          "name": "value",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_parent_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_list_idx",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        }
+      ]
+    },
+    "ref.venues": {
+      "row_count": 837,
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "name",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "capacity",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "dome",
+          "type": "boolean",
+          "nullable": "YES"
+        },
+        {
+          "name": "city",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "state",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "zip",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "country_code",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "latitude",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "longitude",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "grass",
+          "type": "boolean",
+          "nullable": "YES"
+        },
+        {
+          "name": "timezone",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "elevation",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "construction_year",
+          "type": "bigint",
+          "nullable": "YES"
+        }
+      ]
+    },
+    "core.drives": {
+      "row_count": 183603,
+      "columns": [
+        {
+          "name": "id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "game_id",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "offense",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "offense_conference",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "defense",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "defense_conference",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "drive_number",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "scoring",
+          "type": "boolean",
+          "nullable": "YES"
+        },
+        {
+          "name": "start_period",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "start_yardline",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "start_yards_to_goal",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "start_time__minutes",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "start_time__seconds",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "end_period",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "end_yardline",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "end_yards_to_goal",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "end_time__minutes",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "end_time__seconds",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "elapsed__minutes",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "elapsed__seconds",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "plays",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "yards",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "drive_result",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "is_home_offense",
+          "type": "boolean",
+          "nullable": "YES"
+        },
+        {
+          "name": "start_offense_score",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "start_defense_score",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "end_offense_score",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "end_defense_score",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "season",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        }
+      ]
+    },
+    "core.games": {
+      "row_count": 18650,
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "season",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "week",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "season_type",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "start_date",
+          "type": "timestamp with time zone",
+          "nullable": "YES"
+        },
+        {
+          "name": "start_time_tbd",
+          "type": "boolean",
+          "nullable": "YES"
+        },
+        {
+          "name": "completed",
+          "type": "boolean",
+          "nullable": "YES"
+        },
+        {
+          "name": "neutral_site",
+          "type": "boolean",
+          "nullable": "YES"
+        },
+        {
+          "name": "conference_game",
+          "type": "boolean",
+          "nullable": "YES"
+        },
+        {
+          "name": "home_id",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "home_team",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "home_classification",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "home_conference",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "home_points",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "away_id",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "away_team",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "away_points",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "highlights",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "attendance",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "venue_id",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "venue",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "home_postgame_win_probability",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "home_pregame_elo",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "home_postgame_elo",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "away_classification",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "away_conference",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "away_postgame_win_probability",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "away_pregame_elo",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "away_postgame_elo",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "excitement_index",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "notes",
+          "type": "character varying",
+          "nullable": "YES"
+        }
+      ]
+    },
+    "core.games__away_line_scores": {
+      "row_count": 74940,
+      "columns": [
+        {
+          "name": "value",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_root_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_parent_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_list_idx",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        }
+      ]
+    },
+    "core.games__home_line_scores": {
+      "row_count": 74940,
+      "columns": [
+        {
+          "name": "value",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_root_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_parent_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_list_idx",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        }
+      ]
+    },
+    "core.plays": {
+      "row_count": 3611707,
+      "columns": [
+        {
+          "name": "game_id",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "drive_id",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "drive_number",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "play_number",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "offense",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "offense_conference",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "offense_score",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "defense",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "defense_conference",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "defense_score",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "home",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "away",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "period",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "clock__minutes",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "clock__seconds",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "offense_timeouts",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "defense_timeouts",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "yardline",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "yards_to_goal",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "down",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "distance",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "yards_gained",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "scoring",
+          "type": "boolean",
+          "nullable": "YES"
+        },
+        {
+          "name": "play_type",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "play_text",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "ppa",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "wallclock",
+          "type": "timestamp with time zone",
+          "nullable": "YES"
+        },
+        {
+          "name": "season",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        }
+      ]
+    },
+    "stats.player_season_stats": {
+      "row_count": 131268,
+      "columns": [
+        {
+          "name": "season",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "player_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "player",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "position",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "team",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "conference",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "category",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "stat_type",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "stat",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        }
+      ]
+    },
+    "stats.team_season_stats": {
+      "row_count": 49819,
+      "columns": [
+        {
+          "name": "season",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "team",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "conference",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "stat_name",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "stat_value",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        }
+      ]
+    },
+    "ratings.elo_ratings": {
+      "row_count": 791,
+      "columns": [
+        {
+          "name": "year",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "team",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "conference",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "elo",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        }
+      ]
+    },
+    "ratings.fpi_ratings": {
+      "row_count": 791,
+      "columns": [
+        {
+          "name": "year",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "team",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "conference",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "fpi",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "resume_ranks__strength_of_record",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "resume_ranks__fpi",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "resume_ranks__average_win_probability",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "resume_ranks__strength_of_schedule",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "resume_ranks__game_control",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "efficiencies__overall",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "efficiencies__offense",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "efficiencies__defense",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "efficiencies__special_teams",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "resume_ranks__remaining_strength_of_schedule",
+          "type": "bigint",
+          "nullable": "YES"
+        }
+      ]
+    },
+    "ratings.sp_ratings": {
+      "row_count": 800,
+      "columns": [
+        {
+          "name": "year",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "team",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "conference",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "rating",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "ranking",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "offense__ranking",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "offense__rating",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "defense__ranking",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "defense__rating",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "special_teams__rating",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        }
+      ]
+    },
+    "ratings.srs_ratings": {
+      "row_count": 1258,
+      "columns": [
+        {
+          "name": "year",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "team",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "conference",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "ranking",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "rating",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "division",
+          "type": "character varying",
+          "nullable": "YES"
+        }
+      ]
+    },
+    "recruiting.recruits": {
+      "row_count": 16086,
+      "columns": [
+        {
+          "name": "id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "athlete_id",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "recruit_type",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "year",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "ranking",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "name",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "school",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "committed_to",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "position",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "height",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "weight",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "stars",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "rating",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "city",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "state_province",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "country",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "hometown_info__latitude",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "hometown_info__longitude",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "hometown_info__fips_code",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "recruiting_year",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "height__v_double",
+          "type": "double precision",
+          "nullable": "YES"
+        }
+      ]
+    },
+    "recruiting.team_recruiting": {
+      "row_count": 1184,
+      "columns": [
+        {
+          "name": "year",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "team",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "rank",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "points",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        }
+      ]
+    },
+    "recruiting.transfer_portal": {
+      "row_count": 14356,
+      "columns": [
+        {
+          "name": "season",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "first_name",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "last_name",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "position",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "origin",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "transfer_date",
+          "type": "timestamp with time zone",
+          "nullable": "YES"
+        },
+        {
+          "name": "stars",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "eligibility",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "destination",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "rating",
+          "type": "double precision",
+          "nullable": "YES"
+        }
+      ]
+    },
+    "betting.lines": {
+      "row_count": 20192,
+      "columns": [
+        {
+          "name": "game_id",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "season",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "week",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "home_team",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "away_team",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "home_score",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "away_score",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "provider",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "spread",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "formatted_spread",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "over_under",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "home_moneyline",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "away_moneyline",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        }
+      ]
+    },
+    "draft.draft_picks": {
+      "row_count": 1549,
+      "columns": [
+        {
+          "name": "college_athlete_id",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "nfl_athlete_id",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "college_id",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "college_team",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "college_conference",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "nfl_team_id",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "nfl_team",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "year",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "overall",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "round",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "pick",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "name",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "position",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "height",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "weight",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "pre_draft_ranking",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "pre_draft_position_ranking",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "pre_draft_grade",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "hometown_info__city",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "hometown_info__state",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "hometown_info__country",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "hometown_info__latitude",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "hometown_info__longitude",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "hometown_info__county_fips",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        }
+      ]
+    },
+    "metrics.ppa_players_season": {
+      "row_count": 24475,
+      "columns": [
+        {
+          "name": "season",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "name",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "position",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "team",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "conference",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "average_ppa__all",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "average_ppa__pass",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "average_ppa__rush",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "average_ppa__first_down",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "average_ppa__second_down",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "average_ppa__third_down",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "average_ppa__standard_downs",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "average_ppa__passing_downs",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "total_ppa__all",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "total_ppa__pass",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "total_ppa__rush",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "total_ppa__first_down",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "total_ppa__second_down",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "total_ppa__third_down",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "total_ppa__standard_downs",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "total_ppa__passing_downs",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        }
+      ]
+    },
+    "metrics.ppa_teams": {
+      "row_count": 792,
+      "columns": [
+        {
+          "name": "season",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "conference",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "team",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "offense__overall",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "offense__passing",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "offense__rushing",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "offense__first_down",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "offense__second_down",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "offense__third_down",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "offense__cumulative__total",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "offense__cumulative__passing",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "offense__cumulative__rushing",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "defense__overall",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "defense__passing",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "defense__rushing",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "defense__first_down",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "defense__second_down",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "defense__third_down",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "defense__cumulative__total",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "defense__cumulative__passing",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "defense__cumulative__rushing",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "defense__first_down__v_double",
+          "type": "double precision",
+          "nullable": "YES"
+        }
+      ]
+    },
+    "metrics.pregame_win_probability": {
+      "row_count": 5080,
+      "columns": [
+        {
+          "name": "season",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "week",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "season_type",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "game_id",
+          "type": "bigint",
+          "nullable": "NO"
+        },
+        {
+          "name": "home_team",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "away_team",
+          "type": "character varying",
+          "nullable": "YES"
+        },
+        {
+          "name": "spread",
+          "type": "bigint",
+          "nullable": "YES"
+        },
+        {
+          "name": "home_win_probability",
+          "type": "double precision",
+          "nullable": "YES"
+        },
+        {
+          "name": "_dlt_load_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "_dlt_id",
+          "type": "character varying",
+          "nullable": "NO"
+        },
+        {
+          "name": "spread__v_double",
+          "type": "double precision",
+          "nullable": "YES"
+        }
+      ]
+    }
+  }
+}

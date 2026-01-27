@@ -36,7 +36,10 @@ def metrics_source(
     return [
         ppa_teams_resource(years),
         ppa_players_season_resource(years),
+        ppa_games_resource(years),
+        ppa_players_games_resource(years),
         pregame_win_probability_resource(years),
+        win_probability_resource(years),
     ]
 
 
@@ -93,6 +96,58 @@ def ppa_players_season_resource(years: list[int]) -> Iterator[dict]:
 
 
 @dlt.resource(
+    name="ppa_games",
+    write_disposition="merge",
+    primary_key=["game_id", "team"],
+)
+def ppa_games_resource(years: list[int]) -> Iterator[dict]:
+    """Load game-level PPA (Predicted Points Added) data.
+
+    Args:
+        years: List of years to load PPA for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            logger.info(f"Loading game PPA for {year}...")
+
+            data = make_request(client, "/ppa/games", params={"year": year})
+
+            for game in data:
+                yield game
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="ppa_players_games",
+    write_disposition="merge",
+    primary_key="id",
+)
+def ppa_players_games_resource(years: list[int]) -> Iterator[dict]:
+    """Load player game-level PPA data.
+
+    Args:
+        years: List of years to load PPA for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            logger.info(f"Loading player game PPA for {year}...")
+
+            data = make_request(
+                client, "/ppa/players/games", params={"year": year}
+            )
+
+            for player in data:
+                yield player
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
     name="pregame_win_probability",
     write_disposition="merge",
     primary_key=["season", "game_id"],
@@ -114,6 +169,33 @@ def pregame_win_probability_resource(years: list[int]) -> Iterator[dict]:
 
             for game in data:
                 yield game
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="win_probability",
+    write_disposition="merge",
+    primary_key="play_id",
+)
+def win_probability_resource(years: list[int]) -> Iterator[dict]:
+    """Load in-game win probability by play.
+
+    Args:
+        years: List of years to load win probability for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            logger.info(f"Loading in-game win probability for {year}...")
+
+            data = make_request(
+                client, "/metrics/wp", params={"year": year}
+            )
+
+            for play in data:
+                yield play
 
     finally:
         client.close()

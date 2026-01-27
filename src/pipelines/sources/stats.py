@@ -36,6 +36,7 @@ def stats_source(
     return [
         team_season_stats_resource(years),
         player_season_stats_resource(years),
+        advanced_team_stats_resource(years),
     ]
 
 
@@ -68,7 +69,7 @@ def team_season_stats_resource(years: list[int]) -> Iterator[dict]:
 @dlt.resource(
     name="player_season_stats",
     write_disposition="merge",
-    primary_key=["player_id", "season", "category"],
+    primary_key=["player_id", "season", "category", "stat_type"],
 )
 def player_season_stats_resource(years: list[int]) -> Iterator[dict]:
     """Load player season statistics.
@@ -100,6 +101,8 @@ def player_season_stats_resource(years: list[int]) -> Iterator[dict]:
                 for stat in data:
                     stat["season"] = year
                     stat["category"] = category
+                    # API returns statType (e.g., "YDS", "TD"); ensure it's present for PK
+                    stat["stat_type"] = stat.get("statType", stat.get("stat_type", "unknown"))
                     yield stat
 
     finally:

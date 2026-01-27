@@ -41,7 +41,7 @@ REFERENCE_ENDPOINTS = {
     "coaches": EndpointConfig(
         path="/coaches",
         table_name="coaches",
-        primary_key=["first_name", "last_name", "seasons"],
+        primary_key=["first_name", "last_name"],
         schema="ref",
     ),
     "play_types": EndpointConfig(
@@ -96,7 +96,7 @@ STATS_ENDPOINTS = {
     "player_season_stats": EndpointConfig(
         path="/stats/player/season",
         table_name="player_season_stats",
-        primary_key=["player_id", "season", "stat_type"],
+        primary_key=["player_id", "season", "category", "stat_type"],
         schema="stats",
         write_disposition="merge",
     ),
@@ -167,7 +167,7 @@ RECRUITING_ENDPOINTS = {
     "transfer_portal": EndpointConfig(
         path="/player/portal",
         table_name="transfer_portal",
-        primary_key=["player_id", "season"],
+        primary_key=["season", "first_name", "last_name"],
         schema="recruiting",
         write_disposition="merge",
     ),
@@ -178,7 +178,7 @@ BETTING_ENDPOINTS = {
     "lines": EndpointConfig(
         path="/lines",
         table_name="lines",
-        primary_key=["id"],
+        primary_key=["game_id", "provider"],
         schema="betting",
         write_disposition="merge",
     ),
@@ -189,7 +189,7 @@ DRAFT_ENDPOINTS = {
     "picks": EndpointConfig(
         path="/draft/picks",
         table_name="picks",
-        primary_key=["college_athlete_id", "year"],
+        primary_key=["year", "overall"],
         schema="draft",
         write_disposition="merge",
     ),

@@ -16,7 +16,9 @@ from .sources.rankings import rankings_source
 from .sources.ratings import ratings_source
 from .sources.recruiting import recruiting_source
 from .sources.reference import reference_source
+from .sources.rosters import rosters_source
 from .sources.stats import stats_source
+from .sources.wepa import wepa_source
 from .utils.rate_limiter import get_rate_limiter
 
 
@@ -55,6 +57,8 @@ Examples:
             "metrics",
             "rankings",
             "players",
+            "rosters",
+            "wepa",
             "all",
         ],
         help="Data source to load",
@@ -72,6 +76,13 @@ Examples:
         type=int,
         nargs="+",
         help="Specific years to load (for backfill mode)",
+    )
+
+    parser.add_argument(
+        "--teams",
+        type=str,
+        nargs="+",
+        help="Team names (required for rosters source, e.g., --teams Alabama Georgia)",
     )
 
     parser.add_argument(
@@ -312,6 +323,48 @@ def run_players_pipeline(years: list[int] | None = None, mode: str = "incrementa
     return info
 
 
+def run_rosters_pipeline(
+    teams: list[str],
+    years: list[int] | None = None,
+    mode: str = "incremental",
+):
+    """Run the rosters data pipeline."""
+    years_str = f"years={years}" if years else f"mode={mode}"
+    print(f"\n=== Loading Rosters Data ({years_str}, teams={teams}) ===\n")
+
+    pipeline = dlt.pipeline(
+        pipeline_name="cfbd_rosters",
+        destination="postgres",
+        dataset_name="core",
+    )
+
+    source = rosters_source(teams=teams, years=years, mode=mode)
+    info = pipeline.run(source)
+
+    print(f"\nLoad info: {info}")
+
+    return info
+
+
+def run_wepa_pipeline(years: list[int] | None = None, mode: str = "incremental"):
+    """Run the WEPA (opponent-adjusted EPA) data pipeline."""
+    years_str = f"years={years}" if years else f"mode={mode}"
+    print(f"\n=== Loading WEPA Data ({years_str}) ===\n")
+
+    pipeline = dlt.pipeline(
+        pipeline_name="cfbd_wepa",
+        destination="postgres",
+        dataset_name="metrics",
+    )
+
+    source = wepa_source(years=years, mode=mode)
+    info = pipeline.run(source)
+
+    print(f"\nLoad info: {info}")
+
+    return info
+
+
 def main() -> NoReturn:
     """Main entry point."""
     parser = create_parser()
@@ -334,12 +387,20 @@ def main() -> NoReturn:
         print("Wait for next month or upgrade your CFBD tier.")
         sys.exit(1)
 
+    # Validate rosters requires --teams
+    if args.source == "rosters" and not args.teams:
+        print("ERROR: --teams is required for rosters source")
+        print("Example: --source rosters --teams Alabama Georgia 'Ohio State'")
+        sys.exit(1)
+
     # Dry run mode
     if args.dry_run:
         print(f"[DRY RUN] Would load source: {args.source}")
         print(f"[DRY RUN] Mode: {args.mode}")
         if args.years:
             print(f"[DRY RUN] Years: {args.years}")
+        if args.teams:
+            print(f"[DRY RUN] Teams: {args.teams}")
         sys.exit(0)
 
     # Run the appropriate pipeline
@@ -355,6 +416,8 @@ def main() -> NoReturn:
         "metrics": lambda: run_metrics_pipeline(args.years, args.mode),
         "rankings": lambda: run_rankings_pipeline(args.years, args.mode),
         "players": lambda: run_players_pipeline(args.years, args.mode),
+        "rosters": lambda: run_rosters_pipeline(args.teams, args.years, args.mode),
+        "wepa": lambda: run_wepa_pipeline(args.years, args.mode),
     }
 
     if args.source == "all":

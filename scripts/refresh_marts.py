@@ -24,9 +24,18 @@ logger = logging.getLogger(__name__)
 # team_season_summary -> conference_standings (analytics)
 
 MARTS_VIEWS = [
+    # Core EPA views (order matters: _game_epa_calc first)
     "marts._game_epa_calc",
     "marts.team_season_summary",
     "marts.team_epa_season",
+    # Situational and play-level analysis
+    "marts.situational_splits",
+    "marts.defensive_havoc",
+    "marts.scoring_opportunities",
+    # Historical and reference
+    "marts.matchup_history",
+    "marts.recruiting_class",
+    "marts.coach_record",
 ]
 
 ANALYTICS_VIEWS = [

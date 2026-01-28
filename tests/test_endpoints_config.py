@@ -11,6 +11,7 @@ from src.pipelines.config.endpoints import (
     CORE_ENDPOINTS,
     DRAFT_ENDPOINTS,
     METRICS_ENDPOINTS,
+    RANKINGS_ENDPOINTS,
     RATINGS_ENDPOINTS,
     RECRUITING_ENDPOINTS,
     REFERENCE_ENDPOINTS,
@@ -133,6 +134,7 @@ class TestWriteDispositions:
             "betting": BETTING_ENDPOINTS,
             "draft": DRAFT_ENDPOINTS,
             "metrics": METRICS_ENDPOINTS,
+            "rankings": RANKINGS_ENDPOINTS,
         }
         for group_name, group in non_ref.items():
             for name, config in group.items():

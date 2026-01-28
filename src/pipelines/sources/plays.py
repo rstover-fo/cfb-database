@@ -4,7 +4,7 @@ This is the largest dataset - play-by-play data from 2004-present.
 """
 
 import logging
-from typing import Iterator
+from collections.abc import Iterator
 
 import dlt
 from dlt.sources import DltSource

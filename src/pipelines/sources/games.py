@@ -4,7 +4,7 @@ These tables contain game event data and require year-based iteration.
 """
 
 import logging
-from typing import Iterator
+from collections.abc import Iterator
 
 import dlt
 from dlt.sources import DltSource
@@ -37,6 +37,8 @@ def games_source(
         games_resource(years),
         drives_resource(years),
         game_media_resource(years),
+        game_weather_resource(years),
+        records_resource(years),
     ]
 
 
@@ -131,6 +133,54 @@ def game_media_resource(years: list[int]) -> Iterator[dict]:
             for media in data:
                 media["season"] = year
                 yield media
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="game_weather",
+    write_disposition="merge",
+    primary_key="id",
+)
+def game_weather_resource(years: list[int]) -> Iterator[dict]:
+    """Load game weather data for specified years.
+
+    Args:
+        years: List of years to load weather for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            logger.info(f"Loading game weather for {year}...")
+
+            data = make_request(client, "/games/weather", params={"year": year})
+
+            yield from data
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="records",
+    write_disposition="merge",
+    primary_key=["year", "team"],
+)
+def records_resource(years: list[int]) -> Iterator[dict]:
+    """Load team records for specified years.
+
+    Args:
+        years: List of years to load records for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            logger.info(f"Loading records for {year}...")
+
+            data = make_request(client, "/records", params={"year": year})
+
+            yield from data
 
     finally:
         client.close()

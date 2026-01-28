@@ -4,7 +4,7 @@ Team ratings and rankings by various systems.
 """
 
 import logging
-from typing import Iterator
+from collections.abc import Iterator
 
 import dlt
 from dlt.sources import DltSource
@@ -38,6 +38,7 @@ def ratings_source(
         elo_ratings_resource(years),
         fpi_ratings_resource(years),
         srs_ratings_resource(years),
+        sp_conference_ratings_resource(years),
     ]
 
 
@@ -136,6 +137,34 @@ def srs_ratings_resource(years: list[int]) -> Iterator[dict]:
             logger.info(f"Loading SRS ratings for {year}...")
 
             data = make_request(client, "/ratings/srs", params={"year": year})
+
+            for rating in data:
+                rating["year"] = year
+                yield rating
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="sp_conference_ratings",
+    write_disposition="merge",
+    primary_key=["year", "conference"],
+)
+def sp_conference_ratings_resource(years: list[int]) -> Iterator[dict]:
+    """Load SP+ conference-level ratings.
+
+    Args:
+        years: List of years to load conference ratings for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            logger.info(f"Loading SP+ conference ratings for {year}...")
+
+            data = make_request(
+                client, "/ratings/sp/conferences", params={"year": year}
+            )
 
             for rating in data:
                 rating["year"] = year

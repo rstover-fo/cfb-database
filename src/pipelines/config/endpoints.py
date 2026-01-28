@@ -50,6 +50,36 @@ REFERENCE_ENDPOINTS = {
         primary_key=["id"],
         schema="ref",
     ),
+    "teams_fbs": EndpointConfig(
+        path="/teams/fbs",
+        table_name="teams_fbs",
+        primary_key=["id"],
+        schema="ref",
+    ),
+    "draft_positions": EndpointConfig(
+        path="/draft/positions",
+        table_name="draft_positions",
+        primary_key=["name"],
+        schema="ref",
+    ),
+    "draft_teams": EndpointConfig(
+        path="/draft/teams",
+        table_name="draft_teams",
+        primary_key=["location", "nickname"],
+        schema="ref",
+    ),
+    "stat_categories": EndpointConfig(
+        path="/stats/categories",
+        table_name="stat_categories",
+        primary_key=["name"],
+        schema="ref",
+    ),
+    "calendar": EndpointConfig(
+        path="/calendar",
+        table_name="calendar",
+        primary_key=["season", "week"],
+        schema="ref",
+    ),
 }
 
 # Core game data endpoints (year-iterated, merge)
@@ -78,6 +108,41 @@ CORE_ENDPOINTS = {
     "game_media": EndpointConfig(
         path="/games/media",
         table_name="game_media",
+        primary_key=["id"],
+        schema="core",
+        write_disposition="merge",
+    ),
+    "roster": EndpointConfig(
+        path="/roster",
+        table_name="roster",
+        primary_key=["id"],
+        schema="core",
+        write_disposition="merge",
+    ),
+    "records": EndpointConfig(
+        path="/records",
+        table_name="team_records",
+        primary_key=["year", "team"],
+        schema="core",
+        write_disposition="merge",
+    ),
+    "game_weather": EndpointConfig(
+        path="/games/weather",
+        table_name="game_weather",
+        primary_key=["id"],
+        schema="core",
+        write_disposition="merge",
+    ),
+    "team_matchup": EndpointConfig(
+        path="/teams/matchup",
+        table_name="team_matchups",
+        primary_key=["team1", "team2"],
+        schema="core",
+        write_disposition="merge",
+    ),
+    "player_search": EndpointConfig(
+        path="/player/search",
+        table_name="players",
         primary_key=["id"],
         schema="core",
         write_disposition="merge",
@@ -114,6 +179,27 @@ STATS_ENDPOINTS = {
         schema="stats",
         write_disposition="merge",
     ),
+    "advanced_game_stats": EndpointConfig(
+        path="/game/box/advanced",
+        table_name="advanced_game_stats",
+        primary_key=["game_id", "team"],
+        schema="stats",
+        write_disposition="merge",
+    ),
+    "player_usage": EndpointConfig(
+        path="/player/usage",
+        table_name="player_usage",
+        primary_key=["season", "id"],
+        schema="stats",
+        write_disposition="merge",
+    ),
+    "player_returning": EndpointConfig(
+        path="/player/returning",
+        table_name="player_returning",
+        primary_key=["season", "team"],
+        schema="stats",
+        write_disposition="merge",
+    ),
 }
 
 # Ratings endpoints (year-iterated, merge)
@@ -146,6 +232,13 @@ RATINGS_ENDPOINTS = {
         schema="ratings",
         write_disposition="merge",
     ),
+    "sp_conferences": EndpointConfig(
+        path="/ratings/sp/conferences",
+        table_name="sp_conference_ratings",
+        primary_key=["year", "conference"],
+        schema="ratings",
+        write_disposition="merge",
+    ),
 }
 
 # Recruiting endpoints (year-iterated, merge)
@@ -168,6 +261,20 @@ RECRUITING_ENDPOINTS = {
         path="/player/portal",
         table_name="transfer_portal",
         primary_key=["season", "first_name", "last_name"],
+        schema="recruiting",
+        write_disposition="merge",
+    ),
+    "team_talent": EndpointConfig(
+        path="/talent",
+        table_name="team_talent",
+        primary_key=["year", "school"],
+        schema="recruiting",
+        write_disposition="merge",
+    ),
+    "recruiting_groups": EndpointConfig(
+        path="/recruiting/groups",
+        table_name="recruiting_groups",
+        primary_key=["year", "team", "position_group"],
         schema="recruiting",
         write_disposition="merge",
     ),
@@ -225,6 +332,24 @@ METRICS_ENDPOINTS = {
         schema="metrics",
         write_disposition="merge",
     ),
+    "ppa_predicted": EndpointConfig(
+        path="/ppa/predicted",
+        table_name="ppa_predicted",
+        primary_key=["down", "distance"],
+        schema="metrics",
+        write_disposition="merge",
+    ),
+}
+
+# Rankings endpoints (year+week iterated, merge)
+RANKINGS_ENDPOINTS = {
+    "rankings": EndpointConfig(
+        path="/rankings",
+        table_name="rankings",
+        primary_key=["season", "week", "poll", "rank"],
+        schema="core",
+        write_disposition="merge",
+    ),
 }
 
 # All endpoints grouped by source
@@ -237,4 +362,5 @@ ALL_ENDPOINTS = {
     "betting": BETTING_ENDPOINTS,
     "draft": DRAFT_ENDPOINTS,
     "metrics": METRICS_ENDPOINTS,
+    "rankings": RANKINGS_ENDPOINTS,
 }

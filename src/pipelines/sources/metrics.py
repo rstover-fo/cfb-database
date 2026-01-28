@@ -4,7 +4,7 @@ Predicted Points Added and other advanced analytics.
 """
 
 import logging
-from typing import Iterator
+from collections.abc import Iterator
 
 import dlt
 from dlt.sources import DltSource
@@ -40,6 +40,7 @@ def metrics_source(
         ppa_players_games_resource(years),
         pregame_win_probability_resource(years),
         win_probability_resource(years),
+        ppa_predicted_resource(),
     ]
 
 
@@ -196,6 +197,28 @@ def win_probability_resource(years: list[int]) -> Iterator[dict]:
 
             for play in data:
                 yield play
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="ppa_predicted",
+    write_disposition="merge",
+    primary_key=["down", "distance"],
+)
+def ppa_predicted_resource() -> Iterator[dict]:
+    """Load predicted PPA values (static lookup table).
+
+    This is a reference/lookup endpoint that does not require year iteration.
+    """
+    client = get_client()
+    try:
+        logger.info("Loading predicted PPA lookup data...")
+
+        data = make_request(client, "/ppa/predicted")
+
+        yield from data
 
     finally:
         client.close()

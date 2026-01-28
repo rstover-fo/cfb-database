@@ -4,7 +4,7 @@ Game betting lines from various sportsbooks.
 """
 
 import logging
-from typing import Iterator
+from collections.abc import Iterator
 
 import dlt
 from dlt.sources import DltSource

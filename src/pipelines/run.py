@@ -10,7 +10,9 @@ from .sources.betting import betting_source
 from .sources.draft import draft_source
 from .sources.games import games_source
 from .sources.metrics import metrics_source
+from .sources.players import players_source
 from .sources.plays import plays_source
+from .sources.rankings import rankings_source
 from .sources.ratings import ratings_source
 from .sources.recruiting import recruiting_source
 from .sources.reference import reference_source
@@ -51,6 +53,8 @@ Examples:
             "betting",
             "draft",
             "metrics",
+            "rankings",
+            "players",
             "all",
         ],
         help="Data source to load",
@@ -270,6 +274,44 @@ def run_metrics_pipeline(years: list[int] | None = None, mode: str = "incrementa
     return info
 
 
+def run_rankings_pipeline(years: list[int] | None = None, mode: str = "incremental"):
+    """Run the rankings data pipeline."""
+    years_str = f"years={years}" if years else f"mode={mode}"
+    print(f"\n=== Loading Rankings Data ({years_str}) ===\n")
+
+    pipeline = dlt.pipeline(
+        pipeline_name="cfbd_rankings",
+        destination="postgres",
+        dataset_name="core",
+    )
+
+    source = rankings_source(years=years, mode=mode)
+    info = pipeline.run(source)
+
+    print(f"\nLoad info: {info}")
+
+    return info
+
+
+def run_players_pipeline(years: list[int] | None = None, mode: str = "incremental"):
+    """Run the players data pipeline."""
+    years_str = f"years={years}" if years else f"mode={mode}"
+    print(f"\n=== Loading Players Data ({years_str}) ===\n")
+
+    pipeline = dlt.pipeline(
+        pipeline_name="cfbd_players",
+        destination="postgres",
+        dataset_name="core",
+    )
+
+    source = players_source(years=years, mode=mode)
+    info = pipeline.run(source)
+
+    print(f"\nLoad info: {info}")
+
+    return info
+
+
 def main() -> NoReturn:
     """Main entry point."""
     parser = create_parser()
@@ -311,6 +353,8 @@ def main() -> NoReturn:
         "betting": lambda: run_betting_pipeline(args.years, args.mode),
         "draft": lambda: run_draft_pipeline(args.years, args.mode),
         "metrics": lambda: run_metrics_pipeline(args.years, args.mode),
+        "rankings": lambda: run_rankings_pipeline(args.years, args.mode),
+        "players": lambda: run_players_pipeline(args.years, args.mode),
     }
 
     if args.source == "all":

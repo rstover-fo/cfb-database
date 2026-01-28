@@ -1,6 +1,6 @@
-"""NFL Draft data sources.
+"""Player data sources - player search and roster info.
 
-Draft picks with college player information.
+Player biographical and roster data.
 """
 
 import logging
@@ -16,12 +16,12 @@ from .base import make_request
 logger = logging.getLogger(__name__)
 
 
-@dlt.source(name="cfbd_draft")
-def draft_source(
+@dlt.source(name="cfbd_players")
+def players_source(
     years: list[int] | None = None,
     mode: str = "incremental",
 ) -> DltSource:
-    """Source for NFL draft data.
+    """Source for player data.
 
     Args:
         years: Specific years to load. If None, uses mode to determine years.
@@ -31,33 +31,34 @@ def draft_source(
         if mode == "incremental":
             years = [get_current_season()]
         else:  # backfill
-            years = YEAR_RANGES["draft"].to_list()
+            years = YEAR_RANGES["stats"].to_list()
 
     return [
-        draft_picks_resource(years),
+        player_search_resource(years),
     ]
 
 
 @dlt.resource(
-    name="draft_picks",
+    name="player_search",
     write_disposition="merge",
-    primary_key=["year", "overall"],
+    primary_key="id",
 )
-def draft_picks_resource(years: list[int]) -> Iterator[dict]:
-    """Load NFL draft picks.
+def player_search_resource(years: list[int]) -> Iterator[dict]:
+    """Load player search data for specified years.
 
     Args:
-        years: List of years to load draft picks for
+        years: List of years to load players for
     """
     client = get_client()
     try:
         for year in years:
-            logger.info(f"Loading draft picks for {year}...")
+            logger.info(f"Loading player search for {year}...")
 
-            data = make_request(client, "/draft/picks", params={"year": year})
+            data = make_request(
+                client, "/player/search", params={"year": year}
+            )
 
-            for pick in data:
-                yield pick
+            yield from data
 
     finally:
         client.close()

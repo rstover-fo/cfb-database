@@ -4,7 +4,7 @@ Includes season stats, game stats for teams and players.
 """
 
 import logging
-from typing import Iterator
+from collections.abc import Iterator
 
 import dlt
 from dlt.sources import DltSource
@@ -37,6 +37,9 @@ def stats_source(
         team_season_stats_resource(years),
         player_season_stats_resource(years),
         advanced_team_stats_resource(years),
+        advanced_game_stats_resource(years),
+        player_usage_resource(years),
+        player_returning_resource(years),
     ]
 
 
@@ -134,6 +137,90 @@ def advanced_team_stats_resource(years: list[int]) -> Iterator[dict]:
             for stat in data:
                 stat["season"] = year
                 yield stat
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="advanced_game_stats",
+    write_disposition="merge",
+    primary_key=["game_id", "team"],
+)
+def advanced_game_stats_resource(years: list[int]) -> Iterator[dict]:
+    """Load advanced game-level box score stats (EPA, success rates, etc).
+
+    Args:
+        years: List of years to load stats for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            logger.info(f"Loading advanced game stats for {year}...")
+
+            data = make_request(
+                client,
+                "/game/box/advanced",
+                params={"year": year},
+            )
+
+            yield from data
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="player_usage",
+    write_disposition="merge",
+    primary_key=["season", "id"],
+)
+def player_usage_resource(years: list[int]) -> Iterator[dict]:
+    """Load player usage metrics.
+
+    Args:
+        years: List of years to load usage for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            logger.info(f"Loading player usage for {year}...")
+
+            data = make_request(
+                client,
+                "/player/usage",
+                params={"year": year},
+            )
+
+            yield from data
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="player_returning",
+    write_disposition="merge",
+    primary_key=["season", "team"],
+)
+def player_returning_resource(years: list[int]) -> Iterator[dict]:
+    """Load returning player production data.
+
+    Args:
+        years: List of years to load returning production for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            logger.info(f"Loading player returning production for {year}...")
+
+            data = make_request(
+                client,
+                "/player/returning",
+                params={"year": year},
+            )
+
+            yield from data
 
     finally:
         client.close()

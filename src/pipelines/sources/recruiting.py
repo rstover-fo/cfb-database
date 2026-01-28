@@ -4,7 +4,7 @@ College football recruiting data.
 """
 
 import logging
-from typing import Iterator
+from collections.abc import Iterator
 
 import dlt
 from dlt.sources import DltSource
@@ -37,6 +37,8 @@ def recruiting_source(
         recruits_resource(years),
         team_recruiting_resource(years),
         transfer_portal_resource(years),
+        team_talent_resource(years),
+        recruiting_groups_resource(years),
     ]
 
 
@@ -117,6 +119,58 @@ def transfer_portal_resource(years: list[int]) -> Iterator[dict]:
 
             for transfer in data:
                 yield transfer
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="team_talent",
+    write_disposition="merge",
+    primary_key=["year", "school"],
+)
+def team_talent_resource(years: list[int]) -> Iterator[dict]:
+    """Load team talent composite ratings.
+
+    Args:
+        years: List of years to load talent data for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            logger.info(f"Loading team talent for {year}...")
+
+            data = make_request(
+                client, "/talent", params={"year": year}
+            )
+
+            yield from data
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="recruiting_groups",
+    write_disposition="merge",
+    primary_key=["year", "team", "position_group"],
+)
+def recruiting_groups_resource(years: list[int]) -> Iterator[dict]:
+    """Load recruiting data by position group.
+
+    Args:
+        years: List of years to load recruiting groups for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            logger.info(f"Loading recruiting groups for {year}...")
+
+            data = make_request(
+                client, "/recruiting/groups", params={"year": year}
+            )
+
+            yield from data
 
     finally:
         client.close()

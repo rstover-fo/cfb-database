@@ -6,6 +6,7 @@ These tables contain relatively static reference/dimension data.
 import dlt
 from dlt.sources import DltSource
 
+from ..config.years import get_current_season
 from ..utils.api_client import get_client
 from .base import make_request
 
@@ -14,14 +15,20 @@ from .base import make_request
 def reference_source() -> DltSource:
     """Source for all reference/dimension data.
 
-    Includes: conferences, teams, venues, coaches, play_types
+    Includes: conferences, teams, teams_fbs, venues, coaches, play_types,
+              draft_positions, draft_teams, stat_categories, calendar
     """
     return [
         conferences_resource(),
         teams_resource(),
+        teams_fbs_resource(),
         venues_resource(),
         coaches_resource(),
         play_types_resource(),
+        draft_positions_resource(),
+        draft_teams_resource(),
+        stat_categories_resource(),
+        calendar_resource(),
     ]
 
 
@@ -98,6 +105,82 @@ def play_types_resource():
     client = get_client()
     try:
         data = make_request(client, "/plays/types")
+        yield from data
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="teams_fbs",
+    write_disposition="replace",
+    primary_key="id",
+)
+def teams_fbs_resource():
+    """Load all FBS teams."""
+    client = get_client()
+    try:
+        data = make_request(client, "/teams/fbs")
+        yield from data
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="draft_positions",
+    write_disposition="replace",
+    primary_key="name",
+)
+def draft_positions_resource():
+    """Load NFL draft position categories."""
+    client = get_client()
+    try:
+        data = make_request(client, "/draft/positions")
+        yield from data
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="draft_teams",
+    write_disposition="replace",
+    primary_key=["location", "nickname"],
+)
+def draft_teams_resource():
+    """Load NFL draft teams."""
+    client = get_client()
+    try:
+        data = make_request(client, "/draft/teams")
+        yield from data
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="stat_categories",
+    write_disposition="replace",
+    primary_key="name",
+)
+def stat_categories_resource():
+    """Load stat category definitions."""
+    client = get_client()
+    try:
+        data = make_request(client, "/stats/categories")
+        yield from data
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="calendar",
+    write_disposition="replace",
+    primary_key=["season", "week"],
+)
+def calendar_resource():
+    """Load season calendar for current year."""
+    client = get_client()
+    try:
+        year = get_current_season()
+        data = make_request(client, "/calendar", params={"year": year})
         yield from data
     finally:
         client.close()

@@ -15,12 +15,15 @@ WITH play_situations AS (
         p.distance,
         p.yards_to_goal,
         p.period,
-        p.clock_minutes,
-        p.clock_seconds,
+        p.clock__minutes,
+        p.clock__seconds,
         p.score_diff,
 
-        -- Situation flags
-        NOT is_garbage_time(p.period::integer, p.score_diff::integer) AS is_competitive,
+        -- Situation flags (inlined for performance)
+        NOT (
+            (p.period = 4 AND ABS(COALESCE(p.score_diff, 0)) > 28) OR
+            (p.period >= 3 AND ABS(COALESCE(p.score_diff, 0)) > 35)
+        ) AS is_competitive,
 
         -- Down classifications
         CASE
@@ -58,7 +61,7 @@ WITH play_situations AS (
         -- Two-minute drill: last 2 mins of half
         CASE
             WHEN (p.period = 2 OR p.period = 4)
-                AND COALESCE(p.clock_minutes, 0) < 2 THEN true
+                AND COALESCE(p.clock__minutes, 0) < 2 THEN true
             ELSE false
         END AS is_two_minute,
 

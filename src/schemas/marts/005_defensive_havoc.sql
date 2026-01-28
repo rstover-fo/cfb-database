@@ -13,7 +13,11 @@ WITH defensive_plays AS (
         p.play_type,
         p.yards_gained,
 
-        NOT is_garbage_time(p.period::integer, p.score_diff::integer) AS is_competitive,
+        -- Inlined garbage time check for performance
+        NOT (
+            (p.period = 4 AND ABS(COALESCE(p.score_diff, 0)) > 28) OR
+            (p.period >= 3 AND ABS(COALESCE(p.score_diff, 0)) > 35)
+        ) AS is_competitive,
 
         -- Havoc plays (disruptive plays)
         CASE

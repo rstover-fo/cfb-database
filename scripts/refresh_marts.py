@@ -22,17 +22,23 @@ logger = logging.getLogger(__name__)
 # Order matters: dependencies must refresh first
 # _game_epa_calc -> team_epa_season
 # team_season_summary -> conference_standings (analytics)
+#
+# NOTE: EPA views (_game_epa_calc, team_epa_season, situational_splits, defensive_havoc)
+# take 10-15 minutes each because they process 2.7M plays. For Supabase, these require
+# statement_timeout=0 which the script sets automatically.
 
 MARTS_VIEWS = [
     # Core EPA views (order matters: _game_epa_calc first)
+    # These are slow (~12 min each) due to processing 2.7M plays
     "marts._game_epa_calc",
     "marts.team_season_summary",
     "marts.team_epa_season",
-    # Situational and play-level analysis
+    # Situational and play-level analysis (also slow ~12 min)
     "marts.situational_splits",
     "marts.defensive_havoc",
+    # Drive-level views (faster ~1 min)
     "marts.scoring_opportunities",
-    # Historical and reference
+    # Historical and reference (fast)
     "marts.matchup_history",
     "marts.recruiting_class",
     "marts.coach_record",
@@ -48,24 +54,36 @@ ANALYTICS_VIEWS = [
 
 
 def get_db_url() -> str:
-    """Get database URL from dlt secrets or environment."""
+    """Get database URL from dlt secrets or environment.
+
+    Adds statement_timeout=0 for long-running EPA view refreshes.
+    """
+    import os
+
+    url = None
     try:
         creds = dlt.secrets.get("destination.postgres.credentials")
         if creds:
-            return str(creds)
+            url = str(creds)
     except Exception:
         pass
 
-    import os
+    if not url:
+        url = os.environ.get("SUPABASE_DB_URL") or os.environ.get("DATABASE_URL")
 
-    url = os.environ.get("SUPABASE_DB_URL") or os.environ.get("DATABASE_URL")
-    if url:
-        return url
+    if not url:
+        raise RuntimeError(
+            "No database URL found. Set destination.postgres.credentials in "
+            ".dlt/secrets.toml or SUPABASE_DB_URL environment variable."
+        )
 
-    raise RuntimeError(
-        "No database URL found. Set destination.postgres.credentials in "
-        ".dlt/secrets.toml or SUPABASE_DB_URL environment variable."
-    )
+    # Add statement_timeout=0 for long-running EPA views
+    # This is required for Supabase which has a default timeout
+    if "options=" not in url:
+        separator = "&" if "?" in url else "?"
+        url = f"{url}{separator}options=-c%20statement_timeout%3D0"
+
+    return url
 
 
 def refresh_view(view_name: str, conn, concurrently: bool, dry_run: bool) -> bool:

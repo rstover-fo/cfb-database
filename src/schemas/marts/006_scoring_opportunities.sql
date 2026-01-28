@@ -55,7 +55,7 @@ SELECT
     -- Average drive stats
     ROUND(AVG(d.plays)::numeric, 1) AS avg_plays_per_drive,
     ROUND(AVG(d.yards)::numeric, 1) AS avg_yards_per_drive,
-    ROUND(AVG(d.elapsed_minutes)::numeric, 2) AS avg_time_per_drive,
+    ROUND(AVG(d.elapsed__minutes)::numeric, 2) AS avg_time_per_drive,
 
     -- Red zone drives (started inside opponent 20)
     COUNT(*) FILTER (WHERE d.start_yards_to_goal <= 20) AS red_zone_drives,

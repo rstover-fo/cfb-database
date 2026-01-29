@@ -39,6 +39,8 @@ def games_source(
         game_media_resource(years),
         game_weather_resource(years),
         records_resource(years),
+        game_team_stats_resource(years),
+        game_player_stats_resource(years),
     ]
 
 
@@ -179,6 +181,54 @@ def records_resource(years: list[int]) -> Iterator[dict]:
             logger.info(f"Loading records for {year}...")
 
             data = make_request(client, "/records", params={"year": year})
+
+            yield from data
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="game_team_stats",
+    write_disposition="merge",
+    primary_key="id",
+)
+def game_team_stats_resource(years: list[int]) -> Iterator[dict]:
+    """Load team box scores per game for specified years.
+
+    Args:
+        years: List of years to load game team stats for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            logger.info(f"Loading game team stats for {year}...")
+
+            data = make_request(client, "/games/teams", params={"year": year})
+
+            yield from data
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="game_player_stats",
+    write_disposition="merge",
+    primary_key="id",
+)
+def game_player_stats_resource(years: list[int]) -> Iterator[dict]:
+    """Load player box scores per game for specified years.
+
+    Args:
+        years: List of years to load game player stats for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            logger.info(f"Loading game player stats for {year}...")
+
+            data = make_request(client, "/games/players", params={"year": year})
 
             yield from data
 

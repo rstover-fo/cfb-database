@@ -161,7 +161,7 @@ STATS_ENDPOINTS = {
     "player_season_stats": EndpointConfig(
         path="/stats/player/season",
         table_name="player_season_stats",
-        primary_key=["player_id", "season", "category", "stat_type"],
+        primary_key=["player_id", "season", "team", "category", "stat_type"],
         schema="stats",
         write_disposition="merge",
     ),

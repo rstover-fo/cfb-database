@@ -74,12 +74,13 @@ class TestPrimaryKeyIntegrity:
         assert "seasons" not in pk
         assert pk == ["first_name", "last_name"]
 
-    def test_player_season_stats_pk_has_stat_type(self):
-        """player_season_stats needs 4-part PK including stat_type."""
+    def test_player_season_stats_pk_includes_team(self):
+        """player_season_stats needs 5-part PK including team for transfers."""
         pk = STATS_ENDPOINTS["player_season_stats"].primary_key
+        assert "team" in pk, "player_season_stats PK must include team for transfer players"
         assert "stat_type" in pk
         assert "category" in pk
-        assert pk == ["player_id", "season", "category", "stat_type"]
+        assert pk == ["player_id", "season", "team", "category", "stat_type"]
 
     def test_transfer_portal_pk_uses_name_fields(self):
         """transfer_portal API has no player_id — use name fields."""

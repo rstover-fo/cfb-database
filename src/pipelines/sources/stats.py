@@ -7,6 +7,7 @@ import logging
 from collections.abc import Iterator
 
 import dlt
+import httpx
 from dlt.sources import DltSource
 
 from ..config.years import YEAR_RANGES, get_current_season
@@ -150,6 +151,8 @@ def advanced_team_stats_resource(years: list[int]) -> Iterator[dict]:
 def advanced_game_stats_resource(years: list[int]) -> Iterator[dict]:
     """Load advanced game-level box score stats (EPA, success rates, etc).
 
+    Note: Data only available from ~2014+. Earlier years return 400 and are skipped.
+
     Args:
         years: List of years to load stats for
     """
@@ -158,13 +161,18 @@ def advanced_game_stats_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading advanced game stats for {year}...")
 
-            data = make_request(
-                client,
-                "/game/box/advanced",
-                params={"year": year},
-            )
-
-            yield from data
+            try:
+                data = make_request(
+                    client,
+                    "/game/box/advanced",
+                    params={"year": year},
+                )
+                yield from data
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 400:
+                    logger.warning(f"No advanced game stats for {year} (400 response), skipping")
+                    continue
+                raise
 
     finally:
         client.close()
@@ -178,6 +186,8 @@ def advanced_game_stats_resource(years: list[int]) -> Iterator[dict]:
 def player_usage_resource(years: list[int]) -> Iterator[dict]:
     """Load player usage metrics.
 
+    Note: Data only available from ~2014+. Earlier years return 400 and are skipped.
+
     Args:
         years: List of years to load usage for
     """
@@ -186,13 +196,18 @@ def player_usage_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading player usage for {year}...")
 
-            data = make_request(
-                client,
-                "/player/usage",
-                params={"year": year},
-            )
-
-            yield from data
+            try:
+                data = make_request(
+                    client,
+                    "/player/usage",
+                    params={"year": year},
+                )
+                yield from data
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 400:
+                    logger.warning(f"No player usage data for {year} (400 response), skipping")
+                    continue
+                raise
 
     finally:
         client.close()
@@ -206,6 +221,8 @@ def player_usage_resource(years: list[int]) -> Iterator[dict]:
 def player_returning_resource(years: list[int]) -> Iterator[dict]:
     """Load returning player production data.
 
+    Note: Data only available from ~2014+. Earlier years return 400 and are skipped.
+
     Args:
         years: List of years to load returning production for
     """
@@ -214,13 +231,18 @@ def player_returning_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading player returning production for {year}...")
 
-            data = make_request(
-                client,
-                "/player/returning",
-                params={"year": year},
-            )
-
-            yield from data
+            try:
+                data = make_request(
+                    client,
+                    "/player/returning",
+                    params={"year": year},
+                )
+                yield from data
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 400:
+                    logger.warning(f"No player returning data for {year} (400 response), skipping")
+                    continue
+                raise
 
     finally:
         client.close()

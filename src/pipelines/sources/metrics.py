@@ -7,6 +7,7 @@ import logging
 from collections.abc import Iterator
 
 import dlt
+import httpx
 from dlt.sources import DltSource
 
 from ..config.years import YEAR_RANGES, get_current_season
@@ -104,6 +105,8 @@ def ppa_players_season_resource(years: list[int]) -> Iterator[dict]:
 def ppa_games_resource(years: list[int]) -> Iterator[dict]:
     """Load game-level PPA (Predicted Points Added) data.
 
+    Note: Data availability varies by year. Years with no data return 400 and are skipped.
+
     Args:
         years: List of years to load PPA for
     """
@@ -112,10 +115,15 @@ def ppa_games_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading game PPA for {year}...")
 
-            data = make_request(client, "/ppa/games", params={"year": year})
-
-            for game in data:
-                yield game
+            try:
+                data = make_request(client, "/ppa/games", params={"year": year})
+                for game in data:
+                    yield game
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 400:
+                    logger.warning(f"No game PPA data for {year} (400 response), skipping")
+                    continue
+                raise
 
     finally:
         client.close()
@@ -129,6 +137,8 @@ def ppa_games_resource(years: list[int]) -> Iterator[dict]:
 def ppa_players_games_resource(years: list[int]) -> Iterator[dict]:
     """Load player game-level PPA data.
 
+    Note: Data availability varies by year. Years with no data return 400 and are skipped.
+
     Args:
         years: List of years to load PPA for
     """
@@ -137,12 +147,17 @@ def ppa_players_games_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading player game PPA for {year}...")
 
-            data = make_request(
-                client, "/ppa/players/games", params={"year": year}
-            )
-
-            for player in data:
-                yield player
+            try:
+                data = make_request(
+                    client, "/ppa/players/games", params={"year": year}
+                )
+                for player in data:
+                    yield player
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 400:
+                    logger.warning(f"No player game PPA data for {year} (400 response), skipping")
+                    continue
+                raise
 
     finally:
         client.close()
@@ -183,6 +198,8 @@ def pregame_win_probability_resource(years: list[int]) -> Iterator[dict]:
 def win_probability_resource(years: list[int]) -> Iterator[dict]:
     """Load in-game win probability by play.
 
+    Note: Data availability varies by year. Years with no data return 400 and are skipped.
+
     Args:
         years: List of years to load win probability for
     """
@@ -191,12 +208,17 @@ def win_probability_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading in-game win probability for {year}...")
 
-            data = make_request(
-                client, "/metrics/wp", params={"year": year}
-            )
-
-            for play in data:
-                yield play
+            try:
+                data = make_request(
+                    client, "/metrics/wp", params={"year": year}
+                )
+                for play in data:
+                    yield play
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 400:
+                    logger.warning(f"No win probability data for {year} (400 response), skipping")
+                    continue
+                raise
 
     finally:
         client.close()
@@ -211,14 +233,20 @@ def ppa_predicted_resource() -> Iterator[dict]:
     """Load predicted PPA values (static lookup table).
 
     This is a reference/lookup endpoint that does not require year iteration.
+    Note: This endpoint may require specific parameters. Returns empty if unavailable.
     """
     client = get_client()
     try:
         logger.info("Loading predicted PPA lookup data...")
 
-        data = make_request(client, "/ppa/predicted")
-
-        yield from data
+        try:
+            data = make_request(client, "/ppa/predicted")
+            yield from data
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 400:
+                logger.warning("PPA predicted endpoint returned 400, skipping")
+                return
+            raise
 
     finally:
         client.close()

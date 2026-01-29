@@ -7,6 +7,7 @@
 
 - **WORKING**: Configured + implemented + wired in source return + CLI registered
 - **CONFIG_ONLY**: Endpoint config exists, resource function may exist, but NOT returned from source
+- **DEFERRED**: Investigated; requires non-standard iteration pattern (per-game or parameter combinations); low priority
 - **UNMAPPED**: No config or source implementation
 
 ## Database Summary
@@ -151,8 +152,8 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 44 | `/metrics/wp/pregame` | metrics.pregame_win_probability | metrics.py | pregame_wp_resource | YES | merge | season, game_id | 2014-2026 | WORKING |
 | 45 | `/ppa/games` | — | — | — | NO | merge | game_id, team | 2014-2026 | CONFIG_ONLY |
 | 46 | `/ppa/players/games` | — | — | — | NO | merge | id | 2014-2026 | CONFIG_ONLY |
-| 47 | `/metrics/wp` | — | — | — | NO | merge | play_id | 2014-2026 | CONFIG_ONLY |
-| 48 | `/ppa/predicted` | — | — | — | — | — | — | — | UNMAPPED |
+| 47 | `/metrics/wp` | — | — | — | NO | merge | play_id | 2014-2026 | DEFERRED |
+| 48 | `/ppa/predicted` | — | — | — | — | — | down, distance, yard_line | — | DEFERRED |
 | 49 | `/metrics/fg/ep` | — | — | — | — | — | — | — | UNMAPPED |
 
 ### Rankings
@@ -188,8 +189,48 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 |---|---|
 | WORKING | 22 |
 | WORKING (PK bug) | 4 |
-| CONFIG_ONLY | 6 |
+| CONFIG_ONLY | 4 |
+| DEFERRED | 2 |
 | UNMAPPED | 27 |
 | **Total** | **59** |
 
 **Note**: The API reference lists ~61 endpoints but some are variants of others (e.g., `/stats/season` vs `/stats/player/season` are listed as one "stats" category). This manifest counts distinct loadable endpoints.
+
+---
+
+## Endpoint Investigation Notes
+
+### `/metrics/wp` (In-Game Win Probability) — DEFERRED
+
+**Investigation Date:** 2026-01-29
+
+**Findings:**
+- Endpoint requires `gameId` parameter — year-only queries return 400
+- Returns play-by-play win probability data for a single game
+- Each record includes: `playId`, `playText`, `homeWinProbability`, `down`, `distance`, `yardLine`, etc.
+- Example: `GET /metrics/wp?gameId=401628455` returns ~150+ records per game
+
+**Why Deferred:**
+The current year-based iteration pattern doesn't work for this endpoint. Loading all games would require:
+1. First query all game IDs from the `games` table
+2. Then iterate per-game to fetch win probability
+3. With ~18,000+ games in the database, this would consume significant API quota
+
+**Recommendation:**
+Use `pregame_win_probability` (already working) for pre-game predictions. In-game win probability is low priority for analytics use cases. If needed later, implement a targeted loader for specific games of interest rather than full historical backfill.
+
+### `/ppa/predicted` (Predicted Points Lookup) — DEFERRED
+
+**Investigation Date:** 2026-01-29
+
+**Findings:**
+- Endpoint requires `down` and `distance` parameters — no-parameter queries return 400
+- Returns expected points by yard line (1-90) for a given down/distance situation
+- Example: `GET /ppa/predicted?down=1&distance=10` returns 90 records (one per yard line)
+- Full dataset would be: 4 downs × ~30 distances × 90 yard lines = ~10,800 records (small)
+
+**Why Deferred:**
+While the total dataset is small (~10K records), the endpoint requires iterating over all down/distance combinations. This is low priority for current analytics needs.
+
+**Recommendation:**
+If needed, implement a simple nested loop over realistic down/distance combinations (down 1-4, distance 1-30) to build the complete lookup table. This could be done in a single pipeline run with ~120 API calls.

@@ -204,9 +204,21 @@ def game_team_stats_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading game team stats for {year}...")
 
-            data = make_request(client, "/games/teams", params={"year": year})
-
-            yield from data
+            # CFBD games/teams endpoint requires week parameter
+            # Regular season: weeks 1-15, postseason: weeks 1-5
+            for season_type in ["regular", "postseason"]:
+                max_week = 15 if season_type == "regular" else 5
+                for week in range(1, max_week + 1):
+                    try:
+                        data = make_request(
+                            client,
+                            "/games/teams",
+                            params={"year": year, "seasonType": season_type, "week": week}
+                        )
+                        yield from data
+                    except Exception:
+                        # Some weeks may not have games (esp postseason)
+                        continue
 
     finally:
         client.close()
@@ -228,9 +240,21 @@ def game_player_stats_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading game player stats for {year}...")
 
-            data = make_request(client, "/games/players", params={"year": year})
-
-            yield from data
+            # CFBD games/players endpoint requires week parameter
+            # Regular season: weeks 1-15, postseason: weeks 1-5
+            for season_type in ["regular", "postseason"]:
+                max_week = 15 if season_type == "regular" else 5
+                for week in range(1, max_week + 1):
+                    try:
+                        data = make_request(
+                            client,
+                            "/games/players",
+                            params={"year": year, "seasonType": season_type, "week": week}
+                        )
+                        yield from data
+                    except Exception:
+                        # Some weeks may not have games (esp postseason)
+                        continue
 
     finally:
         client.close()

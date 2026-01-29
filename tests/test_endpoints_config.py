@@ -82,11 +82,12 @@ class TestPrimaryKeyIntegrity:
         assert "category" in pk
         assert pk == ["player_id", "season", "team", "category", "stat_type"]
 
-    def test_transfer_portal_pk_uses_name_fields(self):
-        """transfer_portal API has no player_id — use name fields."""
+    def test_transfer_portal_pk_includes_origin(self):
+        """transfer_portal PK must include origin to handle name collisions."""
         pk = RECRUITING_ENDPOINTS["transfer_portal"].primary_key
         assert "player_id" not in pk
-        assert pk == ["season", "first_name", "last_name"]
+        assert "origin" in pk, "transfer_portal PK must include origin school"
+        assert pk == ["first_name", "last_name", "origin", "season"]
 
     def test_lines_pk_is_composite(self):
         """lines flattens nested structure — needs game_id + provider."""

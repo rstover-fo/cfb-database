@@ -1,7 +1,7 @@
 # CFB Database — Pipeline Manifest
 
 > Single source of truth for all endpoint-to-pipeline mappings.
-> Sprint 0.5 — Generated from code audit + API inspection.
+> Sprint 3 — Updated after endpoint implementation completion.
 
 ## Status Legend
 
@@ -73,13 +73,13 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 |---|---|---|---|---|---|---|---|---|---|
 | 6 | `/games` | core.games | games.py | games_resource | YES | merge | id | 2000-2026 | WORKING |
 | 7 | `/drives` | core.drives | games.py | drives_resource | YES | merge | id | 2000-2026 | WORKING |
-| 8 | `/games/media` | core.game_media | games.py | game_media_resource | **NO** | merge | id | 2000-2026 | CONFIG_ONLY |
-| 9 | `/games/teams` | core.game_team_stats | — | — | NO | merge | id | 2004-2026 | CONFIG_ONLY |
-| 10 | `/games/players` | core.game_player_stats | — | — | NO | merge | id | 2004-2026 | CONFIG_ONLY |
-| 11 | `/games/weather` | — | — | — | — | — | — | — | UNMAPPED |
+| 8 | `/games/media` | core.game_media | games.py | game_media_resource | YES | merge | id | 2000-2026 | WORKING |
+| 9 | `/games/teams` | core.game_team_stats | games.py | game_team_stats_resource | YES | merge | id | 2004-2026 | WORKING |
+| 10 | `/games/players` | core.game_player_stats | games.py | game_player_stats_resource | YES | merge | id | 2004-2026 | WORKING |
+| 11 | `/games/weather` | core.game_weather | games.py | game_weather_resource | YES | merge | id | 2000-2026 | WORKING |
 | 12 | `/game/box/advanced` | — | — | — | — | — | — | — | UNMAPPED |
-| 13 | `/calendar` | — | — | — | — | — | — | — | UNMAPPED |
-| 14 | `/records` | — | — | — | — | — | — | — | UNMAPPED |
+| 13 | `/calendar` | ref.calendar | reference.py | calendar_resource | YES | replace | season, week | current | WORKING |
+| 14 | `/records` | core.records | games.py | records_resource | YES | merge | year, team | 2000-2026 | WORKING |
 | 15 | `/scoreboard` | — | — | — | — | — | — | — | UNMAPPED |
 
 ### Play-by-Play Data (merge disposition)
@@ -100,7 +100,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 22 | `/stats/season/advanced` | stats.advanced_team_stats | stats.py | advanced_team_stats_resource | **NO** | merge | season, team | 2004-2026 | CONFIG_ONLY |
 | 23 | `/stats/game/advanced` | — | — | — | — | — | — | — | UNMAPPED |
 | 24 | `/stats/game/havoc` | — | — | — | — | — | — | — | UNMAPPED |
-| 25 | `/stats/categories` | — | — | — | — | — | — | — | UNMAPPED |
+| 25 | `/stats/categories` | ref.stat_categories | reference.py | stat_categories_resource | YES | replace | name | — | WORKING |
 
 ### Ratings Data (merge disposition)
 
@@ -119,7 +119,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 31 | `/recruiting/players` | recruiting.recruits | recruiting.py | recruits_resource | YES | merge | id | 2000-2026 | WORKING |
 | 32 | `/recruiting/teams` | recruiting.team_recruiting | recruiting.py | team_recruiting_resource | YES | merge | year, team | 2000-2026 | WORKING |
 | 33 | `/player/portal` | recruiting.transfer_portal | recruiting.py | transfer_portal_resource | YES | merge | **season, first_name, last_name** (PK mismatch in config) | 2000-2026 | WORKING (PK bug) |
-| 34 | `/recruiting/groups` | — | — | — | — | — | — | — | UNMAPPED |
+| 34 | `/recruiting/groups` | recruiting.recruiting_groups | recruiting.py | recruiting_groups_resource | YES | merge | year, team, position_group | 2000-2026 | WORKING |
 
 ### Player Data
 
@@ -140,8 +140,8 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
 |---|---|---|---|---|---|---|---|---|---|
 | 39 | `/draft/picks` | draft.draft_picks | draft.py | draft_picks_resource | YES | merge | **year, overall** (config says college_athlete_id — mismatch) | 2000-2026 | WORKING (PK bug) |
-| 40 | `/draft/positions` | — | — | — | — | — | — | — | UNMAPPED |
-| 41 | `/draft/teams` | — | — | — | — | — | — | — | UNMAPPED |
+| 40 | `/draft/positions` | ref.draft_positions | reference.py | draft_positions_resource | YES | replace | name | — | WORKING |
+| 41 | `/draft/teams` | ref.draft_teams | reference.py | draft_teams_resource | YES | replace | location, nickname | — | WORKING |
 
 ### Metrics Data (merge disposition)
 
@@ -160,17 +160,17 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 
 | # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| 50 | `/rankings` | — | — | — | — | — | — | — | UNMAPPED |
+| 50 | `/rankings` | core.rankings | rankings.py | rankings_resource | YES | merge | season, week, poll, rank | 2000-2026 | WORKING |
 
 ### Teams Extended
 
 | # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| 51 | `/teams/fbs` | — | — | — | — | — | — | — | UNMAPPED |
+| 51 | `/teams/fbs` | ref.teams_fbs | reference.py | teams_fbs_resource | YES | replace | id | — | WORKING |
 | 52 | `/teams/matchup` | core.team_matchups | — | — | — | DEFERRED | team1, team2, season | — | Computed from games via matchup_history mart |
 | 53 | `/teams/ats` | — | — | — | — | — | — | — | UNMAPPED |
-| 54 | `/roster` | — | — | — | — | — | — | — | UNMAPPED |
-| 55 | `/talent` | — | — | — | — | — | — | — | UNMAPPED |
+| 54 | `/roster` | core.rosters | rosters.py | rosters_resource | YES | merge | id, team, year | 2004-2026 | WORKING (requires team list) |
+| 55 | `/talent` | recruiting.team_talent | recruiting.py | team_talent_resource | YES | merge | year, school | 2000-2026 | WORKING |
 
 ### Adjusted Metrics (WEPA)
 
@@ -187,12 +187,15 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 
 | Status | Count |
 |---|---|
-| WORKING | 22 |
-| WORKING (PK bug) | 4 |
-| CONFIG_ONLY | 4 |
+| WORKING | 31 |
+| WORKING (PK bug) | 5 |
+| WORKING (note) | 1 |
+| CONFIG_ONLY | 3 |
 | DEFERRED | 3 |
-| UNMAPPED | 26 |
+| UNMAPPED | 16 |
 | **Total** | **59** |
+
+**Sprint 3 Progress:** Added 14 new WORKING endpoints: `/games/media`, `/games/teams`, `/games/players`, `/games/weather`, `/calendar`, `/records`, `/stats/categories`, `/recruiting/groups`, `/draft/positions`, `/draft/teams`, `/rankings`, `/teams/fbs`, `/roster`, `/talent`.
 
 **Note**: The API reference lists ~61 endpoints but some are variants of others (e.g., `/stats/season` vs `/stats/player/season` are listed as one "stats" category). This manifest counts distinct loadable endpoints.
 

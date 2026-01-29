@@ -167,7 +167,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
 |---|---|---|---|---|---|---|---|---|---|
 | 51 | `/teams/fbs` | — | — | — | — | — | — | — | UNMAPPED |
-| 52 | `/teams/matchup` | — | — | — | — | — | — | — | UNMAPPED |
+| 52 | `/teams/matchup` | core.team_matchups | — | — | — | DEFERRED | team1, team2, season | — | Computed from games via matchup_history mart |
 | 53 | `/teams/ats` | — | — | — | — | — | — | — | UNMAPPED |
 | 54 | `/roster` | — | — | — | — | — | — | — | UNMAPPED |
 | 55 | `/talent` | — | — | — | — | — | — | — | UNMAPPED |
@@ -190,8 +190,8 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | WORKING | 22 |
 | WORKING (PK bug) | 4 |
 | CONFIG_ONLY | 4 |
-| DEFERRED | 2 |
-| UNMAPPED | 27 |
+| DEFERRED | 3 |
+| UNMAPPED | 26 |
 | **Total** | **59** |
 
 **Note**: The API reference lists ~61 endpoints but some are variants of others (e.g., `/stats/season` vs `/stats/player/season` are listed as one "stats" category). This manifest counts distinct loadable endpoints.
@@ -234,3 +234,18 @@ While the total dataset is small (~10K records), the endpoint requires iterating
 
 **Recommendation:**
 If needed, implement a simple nested loop over realistic down/distance combinations (down 1-4, distance 1-30) to build the complete lookup table. This could be done in a single pipeline run with ~120 API calls.
+
+### `/teams/matchup` (Historical Matchups) — DEFERRED
+
+**Investigation Date:** 2026-01-29
+
+**Findings:**
+- Endpoint requires `team1` and `team2` parameters
+- Returns historical head-to-head records between two specific teams
+- Would require iterating over all FBS team pairs (130 × 129 / 2 = 8,385 calls)
+
+**Why Deferred:**
+The `analytics.matchup_history` materialized view already computes head-to-head records directly from the games table. Loading the API endpoint would be redundant and consume significant API quota.
+
+**Recommendation:**
+Use the existing `matchup_history` mart for rivalry/matchup analysis. No API endpoint needed.

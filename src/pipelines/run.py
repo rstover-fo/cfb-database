@@ -9,6 +9,7 @@ import dlt
 from .sources.betting import betting_source
 from .sources.draft import draft_source
 from .sources.games import games_source
+from .sources.game_stats import game_stats_source
 from .sources.metrics import metrics_source
 from .sources.players import players_source
 from .sources.plays import plays_source
@@ -20,6 +21,19 @@ from .sources.rosters import rosters_source
 from .sources.stats import stats_source
 from .sources.wepa import wepa_source
 from .utils.rate_limiter import get_rate_limiter
+
+
+def batch_years(years: list[int], batch_size: int) -> list[list[int]]:
+    """Split years into batches of specified size.
+
+    Args:
+        years: List of years to batch
+        batch_size: Number of years per batch
+
+    Returns:
+        List of year batches
+    """
+    return [years[i : i + batch_size] for i in range(0, len(years), batch_size)]
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -38,6 +52,9 @@ Examples:
   # Backfill historical games
   python -m src.pipelines.run --source games --mode backfill --years 2020 2021 2022
 
+  # Backfill game stats in batches (avoids timeout on large merges)
+  python -m src.pipelines.run --source game_stats --years 2020 2021 2022 2023 2024 --batch-size 2
+
   # Check pipeline status and rate limits
   python -m src.pipelines.run --status
         """,
@@ -48,6 +65,7 @@ Examples:
         choices=[
             "reference",
             "games",
+            "game_stats",
             "plays",
             "stats",
             "ratings",
@@ -95,6 +113,19 @@ Examples:
         "--dry-run",
         action="store_true",
         help="Show what would be loaded without making API calls",
+    )
+
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Process years in batches of N (e.g., --batch-size 2 for 2 years at a time)",
+    )
+
+    parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="Use replace disposition instead of merge (faster for bulk loads, use for game_stats)",
     )
 
     return parser
@@ -150,6 +181,61 @@ def run_games_pipeline(years: list[int] | None = None, mode: str = "incremental"
     print(f"\nLoad info: {info}")
 
     return info
+
+
+def run_game_stats_pipeline(
+    years: list[int] | None = None,
+    mode: str = "incremental",
+    batch_size: int | None = None,
+    use_replace: bool = False,
+):
+    """Run the game stats pipeline (team/player box scores only).
+
+    Args:
+        years: Specific years to load
+        mode: "incremental" or "backfill"
+        batch_size: If set, process years in batches of this size
+        use_replace: If True, use replace disposition instead of merge
+    """
+    years_str = f"years={years}" if years else f"mode={mode}"
+    disposition = "replace" if use_replace else "merge"
+    print(f"\n=== Loading Game Stats Data ({years_str}, disposition={disposition}) ===\n")
+
+    pipeline = dlt.pipeline(
+        pipeline_name="cfbd_game_stats",
+        destination="postgres",
+        dataset_name="core",
+    )
+
+    # Determine base disposition
+    base_disposition = "replace" if use_replace else "merge"
+
+    # If no batching or no years specified, run normally
+    if batch_size is None or years is None:
+        source = game_stats_source(years=years, mode=mode, disposition=base_disposition)
+        info = pipeline.run(source)
+        print(f"\nLoad info: {info}")
+        return info
+
+    # Batch mode: process years in chunks
+    batches = batch_years(years, batch_size)
+    print(f"Processing {len(years)} years in {len(batches)} batches of up to {batch_size}")
+
+    all_info = []
+    for i, year_batch in enumerate(batches, 1):
+        # First batch uses replace (truncate+insert), subsequent use append
+        if use_replace:
+            batch_disposition = "replace" if i == 1 else "append"
+        else:
+            batch_disposition = "merge"
+        print(f"\n--- Batch {i}/{len(batches)}: years {year_batch} (disposition={batch_disposition}) ---")
+        source = game_stats_source(years=year_batch, mode=mode, disposition=batch_disposition)
+        info = pipeline.run(source)
+        all_info.append(info)
+        print(f"Batch {i} complete: {info}")
+
+    print(f"\n=== All {len(batches)} batches complete ===")
+    return all_info
 
 
 def run_plays_pipeline(years: list[int] | None = None, mode: str = "incremental"):
@@ -401,12 +487,17 @@ def main() -> NoReturn:
             print(f"[DRY RUN] Years: {args.years}")
         if args.teams:
             print(f"[DRY RUN] Teams: {args.teams}")
+        if args.batch_size and args.years:
+            batches = batch_years(args.years, args.batch_size)
+            print(f"[DRY RUN] Batch size: {args.batch_size}")
+            print(f"[DRY RUN] Would run {len(batches)} batches: {batches}")
         sys.exit(0)
 
     # Run the appropriate pipeline
     source_runners = {
         "reference": lambda: run_reference_pipeline(),
         "games": lambda: run_games_pipeline(args.years, args.mode),
+        "game_stats": lambda: run_game_stats_pipeline(args.years, args.mode, args.batch_size, args.replace),
         "plays": lambda: run_plays_pipeline(args.years, args.mode),
         "stats": lambda: run_stats_pipeline(args.years, args.mode),
         "ratings": lambda: run_ratings_pipeline(args.years, args.mode),

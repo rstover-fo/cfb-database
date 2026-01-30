@@ -24,10 +24,10 @@ team_records AS (
     SELECT
         team,
         year AS season,
-        total_wins AS wins,
-        total_games AS games,
-        ROUND(total_wins::numeric / NULLIF(total_games, 0), 3) AS win_pct
-    FROM core.team_records
+        total__wins AS wins,
+        total__games AS games,
+        ROUND(total__wins::numeric / NULLIF(total__games, 0), 3) AS win_pct
+    FROM core.records
 ),
 recruiting_ranks AS (
     SELECT

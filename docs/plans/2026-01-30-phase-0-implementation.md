@@ -899,18 +899,27 @@ public/data/*.parquet
 ## Summary Checklist
 
 ### Phase 0: Get App Working
-- [ ] Task 1: Add env vars to Vercel, redeploy
-- [ ] Task 2: Verify `get_drive_patterns` function exists
-- [ ] Task 3: Create `team_style_profile` materialized view
-- [ ] Task 4: Create `team_season_trajectory` materialized view
-- [ ] Task 5: Create public schema views for API access
-- [ ] Task 6: Verify app works end-to-end
+- [x] Task 1: Add env vars to Vercel, redeploy
+- [x] Task 2: Verify `get_drive_patterns` function exists
+- [x] Task 3: Create `team_style_profile` materialized view
+- [x] Task 4: Create `team_season_trajectory` materialized view
+- [x] Task 5: Create public schema views for API access
+  - Created `public.team_epa_season` view with correct column mappings (games_played→games, added off_epa_rank, def_epa_rank, total_epa)
+  - Fixed column mismatch that was causing MetricsCards component to error
+- [x] Task 6: Verify app works end-to-end
 
 ### Phase 0.5: DuckDB-WASM Exploration
 - [ ] Task 7: Export Parquet files from Supabase
 - [ ] Task 8: Add DuckDB-WASM to cfb-app
 - [ ] Task 9: Create exploration page
 - [ ] Task 10: Serve Parquet files (local or R2)
+
+### Future: UI Improvements (for cfb-app session)
+- [ ] Fix color contrast on MetricsCards (faded text on white cards)
+- [ ] Add season selector (detect latest available season)
+- [ ] Replace raw JSON trajectory with chart visualization
+- [ ] Debug get_drive_patterns RPC (shows "No data")
+- [ ] Add interactivity (tooltips, drill-down)
 
 ---
 

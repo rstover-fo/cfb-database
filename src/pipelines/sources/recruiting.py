@@ -100,7 +100,7 @@ def team_recruiting_resource(years: list[int]) -> Iterator[dict]:
 @dlt.resource(
     name="transfer_portal",
     write_disposition="merge",
-    primary_key=["season", "first_name", "last_name"],
+    primary_key=["first_name", "last_name", "origin", "season"],
 )
 def transfer_portal_resource(years: list[int]) -> Iterator[dict]:
     """Load transfer portal entries.

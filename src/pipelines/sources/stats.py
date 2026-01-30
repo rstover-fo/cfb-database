@@ -73,7 +73,7 @@ def team_season_stats_resource(years: list[int]) -> Iterator[dict]:
 @dlt.resource(
     name="player_season_stats",
     write_disposition="merge",
-    primary_key=["player_id", "season", "category", "stat_type"],
+    primary_key=["player_id", "season", "team", "category", "stat_type"],
 )
 def player_season_stats_resource(years: list[int]) -> Iterator[dict]:
     """Load player season statistics.

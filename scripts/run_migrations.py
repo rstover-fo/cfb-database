@@ -33,6 +33,9 @@ MIGRATION_ORDER = [
     "011_partition_plays.sql",
     "012_foreign_keys.sql",
     "013_analytics_views.sql",
+    "014_positions.sql",
+    "015_plays_score_diff.sql",
+    "016_analytics_indexes.sql",
 ]
 
 

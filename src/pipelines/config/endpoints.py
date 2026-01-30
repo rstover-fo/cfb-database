@@ -161,7 +161,7 @@ STATS_ENDPOINTS = {
     "player_season_stats": EndpointConfig(
         path="/stats/player/season",
         table_name="player_season_stats",
-        primary_key=["player_id", "season", "category", "stat_type"],
+        primary_key=["player_id", "season", "team", "category", "stat_type"],
         schema="stats",
         write_disposition="merge",
     ),
@@ -260,7 +260,7 @@ RECRUITING_ENDPOINTS = {
     "transfer_portal": EndpointConfig(
         path="/player/portal",
         table_name="transfer_portal",
-        primary_key=["season", "first_name", "last_name"],
+        primary_key=["first_name", "last_name", "origin", "season"],
         schema="recruiting",
         write_disposition="merge",
     ),

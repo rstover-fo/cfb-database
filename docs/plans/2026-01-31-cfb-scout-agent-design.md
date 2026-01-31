@@ -108,20 +108,18 @@ New schema: `scouting`
 
 ### Tier 1 - High-value scouting sites (daily crawl)
 
-| Source | Content Type | Method | Notes |
-|--------|--------------|--------|-------|
-| 247Sports | Recruiting, scouting reports | Scrape | Player pages, team boards |
-| Rivals | Recruiting, player evals | Scrape | Similar structure to 247 |
-| On3 | NIL, transfer portal, recruiting | Scrape | Strong portal coverage |
-| ESPN | Draft rankings, scouting reports | Scrape | Insider content limited |
-| The Athletic | Deep-dive articles | Scrape | Paywall - may need subscription |
+| Source | Content Type | Method | Cost | Notes |
+|--------|--------------|--------|------|-------|
+| 247Sports | Recruiting, scouting reports | Scrape | Free tier | Player pages, team boards |
+| Rivals | Recruiting, player evals | Scrape | Free tier | Similar structure to 247 |
+| On3 | NIL, transfer portal, recruiting | Scrape | Free tier | Strong portal coverage, consider upgrade later |
+| PFF | Per-play grades, position rankings | Scrape | Free/~$40/mo | Objective film-based grades, complements sentiment |
 
 ### Tier 2 - Community sentiment (hourly for active topics)
 
-| Source | Content Type | Method | Notes |
-|--------|--------------|--------|-------|
-| Reddit | r/CFB, team subreddits | API (PRAW) | Great for fan sentiment, rumors |
-| X/Twitter | Insider accounts, beat writers | API (tweepy) | Real-time intel, requires paid tier |
+| Source | Content Type | Method | Cost | Notes |
+|--------|--------------|--------|------|-------|
+| Reddit | r/CFB, team subreddits | API (PRAW) | Free | Great for fan sentiment, rumors |
 
 ### Tier 3 - Supplementary (weekly)
 
@@ -129,6 +127,14 @@ New schema: `scouting`
 |--------|--------------|--------|-------|
 | Team blogs (SB Nation) | Team-specific analysis | RSS + scrape | Good for depth chart speculation |
 | Draft analysts | Draft grades | Scrape | Seasonal - ramps up Nov-April |
+| ESPN | Draft rankings, scouting reports | Scrape | Insider content limited |
+
+### Deferred Sources
+
+| Source | Reason | Revisit When |
+|--------|--------|--------------|
+| X/Twitter | Poor cost/value ($100/mo for limited access) | If Reddit + scouting sites leave gaps |
+| The Athletic | Paywall (~$8/mo) | If quality analysis needed |
 
 ### Crawler Architecture
 
@@ -242,9 +248,9 @@ cfb-scout/
 |-------|-------|---------|
 | **1** | Schema + Reddit crawler | Prove the loop: crawl → store → summarize → query |
 | **2** | 247Sports + player entity linking | Real scouting content, matched to existing roster data |
-| **3** | Player timeline + longitudinal tracking | Historical snapshots working |
-| **4** | Team roster rollups | Position group analysis |
-| **5** | X/Twitter + remaining sources | Full source coverage |
+| **3** | PFF grades integration | Objective performance data alongside sentiment |
+| **4** | Player timeline + longitudinal tracking | Historical snapshots working |
+| **5** | Team roster rollups | Position group analysis |
 | **6** | cfb-app integration | API endpoints for UI consumption |
 
 ---
@@ -266,19 +272,19 @@ These can be implemented as Supabase RPC functions or a thin API layer.
 ## Dependencies & Credentials Needed
 
 - **Anthropic API key** - Claude for summarization
-- **Reddit API credentials** - For PRAW
-- **X/Twitter API credentials** - Paid tier for search/stream
+- **Reddit API credentials** - For PRAW (free tier)
 - **Supabase connection** - Same as cfb-database
 - **Proxy service (optional)** - For scraping at scale without blocks
 
 ---
 
-## Open Questions
+## Decisions Made
 
-1. **Subscription access** - Do we have/want Athletic, 247 premium, etc.?
-2. **X API tier** - Basic ($100/mo) vs Pro ($5000/mo) - what level of Twitter access?
-3. **Crawl frequency** - Daily sufficient for most, or need real-time for portal/recruiting season?
-4. **Historical backfill** - Seed with current season only, or attempt historical scraping?
+1. **Premium access:** Start with free tiers for all sources. Consider On3 + Athletic (~$20-30/mo) later if gaps identified.
+2. **X/Twitter:** Skip for now - poor cost/value ratio. Reddit + scouting sites provide 80% of signal.
+3. **PFF:** Added as key source for objective, film-based player grades.
+4. **Backfill scope:** Active roster players only (~11,000 total, focus on ~3,000 key contributors). Pull recruiting history from existing `recruiting.recruits` table, scrape current-season scouting content only.
+5. **Crawl frequency:** Daily for scouting sites, hourly for Reddit during active periods.
 
 ---
 

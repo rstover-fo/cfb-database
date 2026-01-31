@@ -39,8 +39,8 @@ YEAR_RANGES = {
     # Most stats available from 2004
     "stats": YearRange(start=2004, end=2026),
 
-    # Advanced ratings from 2015
-    "ratings": YearRange(start=2015, end=2026),
+    # Advanced ratings from 2004 (FPI starts 2005)
+    "ratings": YearRange(start=2004, end=2026),
 
     # Recruiting from 2000
     "recruiting": YearRange(start=2000, end=2026),

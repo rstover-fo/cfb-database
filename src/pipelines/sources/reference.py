@@ -34,7 +34,7 @@ def reference_source() -> DltSource:
 
 @dlt.resource(
     name="conferences",
-    write_disposition="replace",
+    write_disposition="merge",
     primary_key="id",
 )
 def conferences_resource():
@@ -49,7 +49,7 @@ def conferences_resource():
 
 @dlt.resource(
     name="teams",
-    write_disposition="replace",
+    write_disposition="merge",
     primary_key="id",
 )
 def teams_resource():
@@ -64,7 +64,7 @@ def teams_resource():
 
 @dlt.resource(
     name="venues",
-    write_disposition="replace",
+    write_disposition="merge",
     primary_key="id",
 )
 def venues_resource():
@@ -79,7 +79,7 @@ def venues_resource():
 
 @dlt.resource(
     name="coaches",
-    write_disposition="replace",
+    write_disposition="merge",
     primary_key=["first_name", "last_name"],
 )
 def coaches_resource():
@@ -97,7 +97,7 @@ def coaches_resource():
 
 @dlt.resource(
     name="play_types",
-    write_disposition="replace",
+    write_disposition="merge",
     primary_key="id",
 )
 def play_types_resource():
@@ -112,7 +112,7 @@ def play_types_resource():
 
 @dlt.resource(
     name="teams_fbs",
-    write_disposition="replace",
+    write_disposition="merge",
     primary_key="id",
 )
 def teams_fbs_resource():
@@ -127,7 +127,7 @@ def teams_fbs_resource():
 
 @dlt.resource(
     name="draft_positions",
-    write_disposition="replace",
+    write_disposition="merge",
     primary_key="name",
 )
 def draft_positions_resource():
@@ -142,7 +142,7 @@ def draft_positions_resource():
 
 @dlt.resource(
     name="draft_teams",
-    write_disposition="replace",
+    write_disposition="merge",
     primary_key=["location", "nickname"],
 )
 def draft_teams_resource():
@@ -157,7 +157,7 @@ def draft_teams_resource():
 
 @dlt.resource(
     name="stat_categories",
-    write_disposition="replace",
+    write_disposition="merge",
     primary_key="name",
 )
 def stat_categories_resource():
@@ -172,7 +172,7 @@ def stat_categories_resource():
 
 @dlt.resource(
     name="calendar",
-    write_disposition="replace",
+    write_disposition="merge",
     primary_key=["season", "week"],
 )
 def calendar_resource():

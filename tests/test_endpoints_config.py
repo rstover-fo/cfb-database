@@ -119,12 +119,13 @@ class TestPrimaryKeyFieldsAreStrings:
 
 
 class TestWriteDispositions:
-    """Reference data should use replace, everything else should use merge."""
+    """All endpoints should use merge to preserve indexes and FKs."""
 
-    def test_reference_uses_replace(self):
+    def test_reference_uses_merge(self):
+        """Reference endpoints use merge to preserve indexes, FKs, and triggers."""
         for name, config in REFERENCE_ENDPOINTS.items():
-            assert config.write_disposition == "replace", (
-                f"Reference endpoint {name} should use 'replace'"
+            assert config.write_disposition == "merge", (
+                f"Reference endpoint {name} should use 'merge'"
             )
 
     def test_non_reference_uses_merge(self):

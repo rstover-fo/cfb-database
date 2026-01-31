@@ -18,67 +18,77 @@ class EndpointConfig:
     params: dict | None = None
 
 
-# Reference data endpoints (full refresh)
+# Reference data endpoints (merge to preserve indexes and FKs)
 REFERENCE_ENDPOINTS = {
     "conferences": EndpointConfig(
         path="/conferences",
         table_name="conferences",
         primary_key=["id"],
         schema="ref",
+        write_disposition="merge",
     ),
     "teams": EndpointConfig(
         path="/teams",
         table_name="teams",
         primary_key=["id"],
         schema="ref",
+        write_disposition="merge",
     ),
     "venues": EndpointConfig(
         path="/venues",
         table_name="venues",
         primary_key=["id"],
         schema="ref",
+        write_disposition="merge",
     ),
     "coaches": EndpointConfig(
         path="/coaches",
         table_name="coaches",
         primary_key=["first_name", "last_name"],
         schema="ref",
+        write_disposition="merge",
     ),
     "play_types": EndpointConfig(
         path="/plays/types",
         table_name="play_types",
         primary_key=["id"],
         schema="ref",
+        write_disposition="merge",
     ),
     "teams_fbs": EndpointConfig(
         path="/teams/fbs",
         table_name="teams_fbs",
         primary_key=["id"],
         schema="ref",
+        write_disposition="merge",
     ),
     "draft_positions": EndpointConfig(
         path="/draft/positions",
         table_name="draft_positions",
         primary_key=["name"],
         schema="ref",
+        write_disposition="merge",
     ),
     "draft_teams": EndpointConfig(
         path="/draft/teams",
         table_name="draft_teams",
         primary_key=["location", "nickname"],
         schema="ref",
+        write_disposition="merge",
     ),
     "stat_categories": EndpointConfig(
         path="/stats/categories",
         table_name="stat_categories",
         primary_key=["name"],
         schema="ref",
+        write_disposition="merge",
     ),
     "calendar": EndpointConfig(
         path="/calendar",
         table_name="calendar",
         primary_key=["season", "week"],
         schema="ref",
+        write_disposition="merge",
     ),
 }
 

@@ -36,6 +36,8 @@ MIGRATION_ORDER = [
     "014_positions.sql",
     "015_plays_score_diff.sql",
     "016_analytics_indexes.sql",
+    "017_era_reference.sql",
+    "018_transactional_triggers.sql",
 ]
 
 

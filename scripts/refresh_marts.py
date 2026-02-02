@@ -42,6 +42,8 @@ MARTS_VIEWS = [
     "marts.matchup_history",
     "marts.recruiting_class",
     "marts.coach_record",
+    # Tempo metrics (depends on team_epa_season)
+    "marts.team_tempo_metrics",
 ]
 
 ANALYTICS_VIEWS = [

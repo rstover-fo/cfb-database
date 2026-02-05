@@ -16,7 +16,7 @@ def reference_source() -> DltSource:
     """Source for all reference/dimension data.
 
     Includes: conferences, teams, teams_fbs, venues, coaches, play_types,
-              draft_positions, draft_teams, stat_categories, calendar
+              play_stat_types, draft_positions, draft_teams, stat_categories, calendar
     """
     return [
         conferences_resource(),
@@ -25,6 +25,7 @@ def reference_source() -> DltSource:
         venues_resource(),
         coaches_resource(),
         play_types_resource(),
+        play_stat_types_resource(),
         draft_positions_resource(),
         draft_teams_resource(),
         stat_categories_resource(),
@@ -120,6 +121,21 @@ def teams_fbs_resource():
     client = get_client()
     try:
         data = make_request(client, "/teams/fbs")
+        yield from data
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="play_stat_types",
+    write_disposition="merge",
+    primary_key="id",
+)
+def play_stat_types_resource():
+    """Load play stat type definitions."""
+    client = get_client()
+    try:
+        data = make_request(client, "/plays/stats/types")
         yield from data
     finally:
         client.close()

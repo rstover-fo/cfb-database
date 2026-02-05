@@ -35,6 +35,7 @@ def betting_source(
 
     return [
         lines_resource(years),
+        team_ats_resource(years),
     ]
 
 
@@ -77,6 +78,32 @@ def lines_resource(years: list[int]) -> Iterator[dict]:
                         "home_moneyline": line.get("homeMoneyline"),
                         "away_moneyline": line.get("awayMoneyline"),
                     }
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="team_ats",
+    write_disposition="merge",
+    primary_key=["year", "team_id"],
+)
+def team_ats_resource(years: list[int]) -> Iterator[dict]:
+    """Load team against-the-spread (ATS) records.
+
+    Args:
+        years: List of years to load ATS records for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            logger.info(f"Loading team ATS for {year}...")
+
+            data = make_request(client, "/teams/ats", params={"year": year})
+
+            for team in data:
+                team["year"] = year
+                yield team
 
     finally:
         client.close()

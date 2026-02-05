@@ -42,6 +42,7 @@ def metrics_source(
         pregame_win_probability_resource(years),
         win_probability_resource(years),
         ppa_predicted_resource(),
+        fg_expected_points_resource(),
     ]
 
 
@@ -245,6 +246,34 @@ def ppa_predicted_resource() -> Iterator[dict]:
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 400:
                 logger.warning("PPA predicted endpoint returned 400, skipping")
+                return
+            raise
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="fg_expected_points",
+    write_disposition="merge",
+    primary_key=["distance"],
+)
+def fg_expected_points_resource() -> Iterator[dict]:
+    """Load field goal expected points by distance (static lookup table).
+
+    This is a reference/lookup endpoint that does not require year iteration.
+    Returns expected points value for each field goal distance.
+    """
+    client = get_client()
+    try:
+        logger.info("Loading field goal expected points lookup data...")
+
+        try:
+            data = make_request(client, "/metrics/fg/ep")
+            yield from data
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 400:
+                logger.warning("FG expected points endpoint returned 400, skipping")
                 return
             raise
 

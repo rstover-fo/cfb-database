@@ -91,17 +91,22 @@ def player_season_stats_resource(years: list[int]) -> Iterator[dict]:
             # Player stats endpoint can return a lot of data
             # We'll load by category to manage memory
             categories = [
-                "passing", "rushing", "receiving", "fumbles",
-                "defensive", "interceptions", "punting", "kicking",
-                "kickReturns", "puntReturns",
+                "passing",
+                "rushing",
+                "receiving",
+                "fumbles",
+                "defensive",
+                "interceptions",
+                "punting",
+                "kicking",
+                "kickReturns",
+                "puntReturns",
             ]
 
             for category in categories:
                 logger.info(f"  Category: {category}...")
                 data = make_request(
-                    client,
-                    "/stats/player/season",
-                    params={"year": year, "category": category}
+                    client, "/stats/player/season", params={"year": year, "category": category}
                 )
 
                 for stat in data:
@@ -131,11 +136,7 @@ def advanced_team_stats_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading advanced team stats for {year}...")
 
-            data = make_request(
-                client,
-                "/stats/season/advanced",
-                params={"year": year}
-            )
+            data = make_request(client, "/stats/season/advanced", params={"year": year})
 
             for stat in data:
                 stat["season"] = year
@@ -255,31 +256,98 @@ def player_returning_resource(years: list[int]) -> Iterator[dict]:
     write_disposition="merge",
     primary_key=["game_id", "play_id", "athlete_id", "stat_type"],
 )
-def play_stats_resource(years: list[int]) -> Iterator[dict]:
+def play_stats_resource(
+    years: list[int] | None = None,
+    game_ids: list[int] | None = None,
+) -> Iterator[dict]:
     """Load play-level statistics (player associations for each play).
+
+    IMPORTANT: The API has a 2000 record limit per request. When loading by year,
+    we iterate by gameId to ensure complete data extraction.
 
     Note: Data only available from ~2014+. Earlier years return 400 and are skipped.
 
     Args:
-        years: List of years to load play stats for
+        years: List of years to load play stats for (will fetch game IDs from API)
+        game_ids: Explicit list of game IDs to load (overrides years if provided)
     """
+    if game_ids is None and years is None:
+        raise ValueError("Must provide either years or game_ids")
+
     client = get_client()
     try:
-        for year in years:
-            logger.info(f"Loading play stats for {year}...")
+        if game_ids is not None:
+            # Direct game ID iteration
+            total = 0
+            for i, game_id in enumerate(game_ids):
+                try:
+                    data = make_request(
+                        client,
+                        "/plays/stats",
+                        params={"gameId": game_id},
+                    )
+                    if data:
+                        total += len(data)
+                        yield from data
+                    if (i + 1) % 100 == 0:
+                        logger.info(f"  Processed {i + 1}/{len(game_ids)} games, {total} records")
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 400:
+                        continue
+                    raise
+            logger.info(f"Loaded {total} total records from {len(game_ids)} games")
+        else:
+            # Year-based loading: fetch games for each year, then iterate by gameId
+            for year in years:
+                logger.info(f"Loading play stats for {year}...")
+                try:
+                    # Get all games for this year
+                    games = make_request(
+                        client,
+                        "/games",
+                        params={"year": year, "seasonType": "regular"},
+                    )
+                    # Also get postseason games
+                    postseason = make_request(
+                        client,
+                        "/games",
+                        params={"year": year, "seasonType": "postseason"},
+                    )
+                    games.extend(postseason)
 
-            try:
-                data = make_request(
-                    client,
-                    "/plays/stats",
-                    params={"year": year},
-                )
-                yield from data
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 400:
-                    logger.warning(f"No play stats data for {year} (400 response), skipping")
-                    continue
-                raise
+                    game_ids_for_year = [g["id"] for g in games if g.get("id")]
+                    logger.info(f"  Found {len(game_ids_for_year)} games for {year}")
+
+                    year_total = 0
+                    for i, game_id in enumerate(game_ids_for_year):
+                        try:
+                            data = make_request(
+                                client,
+                                "/plays/stats",
+                                params={"gameId": game_id},
+                            )
+                            if data:
+                                year_total += len(data)
+                                yield from data
+                            if (i + 1) % 100 == 0:
+                                logger.info(
+                                    f"    {year}: {i + 1}/{len(game_ids_for_year)} games,"
+                                    f" {year_total} records"
+                                )
+                        except httpx.HTTPStatusError as e:
+                            if e.response.status_code == 400:
+                                continue
+                            raise
+
+                    logger.info(
+                        f"Loaded {year}: {year_total} records from {len(game_ids_for_year)} games"
+                    )
+
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 400:
+                        logger.warning(f"No play stats data for {year} (400 response), skipping")
+                        continue
+                    raise
 
     finally:
         client.close()

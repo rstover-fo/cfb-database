@@ -1,6 +1,7 @@
 """Load just the play_stat_types reference table."""
 
 import dlt
+
 from src.pipelines.sources.reference import play_stat_types_resource
 
 pipeline = dlt.pipeline(

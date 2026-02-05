@@ -58,9 +58,7 @@ def recruits_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading recruits for {year}...")
 
-            data = make_request(
-                client, "/recruiting/players", params={"year": year}
-            )
+            data = make_request(client, "/recruiting/players", params={"year": year})
 
             for recruit in data:
                 recruit["recruiting_year"] = year
@@ -86,12 +84,9 @@ def team_recruiting_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading team recruiting for {year}...")
 
-            data = make_request(
-                client, "/recruiting/teams", params={"year": year}
-            )
+            data = make_request(client, "/recruiting/teams", params={"year": year})
 
-            for team in data:
-                yield team
+            yield from data
 
     finally:
         client.close()
@@ -113,12 +108,9 @@ def transfer_portal_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading transfer portal for {year}...")
 
-            data = make_request(
-                client, "/player/portal", params={"year": year}
-            )
+            data = make_request(client, "/player/portal", params={"year": year})
 
-            for transfer in data:
-                yield transfer
+            yield from data
 
     finally:
         client.close()
@@ -140,9 +132,7 @@ def team_talent_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading team talent for {year}...")
 
-            data = make_request(
-                client, "/talent", params={"year": year}
-            )
+            data = make_request(client, "/talent", params={"year": year})
 
             yield from data
 
@@ -166,9 +156,7 @@ def recruiting_groups_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading recruiting groups for {year}...")
 
-            data = make_request(
-                client, "/recruiting/groups", params={"year": year}
-            )
+            data = make_request(client, "/recruiting/groups", params={"year": year})
 
             yield from data
 

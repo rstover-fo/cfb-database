@@ -34,8 +34,17 @@ class TestYearRange:
 
 class TestYearRangesConfig:
     def test_all_categories_exist(self):
-        expected = {"games", "games_modern", "plays", "stats", "ratings",
-                    "recruiting", "betting", "draft", "metrics"}
+        expected = {
+            "games",
+            "games_modern",
+            "plays",
+            "stats",
+            "ratings",
+            "recruiting",
+            "betting",
+            "draft",
+            "metrics",
+        }
         assert set(YEAR_RANGES.keys()) == expected
 
     def test_plays_start_2004(self):
@@ -52,24 +61,28 @@ class TestYearRangesConfig:
 class TestGetCurrentSeason:
     def test_before_august_returns_previous_year(self):
         from datetime import datetime
+
         with patch("datetime.datetime") as mock_dt:
             mock_dt.now.return_value = datetime(2026, 3, 15)
             assert get_current_season() == 2025
 
     def test_august_returns_current_year(self):
         from datetime import datetime
+
         with patch("datetime.datetime") as mock_dt:
             mock_dt.now.return_value = datetime(2026, 8, 1)
             assert get_current_season() == 2026
 
     def test_december_returns_current_year(self):
         from datetime import datetime
+
         with patch("datetime.datetime") as mock_dt:
             mock_dt.now.return_value = datetime(2025, 12, 15)
             assert get_current_season() == 2025
 
     def test_january_returns_previous_year(self):
         from datetime import datetime
+
         with patch("datetime.datetime") as mock_dt:
             mock_dt.now.return_value = datetime(2026, 1, 27)
             assert get_current_season() == 2025

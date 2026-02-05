@@ -9,11 +9,11 @@ from collections.abc import Iterator
 import dlt
 from dlt.sources import DltSource
 
-logger = logging.getLogger(__name__)
-
 from ..config.years import YEAR_RANGES, get_current_season
 from ..utils.api_client import get_client
 from .base import make_request
+
+logger = logging.getLogger(__name__)
 
 
 @dlt.source(name="cfbd_games")
@@ -89,11 +89,7 @@ def drives_resource(years: list[int]) -> Iterator[dict]:
             logger.info(f"Loading drives for {year}...")
 
             # CFBD drives endpoint requires seasonType parameter
-            data = make_request(
-                client,
-                "/drives",
-                params={"year": year, "seasonType": "regular"}
-            )
+            data = make_request(client, "/drives", params={"year": year, "seasonType": "regular"})
 
             for drive in data:
                 drive["season"] = year
@@ -101,9 +97,7 @@ def drives_resource(years: list[int]) -> Iterator[dict]:
 
             # Also load postseason drives
             postseason_data = make_request(
-                client,
-                "/drives",
-                params={"year": year, "seasonType": "postseason"}
+                client, "/drives", params={"year": year, "seasonType": "postseason"}
             )
 
             for drive in postseason_data:
@@ -213,7 +207,7 @@ def game_team_stats_resource(years: list[int]) -> Iterator[dict]:
                         data = make_request(
                             client,
                             "/games/teams",
-                            params={"year": year, "seasonType": season_type, "week": week}
+                            params={"year": year, "seasonType": season_type, "week": week},
                         )
                         yield from data
                     except Exception:
@@ -249,7 +243,7 @@ def game_player_stats_resource(years: list[int]) -> Iterator[dict]:
                         data = make_request(
                             client,
                             "/games/players",
-                            params={"year": year, "seasonType": season_type, "week": week}
+                            params={"year": year, "seasonType": season_type, "week": week},
                         )
                         yield from data
                     except Exception:

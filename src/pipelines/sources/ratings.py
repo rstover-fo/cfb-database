@@ -162,9 +162,7 @@ def sp_conference_ratings_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading SP+ conference ratings for {year}...")
 
-            data = make_request(
-                client, "/ratings/sp/conferences", params={"year": year}
-            )
+            data = make_request(client, "/ratings/sp/conferences", params={"year": year})
 
             for rating in data:
                 rating["year"] = year

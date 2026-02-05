@@ -1,7 +1,6 @@
 """Tests for roster data source."""
 
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 
 def test_rosters_resource_yields_players():
@@ -13,8 +12,10 @@ def test_rosters_resource_yields_players():
         {"id": 12346, "first_name": "Ryan", "last_name": "Williams", "position": "WR", "jersey": 2},
     ]
 
-    with patch("src.pipelines.sources.rosters.get_client") as mock_get_client, \
-         patch("src.pipelines.sources.rosters.make_request") as mock_make_request:
+    with (
+        patch("src.pipelines.sources.rosters.get_client") as mock_get_client,
+        patch("src.pipelines.sources.rosters.make_request") as mock_make_request,
+    ):
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
         mock_make_request.return_value = mock_response
@@ -31,8 +32,10 @@ def test_rosters_resource_iterates_teams_and_years():
     """Should call API for each team/year combination."""
     from src.pipelines.sources.rosters import rosters_resource
 
-    with patch("src.pipelines.sources.rosters.get_client") as mock_get_client, \
-         patch("src.pipelines.sources.rosters.make_request") as mock_make_request:
+    with (
+        patch("src.pipelines.sources.rosters.get_client") as mock_get_client,
+        patch("src.pipelines.sources.rosters.make_request") as mock_make_request,
+    ):
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
         mock_make_request.return_value = []
@@ -47,8 +50,10 @@ def test_rosters_resource_handles_empty_response():
     """Should handle teams with no roster data gracefully."""
     from src.pipelines.sources.rosters import rosters_resource
 
-    with patch("src.pipelines.sources.rosters.get_client") as mock_get_client, \
-         patch("src.pipelines.sources.rosters.make_request") as mock_make_request:
+    with (
+        patch("src.pipelines.sources.rosters.get_client") as mock_get_client,
+        patch("src.pipelines.sources.rosters.make_request") as mock_make_request,
+    ):
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
         mock_make_request.return_value = []

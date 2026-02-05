@@ -8,8 +8,8 @@ import dlt
 
 from .sources.betting import betting_source
 from .sources.draft import draft_source
-from .sources.games import games_source
 from .sources.game_stats import game_stats_source
+from .sources.games import games_source
 from .sources.metrics import metrics_source
 from .sources.players import players_source
 from .sources.plays import plays_source
@@ -228,7 +228,10 @@ def run_game_stats_pipeline(
             batch_disposition = "replace" if i == 1 else "append"
         else:
             batch_disposition = "merge"
-        print(f"\n--- Batch {i}/{len(batches)}: years {year_batch} (disposition={batch_disposition}) ---")
+        print(
+            f"\n--- Batch {i}/{len(batches)}: years {year_batch}"
+            f" (disposition={batch_disposition}) ---"
+        )
         source = game_stats_source(years=year_batch, mode=mode, disposition=batch_disposition)
         info = pipeline.run(source)
         all_info.append(info)
@@ -497,7 +500,9 @@ def main() -> NoReturn:
     source_runners = {
         "reference": lambda: run_reference_pipeline(),
         "games": lambda: run_games_pipeline(args.years, args.mode),
-        "game_stats": lambda: run_game_stats_pipeline(args.years, args.mode, args.batch_size, args.replace),
+        "game_stats": lambda: run_game_stats_pipeline(
+            args.years, args.mode, args.batch_size, args.replace
+        ),
         "plays": lambda: run_plays_pipeline(args.years, args.mode),
         "stats": lambda: run_stats_pipeline(args.years, args.mode),
         "ratings": lambda: run_ratings_pipeline(args.years, args.mode),

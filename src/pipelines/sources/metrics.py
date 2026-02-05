@@ -64,8 +64,7 @@ def ppa_teams_resource(years: list[int]) -> Iterator[dict]:
 
             data = make_request(client, "/ppa/teams", params={"year": year})
 
-            for team in data:
-                yield team
+            yield from data
 
     finally:
         client.close()
@@ -87,12 +86,9 @@ def ppa_players_season_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading player season PPA for {year}...")
 
-            data = make_request(
-                client, "/ppa/players/season", params={"year": year}
-            )
+            data = make_request(client, "/ppa/players/season", params={"year": year})
 
-            for player in data:
-                yield player
+            yield from data
 
     finally:
         client.close()
@@ -118,8 +114,7 @@ def ppa_games_resource(years: list[int]) -> Iterator[dict]:
 
             try:
                 data = make_request(client, "/ppa/games", params={"year": year})
-                for game in data:
-                    yield game
+                yield from data
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 400:
                     logger.warning(f"No game PPA data for {year} (400 response), skipping")
@@ -149,11 +144,8 @@ def ppa_players_games_resource(years: list[int]) -> Iterator[dict]:
             logger.info(f"Loading player game PPA for {year}...")
 
             try:
-                data = make_request(
-                    client, "/ppa/players/games", params={"year": year}
-                )
-                for player in data:
-                    yield player
+                data = make_request(client, "/ppa/players/games", params={"year": year})
+                yield from data
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 400:
                     logger.warning(f"No player game PPA data for {year} (400 response), skipping")
@@ -180,12 +172,9 @@ def pregame_win_probability_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading pregame win probabilities for {year}...")
 
-            data = make_request(
-                client, "/metrics/wp/pregame", params={"year": year}
-            )
+            data = make_request(client, "/metrics/wp/pregame", params={"year": year})
 
-            for game in data:
-                yield game
+            yield from data
 
     finally:
         client.close()
@@ -210,11 +199,8 @@ def win_probability_resource(years: list[int]) -> Iterator[dict]:
             logger.info(f"Loading in-game win probability for {year}...")
 
             try:
-                data = make_request(
-                    client, "/metrics/wp", params={"year": year}
-                )
-                for play in data:
-                    yield play
+                data = make_request(client, "/metrics/wp", params={"year": year})
+                yield from data
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 400:
                     logger.warning(f"No win probability data for {year} (400 response), skipping")

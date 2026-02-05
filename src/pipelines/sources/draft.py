@@ -56,8 +56,7 @@ def draft_picks_resource(years: list[int]) -> Iterator[dict]:
 
             data = make_request(client, "/draft/picks", params={"year": year})
 
-            for pick in data:
-                yield pick
+            yield from data
 
     finally:
         client.close()

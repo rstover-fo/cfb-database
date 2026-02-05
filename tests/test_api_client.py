@@ -70,11 +70,12 @@ class TestCFBDClient:
         success_response.raise_for_status = MagicMock()
 
         with patch.object(
-            client._client, "get",
+            client._client,
+            "get",
             side_effect=[
                 httpx.HTTPStatusError("500", request=MagicMock(), response=error_response),
                 success_response,
-            ]
+            ],
         ):
             with patch("src.pipelines.utils.api_client.time.sleep"):
                 result = client.get("/teams")
@@ -94,11 +95,12 @@ class TestCFBDClient:
         success_response.raise_for_status = MagicMock()
 
         with patch.object(
-            client._client, "get",
+            client._client,
+            "get",
             side_effect=[
                 httpx.HTTPStatusError("429", request=MagicMock(), response=rate_response),
                 success_response,
-            ]
+            ],
         ):
             with patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep:
                 client.get("/teams")

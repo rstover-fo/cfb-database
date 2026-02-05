@@ -22,11 +22,14 @@ from src.pipelines.config.endpoints import (
 class TestEndpointConfigStructure:
     """Every endpoint config must have valid required fields."""
 
-    @pytest.fixture(params=[
-        (group_name, name, config)
-        for group_name, group in ALL_ENDPOINTS.items()
-        for name, config in group.items()
-    ], ids=lambda x: f"{x[0]}.{x[1]}")
+    @pytest.fixture(
+        params=[
+            (group_name, name, config)
+            for group_name, group in ALL_ENDPOINTS.items()
+            for name, config in group.items()
+        ],
+        ids=lambda x: f"{x[0]}.{x[1]}",
+    )
     def endpoint(self, request):
         return request.param
 
@@ -177,9 +180,7 @@ class TestPrimaryKeyFieldsAreStrings:
                             f"{group_name}.{name} PK field {field} is not a string"
                         )
                 else:
-                    assert isinstance(pk, str), (
-                        f"{group_name}.{name} PK {pk} is not a string"
-                    )
+                    assert isinstance(pk, str), f"{group_name}.{name} PK {pk} is not a string"
 
 
 class TestWriteDispositions:

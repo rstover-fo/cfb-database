@@ -1,7 +1,6 @@
 """Tests for WEPA (opponent-adjusted EPA) data source."""
 
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 
 def test_wepa_team_season_resource_yields_data():
@@ -23,8 +22,10 @@ def test_wepa_team_season_resource_yields_data():
         },
     ]
 
-    with patch("src.pipelines.sources.wepa.get_client") as mock_get_client, \
-         patch("src.pipelines.sources.wepa.make_request") as mock_make_request:
+    with (
+        patch("src.pipelines.sources.wepa.get_client") as mock_get_client,
+        patch("src.pipelines.sources.wepa.make_request") as mock_make_request,
+    ):
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
         mock_make_request.return_value = mock_response
@@ -40,8 +41,10 @@ def test_wepa_team_season_iterates_years():
     """Should call API for each year."""
     from src.pipelines.sources.wepa import wepa_team_season_resource
 
-    with patch("src.pipelines.sources.wepa.get_client") as mock_get_client, \
-         patch("src.pipelines.sources.wepa.make_request") as mock_make_request:
+    with (
+        patch("src.pipelines.sources.wepa.get_client") as mock_get_client,
+        patch("src.pipelines.sources.wepa.make_request") as mock_make_request,
+    ):
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
         mock_make_request.return_value = []
@@ -65,8 +68,10 @@ def test_wepa_players_passing_resource_yields_data():
         },
     ]
 
-    with patch("src.pipelines.sources.wepa.get_client") as mock_get_client, \
-         patch("src.pipelines.sources.wepa.make_request") as mock_make_request:
+    with (
+        patch("src.pipelines.sources.wepa.get_client") as mock_get_client,
+        patch("src.pipelines.sources.wepa.make_request") as mock_make_request,
+    ):
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
         mock_make_request.return_value = mock_response

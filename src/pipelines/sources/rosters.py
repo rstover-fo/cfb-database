@@ -71,11 +71,7 @@ def rosters_resource(
                 logger.info(f"Loading roster for {team} {year}...")
 
                 try:
-                    players = make_request(
-                        client,
-                        "/roster",
-                        params={"team": team, "year": year}
-                    )
+                    players = make_request(client, "/roster", params={"team": team, "year": year})
 
                     for player in players:
                         # Add context fields for PK and querying

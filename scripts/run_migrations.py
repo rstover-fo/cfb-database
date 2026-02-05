@@ -51,6 +51,7 @@ def get_db_url() -> str:
         pass
 
     import os
+
     url = os.environ.get("SUPABASE_DB_URL")
     if url:
         return url
@@ -117,6 +118,7 @@ def main() -> None:
 
     # Connect and run
     import psycopg2
+
     db_url = get_db_url()
     conn = psycopg2.connect(db_url)
 

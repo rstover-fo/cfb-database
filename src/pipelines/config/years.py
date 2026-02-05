@@ -32,25 +32,18 @@ YEAR_RANGES = {
     # Games go back to 1869 but we'll start with modern era for most uses
     "games": YearRange(start=1869, end=2026),
     "games_modern": YearRange(start=2000, end=2026),
-
     # Play-by-play only available from 2004
     "plays": YearRange(start=2004, end=2026),
-
     # Most stats available from 2004
     "stats": YearRange(start=2004, end=2026),
-
     # Advanced ratings from 2004 (FPI starts 2005)
     "ratings": YearRange(start=2004, end=2026),
-
     # Recruiting from 2000
     "recruiting": YearRange(start=2000, end=2026),
-
     # Betting lines from 2013
     "betting": YearRange(start=2013, end=2026),
-
     # Draft from 2000
     "draft": YearRange(start=2000, end=2026),
-
     # Advanced metrics from 2014
     "metrics": YearRange(start=2014, end=2026),
 }

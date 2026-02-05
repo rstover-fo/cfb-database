@@ -61,11 +61,7 @@ def wepa_team_season_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading team WEPA for {year}...")
 
-            data = make_request(
-                client,
-                "/wepa/team/season",
-                params={"year": year}
-            )
+            data = make_request(client, "/wepa/team/season", params={"year": year})
 
             for team in data:
                 team["year"] = year
@@ -94,11 +90,7 @@ def wepa_players_passing_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading player passing WEPA for {year}...")
 
-            data = make_request(
-                client,
-                "/wepa/players/passing",
-                params={"year": year}
-            )
+            data = make_request(client, "/wepa/players/passing", params={"year": year})
 
             for player in data:
                 player["year"] = year
@@ -127,11 +119,7 @@ def wepa_players_rushing_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading player rushing WEPA for {year}...")
 
-            data = make_request(
-                client,
-                "/wepa/players/rushing",
-                params={"year": year}
-            )
+            data = make_request(client, "/wepa/players/rushing", params={"year": year})
 
             for player in data:
                 player["year"] = year
@@ -160,11 +148,7 @@ def wepa_players_kicking_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading player kicking WEPA for {year}...")
 
-            data = make_request(
-                client,
-                "/wepa/players/kicking",
-                params={"year": year}
-            )
+            data = make_request(client, "/wepa/players/kicking", params={"year": year})
 
             for player in data:
                 player["year"] = year

@@ -1,13 +1,14 @@
 """Load the 5 new endpoints added in API completion sprint."""
 
 import dlt
-from src.pipelines.sources.metrics import fg_expected_points_resource
+
 from src.pipelines.sources.betting import team_ats_resource
-from src.pipelines.sources.stats import play_stats_resource, game_havoc_resource
-from src.pipelines.config.years import YEAR_RANGES
+from src.pipelines.sources.metrics import fg_expected_points_resource
+from src.pipelines.sources.stats import game_havoc_resource, play_stats_resource
 
 # Use a limited year range for initial testing (recent years with more data availability)
 TEST_YEARS = [2020, 2021, 2022, 2023, 2024, 2025]
+
 
 def load_fg_expected_points():
     """Load fg_expected_points (static lookup)."""
@@ -21,6 +22,7 @@ def load_fg_expected_points():
     print(f"Load info: {info}")
     return info
 
+
 def load_team_ats(years):
     """Load team_ats for specified years."""
     pipeline = dlt.pipeline(
@@ -33,17 +35,26 @@ def load_team_ats(years):
     print(f"Load info: {info}")
     return info
 
+
 def load_play_stats(years):
-    """Load play_stats for specified years (large table!)."""
+    """Load play_stats for specified years (large table!).
+
+    Iterates by gameId to avoid API 2000 record limit per request.
+
+    Args:
+        years: List of years to load
+    """
     pipeline = dlt.pipeline(
         pipeline_name="cfbd_play_stats",
         destination="postgres",
         dataset_name="stats",
     )
     print(f"\n=== Loading play_stats for years {years} ===")
-    info = pipeline.run(play_stats_resource(years))
+    print("    (Iterating by gameId for complete data - this will take a while)")
+    info = pipeline.run(play_stats_resource(years=years))
     print(f"Load info: {info}")
     return info
+
 
 def load_game_havoc(years):
     """Load game_havoc for specified years."""
@@ -57,9 +68,10 @@ def load_game_havoc(years):
     print(f"Load info: {info}")
     return info
 
+
 if __name__ == "__main__":
     import sys
-    
+
     if len(sys.argv) > 1:
         endpoint = sys.argv[1]
         if endpoint == "fg_expected_points":

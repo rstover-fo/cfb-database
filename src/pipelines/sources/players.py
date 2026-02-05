@@ -54,9 +54,7 @@ def player_search_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading player search for {year}...")
 
-            data = make_request(
-                client, "/player/search", params={"year": year}
-            )
+            data = make_request(client, "/player/search", params={"year": year})
 
             yield from data
 

@@ -68,7 +68,7 @@ def plays_resource(years: list[int]) -> Iterator[dict]:
                         "year": year,
                         "week": week,
                         "seasonType": "regular",
-                    }
+                    },
                 )
 
                 for play in data:
@@ -84,7 +84,7 @@ def plays_resource(years: list[int]) -> Iterator[dict]:
                     "year": year,
                     "seasonType": "postseason",
                     "week": 1,  # All postseason games are in "week 1"
-                }
+                },
             )
 
             for play in postseason_data:

@@ -92,7 +92,8 @@ class RateLimiter:
         """
         self.calls_used += count
         self._save_state()
-        logger.debug(f"API calls: {self.calls_used}/{self.monthly_budget} ({self.usage_percent:.1f}%)")
+        pct = self.usage_percent
+        logger.debug(f"API calls: {self.calls_used}/{self.monthly_budget} ({pct:.1f}%)")
 
     def get_status(self) -> dict:
         """Return current rate limit status."""

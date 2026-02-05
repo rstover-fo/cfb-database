@@ -41,6 +41,8 @@ def stats_source(
         advanced_game_stats_resource(years),
         player_usage_resource(years),
         player_returning_resource(years),
+        play_stats_resource(years),
+        game_havoc_resource(years),
     ]
 
 
@@ -241,6 +243,76 @@ def player_returning_resource(years: list[int]) -> Iterator[dict]:
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 400:
                     logger.warning(f"No player returning data for {year} (400 response), skipping")
+                    continue
+                raise
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="play_stats",
+    write_disposition="merge",
+    primary_key=["game_id", "play_id", "athlete_id", "stat_type"],
+)
+def play_stats_resource(years: list[int]) -> Iterator[dict]:
+    """Load play-level statistics (player associations for each play).
+
+    Note: Data only available from ~2014+. Earlier years return 400 and are skipped.
+
+    Args:
+        years: List of years to load play stats for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            logger.info(f"Loading play stats for {year}...")
+
+            try:
+                data = make_request(
+                    client,
+                    "/plays/stats",
+                    params={"year": year},
+                )
+                yield from data
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 400:
+                    logger.warning(f"No play stats data for {year} (400 response), skipping")
+                    continue
+                raise
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="game_havoc",
+    write_disposition="merge",
+    primary_key=["game_id", "team"],
+)
+def game_havoc_resource(years: list[int]) -> Iterator[dict]:
+    """Load game-level havoc statistics (TFLs, passes broken up, etc).
+
+    Note: Data only available from ~2014+. Earlier years return 400 and are skipped.
+
+    Args:
+        years: List of years to load havoc stats for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            logger.info(f"Loading game havoc stats for {year}...")
+
+            try:
+                data = make_request(
+                    client,
+                    "/stats/game/havoc",
+                    params={"year": year},
+                )
+                yield from data
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 400:
+                    logger.warning(f"No game havoc data for {year} (400 response), skipping")
                     continue
                 raise
 

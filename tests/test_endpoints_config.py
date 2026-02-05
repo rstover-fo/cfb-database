@@ -99,6 +99,70 @@ class TestPrimaryKeyIntegrity:
         pk = DRAFT_ENDPOINTS["picks"].primary_key
         assert pk == ["year", "overall"]
 
+    def test_play_stats_pk(self):
+        """play_stats needs composite PK for player-play associations."""
+        config = STATS_ENDPOINTS["play_stats"]
+        assert config.primary_key == ["game_id", "play_id", "athlete_id", "stat_type"]
+
+    def test_game_havoc_pk(self):
+        """game_havoc needs game_id + team composite PK."""
+        config = STATS_ENDPOINTS["game_havoc"]
+        assert config.primary_key == ["game_id", "team"]
+
+    def test_team_ats_pk(self):
+        """team_ats needs year + team_id composite PK."""
+        config = BETTING_ENDPOINTS["team_ats"]
+        assert config.primary_key == ["year", "team_id"]
+
+    def test_play_stat_types_pk(self):
+        """play_stat_types is reference table with id PK."""
+        config = REFERENCE_ENDPOINTS["play_stat_types"]
+        assert config.primary_key == ["id"]
+
+    def test_fg_expected_points_pk(self):
+        """fg_expected_points is keyed by distance."""
+        config = METRICS_ENDPOINTS["fg_expected_points"]
+        assert config.primary_key == ["distance"]
+
+
+class TestSyncedEndpointPKs:
+    """Verify PKs for endpoints that existed but weren't in config."""
+
+    def test_wepa_team_season_pk(self):
+        """wepa_team_season keyed by year + team."""
+        config = METRICS_ENDPOINTS["wepa_team_season"]
+        assert config.primary_key == ["year", "team"]
+
+    def test_wepa_players_passing_pk(self):
+        """wepa_players_passing keyed by id + year."""
+        config = METRICS_ENDPOINTS["wepa_players_passing"]
+        assert config.primary_key == ["id", "year"]
+
+    def test_wepa_players_rushing_pk(self):
+        """wepa_players_rushing keyed by id + year."""
+        config = METRICS_ENDPOINTS["wepa_players_rushing"]
+        assert config.primary_key == ["id", "year"]
+
+    def test_wepa_players_kicking_pk(self):
+        """wepa_players_kicking keyed by id + year."""
+        config = METRICS_ENDPOINTS["wepa_players_kicking"]
+        assert config.primary_key == ["id", "year"]
+
+    def test_ppa_teams_pk(self):
+        """ppa_teams keyed by season + team."""
+        config = METRICS_ENDPOINTS["ppa_teams"]
+        assert config.primary_key == ["season", "team"]
+
+    def test_pregame_win_probability_pk(self):
+        """pregame_win_probability keyed by season + game_id."""
+        config = METRICS_ENDPOINTS["pregame_win_probability"]
+        assert config.primary_key == ["season", "game_id"]
+
+    def test_advanced_team_stats_pk(self):
+        """advanced_team_stats keyed by season + team."""
+        config = STATS_ENDPOINTS["advanced_team_stats"]
+        assert config.primary_key == ["season", "team"]
+
 
 class TestPrimaryKeyFieldsAreStrings:
     """PK fields should be simple string column names, not nested/complex types."""

@@ -176,11 +176,35 @@ python -m src.pipelines.run --source metrics --endpoint fg_expected_points --mod
 
 ## Acceptance Criteria
 
-- [ ] 5 new endpoints added to `endpoints.py`
-- [ ] 7 existing endpoints synced in config
-- [ ] Tests pass (`pytest tests/test_endpoints_config.py`)
-- [ ] All 5 new tables created in database with data
-- [ ] Row counts documented
+- [x] 5 new endpoints added to `endpoints.py`
+- [x] 7 existing endpoints synced in config
+- [x] Tests pass (`pytest tests/test_endpoints_config.py`)
+- [x] All 5 new tables created in database with data
+- [x] Row counts documented
+
+## Results (2026-02-05)
+
+### New Tables Created
+
+| Table | Schema | Rows |
+|-------|--------|------|
+| play_stats | stats | 4,000 (2024-2025 only) |
+| play_stat_types | ref | 26 |
+| game_havoc | stats | 11,577 |
+| team_ats | betting | 1,363 |
+| fg_expected_points | metrics | 100 |
+
+### Synced Tables Verified
+
+| Table | Schema | Rows |
+|-------|--------|------|
+| wepa_team_season | metrics | 1,587 |
+| wepa_players_passing | metrics | 2,313 |
+| wepa_players_rushing | metrics | 4,975 |
+| wepa_players_kicking | metrics | 1,732 |
+| ppa_teams | metrics | 1,566 |
+| pregame_win_probability | metrics | 10,073 |
+| advanced_team_stats | stats | 2,887 |
 
 ## Verification Query
 

@@ -90,6 +90,13 @@ REFERENCE_ENDPOINTS = {
         schema="ref",
         write_disposition="merge",
     ),
+    "play_stat_types": EndpointConfig(
+        path="/plays/stats/types",
+        table_name="play_stat_types",
+        primary_key=["id"],
+        schema="ref",
+        write_disposition="merge",
+    ),
 }
 
 # Core game data endpoints (year-iterated, merge)
@@ -210,6 +217,27 @@ STATS_ENDPOINTS = {
         schema="stats",
         write_disposition="merge",
     ),
+    "play_stats": EndpointConfig(
+        path="/plays/stats",
+        table_name="play_stats",
+        primary_key=["game_id", "play_id", "athlete_id", "stat_type"],
+        schema="stats",
+        write_disposition="merge",
+    ),
+    "game_havoc": EndpointConfig(
+        path="/stats/game/havoc",
+        table_name="game_havoc",
+        primary_key=["game_id", "team"],
+        schema="stats",
+        write_disposition="merge",
+    ),
+    "advanced_team_stats": EndpointConfig(
+        path="/stats/season/advanced",
+        table_name="advanced_team_stats",
+        primary_key=["season", "team"],
+        schema="stats",
+        write_disposition="merge",
+    ),
 }
 
 # Ratings endpoints (year-iterated, merge)
@@ -299,6 +327,13 @@ BETTING_ENDPOINTS = {
         schema="betting",
         write_disposition="merge",
     ),
+    "team_ats": EndpointConfig(
+        path="/teams/ats",
+        table_name="team_ats",
+        primary_key=["year", "team_id"],
+        schema="betting",
+        write_disposition="merge",
+    ),
 }
 
 # Draft endpoints (year-iterated, merge)
@@ -346,6 +381,56 @@ METRICS_ENDPOINTS = {
         path="/ppa/predicted",
         table_name="ppa_predicted",
         primary_key=["down", "distance"],
+        schema="metrics",
+        write_disposition="merge",
+    ),
+    "fg_expected_points": EndpointConfig(
+        path="/metrics/fg/ep",
+        table_name="fg_expected_points",
+        primary_key=["distance"],
+        schema="metrics",
+        write_disposition="merge",
+    ),
+    # WEPA endpoints (already loaded, now tracked in config)
+    "wepa_team_season": EndpointConfig(
+        path="/wepa/team/season",
+        table_name="wepa_team_season",
+        primary_key=["year", "team"],
+        schema="metrics",
+        write_disposition="merge",
+    ),
+    "wepa_players_passing": EndpointConfig(
+        path="/wepa/players/passing",
+        table_name="wepa_players_passing",
+        primary_key=["id", "year"],
+        schema="metrics",
+        write_disposition="merge",
+    ),
+    "wepa_players_rushing": EndpointConfig(
+        path="/wepa/players/rushing",
+        table_name="wepa_players_rushing",
+        primary_key=["id", "year"],
+        schema="metrics",
+        write_disposition="merge",
+    ),
+    "wepa_players_kicking": EndpointConfig(
+        path="/wepa/players/kicking",
+        table_name="wepa_players_kicking",
+        primary_key=["id", "year"],
+        schema="metrics",
+        write_disposition="merge",
+    ),
+    "ppa_teams": EndpointConfig(
+        path="/ppa/teams",
+        table_name="ppa_teams",
+        primary_key=["season", "team"],
+        schema="metrics",
+        write_disposition="merge",
+    ),
+    "pregame_win_probability": EndpointConfig(
+        path="/metrics/wp/pregame",
+        table_name="pregame_win_probability",
+        primary_key=["season", "game_id"],
         schema="metrics",
         write_disposition="merge",
     ),

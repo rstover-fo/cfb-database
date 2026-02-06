@@ -86,6 +86,11 @@ cfb-database/
 | Metrics (PPA, win prob) | 8 | Incremental by year |
 | Draft | 3 | Incremental by year |
 
+## Git Conventions
+
+- Branch names: `feature/`, `fix/`, `refactor/`, `chore/` prefixes
+- Commit messages: imperative mood, 50-char subject line
+
 ## Environment Variables
 
 ```bash

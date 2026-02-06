@@ -1,6 +1,6 @@
 """Tests for API views in the api schema.
 
-Verifies all 7 API views exist, return expected row counts,
+Verifies all 11 API views exist, return expected row counts,
 expose the correct columns, and respond to filtered queries.
 """
 

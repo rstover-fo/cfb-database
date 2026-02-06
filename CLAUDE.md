@@ -148,6 +148,35 @@ Apply these guidelines when designing schema and writing queries:
 - Use BRIN indexes for time-series data (created_at, game_date)
 - Use partial indexes for filtered queries (e.g., active season only)
 
+### CFBD API Skill
+Location: `~/.claude/skills/cfbd-api/`
+
+Use this skill for CFBD API reference when building or debugging pipelines:
+
+- **All 15 API classes** with method signatures and common parameters
+- **Authentication pattern**: Bearer token via `cfbd.Configuration(access_token=...)`
+- **Endpoint coverage**: Games, teams, plays, drives, stats, ratings, rankings, recruiting, betting, metrics, players, coaches, conferences, venues, draft
+- **Common parameters**: `year` (required for most), `week`, `team` (full name, e.g. "Ohio State"), `conference` (abbreviation, e.g. "SEC", "B1G")
+- **Gotchas**: Cloudflare burst blocking (~10 min), nullable fields, v2 breaking changes from v1
+
+When adding new pipeline sources or debugging API responses, reference this skill for correct method names, parameter types, and response models.
+
+### dlt REST API Source Skill
+Location: `~/.claude/skills/dlt-rest-api/`
+
+Use this skill when building or modifying dlt pipelines:
+
+- **RESTAPIConfig structure**: `client`, `resource_defaults`, `resources` — full field reference
+- **Authentication**: Bearer, API Key, HTTP Basic, OAuth2 — both dict syntax (`"type": "bearer"`) and class imports (`BearerTokenAuth`)
+- **Pagination**: All 7 types (json_link, header_link, offset, page_number, cursor, header_cursor, single_page) with constructor params
+- **Incremental loading**: Placeholder syntax (`{incremental.start_value}`), cursor_path, initial_value
+- **Parent-child resources**: Path placeholders (`{resources.parent.field}`), query params, legacy resolve syntax
+- **Write dispositions**: `append`, `replace`, `merge` — when to use each
+- **Config/secrets**: `.dlt/config.toml`, `.dlt/secrets.toml`, env var patterns (`SOURCES__*`)
+- **Gotchas**: auto-pagination failures, data_selector for wrapped responses, nested table unnesting, state per pipeline_name
+
+Reference this skill when writing `RESTAPIConfig` dicts, debugging pagination, configuring incremental loads, or setting up new source modules.
+
 ## CFBD API Categories
 
 | Category | Endpoints | Refresh Strategy |

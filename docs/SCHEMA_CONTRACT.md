@@ -45,6 +45,10 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.recruit_lookup` | **Deployed** | 67,179 | Stable recruiting view for recruit data |
 | `api.player_season_leaders` | **Deployed** | 152,966 | Season stat leaders by category (passing, rushing, receiving, defensive). Columns: season, category, player_id, player_name, team, yards, touchdowns, interceptions, pct, attempts, completions, carries, yards_per_carry, receptions, yards_per_reception, longest, total_tackles, solo_tackles, sacks, tackles_for_loss, passes_defended, yards_rank |
 | `api.player_detail` | **Deployed** | 340,878 | Single player page: bio, recruiting, season stats, PPA. Columns: player_id, name, team, position, season, height, weight, jersey, home_city, home_state, stars, recruit_rating, national_ranking, recruit_class, pass_att, pass_cmp, pass_yds, pass_td, pass_int, pass_pct, rush_car, rush_yds, rush_td, rush_ypc, rec, rec_yds, rec_td, rec_ypr, tackles, sacks, tfl, pass_def, ppa_avg, ppa_total |
+| `api.player_comparison` | **Deployed** | 127,333 | Player stats with positional percentiles, backed by matview. Columns: all player_detail columns PLUS position_group, pass_yds_pctl, pass_td_pctl, pass_pct_pctl, rush_yds_pctl, rush_td_pctl, rush_ypc_pctl, rec_yds_pctl, rec_td_pctl, tackles_pctl, sacks_pctl, tfl_pctl, ppa_avg_pctl |
+| `api.game_player_leaders` | **Deployed** | 4,194,621 | Per-game player stats flattened from dlt hierarchy. Columns: game_id, season, team, conference, home_away, category, stat_type, player_id, player_name, stat |
+| `api.game_box_score` | **Deployed** | 1,178,727 | Per-game team stats in EAV format. Columns: game_id, season, team, home_away, category, stat_value |
+| `api.game_line_scores` | **Deployed** | 45,897 | Game line scores pivoted into Q1-Q4 columns with OT periods summed. Columns: game_id, season, home_q1, home_q2, home_q3, home_q4, home_ot, away_q1, away_q2, away_q3, away_q4, away_ot |
 
 ### Marts (schema: `marts`) -- Materialized Views
 
@@ -71,6 +75,7 @@ cfb-app for advanced features.
 | `marts.play_epa` | Deployed | Per-play EPA values |
 | `marts.player_game_epa` | Deployed | Player EPA aggregated per game |
 | `marts.player_season_epa` | Deployed | Player EPA aggregated per season |
+| `marts.player_comparison` | Deployed | Player stats pivoted from EAV with positional percentiles (PERCENT_RANK). Indexes: (player_id, season) unique, (season, position_group) |
 
 ### Public Schema Views
 
@@ -125,7 +130,7 @@ These reference tables are stable enough for direct access.
 |----------|--------|-------------|
 | `ref.get_era` | `ref` | Returns era code/name for a given year |
 | `analytics.refresh_all_views` | `analytics` | Refreshes all analytics materialized views (admin use) |
-| `marts.refresh_all` | `marts` | Refreshes all 18 mart materialized views in dependency order. Returns (view_name, duration_ms, status). |
+| `marts.refresh_all` | `marts` | Refreshes all 19 mart materialized views in dependency order. Returns (view_name, duration_ms, status). |
 
 ---
 
@@ -141,6 +146,7 @@ cfb-scout is the recruiting/scouting application. It has a narrower dependency s
 | `api.recruit_lookup` | `api` | Recruiting data: stars, rating, committed_to, position |
 | `api.player_detail` | `api` | Single player page: bio, recruiting, season stats, PPA |
 | `api.player_season_leaders` | `api` | Season stat leaders by category |
+| `api.player_comparison` | `api` | Player stats with positional percentiles for side-by-side comparison |
 
 ### RPCs
 
@@ -232,6 +238,9 @@ not yet contracted and may change shape.
 
 ```
 cfb-app  -->  api.* views  -->  marts.* matviews  -->  raw tables (core, stats, ratings, ...)
+              api.game_player_leaders   -->  core.game_player_stats (5-level dlt hierarchy)
+              api.game_box_score        -->  core.game_team_stats (3-level dlt hierarchy)
+              api.game_line_scores      -->  core.games + line_scores child tables
               public.* views
               public.get_* RPCs
 
@@ -239,6 +248,7 @@ cfb-scout -->  api.roster_lookup       -->  core.roster
                api.recruit_lookup      -->  recruiting.recruits
                api.player_detail       -->  core.roster, stats.*, recruiting.*, metrics.*
                api.player_season_leaders -->  stats.player_season_stats
+               api.player_comparison   -->  marts.player_comparison (matview)
                get_player_search()     -->  api.roster_lookup
                scouting.* (owned by cfb-scout)
 ```

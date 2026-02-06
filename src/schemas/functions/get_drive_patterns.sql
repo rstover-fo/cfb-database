@@ -1,8 +1,11 @@
 -- Aggregate drive data for visualization
 -- Returns bucketed start/end positions with outcome counts
+-- p_side: 'offense' (default) filters on d.offense = p_team
+--         'defense' filters on d.defense = p_team
 CREATE OR REPLACE FUNCTION get_drive_patterns(
   p_team TEXT,
-  p_season INT
+  p_season INT,
+  p_side TEXT DEFAULT 'offense'
 )
 RETURNS TABLE (
   start_yard INT,
@@ -32,7 +35,10 @@ BEGIN
       d.plays,
       d.yards
     FROM core.drives d
-    WHERE d.offense = p_team
+    WHERE CASE
+        WHEN p_side = 'defense' THEN d.defense = p_team
+        ELSE d.offense = p_team
+      END
       AND d.season = p_season
       AND d.start_yards_to_goal IS NOT NULL
   )
@@ -48,7 +54,6 @@ BEGIN
   FROM drive_outcomes drv
   WHERE drv.outcome != 'other'
   GROUP BY 1, 2, drv.outcome
-  HAVING COUNT(*) >= 2  -- At least 2 drives for this pattern
   ORDER BY drv.outcome, 1, 2;
 END;
 $$ LANGUAGE plpgsql STABLE;

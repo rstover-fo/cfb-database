@@ -12,7 +12,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _load_postgres_dsn() -> str:
-    """Read the Postgres connection string from .dlt/secrets.toml."""
+    """Read the Postgres connection string from env var or .dlt/secrets.toml."""
+    import os
+
+    # CI: use SUPABASE_DB_URL environment variable
+    env_url = os.environ.get("SUPABASE_DB_URL")
+    if env_url:
+        return env_url
+
+    # Local: read from .dlt/secrets.toml
     secrets_path = PROJECT_ROOT / ".dlt" / "secrets.toml"
     if not secrets_path.exists():
         pytest.skip(f"Secrets file not found: {secrets_path}")

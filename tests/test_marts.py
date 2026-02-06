@@ -13,7 +13,11 @@ import pytest
 MARTS_VIEWS = [
     "_game_epa_calc",
     "coach_record",
+    "coaching_tenure",
+    "conference_comparison",
     "conference_era_summary",
+    "conference_head_to_head",
+    "data_freshness",
     "defensive_havoc",
     "matchup_edges",
     "matchup_history",
@@ -22,6 +26,7 @@ MARTS_VIEWS = [
     "player_game_epa",
     "player_season_epa",
     "recruiting_class",
+    "recruiting_roi",
     "scoring_opportunities",
     "situational_splits",
     "team_epa_season",
@@ -32,6 +37,7 @@ MARTS_VIEWS = [
     "team_style_profile",
     "team_talent_composite",
     "team_tempo_metrics",
+    "transfer_portal_impact",
 ]
 
 ANALYTICS_VIEWS = [

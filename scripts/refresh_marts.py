@@ -28,27 +28,38 @@ logger = logging.getLogger(__name__)
 # statement_timeout=0 which the script sets automatically.
 
 MARTS_VIEWS = [
-    # Core EPA views (order matters: _game_epa_calc first)
-    # These are slow (~12 min each) due to processing 2.7M plays
+    # Layer 1: No mart dependencies
     "marts._game_epa_calc",
-    "marts.team_season_summary",
-    "marts.team_epa_season",
-    # Situational and play-level analysis (also slow ~12 min)
-    "marts.situational_splits",
-    "marts.defensive_havoc",
-    # Drive-level views (faster ~1 min)
-    "marts.scoring_opportunities",
-    # Historical and reference (fast)
-    "marts.matchup_history",
-    "marts.recruiting_class",
-    "marts.coach_record",
-    # Tempo metrics (depends on team_epa_season)
-    "marts.team_tempo_metrics",
-    # Player comparison (no mart dependencies)
+    "marts.play_epa",
     "marts.player_comparison",
-    # Play-calling analytics (depend on play_epa)
+    "marts.conference_head_to_head",
+    # Layer 2: Depends on Layer 1
+    "marts.team_epa_season",
+    "marts.team_season_summary",
+    "marts.player_game_epa",
+    "marts.defensive_havoc",
+    "marts.scoring_opportunities",
     "marts.team_playcalling_tendencies",
     "marts.team_situational_success",
+    # Layer 3: Depends on Layer 2
+    "marts.situational_splits",
+    "marts.player_season_epa",
+    "marts.coach_record",
+    "marts.matchup_history",
+    "marts.recruiting_class",
+    "marts.team_talent_composite",
+    "marts.team_tempo_metrics",
+    "marts.transfer_portal_impact",
+    # Layer 4: Depends on Layer 3
+    "marts.team_season_trajectory",
+    "marts.conference_era_summary",
+    "marts.team_style_profile",
+    "marts.coaching_tenure",
+    "marts.recruiting_roi",
+    "marts.conference_comparison",
+    # Layer 5: Depends on Layer 4 + standalone
+    "marts.matchup_edges",
+    "marts.data_freshness",
 ]
 
 ANALYTICS_VIEWS = [

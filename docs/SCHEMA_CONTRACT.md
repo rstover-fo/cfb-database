@@ -50,6 +50,10 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.game_box_score` | **Deployed** | 1,178,727 | Per-game team stats in EAV format. Columns: game_id, season, team, home_away, category, stat_value |
 | `api.game_line_scores` | **Deployed** | 45,897 | Game line scores pivoted into Q1-Q4 columns with OT periods summed. Columns: game_id, season, home_q1, home_q2, home_q3, home_q4, home_ot, away_q1, away_q2, away_q3, away_q4, away_ot |
 | `api.team_playcalling_profile` | **Deployed** | 4,627 | Team playcalling identity with situational tendencies and percentile rankings. One row per team-season. Columns: team, season, conference, games_played, overall_run_rate, early_down_run_rate, third_down_pass_rate, red_zone_run_rate, overall_success_rate, overall_avg_epa, third_down_success_rate, red_zone_success_rate, leading_run_rate, trailing_run_rate, run_rate_delta, pace_plays_per_game, overall_run_rate_pctl, early_down_run_rate_pctl, third_down_pass_rate_pctl, overall_epa_pctl, third_down_success_pctl, red_zone_success_pctl, run_rate_delta_pctl, pace_pctl |
+| `api.coaching_history` | **Deployed** | 2,752 | Coaching tenure analytics: career spans, W-L records, talent metrics. One row per coach-team-tenure. Columns: first_name, last_name, team, tenure_start, tenure_end, seasons_count, total_wins, total_losses, win_pct, conf_wins, conf_losses, conf_win_pct, bowl_games, bowl_wins, inherited_talent_rank, year3_talent_rank, talent_improvement, is_active |
+| `api.recruiting_roi` | **Deployed** | 1,324 | Recruiting investment vs on-field outcomes. 4-year rolling BCR, wins over expected, draft production. One row per team-season. Columns: team, season, conference, blue_chip_ratio, avg_recruit_rating, total_wins, win_pct, epa_per_play, players_drafted, wins_over_expected, recruiting_efficiency, win_pct_pctl, epa_pctl, recruiting_efficiency_pctl |
+| `api.transfer_portal_impact` | **Deployed** | 1,374 | Transfer portal activity correlated with team performance changes. Portal era (2021+). One row per team-season. Columns: team, season, conference, transfers_in, transfers_out, net_transfers, avg_transfer_stars, portal_dependency, win_delta, net_transfers_pctl, win_delta_pctl, portal_dependency_pctl |
+| `api.conference_comparison` | **Deployed** | 347 | Conference-level season analytics with percentile rankings. One row per conference-season. Columns: conference, season, member_count, avg_wins, avg_sp_rating, avg_epa, avg_recruiting_rank, non_conf_win_pct, avg_sp_pctl, avg_epa_pctl, avg_recruiting_pctl, non_conf_win_pct_pctl |
 
 ### Marts (schema: `marts`) -- Materialized Views
 
@@ -79,6 +83,12 @@ cfb-app for advanced features.
 | `marts.player_comparison` | Deployed | Player stats pivoted from EAV with positional percentiles (PERCENT_RANK). Indexes: (player_id, season) unique, (season, position_group) |
 | `marts.team_playcalling_tendencies` | Deployed | Team play-calling mix (run/pass rates) by situation: down, distance, field position, score state. ~492K rows. Grain: team + season + situation. |
 | `marts.team_situational_success` | Deployed | Team situational effectiveness (success rate, EPA, explosiveness) by context. ~492K rows. Min 10-play threshold for rate metrics. |
+| `marts.coaching_tenure` | Deployed | Coaching tenure analytics with gap detection. One row per coach-team-tenure. Includes W-L, bowl record, inherited vs recruited talent. 2,752 rows. |
+| `marts.recruiting_roi` | Deployed | 4-year rolling recruiting investment vs outcomes. Blue chip ratio, wins over expected, draft production, recruiting efficiency. 1,324 rows. |
+| `marts.transfer_portal_impact` | Deployed | Portal activity correlated with team performance changes. Portal era only (2021+). 1,374 rows. |
+| `marts.conference_comparison` | Deployed | Per-conference per-season aggregates with PERCENT_RANK percentiles. 347 rows. |
+| `marts.conference_head_to_head` | Deployed | Conference vs conference records by season. Alphabetical ordering to avoid duplicate pairs. 4,818 rows. |
+| `marts.data_freshness` | Deployed | Data freshness tracking for 23 key tables. Row counts, last activity, staleness detection. |
 
 ### Public Schema Views
 
@@ -119,6 +129,8 @@ Server-side functions callable via `supabase.rpc()`.
 | `get_available_seasons` | `public` | `()` | List of seasons with data |
 | `get_available_weeks` | `public` | `(p_season)` | List of weeks for a given season |
 | `is_garbage_time` | `public` | `(period, score_diff)` | Returns true if play is in garbage time |
+| `get_conference_head_to_head` | `public` | `(p_conf1, p_conf2, p_season_start?, p_season_end?)` | Conference vs conference head-to-head records by season. Flips results to match caller's conference order. |
+| `get_data_freshness` | `public` | `()` | Returns data freshness status for all tracked tables. Useful for cfb-app "data last updated" indicators. |
 
 ### Reference Tables (Direct Access Allowed)
 
@@ -135,7 +147,7 @@ These reference tables are stable enough for direct access.
 |----------|--------|-------------|
 | `ref.get_era` | `ref` | Returns era code/name for a given year |
 | `analytics.refresh_all_views` | `analytics` | Refreshes all analytics materialized views (admin use) |
-| `marts.refresh_all` | `marts` | Refreshes all 22 mart materialized views in dependency order (5 layers). Returns (view_name, duration_ms, status). |
+| `marts.refresh_all` | `marts` | Refreshes all 28 mart materialized views in dependency order (5 layers). Returns (view_name, duration_ms, status). |
 
 ---
 

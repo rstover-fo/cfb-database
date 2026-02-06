@@ -1,10 +1,37 @@
 """Shared fixtures for cfb-database tests."""
 
 import json
+import tomllib
 from pathlib import Path
 from unittest.mock import patch
 
+import psycopg2
 import pytest
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_postgres_dsn() -> str:
+    """Read the Postgres connection string from .dlt/secrets.toml."""
+    secrets_path = PROJECT_ROOT / ".dlt" / "secrets.toml"
+    if not secrets_path.exists():
+        pytest.skip(f"Secrets file not found: {secrets_path}")
+    with open(secrets_path, "rb") as f:
+        secrets = tomllib.load(f)
+    try:
+        return secrets["destination"]["postgres"]["credentials"]
+    except KeyError:
+        pytest.skip("destination.postgres.credentials not found in secrets.toml")
+
+
+@pytest.fixture(scope="module")
+def db_conn():
+    """Module-scoped Postgres connection for database integration tests."""
+    dsn = _load_postgres_dsn()
+    conn = psycopg2.connect(dsn)
+    conn.autocommit = True
+    yield conn
+    conn.close()
 
 
 @pytest.fixture

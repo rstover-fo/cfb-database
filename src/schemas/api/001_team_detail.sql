@@ -12,8 +12,8 @@ SELECT
     t.mascot,
     t.abbreviation,
     t.color,
-    t.alt_color,
-    t.logos->0 AS logo_url,  -- First logo from JSONB array
+    t.alternate_color,
+    logo.value AS logo_url,  -- Primary logo from child table
     t.conference,
     t.classification,
 
@@ -47,6 +47,11 @@ SELECT
     tss.recruiting_points
 
 FROM ref.teams t
+LEFT JOIN LATERAL (
+    SELECT value FROM ref.teams__logos
+    WHERE _dlt_parent_id = t._dlt_id AND _dlt_list_idx = 0
+    LIMIT 1
+) logo ON true
 LEFT JOIN LATERAL (
     SELECT * FROM marts.team_season_summary
     WHERE team = t.school

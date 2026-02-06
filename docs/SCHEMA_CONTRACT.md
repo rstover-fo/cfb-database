@@ -4,7 +4,7 @@
 > only depend on objects listed here as **public**. Everything else is internal and may change
 > without notice.
 
-Last updated: 2026-02-05
+Last updated: 2026-02-06
 
 ---
 
@@ -34,15 +34,15 @@ cfb-app is the main analytics dashboard. It consumes the broadest surface area.
 
 These are the primary PostgREST-accessible views. Queries go through Supabase client libraries.
 
-| View | Status | Description |
-|------|--------|-------------|
-| `api.team_detail` | Defined (not yet deployed) | Single team page: current season stats, ratings, EPA |
-| `api.team_history` | Defined (not yet deployed) | Multi-season team history with records, ratings, EPA trends |
-| `api.game_detail` | Defined (not yet deployed) | Single game: teams, scores, betting lines, EPA, venue |
-| `api.matchup` | Defined (not yet deployed) | Head-to-head matchup history and current season comparison |
-| `api.leaderboard_teams` | Defined (not yet deployed) | Team leaderboard with rankings, ratings, EPA |
-| `api.roster_lookup` | Deployed | Stable roster view for player matching |
-| `api.recruit_lookup` | Deployed | Stable recruiting view for recruit data |
+| View | Status | Rows | Description |
+|------|--------|------|-------------|
+| `api.team_detail` | **Deployed** | 136 | Single team page: current season stats, ratings, EPA. Columns: school, mascot, abbreviation, color, alternate_color, logo_url, conference, classification, current_season, games, wins, losses, conf_wins, conf_losses, ppg, opp_ppg, avg_margin, sp_rating, sp_rank, sp_offense, sp_defense, elo, fpi, epa_per_play, epa_tier, success_rate, explosiveness, recruiting_rank, recruiting_points |
+| `api.team_history` | **Deployed** | 3,667 | Multi-season team history with records, ratings, EPA trends. Columns: team, season, conference, games, wins, losses, conf_wins, conf_losses, ppg, opp_ppg, avg_margin, sp_rating, sp_rank, elo, fpi, epa_per_play, epa_tier, success_rate, explosiveness, total_plays, recruiting_rank, recruiting_points |
+| `api.game_detail` | **Deployed** | 45,897 | Single game: teams, scores, betting lines, EPA, venue. Columns: game_id, season, week, season_type, start_date, completed, home_team, away_team, home_points, away_points, winner, point_diff, home_spread, over_under, spread_result, ou_result, home_epa, away_epa, pregame_home_win_prob, venue, attendance, excitement_index |
+| `api.matchup` | **Deployed** | 11,975 | Head-to-head matchup history and current season comparison. Columns: team1, team2, total_games, team1_wins, team2_wins, ties, first_meeting, last_meeting, recent_results (JSONB array), team1/team2 current season stats |
+| `api.leaderboard_teams` | **Deployed** | 3,667 | Team leaderboard with rankings, ratings, EPA. Columns: team, conference, season, wins, losses, win_pct, ppg, opp_ppg, sp_rank, epa_per_play, epa_tier, wins_rank, ppg_rank, defense_ppg_rank, epa_rank |
+| `api.roster_lookup` | **Deployed** | 340,855 | Stable roster view for player matching |
+| `api.recruit_lookup` | **Deployed** | 67,179 | Stable recruiting view for recruit data |
 
 ### Marts (schema: `marts`) -- Materialized Views
 
@@ -122,6 +122,7 @@ These reference tables are stable enough for direct access.
 |----------|--------|-------------|
 | `ref.get_era` | `ref` | Returns era code/name for a given year |
 | `analytics.refresh_all_views` | `analytics` | Refreshes all analytics materialized views (admin use) |
+| `marts.refresh_all` | `marts` | Refreshes all 18 mart materialized views in dependency order. Returns (view_name, duration_ms, status). |
 
 ---
 

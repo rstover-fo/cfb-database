@@ -49,6 +49,7 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.game_player_leaders` | **Deployed** | 4,194,621 | Per-game player stats flattened from dlt hierarchy. Columns: game_id, season, team, conference, home_away, category, stat_type, player_id, player_name, stat |
 | `api.game_box_score` | **Deployed** | 1,178,727 | Per-game team stats in EAV format. Columns: game_id, season, team, home_away, category, stat_value |
 | `api.game_line_scores` | **Deployed** | 45,897 | Game line scores pivoted into Q1-Q4 columns with OT periods summed. Columns: game_id, season, home_q1, home_q2, home_q3, home_q4, home_ot, away_q1, away_q2, away_q3, away_q4, away_ot |
+| `api.team_playcalling_profile` | **Deployed** | 4,627 | Team playcalling identity with situational tendencies and percentile rankings. One row per team-season. Columns: team, season, conference, games_played, overall_run_rate, early_down_run_rate, third_down_pass_rate, red_zone_run_rate, overall_success_rate, overall_avg_epa, third_down_success_rate, red_zone_success_rate, leading_run_rate, trailing_run_rate, run_rate_delta, pace_plays_per_game, overall_run_rate_pctl, early_down_run_rate_pctl, third_down_pass_rate_pctl, overall_epa_pctl, third_down_success_pctl, red_zone_success_pctl, run_rate_delta_pctl, pace_pctl |
 
 ### Marts (schema: `marts`) -- Materialized Views
 
@@ -76,6 +77,8 @@ cfb-app for advanced features.
 | `marts.player_game_epa` | Deployed | Player EPA aggregated per game |
 | `marts.player_season_epa` | Deployed | Player EPA aggregated per season |
 | `marts.player_comparison` | Deployed | Player stats pivoted from EAV with positional percentiles (PERCENT_RANK). Indexes: (player_id, season) unique, (season, position_group) |
+| `marts.team_playcalling_tendencies` | Deployed | Team play-calling mix (run/pass rates) by situation: down, distance, field position, score state. ~492K rows. Grain: team + season + situation. |
+| `marts.team_situational_success` | Deployed | Team situational effectiveness (success rate, EPA, explosiveness) by context. ~492K rows. Min 10-play threshold for rate metrics. |
 
 ### Public Schema Views
 
@@ -130,7 +133,7 @@ These reference tables are stable enough for direct access.
 |----------|--------|-------------|
 | `ref.get_era` | `ref` | Returns era code/name for a given year |
 | `analytics.refresh_all_views` | `analytics` | Refreshes all analytics materialized views (admin use) |
-| `marts.refresh_all` | `marts` | Refreshes all 19 mart materialized views in dependency order. Returns (view_name, duration_ms, status). |
+| `marts.refresh_all` | `marts` | Refreshes all 22 mart materialized views in dependency order (5 layers). Returns (view_name, duration_ms, status). |
 
 ---
 
@@ -241,6 +244,9 @@ cfb-app  -->  api.* views  -->  marts.* matviews  -->  raw tables (core, stats, 
               api.game_player_leaders   -->  core.game_player_stats (5-level dlt hierarchy)
               api.game_box_score        -->  core.game_team_stats (3-level dlt hierarchy)
               api.game_line_scores      -->  core.games + line_scores child tables
+              api.team_playcalling_profile -->  marts.team_playcalling_tendencies
+                                               marts.team_situational_success
+                                               marts.team_epa_season, ref.teams
               public.* views
               public.get_* RPCs
 

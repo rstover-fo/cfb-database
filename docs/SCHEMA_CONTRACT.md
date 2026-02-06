@@ -43,6 +43,8 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.leaderboard_teams` | **Deployed** | 3,667 | Team leaderboard with rankings, ratings, EPA. Columns: team, conference, season, wins, losses, win_pct, ppg, opp_ppg, sp_rank, epa_per_play, epa_tier, wins_rank, ppg_rank, defense_ppg_rank, epa_rank |
 | `api.roster_lookup` | **Deployed** | 340,855 | Stable roster view for player matching |
 | `api.recruit_lookup` | **Deployed** | 67,179 | Stable recruiting view for recruit data |
+| `api.player_season_leaders` | **Deployed** | 152,966 | Season stat leaders by category (passing, rushing, receiving, defensive). Columns: season, category, player_id, player_name, team, yards, touchdowns, interceptions, pct, attempts, completions, carries, yards_per_carry, receptions, yards_per_reception, longest, total_tackles, solo_tackles, sacks, tackles_for_loss, passes_defended, yards_rank |
+| `api.player_detail` | **Deployed** | 340,878 | Single player page: bio, recruiting, season stats, PPA. Columns: player_id, name, team, position, season, height, weight, jersey, home_city, home_state, stars, recruit_rating, national_ranking, recruit_class, pass_att, pass_cmp, pass_yds, pass_td, pass_int, pass_pct, rush_car, rush_yds, rush_td, rush_ypc, rec, rec_yds, rec_td, rec_ypr, tackles, sacks, tfl, pass_def, ppa_avg, ppa_total |
 
 ### Marts (schema: `marts`) -- Materialized Views
 
@@ -103,6 +105,7 @@ Server-side functions callable via `supabase.rpc()`.
 | `get_conference_splits` | `public` | `(p_team, p_season)` | Performance vs conference, non-conference, ranked opponents |
 | `get_trajectory_averages` | `public` | `(p_conference, p_season_start?, p_season_end?)` | Conference and FBS average benchmarks |
 | `get_player_season_stats_pivoted` | `public` | `(p_team, p_season)` | Pivoted player stats (pass/rush/rec/def/kick in columns) |
+| `get_player_search` | `public` | `(p_query text, p_position?, p_team?, p_season?, p_limit? default 25)` | Fuzzy player name search using pg_trgm. Returns player_id, name, team, position, season, height, weight, jersey, stars, recruit_rating, similarity_score. Supports typo tolerance. |
 | `get_available_seasons` | `public` | `()` | List of seasons with data |
 | `get_available_weeks` | `public` | `(p_season)` | List of weeks for a given season |
 | `is_garbage_time` | `public` | `(period, score_diff)` | Returns true if play is in garbage time |
@@ -136,6 +139,14 @@ cfb-scout is the recruiting/scouting application. It has a narrower dependency s
 |------|--------|-------------|
 | `api.roster_lookup` | `api` | Player roster data for matching scout reports to players |
 | `api.recruit_lookup` | `api` | Recruiting data: stars, rating, committed_to, position |
+| `api.player_detail` | `api` | Single player page: bio, recruiting, season stats, PPA |
+| `api.player_season_leaders` | `api` | Season stat leaders by category |
+
+### RPCs
+
+| Function | Schema | Description |
+|----------|--------|-------------|
+| `get_player_search` | `public` | Fuzzy player name search with typo tolerance. **Replaces raw roster table queries** for player lookup in cfb-scout. |
 
 ### Scouting Schema (Owned by cfb-scout)
 
@@ -224,8 +235,11 @@ cfb-app  -->  api.* views  -->  marts.* matviews  -->  raw tables (core, stats, 
               public.* views
               public.get_* RPCs
 
-cfb-scout -->  api.roster_lookup  -->  core.roster
-               api.recruit_lookup -->  recruiting.recruits
+cfb-scout -->  api.roster_lookup       -->  core.roster
+               api.recruit_lookup      -->  recruiting.recruits
+               api.player_detail       -->  core.roster, stats.*, recruiting.*, metrics.*
+               api.player_season_leaders -->  stats.player_season_stats
+               get_player_search()     -->  api.roster_lookup
                scouting.* (owned by cfb-scout)
 ```
 

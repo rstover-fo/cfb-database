@@ -98,6 +98,8 @@ eventually migrate to `api.*`.
 | `public.team_season_trajectory` | Deployed | Week-by-week trajectory |
 | `public.team_tempo_metrics` | Deployed | Tempo analysis |
 | `public.team_special_teams_sos` | Deployed | Special teams strength of schedule |
+| `public.transfer_portal_search` | Deployed | Transfer portal entries for roster builder search. Columns: season, first_name, last_name, position, origin, destination, stars, rating, transfer_date, eligibility |
+| `public.recruits_search` | Deployed | Recruiting class entries for roster builder search. Columns: id, athlete_id, year, name, position, height, weight, stars, rating, ranking, committed_to, school, city, state_province, country |
 
 ### RPCs (Functions)
 

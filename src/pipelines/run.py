@@ -11,7 +11,6 @@ from .sources.draft import draft_source
 from .sources.game_stats import game_stats_source
 from .sources.games import games_source
 from .sources.metrics import metrics_source
-from .sources.players import players_source
 from .sources.plays import plays_source
 from .sources.rankings import rankings_source
 from .sources.ratings import ratings_source
@@ -74,7 +73,6 @@ Examples:
             "draft",
             "metrics",
             "rankings",
-            "players",
             "rosters",
             "wepa",
             "all",
@@ -393,25 +391,6 @@ def run_rankings_pipeline(years: list[int] | None = None, mode: str = "increment
     return info
 
 
-def run_players_pipeline(years: list[int] | None = None, mode: str = "incremental"):
-    """Run the players data pipeline."""
-    years_str = f"years={years}" if years else f"mode={mode}"
-    print(f"\n=== Loading Players Data ({years_str}) ===\n")
-
-    pipeline = dlt.pipeline(
-        pipeline_name="cfbd_players",
-        destination="postgres",
-        dataset_name="core",
-    )
-
-    source = players_source(years=years, mode=mode)
-    info = pipeline.run(source)
-
-    print(f"\nLoad info: {info}")
-
-    return info
-
-
 def run_rosters_pipeline(
     teams: list[str],
     years: list[int] | None = None,
@@ -511,7 +490,6 @@ def main() -> NoReturn:
         "draft": lambda: run_draft_pipeline(args.years, args.mode),
         "metrics": lambda: run_metrics_pipeline(args.years, args.mode),
         "rankings": lambda: run_rankings_pipeline(args.years, args.mode),
-        "players": lambda: run_players_pipeline(args.years, args.mode),
         "rosters": lambda: run_rosters_pipeline(args.teams, args.years, args.mode),
         "wepa": lambda: run_wepa_pipeline(args.years, args.mode),
     }

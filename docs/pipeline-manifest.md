@@ -78,7 +78,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 9 | `/games/teams` | core.game_team_stats | game_stats.py | game_team_stats_resource | YES | merge | id | 2004-2026 | WORKING |
 | 10 | `/games/players` | core.game_player_stats | game_stats.py | game_player_stats_resource | YES | merge | id | 2004-2026 | DEFERRED |
 | 11 | `/games/weather` | core.game_weather | games.py | game_weather_resource | YES | merge | id | 2000-2026 | WORKING |
-| 12 | `/game/box/advanced` | — | — | — | — | — | — | — | UNMAPPED |
+| 12 | `/game/box/advanced` | stats.advanced_game_stats | stats.py | advanced_game_stats_resource | YES | merge | game_id, team | 2014-2026 | WORKING |
 | 13 | `/calendar` | ref.calendar | reference.py | calendar_resource | YES | replace | season, week | current | WORKING |
 | 14 | `/records` | core.records | games.py | records_resource | YES | merge | year, team | 2000-2026 | WORKING |
 | 15 | `/scoreboard` | — | — | — | — | — | — | — | UNMAPPED |
@@ -88,7 +88,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
 |---|---|---|---|---|---|---|---|---|---|
 | 16 | `/plays` | core.plays | plays.py | plays_resource | YES | merge | id | 2004-2026 | WORKING |
-| 17 | `/plays/stats` | — | — | — | — | — | — | — | UNMAPPED |
+| 17 | `/plays/stats` | stats.play_stats | stats.py | play_stats_resource | YES | merge | game_id, play_id, athlete_id, stat_type | 2014-2026 | WORKING |
 | 18 | `/plays/stats/types` | — | — | — | — | — | — | — | UNMAPPED |
 | 19 | `/live/plays` | — | — | — | — | — | — | — | UNMAPPED |
 
@@ -98,9 +98,9 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 |---|---|---|---|---|---|---|---|---|---|
 | 20 | `/stats/season` | stats.team_season_stats | stats.py | team_season_stats_resource | YES | merge | season, team, stat_name | 2004-2026 | WORKING |
 | 21 | `/stats/player/season` | stats.player_season_stats | stats.py | player_season_stats_resource | YES | merge | **player_id, season, category** (WRONG — needs stat_type too) | 2004-2026 | WORKING (PK bug) |
-| 22 | `/stats/season/advanced` | stats.advanced_team_stats | stats.py | advanced_team_stats_resource | **NO** | merge | season, team | 2004-2026 | CONFIG_ONLY |
+| 22 | `/stats/season/advanced` | stats.advanced_team_stats | stats.py | advanced_team_stats_resource | YES | merge | season, team | 2004-2026 | WORKING |
 | 23 | `/stats/game/advanced` | — | — | — | — | — | — | — | UNMAPPED |
-| 24 | `/stats/game/havoc` | — | — | — | — | — | — | — | UNMAPPED |
+| 24 | `/stats/game/havoc` | stats.game_havoc | stats.py | game_havoc_resource | YES | merge | game_id, team | 2014-2026 | WORKING |
 | 25 | `/stats/categories` | ref.stat_categories | reference.py | stat_categories_resource | YES | replace | name | — | WORKING |
 
 ### Ratings Data (merge disposition)
@@ -111,7 +111,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 27 | `/ratings/elo` | ratings.elo_ratings | ratings.py | elo_ratings_resource | YES | merge | year, team | 2015-2026 | WORKING |
 | 28 | `/ratings/fpi` | ratings.fpi_ratings | ratings.py | fpi_ratings_resource | YES | merge | year, team | 2015-2026 | WORKING |
 | 29 | `/ratings/srs` | ratings.srs_ratings | ratings.py | srs_ratings_resource | YES | merge | year, team | 2015-2026 | WORKING |
-| 30 | `/ratings/sp/conferences` | — | — | — | — | — | — | — | UNMAPPED |
+| 30 | `/ratings/sp/conferences` | ratings.sp_conference_ratings | ratings.py | sp_conference_ratings_resource | YES | merge | year, conference | 2015-2026 | WORKING |
 
 ### Recruiting Data (merge disposition)
 
@@ -126,9 +126,9 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 
 | # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| 35 | `/player/search` | — | — | — | — | — | — | — | UNMAPPED |
-| 36 | `/player/usage` | — | — | — | — | — | — | — | UNMAPPED |
-| 37 | `/player/returning` | — | — | — | — | — | — | — | UNMAPPED |
+| 35 | `/player/search` | — | — | — | — | — | — | — | REMOVED (requires searchTerm; use core.rosters instead) |
+| 36 | `/player/usage` | stats.player_usage | stats.py | player_usage_resource | YES | merge | season, id | 2014-2026 | WORKING |
+| 37 | `/player/returning` | stats.player_returning | stats.py | player_returning_resource | YES | merge | season, team | 2014-2026 | WORKING |
 
 ### Betting Data (merge disposition)
 
@@ -151,11 +151,11 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 42 | `/ppa/teams` | metrics.ppa_teams | metrics.py | ppa_teams_resource | YES | merge | season, team | 2014-2026 | WORKING |
 | 43 | `/ppa/players/season` | metrics.ppa_players_season | metrics.py | ppa_players_season_resource | YES | merge | season, id | 2014-2026 | WORKING |
 | 44 | `/metrics/wp/pregame` | metrics.pregame_win_probability | metrics.py | pregame_wp_resource | YES | merge | season, game_id | 2014-2026 | WORKING |
-| 45 | `/ppa/games` | — | — | — | NO | merge | game_id, team | 2014-2026 | CONFIG_ONLY |
-| 46 | `/ppa/players/games` | — | — | — | NO | merge | id | 2014-2026 | CONFIG_ONLY |
+| 45 | `/ppa/games` | metrics.ppa_games | metrics.py | ppa_games_resource | YES | merge | game_id, team | 2014-2026 | WORKING |
+| 46 | `/ppa/players/games` | metrics.ppa_players_games | metrics.py | ppa_players_games_resource | YES | merge | id | 2014-2026 | WORKING |
 | 47 | `/metrics/wp` | — | — | — | NO | merge | play_id | 2014-2026 | DEFERRED |
 | 48 | `/ppa/predicted` | — | — | — | — | — | down, distance, yard_line | — | DEFERRED |
-| 49 | `/metrics/fg/ep` | — | — | — | — | — | — | — | UNMAPPED |
+| 49 | `/metrics/fg/ep` | metrics.fg_expected_points | metrics.py | fg_expected_points_resource | YES | merge | distance | — | WORKING |
 
 ### Rankings
 
@@ -169,7 +169,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 |---|---|---|---|---|---|---|---|---|---|
 | 51 | `/teams/fbs` | ref.teams_fbs | reference.py | teams_fbs_resource | YES | replace | id | — | WORKING |
 | 52 | `/teams/matchup` | core.team_matchups | — | — | — | DEFERRED | team1, team2, season | — | Computed from games via matchup_history mart |
-| 53 | `/teams/ats` | — | — | — | — | — | — | — | UNMAPPED |
+| 53 | `/teams/ats` | betting.team_ats | betting.py | team_ats_resource | YES | merge | year, team_id | 2013-2026 | WORKING |
 | 54 | `/roster` | core.rosters | rosters.py | rosters_resource | YES | merge | id, team, year | 2004-2026 | WORKING (requires team list) |
 | 55 | `/talent` | recruiting.team_talent | recruiting.py | team_talent_resource | YES | merge | year, school | 2000-2026 | WORKING |
 
@@ -177,10 +177,10 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 
 | # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| 56 | `/wepa/players/passing` | — | — | — | — | — | — | — | UNMAPPED |
-| 57 | `/wepa/players/rushing` | — | — | — | — | — | — | — | UNMAPPED |
-| 58 | `/wepa/team/season` | — | — | — | — | — | — | — | UNMAPPED |
-| 59 | `/wepa/players/kicking` | — | — | — | — | — | — | — | UNMAPPED |
+| 56 | `/wepa/players/passing` | metrics.wepa_players_passing | wepa.py | wepa_players_passing_resource | YES | merge | id, year | 2014-2026 | WORKING |
+| 57 | `/wepa/players/rushing` | metrics.wepa_players_rushing | wepa.py | wepa_players_rushing_resource | YES | merge | id, year | 2014-2026 | WORKING |
+| 58 | `/wepa/team/season` | metrics.wepa_team_season | wepa.py | wepa_team_season_resource | YES | merge | year, team | 2014-2026 | WORKING |
+| 59 | `/wepa/players/kicking` | metrics.wepa_players_kicking | wepa.py | wepa_players_kicking_resource | YES | merge | id, year | 2014-2026 | WORKING |
 
 ---
 
@@ -188,15 +188,16 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 
 | Status | Count |
 |---|---|
-| WORKING | 30 |
+| WORKING | 45 |
 | WORKING (PK bug) | 5 |
 | WORKING (note) | 1 |
-| CONFIG_ONLY | 3 |
+| CONFIG_ONLY | 0 |
 | DEFERRED | 4 |
-| UNMAPPED | 16 |
-| **Total** | **59** |
+| UNMAPPED | 4 |
+| REMOVED | 1 |
+| **Total** | **60** |
 
-**Sprint 3 Progress:** Added 14 new WORKING endpoints: `/games/media`, `/games/teams`, `/games/weather`, `/calendar`, `/records`, `/stats/categories`, `/recruiting/groups`, `/draft/positions`, `/draft/teams`, `/rankings`, `/teams/fbs`, `/roster`, `/talent`. Note: `/games/players` deferred due to Supabase timeout limits.
+**Sprint 4 Progress:** Promoted 15 endpoints from UNMAPPED/CONFIG_ONLY to WORKING: `/game/box/advanced`, `/plays/stats`, `/stats/season/advanced`, `/stats/game/havoc`, `/ratings/sp/conferences`, `/player/usage`, `/player/returning`, `/teams/ats`, `/ppa/games`, `/ppa/players/games`, `/metrics/fg/ep`, `/wepa/players/passing`, `/wepa/players/rushing`, `/wepa/team/season`, `/wepa/players/kicking`. Removed `/player/search` (requires searchTerm; use core.rosters instead). Deleted dead code: `adjusted_metrics.py` (duplicate of `wepa.py`), `players.py` (broken source).
 
 **Note**: The API reference lists ~61 endpoints but some are variants of others (e.g., `/stats/season` vs `/stats/player/season` are listed as one "stats" category). This manifest counts distinct loadable endpoints.
 

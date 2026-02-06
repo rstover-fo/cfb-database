@@ -50,8 +50,8 @@ class TestYearRangesConfig:
     def test_plays_start_2004(self):
         assert YEAR_RANGES["plays"].start == 2004
 
-    def test_ratings_start_2015(self):
-        assert YEAR_RANGES["ratings"].start == 2015
+    def test_ratings_start_2004(self):
+        assert YEAR_RANGES["ratings"].start == 2004
 
     def test_all_ranges_end_2026(self):
         for name, yr in YEAR_RANGES.items():

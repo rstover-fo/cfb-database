@@ -126,6 +126,12 @@ Examples:
         help="Use replace disposition instead of merge (faster for bulk loads, use for game_stats)",
     )
 
+    parser.add_argument(
+        "--weekly",
+        action="store_true",
+        help="Load game_stats week-by-week (~35K rows per merge) to avoid Supabase timeouts",
+    )
+
     return parser
 
 
@@ -237,6 +243,57 @@ def run_game_stats_pipeline(
 
     print(f"\n=== All {len(batches)} batches complete ===")
     return all_info
+
+
+def run_game_stats_weekly(
+    years: list[int],
+    use_replace: bool = False,
+):
+    """Load game stats week-by-week for small merge batches.
+
+    Each (year, season_type, week) tuple gets its own pipeline.run() call,
+    keeping merge batches at ~35K rows to avoid Supabase timeouts.
+
+    Args:
+        years: List of years to load
+        use_replace: If True, first batch uses replace, rest use append
+    """
+    print(f"\n=== Loading Game Stats Weekly (years={years}) ===\n")
+
+    pipeline = dlt.pipeline(
+        pipeline_name="cfbd_game_stats",
+        destination="postgres",
+        dataset_name="core",
+    )
+
+    first = True
+    total_runs = 0
+
+    for year in years:
+        for season_type in ["regular", "postseason"]:
+            max_week = 15 if season_type == "regular" else 5
+            for week in range(1, max_week + 1):
+                if use_replace and first:
+                    disposition = "replace"
+                else:
+                    disposition = "merge"
+                first = False
+
+                label = f"{year} {season_type} week {week}"
+                print(f"  [{total_runs + 1}] {label} (disposition={disposition})")
+
+                source = game_stats_source(
+                    years=[year],
+                    season_type=season_type,
+                    weeks=[week],
+                    disposition=disposition,
+                )
+                info = pipeline.run(source)
+                total_runs += 1
+                print(f"       -> {info}")
+
+    print(f"\n=== Weekly loading complete: {total_runs} runs across {len(years)} years ===")
+    return total_runs
 
 
 def run_plays_pipeline(years: list[int] | None = None, mode: str = "incremental"):
@@ -469,13 +526,25 @@ def main() -> NoReturn:
             print(f"[DRY RUN] Years: {args.years}")
         if args.teams:
             print(f"[DRY RUN] Teams: {args.teams}")
-        if args.batch_size and args.years:
+        if args.weekly and args.source == "game_stats" and args.years:
+            total_runs = sum(15 + 5 for _ in args.years)
+            print(f"[DRY RUN] Weekly mode: ~{total_runs} pipeline.run() calls")
+        elif args.batch_size and args.years:
             batches = batch_years(args.years, args.batch_size)
             print(f"[DRY RUN] Batch size: {args.batch_size}")
             print(f"[DRY RUN] Would run {len(batches)} batches: {batches}")
         sys.exit(0)
 
     # Run the appropriate pipeline
+    # Weekly mode for game_stats: route to per-week loader
+    if args.weekly and args.source == "game_stats":
+        if not args.years:
+            print("ERROR: --weekly requires --years")
+            sys.exit(1)
+        run_game_stats_weekly(args.years, use_replace=args.replace)
+        show_status()
+        sys.exit(0)
+
     source_runners = {
         "reference": lambda: run_reference_pipeline(),
         "games": lambda: run_games_pipeline(args.years, args.mode),

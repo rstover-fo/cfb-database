@@ -31,6 +31,7 @@ RETURNS TABLE(
     points INT
 )
 LANGUAGE plpgsql
+SET search_path = ''
 AS $function$
 BEGIN
     RETURN QUERY

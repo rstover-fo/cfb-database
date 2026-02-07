@@ -2,7 +2,9 @@
 -- Joins SP+ and FPI ratings for special teams and SOS data.
 -- Created ad-hoc in Supabase; now tracked in version control.
 
-CREATE OR REPLACE VIEW public.team_special_teams_sos AS
+CREATE OR REPLACE VIEW public.team_special_teams_sos
+WITH (security_invoker = true)
+AS
 SELECT
     COALESCE(sp.year, fpi.year) AS season,
     COALESCE(sp.team, fpi.team) AS team,

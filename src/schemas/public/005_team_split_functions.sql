@@ -15,6 +15,7 @@ RETURNS TABLE(
     yards_per_play NUMERIC
 )
 LANGUAGE plpgsql
+SET search_path = ''
 AS $function$
 BEGIN
     RETURN QUERY
@@ -74,6 +75,7 @@ RETURNS TABLE(
     margin_per_game NUMERIC
 )
 LANGUAGE plpgsql
+SET search_path = ''
 AS $function$
 DECLARE
     v_team_conference TEXT;

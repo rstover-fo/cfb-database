@@ -1,48 +1,53 @@
 -- Play-level analysis functions
 -- RPC functions for down/distance, field position, and red zone splits.
 -- Created ad-hoc in Supabase; now tracked in version control.
+-- Refactored: get_down_distance_splits and get_field_position_splits now use
+-- marts.play_epa instead of core.plays JOIN core.games for ~10x performance.
 
-CREATE OR REPLACE FUNCTION public.get_down_distance_splits(p_team TEXT, p_season INT)
+CREATE OR REPLACE FUNCTION public.get_down_distance_splits(p_team text, p_season integer)
 RETURNS TABLE(
-    down INT,
-    distance_bucket TEXT,
-    side TEXT,
-    play_count BIGINT,
-    success_rate NUMERIC,
-    epa_per_play NUMERIC,
-    conversion_rate NUMERIC
+    down integer,
+    distance_bucket text,
+    side text,
+    play_count bigint,
+    success_rate numeric,
+    epa_per_play numeric,
+    conversion_rate numeric
 )
 LANGUAGE plpgsql
+STABLE
+SET search_path = ''
 AS $function$
 BEGIN
     RETURN QUERY
     WITH bucketed_plays AS (
         SELECT
-            p.down,
+            pe.down,
+            -- Recompute 4-bucket distance scheme for frontend compatibility
+            -- (matview uses short/medium/long; frontend expects 1-3/4-6/7-10/11+)
             CASE
-                WHEN p.distance BETWEEN 1 AND 3 THEN '1-3'
-                WHEN p.distance BETWEEN 4 AND 6 THEN '4-6'
-                WHEN p.distance BETWEEN 7 AND 10 THEN '7-10'
+                WHEN pe.distance BETWEEN 1 AND 3 THEN '1-3'
+                WHEN pe.distance BETWEEN 4 AND 6 THEN '4-6'
+                WHEN pe.distance BETWEEN 7 AND 10 THEN '7-10'
                 ELSE '11+'
             END AS distance_bucket,
             CASE
-                WHEN p.offense = p_team THEN 'offense'
+                WHEN pe.offense = p_team THEN 'offense'
                 ELSE 'defense'
             END AS side,
-            p.ppa AS epa,
-            CASE WHEN p.ppa > 0 THEN 1 ELSE 0 END AS success,
+            pe.epa,
+            pe.success,
             CASE
-                WHEN p.down IN (3, 4) AND p.yards_gained >= p.distance THEN 1
+                WHEN pe.down IN (3, 4) AND pe.yards_gained >= pe.distance THEN 1
                 ELSE 0
             END AS converted
-        FROM core.plays p
-        JOIN core.games g ON p.game_id = g.id
-        WHERE g.season = p_season
-          AND (p.offense = p_team OR p.defense = p_team)
-          AND p.down IS NOT NULL
-          AND p.down BETWEEN 1 AND 4
-          AND p.distance IS NOT NULL
-          AND p.distance > 0
+        FROM marts.play_epa pe
+        WHERE pe.season = p_season
+          AND (pe.offense = p_team OR pe.defense = p_team)
+          AND pe.down IS NOT NULL
+          AND pe.down BETWEEN 1 AND 4
+          AND pe.distance IS NOT NULL
+          AND pe.distance > 0
     )
     SELECT
         bp.down::INT,
@@ -61,52 +66,56 @@ BEGIN
 END;
 $function$;
 
-CREATE OR REPLACE FUNCTION public.get_field_position_splits(p_team TEXT, p_season INT)
+CREATE OR REPLACE FUNCTION public.get_field_position_splits(p_team text, p_season integer)
 RETURNS TABLE(
-    zone TEXT,
-    zone_label TEXT,
-    side TEXT,
-    play_count BIGINT,
-    success_rate NUMERIC,
-    epa_per_play NUMERIC,
-    yards_per_play NUMERIC,
-    scoring_rate NUMERIC
+    zone text,
+    zone_label text,
+    side text,
+    play_count bigint,
+    success_rate numeric,
+    epa_per_play numeric,
+    yards_per_play numeric,
+    scoring_rate numeric
 )
 LANGUAGE plpgsql
+STABLE
+SET search_path = ''
 AS $function$
 BEGIN
     RETURN QUERY
     WITH zoned_plays AS (
         SELECT
             CASE
-                WHEN p.offense = p_team THEN 'offense'
+                WHEN pe.offense = p_team THEN 'offense'
                 ELSE 'defense'
             END AS side,
+            -- Recompute 4-zone field position from yards_to_goal
+            -- yards_to_goal is from offense perspective; zones flip for defense
+            -- yards_to_goal == yardline in CFBD data; use same boundaries as original
             CASE
-                WHEN p.offense = p_team THEN
+                WHEN pe.offense = p_team THEN
                     CASE
-                        WHEN p.yardline >= 80 THEN 'own_1_20'
-                        WHEN p.yardline >= 50 THEN 'own_21_50'
-                        WHEN p.yardline >= 20 THEN 'opp_49_21'
+                        WHEN pe.yards_to_goal >= 80 THEN 'own_1_20'
+                        WHEN pe.yards_to_goal >= 50 THEN 'own_21_50'
+                        WHEN pe.yards_to_goal >= 20 THEN 'opp_49_21'
                         ELSE 'opp_20_1'
                     END
                 ELSE
                     CASE
-                        WHEN p.yardline <= 20 THEN 'own_1_20'
-                        WHEN p.yardline <= 50 THEN 'own_21_50'
-                        WHEN p.yardline <= 80 THEN 'opp_49_21'
+                        WHEN pe.yards_to_goal <= 20 THEN 'own_1_20'
+                        WHEN pe.yards_to_goal <= 50 THEN 'own_21_50'
+                        WHEN pe.yards_to_goal <= 80 THEN 'opp_49_21'
                         ELSE 'opp_20_1'
                     END
             END AS zone,
-            p.ppa,
-            p.yards_gained,
-            CASE WHEN p.scoring = true THEN 1 ELSE 0 END AS scored,
-            CASE WHEN p.ppa > 0 THEN 1 ELSE 0 END AS successful
-        FROM core.plays p
-        JOIN core.games g ON p.game_id = g.id
-        WHERE g.season = p_season
-          AND (p.offense = p_team OR p.defense = p_team)
-          AND p.yardline IS NOT NULL
+            pe.epa,
+            pe.yards_gained,
+            CASE WHEN pe.scoring = true THEN 1 ELSE 0 END AS scored,
+            pe.success AS successful
+        FROM marts.play_epa pe
+        WHERE pe.season = p_season
+          AND (pe.offense = p_team OR pe.defense = p_team)
+          AND pe.yards_to_goal IS NOT NULL
     )
     SELECT
         zp.zone::TEXT,
@@ -119,7 +128,7 @@ BEGIN
         zp.side::TEXT,
         COUNT(*)::BIGINT AS play_count,
         ROUND(AVG(zp.successful)::NUMERIC, 3) AS success_rate,
-        ROUND(AVG(zp.ppa)::NUMERIC, 3) AS epa_per_play,
+        ROUND(AVG(zp.epa)::NUMERIC, 3) AS epa_per_play,
         ROUND(AVG(zp.yards_gained)::NUMERIC, 1) AS yards_per_play,
         ROUND(AVG(zp.scored)::NUMERIC, 3) AS scoring_rate
     FROM zoned_plays zp
@@ -134,20 +143,22 @@ BEGIN
 END;
 $function$;
 
-CREATE OR REPLACE FUNCTION public.get_red_zone_splits(p_team TEXT, p_season INT)
+CREATE OR REPLACE FUNCTION public.get_red_zone_splits(p_team text, p_season integer)
 RETURNS TABLE(
-    side TEXT,
-    trips BIGINT,
-    touchdowns BIGINT,
-    field_goals BIGINT,
-    turnovers BIGINT,
-    td_rate NUMERIC,
-    fg_rate NUMERIC,
-    scoring_rate NUMERIC,
-    points_per_trip NUMERIC,
-    epa_per_play NUMERIC
+    side text,
+    trips bigint,
+    touchdowns bigint,
+    field_goals bigint,
+    turnovers bigint,
+    td_rate numeric,
+    fg_rate numeric,
+    scoring_rate numeric,
+    points_per_trip numeric,
+    epa_per_play numeric
 )
 LANGUAGE plpgsql
+STABLE
+SET search_path = ''
 AS $function$
 BEGIN
     RETURN QUERY

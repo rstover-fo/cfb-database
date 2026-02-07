@@ -4,7 +4,7 @@
 --   SELECT * FROM get_data_freshness();
 --   SELECT * FROM get_data_freshness() WHERE is_stale = true;
 
-CREATE OR REPLACE FUNCTION get_data_freshness()
+CREATE OR REPLACE FUNCTION public.get_data_freshness()
 RETURNS TABLE(
     schema_name text,
     table_name text,
@@ -15,6 +15,7 @@ RETURNS TABLE(
 )
 LANGUAGE sql
 STABLE
+SET search_path = ''
 AS $$
     SELECT
         f.schema_name,
@@ -27,5 +28,5 @@ AS $$
     ORDER BY f.is_stale DESC, f.schema_name, f.table_name;
 $$;
 
-COMMENT ON FUNCTION get_data_freshness IS
+COMMENT ON FUNCTION public.get_data_freshness IS
 'Returns data freshness status for all tracked tables. Use WHERE is_stale = true to find tables needing refresh.';

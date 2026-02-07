@@ -2,7 +2,7 @@
 -- Returns bucketed start/end positions with outcome counts
 -- p_side: 'offense' (default) filters on d.offense = p_team
 --         'defense' filters on d.defense = p_team
-CREATE OR REPLACE FUNCTION get_drive_patterns(
+CREATE OR REPLACE FUNCTION public.get_drive_patterns(
   p_team TEXT,
   p_season INT,
   p_side TEXT DEFAULT 'offense'
@@ -14,7 +14,11 @@ RETURNS TABLE (
   count BIGINT,
   avg_plays NUMERIC,
   avg_yards NUMERIC
-) AS $$
+)
+LANGUAGE plpgsql
+STABLE
+SET search_path = ''
+AS $$
 BEGIN
   RETURN QUERY
   WITH drive_outcomes AS (
@@ -56,4 +60,4 @@ BEGIN
   GROUP BY 1, 2, drv.outcome
   ORDER BY drv.outcome, 1, 2;
 END;
-$$ LANGUAGE plpgsql STABLE;
+$$;

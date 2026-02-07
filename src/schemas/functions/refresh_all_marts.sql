@@ -17,6 +17,7 @@ CREATE OR REPLACE FUNCTION marts.refresh_all()
 RETURNS TABLE(view_name text, duration_ms bigint, status text)
 LANGUAGE plpgsql
 SET statement_timeout = 0
+SET search_path = ''
 AS $$
 DECLARE
     v_views text[];

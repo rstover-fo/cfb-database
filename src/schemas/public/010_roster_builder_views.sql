@@ -9,7 +9,9 @@
 -- TRANSFER PORTAL SEARCH
 -- =============================================================================
 
-CREATE OR REPLACE VIEW public.transfer_portal_search AS
+CREATE OR REPLACE VIEW public.transfer_portal_search
+WITH (security_invoker = true)
+AS
 SELECT
     season,
     first_name,
@@ -30,7 +32,9 @@ COMMENT ON VIEW public.transfer_portal_search IS
 -- RECRUITS SEARCH
 -- =============================================================================
 
-CREATE OR REPLACE VIEW public.recruits_search AS
+CREATE OR REPLACE VIEW public.recruits_search
+WITH (security_invoker = true)
+AS
 SELECT
     id,
     athlete_id,

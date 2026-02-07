@@ -7,6 +7,7 @@ CREATE OR REPLACE FUNCTION public.get_player_search(p_query text, p_position tex
  RETURNS TABLE(player_id text, name text, team text, "position" text, season bigint, height bigint, weight bigint, jersey bigint, stars bigint, recruit_rating double precision, similarity_score real)
  LANGUAGE plpgsql
  STABLE
+SET search_path = ''
 AS $function$
 BEGIN
     RETURN QUERY
@@ -21,7 +22,7 @@ BEGIN
         r.jersey,
         rec.stars,
         rec.rating AS recruit_rating,
-        similarity(lower(r.first_name || ' ' || r.last_name), lower(p_query)) AS similarity_score
+        public.similarity(lower(r.first_name || ' ' || r.last_name), lower(p_query)) AS similarity_score
     FROM core.roster r
     LEFT JOIN LATERAL (
         SELECT rr.stars, rr.rating
@@ -30,7 +31,7 @@ BEGIN
         ORDER BY rr.rating DESC NULLS LAST
         LIMIT 1
     ) rec ON true
-    WHERE lower(r.first_name || ' ' || r.last_name) % lower(p_query)
+    WHERE lower(r.first_name || ' ' || r.last_name) OPERATOR(public.%) lower(p_query)
       AND (p_position IS NULL OR r.position = p_position)
       AND (p_team IS NULL OR r.team = p_team)
       AND (p_season IS NULL OR r.year = p_season)

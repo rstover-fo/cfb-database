@@ -25,6 +25,7 @@ RETURNS TABLE(
     fbs_recruiting_rank NUMERIC
 )
 LANGUAGE plpgsql
+SET search_path = ''
 AS $function$
 BEGIN
     RETURN QUERY
@@ -44,8 +45,8 @@ BEGIN
         AVG(t.off_epa_rank)::NUMERIC AS fbs_off_epa_rank,
         AVG(t.def_epa_rank)::NUMERIC AS fbs_def_epa_rank,
         AVG(t.recruiting_rank)::NUMERIC AS fbs_recruiting_rank
-    FROM team_season_trajectory t
-    JOIN teams tm ON t.team = tm.school
+    FROM public.team_season_trajectory t
+    JOIN public.teams tm ON t.team = tm.school
     WHERE tm.classification = 'fbs'
       AND t.season BETWEEN p_season_start AND p_season_end
     GROUP BY t.season

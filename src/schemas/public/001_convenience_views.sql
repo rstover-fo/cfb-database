@@ -2,7 +2,9 @@
 -- These expose core/ref tables with simplified column sets for app consumption.
 -- Created ad-hoc in Supabase; now tracked in version control.
 
-CREATE OR REPLACE VIEW public.teams AS
+CREATE OR REPLACE VIEW public.teams
+WITH (security_invoker = true)
+AS
 SELECT
     id,
     school,
@@ -32,7 +34,9 @@ SELECT
     division
 FROM ref.teams;
 
-CREATE OR REPLACE VIEW public.teams_with_logos AS
+CREATE OR REPLACE VIEW public.teams_with_logos
+WITH (security_invoker = true)
+AS
 SELECT
     t.id,
     t.school,
@@ -53,7 +57,9 @@ LEFT JOIN ref.teams__logos l_dark
     ON l_dark._dlt_parent_id = t._dlt_id
     AND l_dark.value LIKE '%dark%';
 
-CREATE OR REPLACE VIEW public.games AS
+CREATE OR REPLACE VIEW public.games
+WITH (security_invoker = true)
+AS
 SELECT
     id,
     season,
@@ -68,7 +74,9 @@ SELECT
     neutral_site
 FROM core.games;
 
-CREATE OR REPLACE VIEW public.roster AS
+CREATE OR REPLACE VIEW public.roster
+WITH (security_invoker = true)
+AS
 SELECT
     id,
     first_name,

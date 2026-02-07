@@ -2,7 +2,9 @@
 -- These provide stable read interfaces for the frontend app.
 -- Created ad-hoc in Supabase; now tracked in version control.
 
-CREATE OR REPLACE VIEW public.defensive_havoc AS
+CREATE OR REPLACE VIEW public.defensive_havoc
+WITH (security_invoker = true)
+AS
 SELECT
     team,
     season,
@@ -20,7 +22,9 @@ SELECT
     tfls
 FROM marts.defensive_havoc;
 
-CREATE OR REPLACE VIEW public.team_epa_season AS
+CREATE OR REPLACE VIEW public.team_epa_season
+WITH (security_invoker = true)
+AS
 SELECT
     e.team,
     e.season,
@@ -36,7 +40,9 @@ FROM marts.team_epa_season e
 LEFT JOIN marts.defensive_havoc d
     ON e.team = d.team AND e.season = d.season;
 
-CREATE OR REPLACE VIEW public.team_season_epa AS
+CREATE OR REPLACE VIEW public.team_season_epa
+WITH (security_invoker = true)
+AS
 SELECT
     team,
     season,
@@ -48,7 +54,9 @@ SELECT
     games_played
 FROM marts.team_epa_season;
 
-CREATE OR REPLACE VIEW public.team_season_trajectory AS
+CREATE OR REPLACE VIEW public.team_season_trajectory
+WITH (security_invoker = true)
+AS
 SELECT
     team,
     season,
@@ -66,7 +74,9 @@ SELECT
     epa_delta
 FROM marts.team_season_trajectory;
 
-CREATE OR REPLACE VIEW public.team_style_profile AS
+CREATE OR REPLACE VIEW public.team_style_profile
+WITH (security_invoker = true)
+AS
 SELECT
     team,
     season,
@@ -81,7 +91,9 @@ SELECT
     def_epa_vs_pass
 FROM marts.team_style_profile;
 
-CREATE OR REPLACE VIEW public.team_tempo_metrics AS
+CREATE OR REPLACE VIEW public.team_tempo_metrics
+WITH (security_invoker = true)
+AS
 SELECT
     season,
     team,

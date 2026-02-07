@@ -5,7 +5,7 @@
 --   SELECT * FROM get_conference_head_to_head('SEC', 'Big Ten');
 --   SELECT * FROM get_conference_head_to_head('SEC', 'Big 12', 2020, 2024);
 
-CREATE OR REPLACE FUNCTION get_conference_head_to_head(
+CREATE OR REPLACE FUNCTION public.get_conference_head_to_head(
     p_conf1 text,
     p_conf2 text,
     p_season_start int DEFAULT NULL,
@@ -24,6 +24,7 @@ RETURNS TABLE(
 )
 LANGUAGE sql
 STABLE
+SET search_path = ''
 AS $$
     SELECT
         h.conference_1,
@@ -52,7 +53,7 @@ AS $$
     ORDER BY h.season DESC;
 $$;
 
-COMMENT ON FUNCTION get_conference_head_to_head IS
+COMMENT ON FUNCTION public.get_conference_head_to_head IS
 'Conference vs conference head-to-head records by season. '
 'Results are always oriented so p_conf1 wins/pct are shown first, regardless of alphabetical order. '
 'Optional season range filtering.';

@@ -8,6 +8,7 @@ Usage:
     python scripts/load_season.py --season 2025 --sources games,stats  # Load specific sources
     python scripts/load_season.py --season 2025 --dry-run           # Show what would run
     python scripts/load_season.py --season 2025 --skip-refresh      # Load data, skip mart refresh
+    python scripts/load_season.py --season 2025 --weekly            # game_stats week-by-week
 """
 
 import argparse
@@ -56,6 +57,7 @@ def load_season(
     sources: list[str] | None = None,
     dry_run: bool = False,
     skip_refresh: bool = False,
+    weekly: bool = False,
 ) -> dict:
     """Load or refresh all data for a given season.
 
@@ -64,6 +66,7 @@ def load_season(
         sources: Specific sources to load (None = all)
         dry_run: If True, show plan without executing
         skip_refresh: If True, skip mart refresh after loading
+        weekly: If True, load game_stats week-by-week (~35K rows per merge)
 
     Returns:
         Summary dict with timing and row counts
@@ -72,6 +75,7 @@ def load_season(
         run_betting_pipeline,
         run_draft_pipeline,
         run_game_stats_pipeline,
+        run_game_stats_weekly,
         run_games_pipeline,
         run_metrics_pipeline,
         run_plays_pipeline,
@@ -123,10 +127,15 @@ def load_season(
         return {"dry_run": True, "estimated_calls": total_est}
 
     # Map source names to runner functions
+    game_stats_runner = (
+        (lambda: run_game_stats_weekly(years=[season]))
+        if weekly
+        else (lambda: run_game_stats_pipeline(years=[season]))
+    )
     runners = {
         "reference": lambda: run_reference_pipeline(),
         "games": lambda: run_games_pipeline(years=[season]),
-        "game_stats": lambda: run_game_stats_pipeline(years=[season]),
+        "game_stats": game_stats_runner,
         "plays": lambda: run_plays_pipeline(years=[season]),
         "stats": lambda: run_stats_pipeline(years=[season]),
         "ratings": lambda: run_ratings_pipeline(years=[season]),
@@ -208,6 +217,11 @@ def main() -> None:
     parser.add_argument(
         "--skip-refresh", action="store_true", help="Skip mart refresh after loading"
     )
+    parser.add_argument(
+        "--weekly",
+        action="store_true",
+        help="Load game_stats week-by-week (~35K rows per merge) to avoid timeouts",
+    )
     args = parser.parse_args()
 
     sources = args.sources.split(",") if args.sources else None
@@ -217,6 +231,7 @@ def main() -> None:
         sources=sources,
         dry_run=args.dry_run,
         skip_refresh=args.skip_refresh,
+        weekly=args.weekly,
     )
 
     if summary.get("errors", 0) > 0:

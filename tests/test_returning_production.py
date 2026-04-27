@@ -687,18 +687,37 @@ def player_returning_value_loaded(db_conn, fct_player_movements_loaded):
 class TestPlayerReturningValueRowCounts:
     """One row per movement event; total matches fct_player_movements one-to-one."""
 
-    def test_total_matches_fct_movements(self, db_conn, player_returning_value_loaded):
-        """The matview is keyed on (player_id, target_team, target_season) which
-        is one-to-one with rp.fct_player_movements (player_id, transition_season).
-        Total rows must match exactly."""
+    def test_matview_count_equals_fct_minus_null_destinations(
+        self, db_conn, player_returning_value_loaded
+    ):
+        """The matview's grain is (player_id, target_team, target_season). Movements
+        with destination_team = NULL ('in portal, no target') don't fit that grain
+        and are filtered at the matview boundary. The math: matview rows + NULL-
+        destination fct rows = total fct rows."""
         with db_conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM marts.player_returning_value")
             mart_count = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM rp.fct_player_movements")
-            fct_count = cur.fetchone()[0]
-        assert mart_count == fct_count, (
-            f"matview rows ({mart_count}) != fct_player_movements rows ({fct_count})"
+            cur.execute(
+                """
+                SELECT
+                  COUNT(*) AS total,
+                  COUNT(*) FILTER (WHERE destination_team IS NULL) AS null_dest
+                FROM rp.fct_player_movements
+                """
+            )
+            fct_total, null_dest = cur.fetchone()
+        assert mart_count == fct_total - null_dest, (
+            f"matview {mart_count} != fct_total {fct_total} - null_dest {null_dest}; "
+            f"filter logic may have drifted"
         )
+
+    def test_no_null_target_team(self, db_conn, player_returning_value_loaded):
+        """The matview filters NULL destinations; no row may have NULL target_team."""
+        with db_conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM marts.player_returning_value WHERE target_team IS NULL"
+            )
+            assert cur.fetchone()[0] == 0
 
     def test_total_within_envelope(self, db_conn, player_returning_value_loaded):
         with db_conn.cursor() as cur:

@@ -22,6 +22,13 @@
 --   recruits contribute via continuity, returners via full position weight.
 --   U10 replaces base_production with z-score quality formulas per
 --   position; this matview's structure won't change.
+-- * Movements with destination_team = NULL are filtered out. These are
+--   players who entered the portal but never committed to a destination
+--   (~5% residue per settled season; ~23% during an active spring window).
+--   They're real movement events but don't fit a (player, target_team,
+--   target_season) grain because there's no target_team. The silver layer
+--   (rp.fct_player_movements) keeps them as audit trail; the gold layer
+--   excludes them so cfb-app rollups are clean.
 -- * health_factor sources rp.injuries_season_ending which is empty in v1
 --   (U8 will populate it). All rows currently get health_factor = 1.0.
 -- * competition_factor uses ratings.sp_ratings (final SP+ ranking, not
@@ -70,6 +77,10 @@ base_data AS (
   LEFT JOIN rp.fct_player_seasons fps_target
     ON fps_target.player_id = fpm.player_id
     AND fps_target.season   = fpm.transition_season
+  -- Filter movements with no destination -- they fail the (player, target_team,
+  -- target_season) grain. Keeps the matview semantically clean for downstream
+  -- consumers; full audit remains in rp.fct_player_movements.
+  WHERE fpm.destination_team IS NOT NULL
 ),
 -- Schedule + opponent SP+ rank. Build a per-team schedule via UNION
 -- (each game contributes to both home and away team's schedule), then

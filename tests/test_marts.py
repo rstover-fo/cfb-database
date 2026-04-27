@@ -26,6 +26,8 @@ MARTS_VIEWS = [
     "player_returning_value",
     "team_returning_production",
     "player_game_epa",
+    "pre_game_win_probability",
+    "season_simulation_outcomes",
     "player_season_epa",
     "recruiting_class",
     "recruiting_roi",

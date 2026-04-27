@@ -33,6 +33,7 @@ MARTS_VIEWS = [
     "marts.play_epa",
     "marts.player_comparison",
     "marts.conference_head_to_head",
+    "marts.pre_game_win_probability",
     # Layer 2: Depends on Layer 1
     "marts.team_epa_season",
     "marts.team_season_summary",
@@ -41,6 +42,7 @@ MARTS_VIEWS = [
     "marts.scoring_opportunities",
     "marts.team_playcalling_tendencies",
     "marts.team_situational_success",
+    "marts.season_simulation_outcomes",
     # Layer 3: Depends on Layer 2
     "marts.situational_splits",
     "marts.player_season_epa",

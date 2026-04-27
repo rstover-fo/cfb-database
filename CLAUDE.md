@@ -23,6 +23,14 @@ Schema contract for downstream consumers: `docs/SCHEMA_CONTRACT.md`
 
 **Warning:** Schema changes to `core`, `recruiting`, or `public` schemas can break cfb-app and cfb-scout. Check `SCHEMA_CONTRACT.md` before modifying.
 
+## Hard Rules
+
+- **Never modify `core`, `recruiting`, or `public` schemas without checking `docs/SCHEMA_CONTRACT.md`** — changes break cfb-app and cfb-scout
+- **Never exceed the 75,000 API calls/month budget** — use incremental loading, cache reference data, check `.dlt/config.toml` rate limits
+- **Never commit `.dlt/secrets.toml`** — credentials stay local; see `.dlt/secrets.toml.example`
+- **Always use UPSERT (`ON CONFLICT`) for pipeline loads** — idempotent operations prevent duplicates
+- **Always refresh marts after schema changes** — `python scripts/refresh_marts.py`
+
 ## Tech Stack
 
 | Component | Technology |
@@ -191,7 +199,9 @@ Reference this skill when writing `RESTAPIConfig` dicts, debugging pagination, c
 | Metrics (PPA, win prob) | 8 | Incremental by year |
 | Draft | 3 | Incremental by year |
 
-## Commands
+## Verification Commands
+
+Run after every change. All must pass before committing.
 
 ```bash
 # Setup

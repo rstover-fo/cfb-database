@@ -1,6 +1,6 @@
 """Tests for API views in the api schema.
 
-Verifies all 11 API views exist, return expected row counts,
+Verifies key API views exist, return expected row counts,
 expose the correct columns, and respond to filtered queries.
 """
 
@@ -210,6 +210,41 @@ RECRUIT_LOOKUP_COLUMNS = {
     "country",
 }
 
+MATCHUP_FORECAST_COLUMNS = {
+    "game_id",
+    "season",
+    "week",
+    "season_type",
+    "start_date",
+    "completed",
+    "neutral_site",
+    "conference_game",
+    "home_team",
+    "away_team",
+    "market_spread",
+    "market_over_under",
+    "home_win_probability",
+    "away_win_probability",
+    "projected_winner",
+    "projected_margin",
+    "confidence_tier",
+    "cfbd_home_win_prob",
+    "market_home_win_prob",
+    "elo_home_win_prob",
+    "sp_home_win_prob",
+    "model_version",
+    "home_points",
+    "away_points",
+    "actual_winner",
+    "brier_loss",
+    "home_expected_wins",
+    "home_bowl_eligibility_prob",
+    "home_ten_plus_win_prob",
+    "away_expected_wins",
+    "away_bowl_eligibility_prob",
+    "away_ten_plus_win_prob",
+}
+
 
 # ---------------------------------------------------------------------------
 # Test: views exist and return rows
@@ -226,6 +261,7 @@ class TestViewsExistAndReturnRows:
             ("api.team_history", 3000),
             ("api.game_detail", 40000),
             ("api.matchup", 10000),
+            ("api.matchup_forecast", 1000),
             ("api.leaderboard_teams", 3000),
             ("api.roster_lookup", 300000),
             ("api.recruit_lookup", 60000),
@@ -235,6 +271,7 @@ class TestViewsExistAndReturnRows:
             "team_history",
             "game_detail",
             "matchup",
+            "matchup_forecast",
             "leaderboard_teams",
             "roster_lookup",
             "recruit_lookup",
@@ -261,6 +298,7 @@ class TestViewColumns:
             ("api.team_history", TEAM_HISTORY_COLUMNS),
             ("api.game_detail", GAME_DETAIL_COLUMNS),
             ("api.matchup", MATCHUP_COLUMNS),
+            ("api.matchup_forecast", MATCHUP_FORECAST_COLUMNS),
             ("api.leaderboard_teams", LEADERBOARD_TEAMS_COLUMNS),
             ("api.roster_lookup", ROSTER_LOOKUP_COLUMNS),
             ("api.recruit_lookup", RECRUIT_LOOKUP_COLUMNS),
@@ -270,6 +308,7 @@ class TestViewColumns:
             "team_history",
             "game_detail",
             "matchup",
+            "matchup_forecast",
             "leaderboard_teams",
             "roster_lookup",
             "recruit_lookup",
@@ -485,6 +524,55 @@ class TestMatchup:
         assert count_mismatched == 0, (
             f"Found {count_mismatched} matchups where wins + ties != total"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test: matchup_forecast probability quality checks
+# ---------------------------------------------------------------------------
+
+
+class TestMatchupForecast:
+    """api.matchup_forecast — blended game prediction surface."""
+
+    def test_probabilities_in_bounds(self, db_conn):
+        """Home and away probabilities should stay within [0, 1]."""
+        out_of_bounds = _fetch_count(
+            db_conn,
+            """
+            SELECT COUNT(*)
+            FROM api.matchup_forecast
+            WHERE home_win_probability < 0
+               OR home_win_probability > 1
+               OR away_win_probability < 0
+               OR away_win_probability > 1
+            """,
+        )
+        assert out_of_bounds == 0, f"Found {out_of_bounds} rows with invalid probability bounds"
+
+    def test_home_away_sum_to_one(self, db_conn):
+        """Home and away probabilities should sum to 1.0 (within rounding tolerance)."""
+        bad_rows = _fetch_count(
+            db_conn,
+            """
+            SELECT COUNT(*)
+            FROM api.matchup_forecast
+            WHERE ABS((home_win_probability + away_win_probability) - 1.0) > 0.0002
+            """,
+        )
+        assert bad_rows == 0, f"Found {bad_rows} rows where home+away probability != 1.0"
+
+    def test_projected_winner_matches_teams(self, db_conn):
+        """Projected winner should always be either home_team or away_team."""
+        bad_rows = _fetch_count(
+            db_conn,
+            """
+            SELECT COUNT(*)
+            FROM api.matchup_forecast
+            WHERE projected_winner IS NOT NULL
+              AND projected_winner NOT IN (home_team, away_team)
+            """,
+        )
+        assert bad_rows == 0, f"Found {bad_rows} rows with invalid projected_winner values"
 
 
 # ---------------------------------------------------------------------------

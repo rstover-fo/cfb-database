@@ -62,6 +62,19 @@ MARTS_VIEWS = [
     # Layer 5: Depends on Layer 4 + standalone
     "marts.matchup_edges",
     "marts.data_freshness",
+    # Layer 6: rp returning-production pipeline. The two rp.* loaders are run via
+    # RP_PIPELINE_FUNCTIONS below before these matviews refresh; the matviews go
+    # last because team_returning_production depends on player_returning_value.
+    "marts.player_returning_value",
+    "marts.team_returning_production",
+]
+
+# Loader functions (TRUNCATE + INSERT) for the rp pipeline. Invoked, not REFRESHed.
+# Run after the main MARTS_VIEWS Layers 1-5 but before the rp matviews above
+# because the movements loader depends on marts.coaching_tenure (Layer 4).
+RP_PIPELINE_FUNCTIONS = [
+    "rp.refresh_fct_player_seasons",
+    "rp.refresh_fct_player_movements",
 ]
 
 ANALYTICS_VIEWS = [
@@ -133,31 +146,87 @@ def refresh_view(view_name: str, conn, concurrently: bool, dry_run: bool) -> boo
         cursor.close()
 
 
+def invoke_loader_function(fn_name: str, conn, dry_run: bool) -> bool:
+    """Run a TRUNCATE + INSERT loader function (e.g. rp.refresh_fct_player_seasons).
+
+    These are not matviews, so REFRESH does not apply -- they are invoked as
+    SQL functions. Returns True on success.
+    """
+    sql = f"SELECT {fn_name}()"
+    logger.info(f"{'[DRY RUN] ' if dry_run else ''}Invoking {fn_name}()...")
+
+    if dry_run:
+        print(f"  {sql};")
+        return True
+
+    cursor = conn.cursor()
+    try:
+        start = datetime.now()
+        cursor.execute(sql)
+        conn.commit()
+        elapsed = (datetime.now() - start).total_seconds()
+        logger.info(f"  ✓ {fn_name}() ran ({elapsed:.2f}s)")
+        return True
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"  ✗ {fn_name}() failed: {e}")
+        return False
+    finally:
+        cursor.close()
+
+
 def refresh_marts(
     schema: str | None = None,
     concurrently: bool = True,
     dry_run: bool = False,
 ) -> int:
-    """Refresh materialized views. Returns count of failures."""
-    # Build view list based on schema filter
-    views = []
-    if schema is None or schema == "marts":
-        views.extend(MARTS_VIEWS)
-    if schema is None or schema == "analytics":
-        views.extend(ANALYTICS_VIEWS)
+    """Refresh materialized views. Returns count of failures.
 
-    if not views:
+    Refresh order, when schema is None or 'marts':
+      1. MARTS_VIEWS Layers 1-5 (everything except the rp returning-production pipeline).
+      2. RP_PIPELINE_FUNCTIONS -- rp.refresh_fct_player_seasons + rp.refresh_fct_player_movements.
+         The movements loader needs marts.coaching_tenure (Layer 4) to be current.
+      3. MARTS_VIEWS Layer 6 -- player_returning_value, team_returning_production
+         (the last two entries in MARTS_VIEWS).
+
+    When schema='analytics', no rp pipeline runs.
+    """
+    # Split MARTS_VIEWS into the main layers (1-5) and the rp matviews (Layer 6).
+    rp_matviews = {"marts.player_returning_value", "marts.team_returning_production"}
+    main_marts = [v for v in MARTS_VIEWS if v not in rp_matviews]
+    rp_marts = [v for v in MARTS_VIEWS if v in rp_matviews]
+
+    # Build refresh sequence based on schema filter
+    main_views = []
+    rp_funcs: list[str] = []
+    rp_views: list[str] = []
+    if schema is None or schema == "marts":
+        main_views.extend(main_marts)
+        rp_funcs = list(RP_PIPELINE_FUNCTIONS)
+        rp_views = list(rp_marts)
+    if schema is None or schema == "analytics":
+        main_views.extend(ANALYTICS_VIEWS)
+
+    if not main_views and not rp_funcs:
         logger.error(f"No views found for schema: {schema}")
         return 1
 
-    logger.info(f"Refreshing {len(views)} materialized view(s)")
+    total_steps = len(main_views) + len(rp_funcs) + len(rp_views)
+    logger.info(
+        f"Refreshing {total_steps} step(s): {len(main_views)} matview(s), "
+        f"{len(rp_funcs)} loader fn(s), {len(rp_views)} rp matview(s)"
+    )
     if concurrently:
         logger.info("Using CONCURRENTLY (reads not blocked)")
     else:
         logger.info("Not using CONCURRENTLY (reads blocked during refresh)")
 
     if dry_run:
-        for view in views:
+        for view in main_views:
+            refresh_view(view, conn=None, concurrently=concurrently, dry_run=True)
+        for fn in rp_funcs:
+            invoke_loader_function(fn, conn=None, dry_run=True)
+        for view in rp_views:
             refresh_view(view, conn=None, concurrently=concurrently, dry_run=True)
         return 0
 
@@ -168,16 +237,22 @@ def refresh_marts(
 
     failures = 0
     try:
-        for view in views:
+        for view in main_views:
+            if not refresh_view(view, conn, concurrently, dry_run):
+                failures += 1
+        for fn in rp_funcs:
+            if not invoke_loader_function(fn, conn, dry_run):
+                failures += 1
+        for view in rp_views:
             if not refresh_view(view, conn, concurrently, dry_run):
                 failures += 1
     finally:
         conn.close()
 
     if failures:
-        logger.warning(f"{failures} view(s) failed to refresh")
+        logger.warning(f"{failures} step(s) failed to refresh")
     else:
-        logger.info("All views refreshed successfully")
+        logger.info("All steps refreshed successfully")
 
     return failures
 

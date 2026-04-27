@@ -245,6 +245,31 @@ MATCHUP_FORECAST_COLUMNS = {
     "away_ten_plus_win_prob",
 }
 
+TEAM_RETURNING_PRODUCTION_COLUMNS = {
+    "team",
+    "season",
+    "returning_production_total",
+    "returning_production_offense",
+    "returning_production_defense",
+    "rp_qb",
+    "rp_rb",
+    "rp_wr_te",
+    "rp_ol",
+    "rp_dl",
+    "rp_lb",
+    "rp_db",
+    "rp_st",
+    "n_returning_starters",
+    "n_portal_in",
+    "n_portal_out",
+    "n_recruits_contributing",
+    "n_unknown_position",
+    "cfbd_returning_production_pct",
+    "our_pct_normalized",
+    "delta_vs_cfbd",
+    "generated_at",
+}
+
 
 # ---------------------------------------------------------------------------
 # Test: views exist and return rows
@@ -262,6 +287,7 @@ class TestViewsExistAndReturnRows:
             ("api.game_detail", 40000),
             ("api.matchup", 10000),
             ("api.matchup_forecast", 1000),
+            ("api.team_returning_production", 1500),
             ("api.leaderboard_teams", 3000),
             ("api.roster_lookup", 300000),
             ("api.recruit_lookup", 60000),
@@ -272,6 +298,7 @@ class TestViewsExistAndReturnRows:
             "game_detail",
             "matchup",
             "matchup_forecast",
+            "team_returning_production",
             "leaderboard_teams",
             "roster_lookup",
             "recruit_lookup",
@@ -299,6 +326,7 @@ class TestViewColumns:
             ("api.game_detail", GAME_DETAIL_COLUMNS),
             ("api.matchup", MATCHUP_COLUMNS),
             ("api.matchup_forecast", MATCHUP_FORECAST_COLUMNS),
+            ("api.team_returning_production", TEAM_RETURNING_PRODUCTION_COLUMNS),
             ("api.leaderboard_teams", LEADERBOARD_TEAMS_COLUMNS),
             ("api.roster_lookup", ROSTER_LOOKUP_COLUMNS),
             ("api.recruit_lookup", RECRUIT_LOOKUP_COLUMNS),
@@ -309,6 +337,7 @@ class TestViewColumns:
             "game_detail",
             "matchup",
             "matchup_forecast",
+            "team_returning_production",
             "leaderboard_teams",
             "roster_lookup",
             "recruit_lookup",
@@ -728,3 +757,45 @@ class TestRecruitLookup:
             ("QB",),
         )
         assert count >= 100, f"QBs in recruit_lookup: {count}, expected 100+"
+
+
+# ---------------------------------------------------------------------------
+# Test: anon role contract for api.team_returning_production
+# ---------------------------------------------------------------------------
+
+
+class TestTeamReturningProductionAnonAccess:
+    """The api view is the cfb-app contract surface. anon must read; anon must
+    never write. SECURITY INVOKER + GRANT SELECT pattern from 2026-02-07
+    hardening."""
+
+    def test_anon_can_select(self, db_conn):
+        cur = db_conn.cursor()
+        cur.execute("SET ROLE anon")
+        try:
+            cur.execute("SELECT COUNT(*) FROM api.team_returning_production")
+            assert cur.fetchone()[0] > 0
+        finally:
+            cur.execute("RESET ROLE")
+            cur.close()
+
+    def test_anon_cannot_delete(self, db_conn):
+        """anon must not be able to mutate the view. Postgres rejects DELETE on a
+        view-over-matview at the parser level (ObjectNotInPrerequisiteState: 'not
+        automatically updatable') before reaching the privilege check, so we
+        accept that error class as well as InsufficientPrivilege."""
+        import psycopg2
+
+        cur = db_conn.cursor()
+        cur.execute("SET ROLE anon")
+        try:
+            with pytest.raises(
+                (
+                    psycopg2.errors.InsufficientPrivilege,
+                    psycopg2.errors.ObjectNotInPrerequisiteState,
+                )
+            ):
+                cur.execute("DELETE FROM api.team_returning_production")
+        finally:
+            cur.execute("RESET ROLE")
+            cur.close()

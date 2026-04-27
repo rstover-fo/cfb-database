@@ -54,6 +54,7 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.recruiting_roi` | **Deployed** | 1,324 | Recruiting investment vs on-field outcomes. 4-year rolling BCR, wins over expected, draft production. One row per team-season. Columns: team, season, conference, blue_chip_ratio, avg_recruit_rating, total_wins, win_pct, epa_per_play, players_drafted, wins_over_expected, recruiting_efficiency, win_pct_pctl, epa_pctl, recruiting_efficiency_pctl |
 | `api.transfer_portal_impact` | **Deployed** | 1,374 | Transfer portal activity correlated with team performance changes. Portal era (2021+). One row per team-season. Columns: team, season, conference, transfers_in, transfers_out, net_transfers, avg_transfer_stars, portal_dependency, win_delta, net_transfers_pctl, win_delta_pctl, portal_dependency_pctl |
 | `api.conference_comparison` | **Deployed** | 347 | Conference-level season analytics with percentile rankings. One row per conference-season. Columns: conference, season, member_count, avg_wins, avg_sp_rating, avg_epa, avg_recruiting_rank, non_conf_win_pct, avg_sp_pctl, avg_epa_pctl, avg_recruiting_pctl, non_conf_win_pct_pctl |
+| `api.team_returning_production` | **Deployed** | 1,829 | Team-grain returning production rollup, 2021-2026. One row per team-season. Backed by `marts.team_returning_production`. Columns: team, season, returning_production_total, returning_production_offense, returning_production_defense, rp_qb, rp_rb, rp_wr_te, rp_ol, rp_dl, rp_lb, rp_db, rp_st, n_returning_starters, n_portal_in, n_portal_out, n_recruits_contributing, n_unknown_position, cfbd_returning_production_pct, our_pct_normalized, delta_vs_cfbd, generated_at. CFBD calibration columns are NULL for 2026 until CFBD publishes `/player/returning`. |
 
 ### Marts (schema: `marts`) -- Materialized Views
 
@@ -89,6 +90,8 @@ cfb-app for advanced features.
 | `marts.conference_comparison` | Deployed | Per-conference per-season aggregates with PERCENT_RANK percentiles. 347 rows. |
 | `marts.conference_head_to_head` | Deployed | Conference vs conference records by season. Alphabetical ordering to avoid duplicate pairs. 4,818 rows. |
 | `marts.data_freshness` | Deployed | Data freshness tracking for 23 key tables. Row counts, last activity, staleness detection. |
+| `marts.team_returning_production` | Deployed | Team-grain returning production rollup, 2021-2026. One row per team-season. SUM over `marts.player_returning_value` with offense/defense partition, per-position-group breakdown (rp_qb..rp_st), portal/recruit counts, and CFBD calibration columns. 1,829 rows. **Exposed via `api.team_returning_production` (do not query directly from cfb-app).** |
+| `marts.player_returning_value` | Deployed | **Internal** -- player-grain returning value, one row per (player_id, target_team, target_season). Five-factor decomposition: base × position × continuity × competition × health. ~79K rows (2021-2026). Backs `marts.team_returning_production`; cfb-app must consume the team rollup, not this matview. Promotion to `api.player_returning_value` deferred until v3 eyeball validation. |
 
 ### Public Schema Views
 
@@ -212,6 +215,7 @@ These objects are implementation details. Do not depend on them from downstream 
 | `draft` | `draft_picks` |
 | `metrics` | `ppa_teams`, `ppa_games`, `ppa_players_season`, `ppa_players_games`, `pregame_win_probability`, `fg_expected_points`, `wepa_team_season`, `wepa_players_passing`, `wepa_players_rushing`, `wepa_players_kicking` |
 | `ref` | `conferences`, `venues`, `coaches`, `coaches__seasons`, `play_types`, `play_stat_types`, `teams__alternate_names`, `teams__logos` |
+| `rp` | `fct_player_seasons`, `fct_player_movements`, `dim_continuity_factors`, `dim_position_weights`, `injuries_season_ending`, `unmatched_portal_log`. Returning-production model intermediate tables. Schema name is `rp` (not `returning`, which is a Postgres reserved keyword). cfb-app must consume `api.team_returning_production`, not these tables directly. Hand-curated injuries seed lives at `seeds/injuries_season_ending.csv`; load via `src/schemas/migrations/load_injuries_seed.sql`. |
 
 ### dlt Pipeline Metadata
 
@@ -261,6 +265,14 @@ cfb-app  -->  api.* views  -->  marts.* matviews  -->  raw tables (core, stats, 
               api.team_playcalling_profile -->  marts.team_playcalling_tendencies
                                                marts.team_situational_success
                                                marts.team_epa_season, ref.teams
+              api.team_returning_production -->  marts.team_returning_production
+                                                 marts.player_returning_value (internal)
+                                                 rp.fct_player_seasons
+                                                 rp.fct_player_movements
+                                                 rp.dim_continuity_factors
+                                                 rp.dim_position_weights
+                                                 rp.injuries_season_ending (hand-seeded)
+                                                 stats.player_returning (calibration)
               public.* views
               public.get_* RPCs
 

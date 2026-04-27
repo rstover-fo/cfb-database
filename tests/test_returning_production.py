@@ -706,9 +706,11 @@ class TestPlayerReturningValueRowCounts:
             total = cur.fetchone()[0]
         assert 50_000 <= total <= 150_000, f"total={total}; expected 50K-150K"
 
-    def test_target_seasons_2021_through_2025(self, db_conn, player_returning_value_loaded):
-        """Plan said 'target_season=2026 ≥ 30K' but CFBD data caps at 2025
-        transitions. Adjusting the gate to verify 2021-2025 are all populated."""
+    def test_target_seasons_populated(self, db_conn, player_returning_value_loaded):
+        """Every target_season from 2021 onward must have rows. The 2026 cohort
+        shape depends on what CFBD has published: in late spring it's portal-only
+        (~4K), after fall camp publishes rosters it grows to ~17K with returners.
+        Test asserts the floor that holds at any point in the lifecycle."""
         with db_conn.cursor() as cur:
             cur.execute(
                 """
@@ -717,10 +719,14 @@ class TestPlayerReturningValueRowCounts:
                 """
             )
             seasons = dict(cur.fetchall())
-        assert set(seasons) == {2021, 2022, 2023, 2024, 2025}
-        assert all(n >= 10_000 for n in seasons.values()), (
-            f"some target_season has <10K rows: {seasons}"
-        )
+        # 2021-2025 are full historical cohorts (portal + recruits + returners).
+        assert set(seasons) >= {2021, 2022, 2023, 2024, 2025}, f"missing core seasons: {seasons}"
+        for season, n in seasons.items():
+            if season <= 2025:
+                assert n >= 10_000, f"season {season} has only {n} rows"
+            else:
+                # Forward-looking cohorts: floor at portal-only volume.
+                assert n >= 1_000, f"season {season} has only {n} rows (portal cohort minimum)"
 
 
 class TestPlayerReturningValueFactorMath:

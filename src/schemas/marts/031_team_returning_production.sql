@@ -6,6 +6,16 @@
 --   * Totals: returning_production_total / _offense / _defense
 --   * Per-position-group: rp_qb, rp_rb, rp_wr_te, rp_ol, rp_dl, rp_lb, rp_db, rp_st
 --   * Counts: n_returning_starters, n_portal_in, n_portal_out, n_recruits_contributing
+--   * Portal trench exchange (added post-U6 from real-world validation):
+--       portal_trench_in_value     -- SUM(returning_value) for incoming portal OL+DL
+--       portal_trench_out_value    -- SUM(returning_value) for OL+DL who left this team
+--                                     via the portal, computed at the destination team's
+--                                     row in marts.player_returning_value (so the
+--                                     in/out scales are directly comparable)
+--       net_portal_trench_value    -- in_value - out_value. Positive = team won the
+--                                     portal trench exchange this cycle. Surfaces the
+--                                     "Tennessee -1.6 / Texas A&M +1.1" pattern that
+--                                     gross-only investment hides.
 --   * Calibration:
 --       cfbd_returning_production_pct  -- raw stats.player_returning.percent_ppa
 --       our_pct_normalized             -- total / season_max_total, [0,1]
@@ -103,6 +113,38 @@ portal_out AS (
     AND (destination_team IS NULL OR destination_team <> source_team)
   GROUP BY source_team, transition_season
 ),
+-- Portal trench EXCHANGE: separate from gross n_portal_in/out because we want
+-- value-weighted, position-filtered (OL+DL only) flows that are scale-comparable
+-- between in and out.
+-- Outgoing trench value: a player who left team X via portal lands at team Y;
+-- their marts.player_returning_value row at Y has the canonical returning_value.
+-- We attribute that same number as "X's lost trench value" because Y captured it
+-- and X gave it up. This keeps the in/out scales consistent.
+portal_trench_in AS (
+  SELECT
+    target_team   AS team,
+    target_season AS season,
+    SUM(returning_value)::numeric(7,3) AS portal_trench_in_value
+  FROM marts.player_returning_value
+  WHERE position_group IN ('OL','DL')
+    AND is_portal_in
+  GROUP BY target_team, target_season
+),
+portal_trench_out AS (
+  SELECT
+    fpm.source_team   AS team,
+    prv.target_season AS season,
+    SUM(prv.returning_value)::numeric(7,3) AS portal_trench_out_value
+  FROM marts.player_returning_value prv
+  JOIN rp.fct_player_movements fpm
+    ON fpm.player_id = prv.player_id
+   AND fpm.transition_season = prv.target_season
+  WHERE prv.position_group IN ('OL','DL')
+    AND fpm.match_method LIKE 'portal_%'
+    AND fpm.source_team IS NOT NULL
+    AND fpm.source_team <> prv.target_team
+  GROUP BY fpm.source_team, prv.target_season
+),
 -- CFBD calibration target. stats.player_returning is already (season, team)
 -- grain so no aggregation is required.
 cfbd_calibration AS (
@@ -146,6 +188,12 @@ SELECT
   COALESCE(tpr.n_recruits_contributing, 0) AS n_recruits_contributing,
   COALESCE(tpr.n_unknown_position,      0) AS n_unknown_position,
 
+  -- Portal trench exchange (value-weighted, OL+DL only)
+  COALESCE(pti.portal_trench_in_value,  0)::numeric(7,3) AS portal_trench_in_value,
+  COALESCE(pto.portal_trench_out_value, 0)::numeric(7,3) AS portal_trench_out_value,
+  (COALESCE(pti.portal_trench_in_value,  0)
+   - COALESCE(pto.portal_trench_out_value, 0))::numeric(7,3) AS net_portal_trench_value,
+
   -- Calibration
   cal.cfbd_returning_production_pct,
   CASE
@@ -165,9 +213,11 @@ SELECT
 
   NOW() AS generated_at
 FROM team_player_rollup tpr
-LEFT JOIN portal_out       po  ON po.team   = tpr.team   AND po.season  = tpr.season
-LEFT JOIN cfbd_calibration cal ON cal.team  = tpr.team   AND cal.season = tpr.season
-LEFT JOIN season_max       sm  ON sm.season = tpr.season;
+LEFT JOIN portal_out        po  ON po.team   = tpr.team   AND po.season  = tpr.season
+LEFT JOIN portal_trench_in  pti ON pti.team  = tpr.team   AND pti.season = tpr.season
+LEFT JOIN portal_trench_out pto ON pto.team  = tpr.team   AND pto.season = tpr.season
+LEFT JOIN cfbd_calibration  cal ON cal.team  = tpr.team   AND cal.season = tpr.season
+LEFT JOIN season_max        sm  ON sm.season = tpr.season;
 
 -- UNIQUE INDEX is required for REFRESH MATERIALIZED VIEW CONCURRENTLY.
 CREATE UNIQUE INDEX idx_team_returning_production_pk

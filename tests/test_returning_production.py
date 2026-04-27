@@ -1085,6 +1085,78 @@ class TestTeamReturningProductionAdditivity:
             assert cur.fetchone()[0] == 0
 
 
+class TestTeamReturningProductionPortalTrenchExchange:
+    """net_portal_trench_value = portal_trench_in_value - portal_trench_out_value.
+    Validates the column added post-U6 from real-world SEC analysis."""
+
+    def test_net_equals_in_minus_out(self, db_conn, team_returning_production_loaded):
+        with db_conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) FROM marts.team_returning_production
+                WHERE ABS(net_portal_trench_value
+                          - (portal_trench_in_value - portal_trench_out_value)) > 0.001
+                """
+            )
+            assert cur.fetchone()[0] == 0, "net != (in - out) for some rows"
+
+    def test_in_value_matches_player_matview_filter(
+        self, db_conn, team_returning_production_loaded
+    ):
+        """portal_trench_in_value at the team-grain rolls up exactly the OL+DL
+        is_portal_in rows from the player matview."""
+        with db_conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) FROM (
+                  SELECT
+                    t.team, t.season, t.portal_trench_in_value,
+                    COALESCE((SELECT SUM(returning_value)
+                              FROM marts.player_returning_value prv
+                              WHERE prv.target_team = t.team
+                                AND prv.target_season = t.season
+                                AND prv.position_group IN ('OL','DL')
+                                AND prv.is_portal_in), 0)::numeric(7,3) AS expected
+                  FROM marts.team_returning_production t
+                  WHERE t.season = 2026 AND t.team IN ('Tennessee','Kentucky','Texas A&M')
+                ) sub
+                WHERE ABS(portal_trench_in_value - expected) > 0.001
+                """
+            )
+            assert cur.fetchone()[0] == 0
+
+    def test_tennessee_2026_known_negative(self, db_conn, team_returning_production_loaded):
+        """Tennessee 2026 has a major net trench loss (4 in, 13 out) -- locked
+        in as a regression fixture so future model changes don't silently flip
+        the sign on this well-understood case."""
+        with db_conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT portal_trench_in_value, portal_trench_out_value, net_portal_trench_value
+                FROM marts.team_returning_production
+                WHERE team = 'Tennessee' AND season = 2026
+                """
+            )
+            in_v, out_v, net = cur.fetchone()
+        assert in_v < out_v, (
+            f"Tennessee 2026 should be net negative trench (got in={in_v}, out={out_v})"
+        )
+        assert net < -1.0, f"Tennessee 2026 net should be < -1.0 (got {net})"
+
+    def test_no_null_trench_values(self, db_conn, team_returning_production_loaded):
+        """All three trench columns COALESCE to 0 for teams with no portal flow."""
+        with db_conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) FROM marts.team_returning_production
+                WHERE portal_trench_in_value IS NULL
+                   OR portal_trench_out_value IS NULL
+                   OR net_portal_trench_value IS NULL
+                """
+            )
+            assert cur.fetchone()[0] == 0
+
+
 class TestTeamReturningProductionRoundTrip:
     """SUM at the team level must equal SUM of player_returning_value rows for the
     same (team, season) pair. The whole point of the player-grain design."""

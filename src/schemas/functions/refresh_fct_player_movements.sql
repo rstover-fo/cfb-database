@@ -130,9 +130,12 @@ BEGIN
     JOIN core.roster r
       ON r.team = p.origin
       AND r.year = p.season - 1
-      AND public.levenshtein(
+      -- levenshtein_less_equal short-circuits at distance > max, bounding the
+      -- O(m*n) scan against pathological CFBD payloads.
+      AND public.levenshtein_less_equal(
         lower(coalesce(p.first_name, '') || coalesce(p.last_name, '')),
-        lower(coalesce(r.first_name, '') || coalesce(r.last_name, ''))
+        lower(coalesce(r.first_name, '') || coalesce(r.last_name, '')),
+        2
       ) <= 2
     WHERE p.season BETWEEN 2021 AND 2026
       AND NOT EXISTS (
@@ -143,14 +146,19 @@ BEGIN
           AND pe.transition_season = p.season::int
       )
     ORDER BY p.first_name, p.last_name, p.origin, p.season,
-      public.levenshtein(
+      public.levenshtein_less_equal(
         lower(coalesce(p.first_name, '') || coalesce(p.last_name, '')),
-        lower(coalesce(r.first_name, '') || coalesce(r.last_name, ''))
+        lower(coalesce(r.first_name, '') || coalesce(r.last_name, '')),
+        2
       ),
       r.id
   ),
-  -- Portal unmatched: synthetic player_id derived from md5(first|last|origin|season).
-  -- Stable across reruns; logged separately in unmatched_portal_log for audit.
+  -- Portal unmatched: synthetic player_id derived from md5 of all available
+  -- distinguishing fields. Including destination + transfer_date avoids collision
+  -- when (first, last, origin, season) collapse to a single bucket -- e.g. two
+  -- NULL-name CFBD rows in the same season, or two same-name players from the
+  -- same school going to different destinations. Stable across reruns; logged
+  -- separately in unmatched_portal_log for audit.
   portal_unmatched AS (
     SELECT
       p.first_name, p.last_name,
@@ -158,9 +166,11 @@ BEGIN
       p.season::int AS transition_season,
       p.stars, p.rating, p.position, p.transfer_date::date AS transfer_date,
       'portal:' || md5(
-        coalesce(p.first_name, '') || '|' ||
-        coalesce(p.last_name, '')  || '|' ||
-        coalesce(p.origin, '')     || '|' ||
+        coalesce(p.first_name, '')   || '|' ||
+        coalesce(p.last_name, '')    || '|' ||
+        coalesce(p.origin, '')       || '|' ||
+        coalesce(p.destination, '')  || '|' ||
+        coalesce(p.transfer_date::text, '') || '|' ||
         p.season::text
       ) AS player_id
     FROM recruiting.transfer_portal p
@@ -330,9 +340,10 @@ BEGIN
       SELECT 1 FROM core.roster r
       WHERE r.team = p.origin
         AND r.year = p.season - 1
-        AND public.levenshtein(
+        AND public.levenshtein_less_equal(
           lower(coalesce(p.first_name, '') || coalesce(p.last_name, '')),
-          lower(coalesce(r.first_name, '') || coalesce(r.last_name, ''))
+          lower(coalesce(r.first_name, '') || coalesce(r.last_name, '')),
+          2
         ) <= 2
     );
 
@@ -346,3 +357,8 @@ COMMENT ON FUNCTION rp.refresh_fct_player_movements() IS
   'roster continuity (returners), portal events (3-tier name match), recruit class. '
   'Idempotent (TRUNCATE + INSERT). Also writes audit rows for unmatched portal '
   'entries to rp.unmatched_portal_log.';
+
+-- SECURITY DEFINER + REVOKE EXECUTE FROM PUBLIC: prevents anon from calling
+-- this loader via PostgREST. See refresh_fct_player_seasons.sql for the same
+-- rationale.
+REVOKE EXECUTE ON FUNCTION rp.refresh_fct_player_movements() FROM PUBLIC;

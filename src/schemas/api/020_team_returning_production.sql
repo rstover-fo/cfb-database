@@ -21,7 +21,7 @@ SELECT
     rp_lb,
     rp_db,
     rp_st,
-    n_returning_starters,
+    n_returners,
     n_portal_in,
     n_portal_out,
     n_recruits_contributing,

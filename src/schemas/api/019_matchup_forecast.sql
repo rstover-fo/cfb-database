@@ -4,7 +4,8 @@
 
 DROP VIEW IF EXISTS api.matchup_forecast;
 
-CREATE VIEW api.matchup_forecast AS
+CREATE VIEW api.matchup_forecast
+WITH (security_invoker = true) AS
 SELECT
     p.game_id,
     p.season,
@@ -56,5 +57,8 @@ LEFT JOIN marts.season_simulation_outcomes away_out
     ON away_out.season = p.season
    AND away_out.team = p.away_team;
 
+GRANT SELECT ON api.matchup_forecast TO anon, authenticated;
+
 COMMENT ON VIEW api.matchup_forecast IS
-    'Phase 1 matchup forecast with blended pregame win probabilities and team season outlook context.';
+    'Phase 1 matchup forecast with blended pregame win probabilities and team season outlook context. '
+    'SECURITY INVOKER + read-only for anon (matches the 2026-02-07 hardening pattern).';

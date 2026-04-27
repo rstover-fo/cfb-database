@@ -1,5 +1,10 @@
 -- Refresh all materialized views in the marts schema in dependency order.
 --
+-- All REFRESH calls use CONCURRENTLY -- requires UNIQUE INDEX on every matview
+-- (every matview in the chain has one) and that the matview has been populated
+-- at least once via the initial CREATE MATERIALIZED VIEW. Concurrent refresh
+-- avoids blocking cfb-app reads during the refresh window.
+--
 -- Layers:
 --   1: _game_epa_calc, play_epa, player_comparison, conference_head_to_head, pre_game_win_probability
 --      (no mart dependencies)
@@ -43,7 +48,7 @@ BEGIN
     FOREACH v_name IN ARRAY v_views LOOP
         v_start := clock_timestamp();
         BEGIN
-            EXECUTE format('REFRESH MATERIALIZED VIEW marts.%I', v_name);
+            EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY marts.%I', v_name);
             v_elapsed := EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start)::bigint;
             view_name := v_name;
             duration_ms := v_elapsed;
@@ -74,7 +79,7 @@ BEGIN
     FOREACH v_name IN ARRAY v_views LOOP
         v_start := clock_timestamp();
         BEGIN
-            EXECUTE format('REFRESH MATERIALIZED VIEW marts.%I', v_name);
+            EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY marts.%I', v_name);
             v_elapsed := EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start)::bigint;
             view_name := v_name;
             duration_ms := v_elapsed;
@@ -105,7 +110,7 @@ BEGIN
     FOREACH v_name IN ARRAY v_views LOOP
         v_start := clock_timestamp();
         BEGIN
-            EXECUTE format('REFRESH MATERIALIZED VIEW marts.%I', v_name);
+            EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY marts.%I', v_name);
             v_elapsed := EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start)::bigint;
             view_name := v_name;
             duration_ms := v_elapsed;
@@ -134,7 +139,7 @@ BEGIN
     FOREACH v_name IN ARRAY v_views LOOP
         v_start := clock_timestamp();
         BEGIN
-            EXECUTE format('REFRESH MATERIALIZED VIEW marts.%I', v_name);
+            EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY marts.%I', v_name);
             v_elapsed := EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start)::bigint;
             view_name := v_name;
             duration_ms := v_elapsed;
@@ -159,7 +164,7 @@ BEGIN
     FOREACH v_name IN ARRAY v_views LOOP
         v_start := clock_timestamp();
         BEGIN
-            EXECUTE format('REFRESH MATERIALIZED VIEW marts.%I', v_name);
+            EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY marts.%I', v_name);
             v_elapsed := EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start)::bigint;
             view_name := v_name;
             duration_ms := v_elapsed;
@@ -225,7 +230,7 @@ BEGIN
     FOREACH v_name IN ARRAY v_views LOOP
         v_start := clock_timestamp();
         BEGIN
-            EXECUTE format('REFRESH MATERIALIZED VIEW marts.%I', v_name);
+            EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY marts.%I', v_name);
             v_elapsed := EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start)::bigint;
             view_name := v_name;
             duration_ms := v_elapsed;

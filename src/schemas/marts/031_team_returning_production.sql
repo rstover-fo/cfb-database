@@ -43,24 +43,23 @@ DROP MATERIALIZED VIEW IF EXISTS marts.team_returning_production CASCADE;
 
 CREATE MATERIALIZED VIEW marts.team_returning_production AS
 WITH
--- Player-grain rollup over the matview built in U5. We pull games_started from
--- fct_player_seasons here (not exposed in player_returning_value) to compute
--- n_returning_starters at the gold layer. LEFT JOIN because recruits and
--- unmatched portal entries have no source-season fct row.
-prv_with_starts AS (
+-- Player-grain projection from the U5 matview. Originally this CTE LEFT JOINed
+-- rp.fct_player_seasons to pull games_started for an n_returning_starters
+-- (>= 8 starts) count, but CFBD's /roster does not return games_started --
+-- the column is always NULL and the FILTER silently produced 0 for every team.
+-- We now expose n_returners (count of returners regardless of starter status);
+-- a true starter gate lands with U10's quality formulas (see refresh_all_marts.sql
+-- Layer 6 notes).
+prv_proj AS (
   SELECT
-    prv.target_team,
-    prv.target_season,
-    prv.position_group,
-    prv.returning_value,
-    prv.is_returning,
-    prv.is_portal_in,
-    prv.is_recruit,
-    fps.games_started
-  FROM marts.player_returning_value prv
-  LEFT JOIN rp.fct_player_seasons fps
-    ON fps.player_id = prv.player_id
-   AND fps.season   = prv.source_season
+    target_team,
+    target_season,
+    position_group,
+    returning_value,
+    is_returning,
+    is_portal_in,
+    is_recruit
+  FROM marts.player_returning_value
 ),
 team_player_rollup AS (
   SELECT
@@ -86,16 +85,20 @@ team_player_rollup AS (
     SUM(returning_value) FILTER (WHERE position_group = 'DB')::numeric(7,3)    AS rp_db,
     SUM(returning_value) FILTER (WHERE position_group = 'ST')::numeric(7,3)    AS rp_st,
 
-    -- Counts
-    COUNT(*) FILTER (
-      WHERE is_returning = true AND games_started >= 8
-    )::int                                                               AS n_returning_starters,
+    -- Counts. n_returners is "count of returning players" not "count of returning
+    -- starters" because CFBD's /roster endpoint does not return games_started --
+    -- so we cannot distinguish starters from rotation players in v1. The original
+    -- spec asked for `n_returning_starters AND games_started >= 8` but games_started
+    -- is always NULL in rp.fct_player_seasons, which silently produced 0 for every
+    -- team. U10's quality formulas may add a starter-equivalent gate via PFF data
+    -- or per-game appearances joined from core.game_player_stats.
+    COUNT(*) FILTER (WHERE is_returning = true)::int                     AS n_returners,
     COUNT(*) FILTER (WHERE is_portal_in = true)::int                     AS n_portal_in,
     COUNT(*) FILTER (
       WHERE is_recruit = true AND returning_value > 0.10
     )::int                                                               AS n_recruits_contributing,
     COUNT(*) FILTER (WHERE position_group IS NULL)::int                  AS n_unknown_position
-  FROM prv_with_starts
+  FROM prv_proj
   GROUP BY target_team, target_season
 ),
 -- Portal-out is sourced directly from fct_player_movements: players who left
@@ -182,7 +185,7 @@ SELECT
   COALESCE(tpr.rp_st,    0)::numeric(7,3) AS rp_st,
 
   -- Counts (COALESCE so teams with no portal-out / no recruits don't NULL)
-  COALESCE(tpr.n_returning_starters,    0) AS n_returning_starters,
+  COALESCE(tpr.n_returners,             0) AS n_returners,
   COALESCE(tpr.n_portal_in,             0) AS n_portal_in,
   COALESCE(po.n_portal_out,             0) AS n_portal_out,
   COALESCE(tpr.n_recruits_contributing, 0) AS n_recruits_contributing,

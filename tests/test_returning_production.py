@@ -1189,7 +1189,7 @@ class TestTeamReturningProductionCounts:
             cur.execute(
                 """
                 SELECT COUNT(*) FROM marts.team_returning_production
-                WHERE n_returning_starters IS NULL
+                WHERE n_returners IS NULL
                    OR n_portal_in IS NULL
                    OR n_portal_out IS NULL
                    OR n_recruits_contributing IS NULL
@@ -1427,13 +1427,21 @@ class TestTeamReturningProductionAccess:
             cur.close()
 
     def test_anon_cannot_modify(self, db_conn, team_returning_production_loaded):
-        """SELECT-only grant. Confirm anon cannot DELETE."""
+        """SELECT-only grant. Postgres rejects DELETE on a matview at the parser
+        level (matviews are not auto-updatable) before reaching the privilege
+        check, so we accept ObjectNotInPrerequisiteState as well as
+        InsufficientPrivilege -- mirroring the api-level twin in test_api_views.py."""
         import psycopg2
 
         cur = db_conn.cursor()
         cur.execute("SET ROLE anon")
         try:
-            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+            with pytest.raises(
+                (
+                    psycopg2.errors.InsufficientPrivilege,
+                    psycopg2.errors.ObjectNotInPrerequisiteState,
+                )
+            ):
                 cur.execute("DELETE FROM marts.team_returning_production")
         finally:
             cur.execute("RESET ROLE")

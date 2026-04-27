@@ -58,7 +58,7 @@ BEGIN
       SUM(CASE WHEN ps.category = 'defensive'     AND ps.stat_type = 'PD'    AND ps.stat ~ '^-?[0-9]+(\.[0-9]+)?$' THEN ps.stat::numeric ELSE 0 END)::int          AS stat_pbu,
       SUM(CASE WHEN ps.category = 'fumbles'       AND ps.stat_type = 'REC'   AND ps.stat ~ '^-?[0-9]+(\.[0-9]+)?$' THEN ps.stat::numeric ELSE 0 END)::int          AS stat_fr
     FROM stats.player_season_stats ps
-    WHERE ps.season BETWEEN 2020 AND 2025
+    WHERE ps.season BETWEEN 2020 AND 2026
     GROUP BY ps.player_id, ps.season
   ),
   -- Dedupe roster to one row per (player_id, season). For mid-season transfers, pick the
@@ -70,7 +70,7 @@ BEGIN
       r.first_name, r.last_name
     FROM core.roster r
     WHERE r.id IS NOT NULL
-      AND r.year BETWEEN 2020 AND 2025
+      AND r.year BETWEEN 2020 AND 2026
     ORDER BY r.id, r.year, r.team DESC
   ),
   -- Recruits can have multiple rows per athlete_id (reclassifiers per memory 2026-02-05).
@@ -147,7 +147,7 @@ BEGIN
     AND ps.season    = r.year::int
   LEFT JOIN recruits_dedup rd
     ON rd.athlete_id = r.id::text
-  WHERE r.year BETWEEN 2020 AND 2025;
+  WHERE r.year BETWEEN 2020 AND 2026;
 
   -- Refresh planner stats for downstream U3/U5 joins
   ANALYZE rp.fct_player_seasons;
@@ -155,7 +155,13 @@ END;
 $function$;
 
 COMMENT ON FUNCTION rp.refresh_fct_player_seasons() IS
-  'U2 loader. Populates rp.fct_player_seasons for seasons 2020-2025 from '
+  'U2 loader. Populates rp.fct_player_seasons for seasons 2020-2026 from '
   'core.roster + stats.player_season_stats + recruiting.recruits. Idempotent '
   '(TRUNCATE + INSERT). Multi-team-season players: stats SUM-aggregated across '
   'teams; team attribution is alphabetically-last per RP-002.';
+
+-- SECURITY DEFINER + REVOKE EXECUTE FROM PUBLIC: the function performs TRUNCATE
+-- on rp.fct_player_seasons. Without revoking PUBLIC execute, anon could call it
+-- via PostgREST and trigger a full-table reload, defeating the read-only-database
+-- invariant established by 019_returning_schema.sql's REVOKE on rp tables.
+REVOKE EXECUTE ON FUNCTION rp.refresh_fct_player_seasons() FROM PUBLIC;

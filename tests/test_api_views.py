@@ -1,7 +1,9 @@
 """Tests for API views in the api schema.
 
-Verifies key API views exist, return expected row counts,
-expose the correct columns, and respond to filtered queries.
+Verifies the API views below exist, return expected row counts, expose the
+correct columns, and respond to filtered queries. The TestApiViewInventory
+class also asserts the total count in pg_views matches an expected constant,
+so any addition without a corresponding test row is caught.
 """
 
 import pytest
@@ -259,7 +261,7 @@ TEAM_RETURNING_PRODUCTION_COLUMNS = {
     "rp_lb",
     "rp_db",
     "rp_st",
-    "n_returning_starters",
+    "n_returners",
     "n_portal_in",
     "n_portal_out",
     "n_recruits_contributing",
@@ -802,3 +804,30 @@ class TestTeamReturningProductionAnonAccess:
         finally:
             cur.execute("RESET ROLE")
             cur.close()
+
+
+# ---------------------------------------------------------------------------
+# Test: api schema inventory drift detection
+# ---------------------------------------------------------------------------
+
+
+class TestApiViewInventory:
+    """Asserts the number of views in api.* matches an expected constant. New
+    api views must be added to the parametrized tests above AND this constant
+    bumped in the same PR -- otherwise regressions slip through where a view
+    is added without coverage."""
+
+    EXPECTED_API_VIEW_COUNT = 20
+
+    def test_total_api_view_count(self, db_conn):
+        with db_conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM information_schema.views WHERE table_schema = 'api'")
+            actual = cur.fetchone()[0]
+        assert actual == self.EXPECTED_API_VIEW_COUNT, (
+            f"api schema has {actual} views, expected {self.EXPECTED_API_VIEW_COUNT}. "
+            "If you added a new view, also: (1) add a row to TestViewsExistAndReturnRows, "
+            "(2) add a row to TestViewColumns with an explicit column set, "
+            "(3) bump EXPECTED_API_VIEW_COUNT here. "
+            "If you removed a view, ensure no downstream consumer (cfb-app, cfb-scout) "
+            "still depends on it."
+        )

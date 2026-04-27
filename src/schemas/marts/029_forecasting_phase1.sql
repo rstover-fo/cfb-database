@@ -221,6 +221,9 @@ CREATE INDEX ON marts.pre_game_win_probability (away_team);
 CREATE INDEX ON marts.pre_game_win_probability (completed, start_date);
 CREATE INDEX ON marts.pre_game_win_probability (home_win_probability DESC);
 
+-- Grants: SECURITY INVOKER + read-only-database invariant per 2026-02-07 hardening.
+GRANT SELECT ON marts.pre_game_win_probability TO anon, authenticated;
+
 -- -----------------------------------------------------------------------------
 -- 2) Team-level season simulation outcomes (latest season only)
 -- -----------------------------------------------------------------------------
@@ -376,3 +379,6 @@ CREATE INDEX ON marts.season_simulation_outcomes (season);
 CREATE INDEX ON marts.season_simulation_outcomes (expected_wins DESC);
 CREATE INDEX ON marts.season_simulation_outcomes (bowl_eligibility_prob DESC);
 CREATE INDEX ON marts.season_simulation_outcomes (ten_plus_win_prob DESC);
+
+-- Grants: SECURITY INVOKER + read-only-database invariant per 2026-02-07 hardening.
+GRANT SELECT ON marts.season_simulation_outcomes TO anon, authenticated;

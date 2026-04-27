@@ -158,7 +158,12 @@ def recruiting_groups_resource(years: list[int]) -> Iterator[dict]:
 
             data = make_request(client, "/recruiting/groups", params={"year": year})
 
-            yield from data
+            for group in data:
+                # CFBD's /recruiting/groups response omits `year`; the destination
+                # column is NOT NULL, so inject from the request param. Mirrors
+                # the pattern used in recruits_resource for /recruiting/players.
+                group["year"] = year
+                yield group
 
     finally:
         client.close()

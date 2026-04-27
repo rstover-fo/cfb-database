@@ -24,6 +24,7 @@ MARTS_VIEWS = [
     "play_epa",
     "player_comparison",
     "player_returning_value",
+    "team_returning_production",
     "player_game_epa",
     "player_season_epa",
     "recruiting_class",

@@ -1,0 +1,54 @@
+-- Migration: load_injuries_seed
+-- Loads season-ending injury data into rp.injuries_season_ending.
+--
+-- This is a hand-curated seed -- CFBD has no injury feed. Source the URLs from
+-- public/official channels only (team press releases, beat-writer reports with
+-- a verifiable link, school SIDs). Do not invent entries.
+--
+-- Source of truth: seeds/injuries_season_ending.csv
+-- Re-derive the INSERT block below from the CSV when adding/editing entries,
+-- then re-run this migration. Idempotent via INSERT ... ON CONFLICT DO UPDATE
+-- so it is safe to run repeatedly.
+--
+-- Status (2026-04-27): empty seed in v1. health_factor in
+-- marts.player_returning_value defaults to 1.0 for every row when this table
+-- is empty -- the spec's intended behavior when there is no injury signal.
+-- U8 lands the contract surface (CSV path, migration template, SCHEMA_CONTRACT.md
+-- entry); populating real entries is intentionally a follow-up so we don't
+-- ship fabricated injuries.
+--
+-- How to apply:
+--   psql "$SUPABASE_DB_URL" -f src/schemas/migrations/load_injuries_seed.sql
+--
+-- Schema (defined in src/schemas/019_returning_schema.sql):
+--   player_id              VARCHAR  -- CFBD player_id, PK part 1
+--   injury_season          INTEGER  -- season the injury occurred, PK part 2
+--   player_name            VARCHAR  -- helps human auditability of the seed
+--   team                   VARCHAR  -- team at time of injury
+--   severity               VARCHAR  -- 'season' (out for season) | 'partial' (returns mid-season)
+--   target_season_status   VARCHAR  -- 'out' | 'limited' | 'full'
+--   source_url             VARCHAR  -- public/official sources only
+--   source_date            DATE     -- when reported
+--
+-- Example INSERT pattern (uncomment and edit when adding entries):
+--
+-- INSERT INTO rp.injuries_season_ending (
+--     player_id, injury_season, player_name, team,
+--     severity, target_season_status, source_url, source_date
+-- ) VALUES
+--     ('1234567', 2025, 'Player Name', 'Some Team',
+--      'season', 'out', 'https://example.com/injury-report', '2025-09-15')
+-- ON CONFLICT (player_id, injury_season) DO UPDATE SET
+--     player_name          = EXCLUDED.player_name,
+--     team                 = EXCLUDED.team,
+--     severity             = EXCLUDED.severity,
+--     target_season_status = EXCLUDED.target_season_status,
+--     source_url           = EXCLUDED.source_url,
+--     source_date          = EXCLUDED.source_date,
+--     loaded_at            = NOW();
+
+-- v1 no-op. Replace with the INSERT block above once curated entries exist.
+DO $$
+BEGIN
+    RAISE NOTICE 'rp.injuries_season_ending seed migration ran (v1 no-op; see header for usage)';
+END $$;

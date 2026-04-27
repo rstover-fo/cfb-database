@@ -1,14 +1,23 @@
 -- Refresh all materialized views in the marts schema in dependency order.
 --
+-- All REFRESH calls use CONCURRENTLY -- requires UNIQUE INDEX on every matview
+-- (every matview in the chain has one) and that the matview has been populated
+-- at least once via the initial CREATE MATERIALIZED VIEW. Concurrent refresh
+-- avoids blocking cfb-app reads during the refresh window.
+--
 -- Layers:
---   1: _game_epa_calc, play_epa, player_comparison, conference_head_to_head (no mart dependencies)
+--   1: _game_epa_calc, play_epa, player_comparison, conference_head_to_head, pre_game_win_probability
+--      (no mart dependencies)
 --   2: team_epa_season, team_season_summary, player_game_epa, defensive_havoc, scoring_opportunities,
---      team_playcalling_tendencies, team_situational_success
+--      team_playcalling_tendencies, team_situational_success, season_simulation_outcomes
 --   3: situational_splits, player_season_epa, coach_record, matchup_history, recruiting_class,
 --      team_talent_composite, team_tempo_metrics, transfer_portal_impact
 --   4: team_season_trajectory, conference_era_summary, team_style_profile,
 --      coaching_tenure, recruiting_roi, conference_comparison
---   5: matchup_edges
+--   5: matchup_edges, data_freshness
+--   6: rp pipeline -- refresh_fct_player_seasons, refresh_fct_player_movements (functions),
+--      then player_returning_value, team_returning_production (matviews). Runs LAST because
+--      rp.refresh_fct_player_movements depends on Layer 4's marts.coaching_tenure for HC continuity.
 --
 -- Usage:
 --   SELECT * FROM marts.refresh_all();
@@ -31,14 +40,15 @@ BEGIN
         '_game_epa_calc',
         'play_epa',
         'player_comparison',
-        'conference_head_to_head'
+        'conference_head_to_head',
+        'pre_game_win_probability'
     ];
     v_layer := 1;
 
     FOREACH v_name IN ARRAY v_views LOOP
         v_start := clock_timestamp();
         BEGIN
-            EXECUTE format('REFRESH MATERIALIZED VIEW marts.%I', v_name);
+            EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY marts.%I', v_name);
             v_elapsed := EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start)::bigint;
             view_name := v_name;
             duration_ms := v_elapsed;
@@ -61,14 +71,15 @@ BEGIN
         'defensive_havoc',
         'scoring_opportunities',
         'team_playcalling_tendencies',
-        'team_situational_success'
+        'team_situational_success',
+        'season_simulation_outcomes'
     ];
     v_layer := 2;
 
     FOREACH v_name IN ARRAY v_views LOOP
         v_start := clock_timestamp();
         BEGIN
-            EXECUTE format('REFRESH MATERIALIZED VIEW marts.%I', v_name);
+            EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY marts.%I', v_name);
             v_elapsed := EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start)::bigint;
             view_name := v_name;
             duration_ms := v_elapsed;
@@ -99,7 +110,7 @@ BEGIN
     FOREACH v_name IN ARRAY v_views LOOP
         v_start := clock_timestamp();
         BEGIN
-            EXECUTE format('REFRESH MATERIALIZED VIEW marts.%I', v_name);
+            EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY marts.%I', v_name);
             v_elapsed := EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start)::bigint;
             view_name := v_name;
             duration_ms := v_elapsed;
@@ -128,7 +139,7 @@ BEGIN
     FOREACH v_name IN ARRAY v_views LOOP
         v_start := clock_timestamp();
         BEGIN
-            EXECUTE format('REFRESH MATERIALIZED VIEW marts.%I', v_name);
+            EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY marts.%I', v_name);
             v_elapsed := EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start)::bigint;
             view_name := v_name;
             duration_ms := v_elapsed;
@@ -153,7 +164,73 @@ BEGIN
     FOREACH v_name IN ARRAY v_views LOOP
         v_start := clock_timestamp();
         BEGIN
-            EXECUTE format('REFRESH MATERIALIZED VIEW marts.%I', v_name);
+            EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY marts.%I', v_name);
+            v_elapsed := EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start)::bigint;
+            view_name := v_name;
+            duration_ms := v_elapsed;
+            status := format('OK (layer %s)', v_layer);
+            RETURN NEXT;
+        EXCEPTION WHEN OTHERS THEN
+            v_elapsed := EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start)::bigint;
+            view_name := v_name;
+            duration_ms := v_elapsed;
+            status := format('ERROR (layer %s): %s', v_layer, SQLERRM);
+            RETURN NEXT;
+        END;
+    END LOOP;
+
+    -- Layer 6: rp pipeline. Two function calls (TRUNCATE + INSERT loaders),
+    -- then two matviews. Runs after Layer 5 because the movements loader depends
+    -- on marts.coaching_tenure (Layer 4) for HC continuity classification.
+    -- Functions are invoked, not REFRESHed -- they live in the rp schema, not marts.
+    v_layer := 6;
+
+    -- 6a: rp.refresh_fct_player_seasons() -- pivots stats.player_season_stats long-format
+    -- to wide, joins core.roster + recruiting.recruits, populates rp.fct_player_seasons.
+    v_start := clock_timestamp();
+    BEGIN
+        PERFORM rp.refresh_fct_player_seasons();
+        v_elapsed := EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start)::bigint;
+        view_name := 'rp.refresh_fct_player_seasons()';
+        duration_ms := v_elapsed;
+        status := format('OK (layer %s)', v_layer);
+        RETURN NEXT;
+    EXCEPTION WHEN OTHERS THEN
+        v_elapsed := EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start)::bigint;
+        view_name := 'rp.refresh_fct_player_seasons()';
+        duration_ms := v_elapsed;
+        status := format('ERROR (layer %s): %s', v_layer, SQLERRM);
+        RETURN NEXT;
+    END;
+
+    -- 6b: rp.refresh_fct_player_movements() -- builds returners (using marts.coaching_tenure
+    -- for HC continuity), portal-in (3-tier name match), and recruits into fct_player_movements.
+    v_start := clock_timestamp();
+    BEGIN
+        PERFORM rp.refresh_fct_player_movements();
+        v_elapsed := EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start)::bigint;
+        view_name := 'rp.refresh_fct_player_movements()';
+        duration_ms := v_elapsed;
+        status := format('OK (layer %s)', v_layer);
+        RETURN NEXT;
+    EXCEPTION WHEN OTHERS THEN
+        v_elapsed := EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start)::bigint;
+        view_name := 'rp.refresh_fct_player_movements()';
+        duration_ms := v_elapsed;
+        status := format('ERROR (layer %s): %s', v_layer, SQLERRM);
+        RETURN NEXT;
+    END;
+
+    -- 6c-6d: matviews depending on the rp loaders above.
+    v_views := ARRAY[
+        'player_returning_value',
+        'team_returning_production'
+    ];
+
+    FOREACH v_name IN ARRAY v_views LOOP
+        v_start := clock_timestamp();
+        BEGIN
+            EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY marts.%I', v_name);
             v_elapsed := EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start)::bigint;
             view_name := v_name;
             duration_ms := v_elapsed;
@@ -171,5 +248,6 @@ END;
 $$;
 
 COMMENT ON FUNCTION marts.refresh_all IS
-'Refreshes all 28 materialized views in the marts schema in dependency order (5 layers). '
+'Refreshes all marts materialized views in dependency order (6 layers). '
+'Layer 6 runs the rp returning-production pipeline (loader functions + matviews). '
 'Returns timing and status for each view. Errors are caught per-view so one failure does not abort the rest.';

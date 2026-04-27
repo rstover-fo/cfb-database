@@ -1,7 +1,9 @@
 """Tests for API views in the api schema.
 
-Verifies all 11 API views exist, return expected row counts,
-expose the correct columns, and respond to filtered queries.
+Verifies the API views below exist, return expected row counts, expose the
+correct columns, and respond to filtered queries. The TestApiViewInventory
+class also asserts the total count in pg_views matches an expected constant,
+so any addition without a corresponding test row is caught.
 """
 
 import pytest
@@ -210,6 +212,69 @@ RECRUIT_LOOKUP_COLUMNS = {
     "country",
 }
 
+MATCHUP_FORECAST_COLUMNS = {
+    "game_id",
+    "season",
+    "week",
+    "season_type",
+    "start_date",
+    "completed",
+    "neutral_site",
+    "conference_game",
+    "home_team",
+    "away_team",
+    "market_spread",
+    "market_over_under",
+    "home_win_probability",
+    "away_win_probability",
+    "projected_winner",
+    "projected_margin",
+    "confidence_tier",
+    "cfbd_home_win_prob",
+    "market_home_win_prob",
+    "elo_home_win_prob",
+    "sp_home_win_prob",
+    "model_version",
+    "home_points",
+    "away_points",
+    "actual_winner",
+    "brier_loss",
+    "home_expected_wins",
+    "home_bowl_eligibility_prob",
+    "home_ten_plus_win_prob",
+    "away_expected_wins",
+    "away_bowl_eligibility_prob",
+    "away_ten_plus_win_prob",
+}
+
+TEAM_RETURNING_PRODUCTION_COLUMNS = {
+    "team",
+    "season",
+    "returning_production_total",
+    "returning_production_offense",
+    "returning_production_defense",
+    "rp_qb",
+    "rp_rb",
+    "rp_wr_te",
+    "rp_ol",
+    "rp_dl",
+    "rp_lb",
+    "rp_db",
+    "rp_st",
+    "n_returners",
+    "n_portal_in",
+    "n_portal_out",
+    "n_recruits_contributing",
+    "n_unknown_position",
+    "portal_trench_in_value",
+    "portal_trench_out_value",
+    "net_portal_trench_value",
+    "cfbd_returning_production_pct",
+    "our_pct_normalized",
+    "delta_vs_cfbd",
+    "generated_at",
+}
+
 
 # ---------------------------------------------------------------------------
 # Test: views exist and return rows
@@ -226,6 +291,8 @@ class TestViewsExistAndReturnRows:
             ("api.team_history", 3000),
             ("api.game_detail", 40000),
             ("api.matchup", 10000),
+            ("api.matchup_forecast", 1000),
+            ("api.team_returning_production", 1500),
             ("api.leaderboard_teams", 3000),
             ("api.roster_lookup", 300000),
             ("api.recruit_lookup", 60000),
@@ -235,6 +302,8 @@ class TestViewsExistAndReturnRows:
             "team_history",
             "game_detail",
             "matchup",
+            "matchup_forecast",
+            "team_returning_production",
             "leaderboard_teams",
             "roster_lookup",
             "recruit_lookup",
@@ -261,6 +330,8 @@ class TestViewColumns:
             ("api.team_history", TEAM_HISTORY_COLUMNS),
             ("api.game_detail", GAME_DETAIL_COLUMNS),
             ("api.matchup", MATCHUP_COLUMNS),
+            ("api.matchup_forecast", MATCHUP_FORECAST_COLUMNS),
+            ("api.team_returning_production", TEAM_RETURNING_PRODUCTION_COLUMNS),
             ("api.leaderboard_teams", LEADERBOARD_TEAMS_COLUMNS),
             ("api.roster_lookup", ROSTER_LOOKUP_COLUMNS),
             ("api.recruit_lookup", RECRUIT_LOOKUP_COLUMNS),
@@ -270,6 +341,8 @@ class TestViewColumns:
             "team_history",
             "game_detail",
             "matchup",
+            "matchup_forecast",
+            "team_returning_production",
             "leaderboard_teams",
             "roster_lookup",
             "recruit_lookup",
@@ -488,6 +561,55 @@ class TestMatchup:
 
 
 # ---------------------------------------------------------------------------
+# Test: matchup_forecast probability quality checks
+# ---------------------------------------------------------------------------
+
+
+class TestMatchupForecast:
+    """api.matchup_forecast — blended game prediction surface."""
+
+    def test_probabilities_in_bounds(self, db_conn):
+        """Home and away probabilities should stay within [0, 1]."""
+        out_of_bounds = _fetch_count(
+            db_conn,
+            """
+            SELECT COUNT(*)
+            FROM api.matchup_forecast
+            WHERE home_win_probability < 0
+               OR home_win_probability > 1
+               OR away_win_probability < 0
+               OR away_win_probability > 1
+            """,
+        )
+        assert out_of_bounds == 0, f"Found {out_of_bounds} rows with invalid probability bounds"
+
+    def test_home_away_sum_to_one(self, db_conn):
+        """Home and away probabilities should sum to 1.0 (within rounding tolerance)."""
+        bad_rows = _fetch_count(
+            db_conn,
+            """
+            SELECT COUNT(*)
+            FROM api.matchup_forecast
+            WHERE ABS((home_win_probability + away_win_probability) - 1.0) > 0.0002
+            """,
+        )
+        assert bad_rows == 0, f"Found {bad_rows} rows where home+away probability != 1.0"
+
+    def test_projected_winner_matches_teams(self, db_conn):
+        """Projected winner should always be either home_team or away_team."""
+        bad_rows = _fetch_count(
+            db_conn,
+            """
+            SELECT COUNT(*)
+            FROM api.matchup_forecast
+            WHERE projected_winner IS NOT NULL
+              AND projected_winner NOT IN (home_team, away_team)
+            """,
+        )
+        assert bad_rows == 0, f"Found {bad_rows} rows with invalid projected_winner values"
+
+
+# ---------------------------------------------------------------------------
 # Test: leaderboard_teams filters and rankings
 # ---------------------------------------------------------------------------
 
@@ -640,3 +762,72 @@ class TestRecruitLookup:
             ("QB",),
         )
         assert count >= 100, f"QBs in recruit_lookup: {count}, expected 100+"
+
+
+# ---------------------------------------------------------------------------
+# Test: anon role contract for api.team_returning_production
+# ---------------------------------------------------------------------------
+
+
+class TestTeamReturningProductionAnonAccess:
+    """The api view is the cfb-app contract surface. anon must read; anon must
+    never write. SECURITY INVOKER + GRANT SELECT pattern from 2026-02-07
+    hardening."""
+
+    def test_anon_can_select(self, db_conn):
+        cur = db_conn.cursor()
+        cur.execute("SET ROLE anon")
+        try:
+            cur.execute("SELECT COUNT(*) FROM api.team_returning_production")
+            assert cur.fetchone()[0] > 0
+        finally:
+            cur.execute("RESET ROLE")
+            cur.close()
+
+    def test_anon_cannot_delete(self, db_conn):
+        """anon must not be able to mutate the view. Postgres rejects DELETE on a
+        view-over-matview at the parser level (ObjectNotInPrerequisiteState: 'not
+        automatically updatable') before reaching the privilege check, so we
+        accept that error class as well as InsufficientPrivilege."""
+        import psycopg2
+
+        cur = db_conn.cursor()
+        cur.execute("SET ROLE anon")
+        try:
+            with pytest.raises(
+                (
+                    psycopg2.errors.InsufficientPrivilege,
+                    psycopg2.errors.ObjectNotInPrerequisiteState,
+                )
+            ):
+                cur.execute("DELETE FROM api.team_returning_production")
+        finally:
+            cur.execute("RESET ROLE")
+            cur.close()
+
+
+# ---------------------------------------------------------------------------
+# Test: api schema inventory drift detection
+# ---------------------------------------------------------------------------
+
+
+class TestApiViewInventory:
+    """Asserts the number of views in api.* matches an expected constant. New
+    api views must be added to the parametrized tests above AND this constant
+    bumped in the same PR -- otherwise regressions slip through where a view
+    is added without coverage."""
+
+    EXPECTED_API_VIEW_COUNT = 20
+
+    def test_total_api_view_count(self, db_conn):
+        with db_conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM information_schema.views WHERE table_schema = 'api'")
+            actual = cur.fetchone()[0]
+        assert actual == self.EXPECTED_API_VIEW_COUNT, (
+            f"api schema has {actual} views, expected {self.EXPECTED_API_VIEW_COUNT}. "
+            "If you added a new view, also: (1) add a row to TestViewsExistAndReturnRows, "
+            "(2) add a row to TestViewColumns with an explicit column set, "
+            "(3) bump EXPECTED_API_VIEW_COUNT here. "
+            "If you removed a view, ensure no downstream consumer (cfb-app, cfb-scout) "
+            "still depends on it."
+        )

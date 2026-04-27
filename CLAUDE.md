@@ -23,6 +23,14 @@ Schema contract for downstream consumers: `docs/SCHEMA_CONTRACT.md`
 
 **Warning:** Schema changes to `core`, `recruiting`, or `public` schemas can break cfb-app and cfb-scout. Check `SCHEMA_CONTRACT.md` before modifying.
 
+## Hard Rules
+
+- **Never modify `core`, `recruiting`, or `public` schemas without checking `docs/SCHEMA_CONTRACT.md`** — changes break cfb-app and cfb-scout
+- **Never exceed the 75,000 API calls/month budget** — use incremental loading, cache reference data, check `.dlt/config.toml` rate limits
+- **Never commit `.dlt/secrets.toml`** — credentials stay local; see `.dlt/secrets.toml.example`
+- **Always use UPSERT (`ON CONFLICT`) for pipeline loads** — idempotent operations prevent duplicates
+- **Always refresh marts after schema changes** — `python scripts/refresh_marts.py`
+
 ## Tech Stack
 
 | Component | Technology |
@@ -53,17 +61,18 @@ The database uses multiple Postgres schemas organized by data domain:
 | `draft` | NFL draft data | picks, positions |
 | `metrics` | Advanced metrics | PPA, win probability |
 | `analytics` | Computed analytics | EPA, style profiles |
-| `marts` | Materialized views (19) | Denormalized, query-optimized |
-| `api` | API view layer (7) | Contract surface for cfb-app/cfb-scout |
-| `public` | Convenience views/RPCs (8) | Downstream consumer interface |
+| `marts` | Materialized views | Denormalized, query-optimized |
+| `api` | API view layer | Contract surface for cfb-app/cfb-scout |
+| `public` | Convenience views/RPCs | Downstream consumer interface |
+| `rp` | Returning production silver layer | fct_player_seasons, fct_player_movements, dim_continuity_factors, dim_position_weights |
 
 ### Marts System
 
-19 materialized views in the `marts` schema provide denormalized, query-optimized data. Refresh via:
+The `marts` schema provides denormalized, query-optimized matviews. Refresh via:
 ```bash
 python scripts/refresh_marts.py        # Refresh all marts
 ```
-Or use the `refresh_all_marts()` RPC.
+Or use the `marts.refresh_all()` RPC.
 
 ### dlt Table Conventions
 
@@ -191,7 +200,9 @@ Reference this skill when writing `RESTAPIConfig` dicts, debugging pagination, c
 | Metrics (PPA, win prob) | 8 | Incremental by year |
 | Draft | 3 | Incremental by year |
 
-## Commands
+## Verification Commands
+
+Run after every change. All must pass before committing.
 
 ```bash
 # Setup

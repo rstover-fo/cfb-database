@@ -38,6 +38,7 @@ MIGRATION_ORDER = [
     "016_analytics_indexes.sql",
     "017_era_reference.sql",
     "018_transactional_triggers.sql",
+    "019_returning_schema.sql",
 ]
 
 

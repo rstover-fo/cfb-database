@@ -8,6 +8,15 @@ Last updated: 2026-02-06
 
 ---
 
+## Recent Contract Changes
+
+- **2026-07-19 — `get_trajectory_averages` default season end now tracks loaded data.**
+  `p_season_end` default changed from a pinned `2025` to `NULL`, which resolves to the
+  latest season present in `public.team_season_trajectory`. Callers omitting the argument
+  will start receiving 2026 rows as they materialize; explicit arguments behave unchanged.
+
+---
+
 ## Contract Rules
 
 1. **API views and RPCs are versioned.** Breaking changes require a migration and coordination
@@ -123,7 +132,7 @@ Server-side functions callable via `supabase.rpc()`.
 | `get_field_position_splits` | `public` | `(p_team, p_season)` | EPA and success rate by field position zone |
 | `get_home_away_splits` | `public` | `(p_team, p_season)` | Home vs away performance comparison |
 | `get_conference_splits` | `public` | `(p_team, p_season)` | Performance vs conference, non-conference, ranked opponents |
-| `get_trajectory_averages` | `public` | `(p_conference, p_season_start?, p_season_end?)` | Conference and FBS average benchmarks |
+| `get_trajectory_averages` | `public` | `(p_conference, p_season_start?, p_season_end?)` | Conference and FBS average benchmarks. Omitted `p_season_end` resolves to the latest loaded season (changed 2026-07-19; previously pinned to 2025). |
 | `get_player_season_stats_pivoted` | `public` | `(p_team, p_season)` | Pivoted player stats (pass/rush/rec/def/kick in columns) |
 | `get_player_search` | `public` | `(p_query text, p_position?, p_team?, p_season?, p_limit? default 25)` | Fuzzy player name search using pg_trgm. Returns player_id, name, team, position, season, height, weight, jersey, stars, recruit_rating, similarity_score. Supports typo tolerance. |
 | `get_available_seasons` | `public` | `()` | List of seasons with data |

@@ -5,6 +5,10 @@ Usage:
     python scripts/run_migrations.py --from 002         # Run from 002 onwards
     python scripts/run_migrations.py --only 009         # Run only 009
     python scripts/run_migrations.py --dry-run          # Print SQL without executing
+    python scripts/run_migrations.py --file src/schemas/public/008_trajectory_averages_function.sql
+
+--file applies a single SQL file outside MIGRATION_ORDER -- the supported path
+for one-off changes to public/, api/, and functions/ definitions.
 """
 
 import argparse
@@ -90,7 +94,33 @@ def main() -> None:
     parser.add_argument("--from", dest="from_num", help="Start from migration number (e.g., 002)")
     parser.add_argument("--only", help="Run only this migration number (e.g., 009)")
     parser.add_argument("--dry-run", action="store_true", help="Print SQL without executing")
+    parser.add_argument(
+        "--file",
+        dest="sql_file",
+        help="Apply a single SQL file (path relative to repo root or absolute)",
+    )
     args = parser.parse_args()
+
+    if args.sql_file:
+        sql_path = Path(args.sql_file)
+        if not sql_path.is_absolute():
+            sql_path = Path(__file__).parent.parent / sql_path
+        if not sql_path.exists():
+            logger.error(f"SQL file not found: {sql_path}")
+            sys.exit(1)
+
+        if args.dry_run:
+            run_migration(sql_path, conn=None, dry_run=True)
+            return
+
+        import psycopg2
+
+        conn = psycopg2.connect(get_db_url())
+        try:
+            run_migration(sql_path, conn)
+        finally:
+            conn.close()
+        return
 
     # Filter migrations
     migrations = MIGRATION_ORDER

@@ -1,6 +1,10 @@
 """Games and drives data sources - year-iterated loading.
 
 These tables contain game event data and require year-based iteration.
+
+Game box scores (game_team_stats, game_player_stats) load exclusively via
+game_stats.py, whose week-by-week path keeps merge batches small enough for
+Supabase statement timeouts.
 """
 
 import logging
@@ -39,8 +43,6 @@ def games_source(
         game_media_resource(years),
         game_weather_resource(years),
         records_resource(years),
-        game_team_stats_resource(years),
-        game_player_stats_resource(years),
     ]
 
 
@@ -177,78 +179,6 @@ def records_resource(years: list[int]) -> Iterator[dict]:
             data = make_request(client, "/records", params={"year": year})
 
             yield from data
-
-    finally:
-        client.close()
-
-
-@dlt.resource(
-    name="game_team_stats",
-    write_disposition="merge",
-    primary_key="id",
-)
-def game_team_stats_resource(years: list[int]) -> Iterator[dict]:
-    """Load team box scores per game for specified years.
-
-    Args:
-        years: List of years to load game team stats for
-    """
-    client = get_client()
-    try:
-        for year in years:
-            logger.info(f"Loading game team stats for {year}...")
-
-            # CFBD games/teams endpoint requires week parameter
-            # Regular season: weeks 1-15, postseason: weeks 1-5
-            for season_type in ["regular", "postseason"]:
-                max_week = 15 if season_type == "regular" else 5
-                for week in range(1, max_week + 1):
-                    try:
-                        data = make_request(
-                            client,
-                            "/games/teams",
-                            params={"year": year, "seasonType": season_type, "week": week},
-                        )
-                        yield from data
-                    except Exception:
-                        # Some weeks may not have games (esp postseason)
-                        continue
-
-    finally:
-        client.close()
-
-
-@dlt.resource(
-    name="game_player_stats",
-    write_disposition="merge",
-    primary_key="id",
-)
-def game_player_stats_resource(years: list[int]) -> Iterator[dict]:
-    """Load player box scores per game for specified years.
-
-    Args:
-        years: List of years to load game player stats for
-    """
-    client = get_client()
-    try:
-        for year in years:
-            logger.info(f"Loading game player stats for {year}...")
-
-            # CFBD games/players endpoint requires week parameter
-            # Regular season: weeks 1-15, postseason: weeks 1-5
-            for season_type in ["regular", "postseason"]:
-                max_week = 15 if season_type == "regular" else 5
-                for week in range(1, max_week + 1):
-                    try:
-                        data = make_request(
-                            client,
-                            "/games/players",
-                            params={"year": year, "seasonType": season_type, "week": week},
-                        )
-                        yield from data
-                    except Exception:
-                        # Some weeks may not have games (esp postseason)
-                        continue
 
     finally:
         client.close()

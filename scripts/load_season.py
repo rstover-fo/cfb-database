@@ -4,6 +4,7 @@
 Orchestrates pipeline sources in dependency order and refreshes materialized views.
 
 Usage:
+    python scripts/load_season.py                                   # Load current season
     python scripts/load_season.py --season 2025                     # Load everything for 2025
     python scripts/load_season.py --season 2025 --sources games,stats  # Load specific sources
     python scripts/load_season.py --season 2025 --dry-run           # Show what would run
@@ -206,7 +207,12 @@ def load_season(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Load all data for a specific season")
-    parser.add_argument("--season", type=int, required=True, help="Season year to load")
+    parser.add_argument(
+        "--season",
+        type=int,
+        default=None,
+        help="Season year to load (default: current season)",
+    )
     parser.add_argument(
         "--sources",
         type=str,
@@ -224,10 +230,17 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    season = args.season
+    if season is None:
+        from src.pipelines.config.years import get_current_season
+
+        season = get_current_season()
+        logger.info(f"No --season given; using current season {season}")
+
     sources = args.sources.split(",") if args.sources else None
 
     summary = load_season(
-        season=args.season,
+        season=season,
         sources=sources,
         dry_run=args.dry_run,
         skip_refresh=args.skip_refresh,

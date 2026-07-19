@@ -1,3 +1,39 @@
+# Handoff: Portal Surveillance Cron → cfb-scout
+
+**Date:** 2026-07-19
+**Removed from this repo:** `src/schemas/migrations/017_portal_surveillance_cron.sql` (introduced in commit `593a16c`, 2026-02-26)
+
+## Why this was removed from cfb-database
+
+The migration defines `scouting.fn_evaluate_portal_value()` and schedules it via
+pg_cron, but every table it touches — `scouting.players`, `scouting.transfer_events`,
+`scouting.pff_grades`, `scouting.alerts`, `scouting.alert_history` — belongs to the
+`scouting` schema, which `docs/SCHEMA_CONTRACT.md` assigns to **cfb-scout**. This repo
+never creates those tables, so:
+
+- Applying the file against a database without the scouting schema **fails outright**.
+- It was wired into no runner (`scripts/run_migrations.py` does not reference
+  `src/schemas/migrations/`), so it only ever ran if applied by hand.
+- Its `017` number collides with `src/schemas/017_era_reference.sql`.
+
+Per the schema-ownership contract, the function and its cron schedule should live in
+cfb-scout's migration chain instead.
+
+## Action for cfb-scout
+
+1. Adopt the SQL below into cfb-scout's migrations (renumber to fit its chain).
+2. pg_cron must be enabled on the Supabase project (Dashboard → Database → Extensions)
+   if `create extension` lacks permission.
+3. Check whether the job is already live before re-applying:
+   `SELECT jobname, schedule FROM cron.job;`
+   - Live-database state as of this handoff: see note at the bottom of this doc.
+   - If `daily-portal-surveillance` already exists, the `cron.schedule` call in the SQL
+     would create a duplicate under some pg_cron versions — prefer
+     `cron.alter_job`/`cron.unschedule` first.
+
+## Original SQL (verbatim)
+
+```sql
 -- src/schemas/migrations/017_portal_surveillance_cron.sql
 -- Goal: Automated Transfer Portal Surveillance via pg_cron
 
@@ -78,3 +114,8 @@ select cron.schedule(
 );
 
 comment on function scouting.fn_evaluate_portal_value() is 'Automated scouter that identifies high-value portal entrants and fires system alerts.';
+```
+
+## Live database state
+
+_To be recorded during verification: `SELECT jobname, schedule FROM cron.job;`_

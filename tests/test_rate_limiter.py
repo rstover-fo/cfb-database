@@ -77,3 +77,26 @@ class TestRateLimiter:
         limiter = RateLimiter(monthly_budget=100, state_file=state_file)
         limiter.record_call(1)
         assert state_file.exists()
+
+
+class TestConfiguredBudget:
+    def test_reads_dlt_config_value(self):
+        from src.pipelines.utils.rate_limiter import _configured_budget
+
+        with patch("dlt.config") as mock_config:
+            mock_config.get.return_value = 50000
+            assert _configured_budget() == 50000
+
+    def test_falls_back_to_default_when_unset(self):
+        from src.pipelines.utils.rate_limiter import _configured_budget
+
+        with patch("dlt.config") as mock_config:
+            mock_config.get.return_value = None
+            assert _configured_budget() == 75000
+
+    def test_falls_back_to_default_on_error(self):
+        from src.pipelines.utils.rate_limiter import _configured_budget
+
+        with patch("dlt.config") as mock_config:
+            mock_config.get.side_effect = RuntimeError("no config")
+            assert _configured_budget() == 75000

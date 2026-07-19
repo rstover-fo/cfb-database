@@ -65,7 +65,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 1 | `/conferences` | ref.conferences | reference.py | conferences_resource | YES | replace | id | WORKING |
 | 2 | `/teams` | ref.teams | reference.py | teams_resource | YES | replace | id | WORKING |
 | 3 | `/venues` | ref.venues | reference.py | venues_resource | YES | replace | id | WORKING |
-| 4 | `/coaches` | ref.coaches | reference.py | coaches_resource | YES | replace | first_name, last_name | WORKING (PK bug in config) |
+| 4 | `/coaches` | ref.coaches | reference.py | coaches_resource | YES | merge | first_name, last_name | WORKING |
 | 5 | `/plays/types` | ref.play_types | reference.py | play_types_resource | YES | replace | id | WORKING |
 
 ### Core Game Data (merge disposition)
@@ -89,7 +89,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 |---|---|---|---|---|---|---|---|---|---|
 | 16 | `/plays` | core.plays | plays.py | plays_resource | YES | merge | id | 2004-2026 | WORKING |
 | 17 | `/plays/stats` | stats.play_stats | stats.py | play_stats_resource | YES | merge | game_id, play_id, athlete_id, stat_type | 2014-2026 | WORKING |
-| 18 | `/plays/stats/types` | — | — | — | — | — | — | — | UNMAPPED |
+| 18 | `/plays/stats/types` | ref.play_stat_types | reference.py | play_stat_types_resource | YES | merge | id | — | WORKING |
 | 19 | `/live/plays` | — | — | — | — | — | — | — | UNMAPPED |
 
 ### Stats Data (merge disposition)
@@ -97,7 +97,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
 |---|---|---|---|---|---|---|---|---|---|
 | 20 | `/stats/season` | stats.team_season_stats | stats.py | team_season_stats_resource | YES | merge | season, team, stat_name | 2004-2026 | WORKING |
-| 21 | `/stats/player/season` | stats.player_season_stats | stats.py | player_season_stats_resource | YES | merge | **player_id, season, category** (WRONG — needs stat_type too) | 2004-2026 | WORKING (PK bug) |
+| 21 | `/stats/player/season` | stats.player_season_stats | stats.py | player_season_stats_resource | YES | merge | player_id, season, team, category, stat_type | 2004-2026 | WORKING |
 | 22 | `/stats/season/advanced` | stats.advanced_team_stats | stats.py | advanced_team_stats_resource | YES | merge | season, team | 2004-2026 | WORKING |
 | 23 | `/stats/game/advanced` | — | — | — | — | — | — | — | UNMAPPED |
 | 24 | `/stats/game/havoc` | stats.game_havoc | stats.py | game_havoc_resource | YES | merge | game_id, team | 2014-2026 | WORKING |
@@ -119,7 +119,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 |---|---|---|---|---|---|---|---|---|---|
 | 31 | `/recruiting/players` | recruiting.recruits | recruiting.py | recruits_resource | YES | merge | id | 2000-2026 | WORKING |
 | 32 | `/recruiting/teams` | recruiting.team_recruiting | recruiting.py | team_recruiting_resource | YES | merge | year, team | 2000-2026 | WORKING |
-| 33 | `/player/portal` | recruiting.transfer_portal | recruiting.py | transfer_portal_resource | YES | merge | **season, first_name, last_name** (PK mismatch in config) | 2000-2026 | WORKING (PK bug) |
+| 33 | `/player/portal` | recruiting.transfer_portal | recruiting.py | transfer_portal_resource | YES | merge | first_name, last_name, origin, season | 2000-2026 | WORKING |
 | 34 | `/recruiting/groups` | recruiting.recruiting_groups | recruiting.py | recruiting_groups_resource | YES | merge | year, team, position_group | 2000-2026 | WORKING |
 
 ### Player Data
@@ -134,13 +134,13 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 
 | # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| 38 | `/lines` | betting.lines | betting.py | lines_resource | YES | merge | **game_id, provider** (config says id — mismatch) | 2013-2026 | WORKING (PK bug) |
+| 38 | `/lines` | betting.lines | betting.py | lines_resource | YES | merge | game_id, provider | 2013-2026 | WORKING |
 
 ### Draft Data (merge disposition)
 
 | # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| 39 | `/draft/picks` | draft.draft_picks | draft.py | draft_picks_resource | YES | merge | **year, overall** (config says college_athlete_id — mismatch) | 2000-2026 | WORKING (PK bug) |
+| 39 | `/draft/picks` | draft.draft_picks | draft.py | draft_picks_resource | YES | merge | year, overall | 2000-2026 | WORKING |
 | 40 | `/draft/positions` | ref.draft_positions | reference.py | draft_positions_resource | YES | replace | name | — | WORKING |
 | 41 | `/draft/teams` | ref.draft_teams | reference.py | draft_teams_resource | YES | replace | location, nickname | — | WORKING |
 
@@ -188,14 +188,21 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 
 | Status | Count |
 |---|---|
-| WORKING | 45 |
-| WORKING (PK bug) | 5 |
+| WORKING | 51 |
 | WORKING (note) | 1 |
 | CONFIG_ONLY | 0 |
 | DEFERRED | 4 |
-| UNMAPPED | 4 |
+| UNMAPPED | 3 |
 | REMOVED | 1 |
 | **Total** | **60** |
+
+**2026-07-19 update:** The 5 "WORKING (PK bug)" entries (coaches, player_season_stats,
+transfer_portal, lines, draft_picks) were already fixed in the source modules — statuses
+and PKs above now reflect the code. `/plays/stats/types` was loaded (26 rows in
+`ref.play_stat_types`) but still marked UNMAPPED; corrected. Also as of this date,
+`/games/teams` and `/games/players` load **only** via `game_stats_source`
+(`games.py` no longer yields them), whose week-by-week path avoids Supabase merge
+timeouts — `run.py --source game_stats --weekly` or `scripts/load_season.py --weekly`.
 
 **Sprint 4 Progress:** Promoted 15 endpoints from UNMAPPED/CONFIG_ONLY to WORKING: `/game/box/advanced`, `/plays/stats`, `/stats/season/advanced`, `/stats/game/havoc`, `/ratings/sp/conferences`, `/player/usage`, `/player/returning`, `/teams/ats`, `/ppa/games`, `/ppa/players/games`, `/metrics/fg/ep`, `/wepa/players/passing`, `/wepa/players/rushing`, `/wepa/team/season`, `/wepa/players/kicking`. Removed `/player/search` (requires searchTerm; use core.rosters instead). Deleted dead code: `adjusted_metrics.py` (duplicate of `wepa.py`), `players.py` (broken source).
 

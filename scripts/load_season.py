@@ -4,6 +4,7 @@
 Orchestrates pipeline sources in dependency order and refreshes materialized views.
 
 Usage:
+    python scripts/load_season.py                                   # Load current season
     python scripts/load_season.py --season 2025                     # Load everything for 2025
     python scripts/load_season.py --season 2025 --sources games,stats  # Load specific sources
     python scripts/load_season.py --season 2025 --dry-run           # Show what would run
@@ -52,12 +53,24 @@ ESTIMATED_CALLS = {
 }
 
 
+def upcoming_schedule_season(season: int, month: int) -> int | None:
+    """Return the next season to schedule-refresh during the off-season.
+
+    Before August, get_current_season() still points at the previous season,
+    but the upcoming season's schedule is already published on CFBD. Auto-mode
+    loads keep it fresh via a cheap games-only pull (~15 calls) so the daily
+    automation never depends on a manual dispatch to pick up the new season.
+    """
+    return season + 1 if month < 8 else None
+
+
 def load_season(
     season: int,
     sources: list[str] | None = None,
     dry_run: bool = False,
     skip_refresh: bool = False,
     weekly: bool = False,
+    upcoming_schedule: int | None = None,
 ) -> dict:
     """Load or refresh all data for a given season.
 
@@ -67,6 +80,8 @@ def load_season(
         dry_run: If True, show plan without executing
         skip_refresh: If True, skip mart refresh after loading
         weekly: If True, load game_stats week-by-week (~35K rows per merge)
+        upcoming_schedule: If set, also refresh this season's schedule tables
+            (games source only) after the main load
 
     Returns:
         Summary dict with timing and row counts
@@ -122,6 +137,8 @@ def load_season(
             print(f"  {src:15s}  ~{est:,} API calls")
         print(f"\n  Total estimated:  ~{total_est:,} calls")
         print(f"  Budget remaining: {remaining:,} calls")
+        if upcoming_schedule:
+            print(f"  + Refresh {upcoming_schedule} schedule (games source, ~15 calls)")
         if not skip_refresh:
             print("  + Refresh all materialized views after loading")
         return {"dry_run": True, "estimated_calls": total_est}
@@ -167,6 +184,27 @@ def load_season(
             results[src] = {"status": "error", "duration_s": round(elapsed, 1), "error": str(e)}
             logger.error(f"  {src} failed after {elapsed:.1f}s: {e}")
 
+    # Off-season: keep the upcoming season's published schedule fresh
+    if upcoming_schedule:
+        logger.info(f"Refreshing upcoming season {upcoming_schedule} schedule...")
+        src_start = time.time()
+        try:
+            info = run_games_pipeline(years=[upcoming_schedule])
+            elapsed = time.time() - src_start
+            results["games_upcoming"] = {
+                "status": "ok",
+                "duration_s": round(elapsed, 1),
+                "info": str(info),
+            }
+        except Exception as e:
+            elapsed = time.time() - src_start
+            results["games_upcoming"] = {
+                "status": "error",
+                "duration_s": round(elapsed, 1),
+                "error": str(e),
+            }
+            logger.error(f"  upcoming schedule failed after {elapsed:.1f}s: {e}")
+
     # Refresh marts
     if not skip_refresh:
         logger.info("Refreshing materialized views...")
@@ -206,7 +244,12 @@ def load_season(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Load all data for a specific season")
-    parser.add_argument("--season", type=int, required=True, help="Season year to load")
+    parser.add_argument(
+        "--season",
+        type=int,
+        default=None,
+        help="Season year to load (default: current season)",
+    )
     parser.add_argument(
         "--sources",
         type=str,
@@ -224,14 +267,28 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    season = args.season
+    upcoming = None
+    if season is None:
+        from datetime import datetime
+
+        from src.pipelines.config.years import get_current_season
+
+        season = get_current_season()
+        upcoming = upcoming_schedule_season(season, datetime.now().month)
+        logger.info(f"No --season given; using current season {season}")
+        if upcoming:
+            logger.info(f"Off-season: will also refresh the {upcoming} schedule")
+
     sources = args.sources.split(",") if args.sources else None
 
     summary = load_season(
-        season=args.season,
+        season=season,
         sources=sources,
         dry_run=args.dry_run,
         skip_refresh=args.skip_refresh,
         weekly=args.weekly,
+        upcoming_schedule=upcoming,
     )
 
     if summary.get("errors", 0) > 0:

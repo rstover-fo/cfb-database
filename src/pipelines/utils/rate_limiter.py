@@ -118,9 +118,20 @@ class RateLimiter:
 _rate_limiter: RateLimiter | None = None
 
 
+def _configured_budget(default: int = 75000) -> int:
+    """Read sources.cfbd.monthly_budget from dlt config, falling back to default."""
+    try:
+        import dlt
+
+        value = dlt.config.get("sources.cfbd.monthly_budget")
+        return int(value) if value else default
+    except Exception:
+        return default
+
+
 def get_rate_limiter() -> RateLimiter:
     """Get the global rate limiter instance."""
     global _rate_limiter
     if _rate_limiter is None:
-        _rate_limiter = RateLimiter()
+        _rate_limiter = RateLimiter(monthly_budget=_configured_budget())
     return _rate_limiter

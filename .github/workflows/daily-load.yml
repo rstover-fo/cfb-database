@@ -1,0 +1,97 @@
+name: Daily Season Load
+
+# Loads the current season from the CFBD API, refreshes marts, and verifies
+# the load. Runs year-round: portal windows (Jan/Apr), signing days (Dec/Feb),
+# the NFL draft (Apr), and the coaching carousel all mutate off-season data.
+#
+# Requires repo secrets:
+#   CFBD_API_KEY     - collegefootballdata.com API key
+#   SUPABASE_DB_URL  - Supabase SESSION pooler URL (IPv4; the transaction
+#                      pooler rejects the statement_timeout startup option
+#                      that refresh_marts.py appends)
+#
+# The rate limiter's JSON state resets every run (ephemeral runner). That is
+# accepted: a full daily season load is ~730 estimated calls, ~22K/month worst
+# case against the 75K monthly budget.
+
+on:
+  schedule:
+    - cron: "0 10 * * *" # 10:00 UTC ~ 6:00 AM ET, after all games (incl. Hawaii) complete
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Season year (default: current season)"
+        required: false
+        type: string
+
+concurrency:
+  group: daily-season-load
+  cancel-in-progress: false # never kill a mid-merge load; a queued run waits
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  PYTHON_VERSION: "3.11"
+  SOURCES__CFBD__API_KEY: ${{ secrets.CFBD_API_KEY }}
+  SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+jobs:
+  load:
+    name: Load season, refresh marts, verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e .
+      - name: Set dlt destination credentials
+        # dlt requires the postgres:// scheme (see .dlt/secrets.toml.example)
+        run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
+      - name: Load season data (includes mart refresh)
+        run: |
+          if [ -n "${{ inputs.season }}" ]; then
+            python scripts/load_season.py --season "${{ inputs.season }}" --weekly
+          else
+            python scripts/load_season.py --weekly
+          fi
+      - name: Verify load
+        run: |
+          if [ -n "${{ inputs.season }}" ]; then
+            python scripts/verify_load.py --season "${{ inputs.season }}"
+          else
+            python scripts/verify_load.py
+          fi
+      - name: Open or update failure issue
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = "Daily season load failing";
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const { data } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+            });
+            const existing = data.find((i) => i.title === title);
+            const body = `Run failed: ${runUrl} (${new Date().toISOString()})`;
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+              });
+            }

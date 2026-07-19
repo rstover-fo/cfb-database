@@ -1,11 +1,13 @@
 -- Trajectory averages function
 -- Returns conference and FBS average metrics per season for comparison charts.
 -- Created ad-hoc in Supabase; now tracked in version control.
+-- p_season_end NULL (the default) resolves to the latest season present in
+-- public.team_season_trajectory, so omitted-arg callers track the current season.
 
 CREATE OR REPLACE FUNCTION public.get_trajectory_averages(
     p_conference TEXT,
     p_season_start INT DEFAULT 2020,
-    p_season_end INT DEFAULT 2025
+    p_season_end INT DEFAULT NULL
 )
 RETURNS TABLE(
     season BIGINT,
@@ -27,7 +29,14 @@ RETURNS TABLE(
 LANGUAGE plpgsql
 SET search_path = ''
 AS $function$
+DECLARE
+    v_season_end INT;
 BEGIN
+    v_season_end := COALESCE(
+        p_season_end,
+        (SELECT MAX(t.season)::INT FROM public.team_season_trajectory t)
+    );
+
     RETURN QUERY
     SELECT
         t.season,
@@ -48,7 +57,7 @@ BEGIN
     FROM public.team_season_trajectory t
     JOIN public.teams tm ON t.team = tm.school
     WHERE tm.classification = 'fbs'
-      AND t.season BETWEEN p_season_start AND p_season_end
+      AND t.season BETWEEN p_season_start AND v_season_end
     GROUP BY t.season
     ORDER BY t.season;
 END;

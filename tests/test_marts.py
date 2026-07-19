@@ -59,6 +59,19 @@ ALL_MATERIALIZED_VIEWS = (
 )
 
 
+@pytest.fixture(scope="module")
+def scouting_schema_exists(db_conn):
+    """The scouting schema is owned and deployed by cfb-scout, not this repo."""
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM information_schema.schemata WHERE schema_name = 'scouting'")
+        return cur.fetchone() is not None
+
+
+def _skip_if_scouting_absent(schema_name: str, scouting_schema_exists: bool) -> None:
+    if schema_name == "scouting" and not scouting_schema_exists:
+        pytest.skip("scouting schema absent (owned by cfb-scout)")
+
+
 # ---------------------------------------------------------------------------
 # Existence tests
 # ---------------------------------------------------------------------------
@@ -72,7 +85,8 @@ class TestMartViewsExist:
         ALL_MATERIALIZED_VIEWS,
         ids=[f"{s}.{v}" for s, v in ALL_MATERIALIZED_VIEWS],
     )
-    def test_view_exists(self, db_conn, schema_name, view_name):
+    def test_view_exists(self, db_conn, schema_name, view_name, scouting_schema_exists):
+        _skip_if_scouting_absent(schema_name, scouting_schema_exists)
         with db_conn.cursor() as cur:
             cur.execute(
                 """
@@ -99,7 +113,8 @@ class TestMartViewsHaveData:
         ALL_MATERIALIZED_VIEWS,
         ids=[f"{s}.{v}" for s, v in ALL_MATERIALIZED_VIEWS],
     )
-    def test_view_has_rows(self, db_conn, schema_name, view_name):
+    def test_view_has_rows(self, db_conn, schema_name, view_name, scouting_schema_exists):
+        _skip_if_scouting_absent(schema_name, scouting_schema_exists)
         with db_conn.cursor() as cur:
             # Use quoted identifiers to handle leading underscores safely
             cur.execute(f'SELECT COUNT(*) FROM "{schema_name}"."{view_name}"')

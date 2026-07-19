@@ -1,59 +1,163 @@
--- Player EPA attribution per game
--- Extracts player names from play_text for rushing and passing plays
--- Minimum 3 plays per player/game/category to be included
+-- Player EPA attribution per game (rebuilt on stats.play_stats athlete_id)
+-- =============================================================================
+-- Replaces the previous play_text regex attribution
+-- (TRIM(SPLIT_PART(play_text, ' rush '/' pass ', 1))) with CFBD's authoritative
+-- athlete-per-play link table stats.play_stats. Each play's EPA (from
+-- marts.play_epa) is credited to the athletes CFBD associates with that play,
+-- bucketed into a role (passing / rushing / receiving) by stat_type.
+--
+-- OUTPUT GRAIN: (game_id, team, athlete_id, play_category)
+-- OUTPUT COLUMNS (all previous columns preserved; ADDS athlete_id):
+--   game_id, season, team, player_name, athlete_id, play_category,
+--   plays, total_epa, epa_per_play, success_rate, explosive_plays, total_yards
+--
+-- CATEGORY NAMING (backward compatible): the PREVIOUS mart already emitted the
+-- gerund values 'passing' and 'rushing' as play_category (see git history /
+-- the platform-wide convention in api.player_season_leaders which uses
+-- passing/rushing/receiving). Those literals -- NOT 'pass'/'rush', which are
+-- marts.play_epa's *input* play_category -- are what downstream (012,
+-- get_player_game_log, cfb-app) reads. We therefore KEEP 'passing'/'rushing'
+-- and ADD 'receiving' for the new receiver role.
+--
+-- =============================================================================
+-- ASSUMED stats.play_stats COLUMNS (live table could not be inspected this
+-- session -- DB unreachable). Coded to the loader's yielded shape
+-- (src/pipelines/sources/stats.py::play_stats_resource, PK
+-- [game_id, play_id, athlete_id, stat_type]); dlt snake_cases the CFBD
+-- /plays/stats (PlayStat) fields. If a CREATE fails with "column does not
+-- exist", this list is the diff to check against information_schema.columns:
+--   game_id      bigint            -> joins marts.play_epa.game_id
+--   play_id      varchar           -> joins marts.play_epa.play_id (= core.plays.id)
+--   athlete_id   varchar           -> CFBD athleteId (matched to core.roster.id::text)
+--   athlete_name varchar           -> CFBD athleteName (surfaced as player_name)
+--   stat_type    varchar           -> CFBD statType NAME (matches ref.play_stat_types.name)
+--   team         varchar           -> CFBD team/school name (= marts.play_epa.offense
+--                                      for offensive players)
+--   (unused: season, week, conference, opponent, team_score, opponent_score,
+--    drive_id, period, clock__*, yards_to_goal, down, distance, stat)
+--
+-- DATA DEPTH: stats.play_stats loads ~2014+ (loader year range), while
+-- core.plays goes back to 2004. This mart therefore has NO rows before ~2014.
+-- The previous regex version covered 2004+; losing pre-2014 player-EPA is the
+-- accepted tradeoff (per the Tier 1 analytics-unlock plan) for authoritative,
+-- non-fragile attribution.
+--
+-- =============================================================================
+-- STAT_TYPE -> ROLE MAPPING (the one correctable knob): the VALUES block below
+-- is the single place to fix attribution once the live ref.play_stat_types
+-- (26 rows) extract is available. TWO entries carry the highest risk and are
+-- the FIRST things to validate against the live extract + an athlete team-side
+-- check:
+--   * 'Sack'         -- included on the passer (standard EPA charges the sack's
+--                       negative EPA to the QB). If CFBD records 'Sack' only on
+--                       the DEFENDER, the `ps.team = pe.offense` guard below
+--                       already excludes it; drop this VALUES row if it proves
+--                       to double-credit.
+--   * 'Interception' -- included as the passer's thrown INT. If CFBD's
+--                       'Interception' names the intercepting DEFENDER instead,
+--                       the `ps.team = pe.offense` guard excludes that defender
+--                       (they are on defense); still, verify and drop this row
+--                       if it mis-attributes.
+-- The `ps.team = pe.offense` guard makes attribution robust to those two
+-- ambiguities: only offensive players (passer/rusher/receiver, whose
+-- play_stats.team = the play's offense) are ever credited, so a defender-side
+-- Sack/INT row cannot leak into an offense's passing EPA. Both team values
+-- originate from CFBD, so the equality is safe; if a naming skew ever emptied
+-- the mart, the empty-guard at the bottom fails loudly at deploy time.
+-- =============================================================================
 
 DROP MATERIALIZED VIEW IF EXISTS marts.player_game_epa CASCADE;
 
 CREATE MATERIALIZED VIEW marts.player_game_epa AS
-WITH rushing_plays AS (
-    SELECT
-        game_id, season, offense AS team,
-        -- Extract rusher from play_text (pattern: "Name rush for X yards")
-        TRIM(SPLIT_PART(play_text, ' rush ', 1)) AS player_name,
-        'rushing' AS play_category,
-        epa, success, explosive, yards_gained
-    FROM marts.play_epa
-    WHERE play_category = 'rush'
-      AND play_text LIKE '% rush %'
-      AND NOT is_garbage_time
+WITH stat_type_roles (stat_type, play_category) AS (
+    VALUES
+        -- Passer roles -> 'passing'
+        ('Completion',          'passing'),
+        ('Incompletion',        'passing'),
+        ('Passing Touchdown',   'passing'),
+        ('Interception',        'passing'),
+        ('Sack',                'passing'),
+        -- Rusher roles -> 'rushing'
+        ('Rush',                'rushing'),
+        ('Rushing Touchdown',   'rushing'),
+        -- Receiver roles -> 'receiving'
+        ('Reception',           'receiving'),
+        ('Target',              'receiving'),
+        ('Receiving Touchdown', 'receiving')
 ),
-passing_plays AS (
-    SELECT
-        game_id, season, offense AS team,
-        -- Extract passer from play_text (pattern: "Name pass ...")
-        TRIM(SPLIT_PART(play_text, ' pass ', 1)) AS player_name,
-        'passing' AS play_category,
-        epa, success, explosive, yards_gained
-    FROM marts.play_epa
-    WHERE play_category = 'pass'
-      AND play_text LIKE '% pass %'
-      AND NOT is_garbage_time
+role_plays AS (
+    -- One EPA contribution per (game, play, athlete, role). DISTINCT collapses
+    -- the multiple play_stats rows a single athlete gets for ONE role on ONE
+    -- play (e.g. Completion + Passing Touchdown; Reception + Target +
+    -- Receiving Touchdown) into a single counted play. The play-level metric
+    -- columns (season/team/epa/success/explosive/yards_gained) are functionally
+    -- determined by (game_id, play_id) -- marts.play_epa is unique on play_id --
+    -- so listing them under DISTINCT does not change the dedup grain. A player
+    -- may still earn credit in TWO categories on the same play (passer + rusher
+    -- on a trick play): those are distinct roles and are intended.
+    SELECT DISTINCT
+        pe.game_id,
+        pe.season,
+        pe.offense AS team,
+        ps.athlete_id,
+        r.play_category,
+        ps.play_id,
+        pe.epa,
+        pe.success,
+        pe.explosive,
+        pe.yards_gained
+    FROM stats.play_stats ps
+    JOIN stat_type_roles r ON r.stat_type = ps.stat_type
+    JOIN marts.play_epa pe
+        ON pe.game_id = ps.game_id
+       AND pe.play_id = ps.play_id
+    WHERE ps.team = pe.offense      -- credit only the offense (see header)
+      AND NOT pe.is_garbage_time
 ),
-all_attributed AS (
-    SELECT * FROM rushing_plays
-    UNION ALL
-    SELECT * FROM passing_plays
+athlete_names AS (
+    -- One display name per (game, athlete). play_stats.athlete_name repeats
+    -- across a game; MAX() yields a single stable value and keeps this a strict
+    -- 1:1 join against role_plays so it can never fan out the play counts.
+    SELECT
+        game_id,
+        athlete_id,
+        MAX(athlete_name) AS player_name
+    FROM stats.play_stats
+    GROUP BY game_id, athlete_id
 )
 SELECT
-    game_id,
-    season,
-    team,
-    player_name,
-    play_category,
+    rp.game_id,
+    rp.season,
+    rp.team,
+    MAX(an.player_name) AS player_name,
+    rp.athlete_id,
+    rp.play_category,
     COUNT(*) AS plays,
-    SUM(epa)::NUMERIC(8,2) AS total_epa,
-    AVG(epa)::NUMERIC(6,4) AS epa_per_play,
-    AVG(success)::NUMERIC(5,3) AS success_rate,
-    SUM(explosive) AS explosive_plays,
-    SUM(yards_gained) AS total_yards
-FROM all_attributed
-WHERE player_name IS NOT NULL
-  AND player_name != ''
-  AND LENGTH(player_name) > 2  -- Filter out artifacts
-GROUP BY game_id, season, team, player_name, play_category
-HAVING COUNT(*) >= 3;  -- Minimum 3 plays to be included
+    SUM(rp.epa)::NUMERIC(8, 2) AS total_epa,
+    AVG(rp.epa)::NUMERIC(6, 4) AS epa_per_play,
+    AVG(rp.success)::NUMERIC(5, 3) AS success_rate,
+    SUM(rp.explosive) AS explosive_plays,
+    SUM(rp.yards_gained) AS total_yards
+FROM role_plays rp
+LEFT JOIN athlete_names an
+    ON an.game_id = rp.game_id
+   AND an.athlete_id = rp.athlete_id
+GROUP BY rp.game_id, rp.season, rp.team, rp.athlete_id, rp.play_category
+HAVING COUNT(*) >= 3;  -- Minimum 3 plays per player/game/category
 
-CREATE UNIQUE INDEX ON marts.player_game_epa (game_id, team, player_name, play_category);
+-- Unique index: rekeyed on athlete_id (required for REFRESH CONCURRENTLY).
+CREATE UNIQUE INDEX ON marts.player_game_epa (game_id, team, athlete_id, play_category);
+-- Non-unique name-path index retained for backward-compatible name lookups.
 CREATE INDEX ON marts.player_game_epa (player_name, season);
 CREATE INDEX ON marts.player_game_epa (team, season);
 CREATE INDEX ON marts.player_game_epa (total_epa DESC);
+
+-- Empty-guard: stats.play_stats (gate table, ~2014+) backs this mart. If it is
+-- absent/empty the mart materializes to zero rows; fail loudly at deploy time
+-- rather than silently serving an empty player-EPA surface downstream.
+DO $$
+BEGIN
+    IF (SELECT count(*) FROM marts.player_game_epa) = 0 THEN
+        RAISE EXCEPTION 'marts.player_game_epa is empty: stats.play_stats has no matching rows (backfill the stats source -- deploy/tier1-backfill, action=backfill, sources=stats -- then refresh this mart), OR the stat_type/team assumptions in this file no longer match the live table (see header comment).';
+    END IF;
+END $$;

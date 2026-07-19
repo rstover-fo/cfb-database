@@ -76,7 +76,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 7 | `/drives` | core.drives | games.py | drives_resource | YES | merge | id | 2000-2026 | WORKING |
 | 8 | `/games/media` | core.game_media | games.py | game_media_resource | YES | merge | id | 2000-2026 | WORKING |
 | 9 | `/games/teams` | core.game_team_stats | game_stats.py | game_team_stats_resource | YES | merge | id | 2004-2026 | WORKING |
-| 10 | `/games/players` | core.game_player_stats | game_stats.py | game_player_stats_resource | YES | merge | id | 2004-2026 | DEFERRED |
+| 10 | `/games/players` | core.game_player_stats | game_stats.py | game_player_stats_resource | YES | merge | id | 2004-2026 | WORKING |
 | 11 | `/games/weather` | core.game_weather | games.py | game_weather_resource | YES | merge | id | 2000-2026 | WORKING |
 | 12 | `/game/box/advanced` | stats.advanced_game_stats | stats.py | advanced_game_stats_resource | YES | merge | game_id, team | 2014-2026 | WORKING |
 | 13 | `/calendar` | ref.calendar | reference.py | calendar_resource | YES | replace | season, week | current | WORKING |
@@ -188,10 +188,10 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 
 | Status | Count |
 |---|---|
-| WORKING | 51 |
+| WORKING | 52 |
 | WORKING (note) | 1 |
 | CONFIG_ONLY | 0 |
-| DEFERRED | 4 |
+| DEFERRED | 3 |
 | UNMAPPED | 3 |
 | REMOVED | 1 |
 | **Total** | **60** |
@@ -288,3 +288,6 @@ For Sprint 4, investigate:
 1. Supabase Pro tier with adjustable statement_timeout
 2. Loading to local Postgres, then syncing to Supabase
 3. Using dlt's file-based staging to break up inserts
+
+**Resolution (2026-07-19):**
+The table was successfully loaded via `game_stats_source`'s week-by-week loading path. The batching strategy (~35K rows per merge batch) effectively avoids Supabase statement timeouts. `core.game_player_stats` now holds ~6.4M rows across its athlete-level child tables and is actively consumed by `api.game_player_leaders` (src/schemas/api/010) and `api.game_box_score` (src/schemas/api/011). Status promoted to WORKING.

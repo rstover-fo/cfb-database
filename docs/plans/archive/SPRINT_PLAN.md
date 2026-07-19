@@ -1,5 +1,10 @@
 # CFB Database — Sprint Plan
 
+> **SUPERSEDED (2026-07-19).** Historical Sprint 0-1 planning document, kept for
+> reference. Its status claims no longer hold (e.g. "Tests: None" — the repo now
+> has a full test suite; the listed PK bugs are fixed). See `docs/plans/` for the
+> later sprint plans and `docs/pipeline-manifest.md` for current pipeline status.
+
 > Reviewed by plan-reviewer. Incorporates feedback on migration safety, testing timing, dlt disposition conflicts, partitioning complexity, and Sprint 3 decomposition.
 
 ## Project Status

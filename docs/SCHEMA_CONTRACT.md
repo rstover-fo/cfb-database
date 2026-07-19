@@ -4,7 +4,7 @@
 > only depend on objects listed here as **public**. Everything else is internal and may change
 > without notice.
 
-Last updated: 2026-02-06
+Last updated: 2026-07-19
 
 ---
 
@@ -156,7 +156,7 @@ These reference tables are stable enough for direct access.
 |----------|--------|-------------|
 | `ref.get_era` | `ref` | Returns era code/name for a given year |
 | `analytics.refresh_all_views` | `analytics` | Refreshes all analytics materialized views (admin use) |
-| `marts.refresh_all` | `marts` | Refreshes all 28 mart materialized views in dependency order (5 layers). Returns (view_name, duration_ms, status). |
+| `marts.refresh_all` | `marts` | Refreshes all 27 mart materialized views in dependency order (5 layers). Returns (view_name, duration_ms, status). |
 
 ---
 

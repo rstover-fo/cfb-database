@@ -53,17 +53,24 @@ The database uses multiple Postgres schemas organized by data domain:
 | `draft` | NFL draft data | picks, positions |
 | `metrics` | Advanced metrics | PPA, win probability |
 | `analytics` | Computed analytics | EPA, style profiles |
-| `marts` | Materialized views (19) | Denormalized, query-optimized |
-| `api` | API view layer (7) | Contract surface for cfb-app/cfb-scout |
-| `public` | Convenience views/RPCs (8) | Downstream consumer interface |
+| `marts` | Materialized views (27) | Denormalized, query-optimized |
+| `api` | API view layer (18) | Contract surface for cfb-app/cfb-scout |
+| `public` | Convenience views/RPCs (12) | Downstream consumer interface |
 
 ### Marts System
 
-19 materialized views in the `marts` schema provide denormalized, query-optimized data. Refresh via:
+27 materialized views in the `marts` schema provide denormalized, query-optimized data (plus the plain view `analytics.data_quality_dashboard`). Refresh via:
 ```bash
 python scripts/refresh_marts.py        # Refresh all marts
 ```
 Or use the `refresh_all_marts()` RPC.
+
+### Daily Automation
+
+`.github/workflows/daily-load.yml` runs daily at 10:00 UTC from `main`: loads the
+current season (`scripts/load_season.py --weekly`, mart refresh included), then runs
+post-load checks (`scripts/verify_load.py`). Failures open/update a rolling GitHub
+issue. Requires repo secrets `CFBD_API_KEY` and `SUPABASE_DB_URL` (session pooler).
 
 ### dlt Table Conventions
 
@@ -80,8 +87,8 @@ cfb-database/
 │   ├── pipeline-manifest.md      # Endpoint-to-pipeline status (source of truth)
 │   ├── cfbd-api-endpoints.md     # Complete CFBD API reference
 │   ├── dlt-reference.md          # Pipeline configuration patterns
-│   ├── SPRINT_PLAN.md            # Implementation plan
-│   ├── plans/                    # Dated sprint/implementation plans (22 files)
+│   ├── plans/                    # Dated sprint/implementation plans (+ archive/)
+│   ├── handoffs/                 # Cross-repo handoff docs
 │   ├── brainstorms/              # Design exploration docs
 │   └── solutions/                # Solved problem documentation
 ├── src/
@@ -95,19 +102,23 @@ cfb-database/
 │   │   │   └── rate_limiter.py   # Monthly budget tracking
 │   │   └── run.py                # Pipeline orchestration
 │   └── schemas/
-│       ├── api/                  # 7 API view definitions (contract surface)
+│       ├── api/                  # 18 API view definitions (contract surface)
 │       ├── functions/            # SQL functions
-│       ├── marts/                # 19 materialized view definitions
-│       ├── public/               # 8 convenience views + RPCs
+│       ├── marts/                # 27 materialized view definitions (+1 plain view)
+│       ├── public/               # 12 convenience views + RPCs
 │       └── migrations/           # Schema migrations
 ├── scripts/
+│   ├── load_season.py            # Orchestrate full season load + mart refresh
+│   ├── verify_load.py            # Post-load verification checks
 │   ├── refresh_marts.py          # Mart refresh script
-│   └── run_migrations.py         # Migration runner
-├── tests/                        # 8 test files + test_sources/
+│   ├── run_marts.py              # Apply mart definitions
+│   └── run_migrations.py         # Migration runner (--file for one-off SQL)
+├── tests/                        # Test files + test_sources/
 │   └── conftest.py               # DB connection + mock fixtures
 ├── .dlt/
-│   ├── config.toml               # Runtime config (workers, year ranges, rate limits)
+│   ├── config.toml               # Runtime config (workers, rate limit budget)
 │   └── secrets.toml              # API keys (not committed)
+├── .github/workflows/            # CI + daily season load
 └── .githooks/pre-push            # Runs ruff + pytest before push
 ```
 
@@ -202,11 +213,16 @@ pip install -e ".[dev]"
 python -m src.pipelines.run --source reference           # Load reference data
 python -m src.pipelines.run --source games --year 2024   # Load games for a year
 
+# Season orchestration (what the daily workflow runs)
+python scripts/load_season.py --weekly    # Load current season + refresh marts
+python scripts/verify_load.py             # Post-load checks (exit 1 on failure)
+
 # Marts
 python scripts/refresh_marts.py     # Refresh all materialized views
 
 # Migrations
 python scripts/run_migrations.py    # Apply pending migrations
+python scripts/run_migrations.py --file <path>  # Apply one-off public/api/functions SQL
 
 # Testing & linting
 .venv/bin/ruff check .              # Lint
@@ -256,5 +272,5 @@ Historical depth varies by endpoint:
 ## Configuration
 
 - `pyproject.toml` -- project metadata, dependencies, CLI entry point (`cfb-pipeline`), ruff config (line-length 100, py311), pytest config
-- `.dlt/config.toml` -- runtime config: worker count, file chunking, year ranges per source, monthly API budget (75,000)
+- `.dlt/config.toml` -- runtime config: worker count, file chunking, monthly API budget (75,000). Year ranges live in `src/pipelines/config/years.py`
 - Supabase MCP server enabled in `.claude/settings.local.json` for interactive SQL during development

@@ -1,6 +1,8 @@
 {
-  "action": "apply",
-  "files": [
-    "src/schemas/migrations/023_rankings_rekey_reset.sql"
-  ]
+  "action": "backfill",
+  "backfill": {
+    "start": 2000,
+    "end": 2025,
+    "sources": "rankings"
+  }
 }

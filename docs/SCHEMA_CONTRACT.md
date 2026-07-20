@@ -4,11 +4,33 @@
 > only depend on objects listed here as **public**. Everything else is internal and may change
 > without notice.
 
-Last updated: 2026-07-19
+Last updated: 2026-07-20
 
 ---
 
 ## Recent Contract Changes
+
+- **2026-07-20 — Added `api.game_drives`, `api.game_plays`, `api.poll_rankings`.**
+  Closes the Phase 0 Lane D gap where cfb-app queried `core.drives`, `core.plays`, and
+  `core.rankings` directly, in violation of Contract Rule 4. Direct downstream access to
+  those three raw `core.*` tables is now **deprecated** -- migrate to the new `api.*`
+  views.
+
+- **2026-07-20 — Rankings merge key fixed; `api.poll_rankings` gains `season_type`.**
+  The suspected data-integrity risk was confirmed live and fixed the same day: the old
+  merge key `[season, week, poll, rank]` dropped one team whenever a poll had a rank tie
+  (55 AP weeks were short) and let the postseason final poll (reported as week 1)
+  overwrite regular-season week 1. The pipeline now merges on
+  `[season, season_type, week, poll, school]`, history was reloaded 2000-2025, and the
+  view exposes `season_type`. **Consumers of `api.poll_rankings` should filter
+  `season_type = 'regular'` for weekly polls** (the final poll is
+  `season_type = 'postseason'`, week 1) and must tolerate duplicate rank values within
+  a week (tied teams share a rank; the next rank is skipped).
+
+- **2026-07-19 — `get_trajectory_averages` default season end now tracks loaded data.**
+  `p_season_end` default changed from a pinned `2025` to `NULL`, which resolves to the
+  latest season present in `public.team_season_trajectory`. Callers omitting the argument
+  will start receiving 2026 rows as they materialize; explicit arguments behave unchanged.
 
 - **2026-07-19 — Tier 1 analytics unlock.**
   - **Garbage-time exclusion (behavioral change, no signature change):** the five split RPCs
@@ -92,6 +114,9 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.player_usage_leaders` | **Deployed** | -- | Player usage rates by season: share of team plays overall and by down/situation. One row per season-athlete. Columns: season, athlete_id, player_name, position, team, conference, usage_overall, usage_pass, usage_rush, usage_first_down, usage_second_down, usage_third_down, usage_standard_downs, usage_passing_downs |
 | `api.team_ats` | **Deployed** | -- | Team against-the-spread (ATS) records by season. One row per team-season. Columns: season, team_id, team, conference, games, ats_wins, ats_losses, ats_pushes, avg_cover_margin, ats_win_pct |
 | `api.line_movement` | **Deployed** | -- | Betting line movement history from append-only daily snapshots of pending games. One row per (game, provider, captured_at) snapshot. Columns: captured_at, game_id, season, week, home_team, away_team, provider, spread, formatted_spread, over_under, home_moneyline, away_moneyline, line_hash |
+| `api.game_drives` | **Live** | 183,603 | Drive-by-drive summary for a game, one row per possession. Columns: game_id, season, drive_number, offense, defense, start_period, start_yards_to_goal, end_yards_to_goal, plays, yards, drive_result, scoring, start_offense_score, end_offense_score, start_defense_score, end_defense_score, start_time_minutes, start_time_seconds, elapsed_minutes, elapsed_seconds, is_home_offense |
+| `api.game_plays` | **Live** | 3,611,707 | Play-by-play for a game, one row per snap, unfiltered by play type (cfb-app filters client-side). Columns: game_id, season, drive_number, play_number, offense, defense, period, clock_minutes, clock_seconds, down, distance, yards_to_goal, yards_gained, play_type, play_text, ppa, scoring, offense_score, defense_score |
+| `api.poll_rankings` | **Live** | ~31,000 | Weekly poll rankings (AP Top 25, Coaches Poll, CFP, etc). Columns: season, season_type, week, poll, rank, school, conference, first_place_votes, points. Filter `season_type = 'regular'` for weekly polls; final poll is `season_type = 'postseason'` (week 1). Tied teams share a rank (next rank skipped) |
 
 ### Marts (schema: `marts`) -- Materialized Views
 

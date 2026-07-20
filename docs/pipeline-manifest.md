@@ -161,7 +161,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 
 | # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| 50 | `/rankings` | core.rankings | rankings.py | rankings_resource | YES | merge | season, week, poll, rank | 2000-2026 | WORKING |
+| 50 | `/rankings` | core.rankings | rankings.py | rankings_resource | YES | merge | season, season_type, week, poll, school | 2000-2026 | WORKING |
 
 ### Teams Extended
 

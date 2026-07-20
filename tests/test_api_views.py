@@ -1,6 +1,6 @@
 """Tests for API views in the api schema.
 
-Verifies all 14 API views exist, return expected row counts,
+Verifies API views exist, return expected row counts,
 expose the correct columns, and respond to filtered queries.
 """
 
@@ -849,7 +849,7 @@ class TestPollRankings:
         assert max_rank <= 25, f"Max rank is {max_rank}, expected <= 25"
 
     def test_week_1_not_clobbered_by_postseason(self, db_conn):
-        """Documented risk (021_poll_rankings.sql): the pipeline's merge key
+        """Documented risk (027_poll_rankings.sql): the pipeline's merge key
         [season, week, poll, rank] has no season_type, and CFBD's postseason
         payload commonly reports "week": 1 -- the same key as regular-season
         week 1. A true collision upserts one over the other, so duplicate rows
@@ -873,5 +873,5 @@ class TestPollRankings:
         )
         assert count == 25, (
             f"AP Top 25 week 1, 2024 has {count} rows, expected 25 -- "
-            "investigate for postseason/week-1 collision (see 021_poll_rankings.sql)"
+            "investigate for postseason/week-1 collision (see 027_poll_rankings.sql)"
         )

@@ -15,13 +15,41 @@ Last updated: 2026-07-20
   `core.rankings` directly, in violation of Contract Rule 4. Direct downstream access to
   those three raw `core.*` tables is now **deprecated** -- migrate to the new `api.*`
   views. `api.poll_rankings` carries a known, unconfirmed data-integrity risk: see the
-  header comment in `src/schemas/api/021_poll_rankings.sql` (postseason rows may collide
+  header comment in `src/schemas/api/027_poll_rankings.sql` (postseason rows may collide
   with regular-season week 1 under the pipeline's current merge key).
 
 - **2026-07-19 — `get_trajectory_averages` default season end now tracks loaded data.**
   `p_season_end` default changed from a pinned `2025` to `NULL`, which resolves to the
   latest season present in `public.team_season_trajectory`. Callers omitting the argument
   will start receiving 2026 rows as they materialize; explicit arguments behave unchanged.
+
+- **2026-07-19 — Tier 1 analytics unlock.**
+  - **Garbage-time exclusion (behavioral change, no signature change):** the five split RPCs
+    (`get_home_away_splits`, `get_conference_splits`, `get_red_zone_splits`,
+    `get_down_distance_splits`, `get_field_position_splits`) now filter out garbage-time
+    plays via `public.is_garbage_time()`. Output values shift slightly (garbage-time plays
+    previously inflated/deflated per-play splits); arguments and return shapes are unchanged.
+  - **`get_player_detail` additive columns (return-type recreate):** gains
+    `wepa_passing`, `wepa_rushing`, `paar` (opponent-adjusted EPA and kicker points-above-
+    average-replacement from `marts.player_wepa_season`). The function was dropped and
+    recreated to change its `RETURNS TABLE` signature; callers selecting columns by name are
+    unaffected.
+  - **Player EPA attribution rebuilt on athlete_id (additive):** `marts.player_game_epa` and
+    `marts.player_season_epa` gain an `athlete_id` column and a new `receiving` play_category
+    (alongside existing `passing`/`rushing`). Attribution now joins CFBD's `stats.play_stats`
+    athlete-to-play link table instead of regex-parsing play text; coverage starts ~2014
+    (previously 2004+) since `stats.play_stats` does not extend earlier.
+  - **`marts.defensive_havoc` havoc rates re-sourced (additive):** havoc-rate columns are now
+    sourced from authoritative `stats.game_havoc` instead of a play-text heuristic; gains
+    `front_seven_havoc_rate` and `db_havoc_rate` (also added to `public.defensive_havoc`).
+    Disruptive counts (sacks, interceptions, fumbles, TFLs, stuffs) remain plays-derived
+    approximations, unchanged.
+  - **Six new `api.*` views and five new `marts.*` materialized views added** — see the API
+    Views and Marts tables below (`team_wepa_season`, `player_wepa_leaders`/
+    `player_wepa_season`, `team_returning_production`/`returning_production`,
+    `player_usage_leaders`/`player_usage`, `team_ats`/`team_ats_records`, `line_movement`).
+  - cfb-app should regenerate `supabase gen types` to pick up the new/changed columns and
+    views.
 
 ---
 
@@ -71,9 +99,15 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.recruiting_roi` | **Deployed** | 1,324 | Recruiting investment vs on-field outcomes. 4-year rolling BCR, wins over expected, draft production. One row per team-season. Columns: team, season, conference, blue_chip_ratio, avg_recruit_rating, total_wins, win_pct, epa_per_play, players_drafted, wins_over_expected, recruiting_efficiency, win_pct_pctl, epa_pctl, recruiting_efficiency_pctl |
 | `api.transfer_portal_impact` | **Deployed** | 1,374 | Transfer portal activity correlated with team performance changes. Portal era (2021+). One row per team-season. Columns: team, season, conference, transfers_in, transfers_out, net_transfers, avg_transfer_stars, portal_dependency, win_delta, net_transfers_pctl, win_delta_pctl, portal_dependency_pctl |
 | `api.conference_comparison` | **Deployed** | 347 | Conference-level season analytics with percentile rankings. One row per conference-season. Columns: conference, season, member_count, avg_wins, avg_sp_rating, avg_epa, avg_recruiting_rank, non_conf_win_pct, avg_sp_pctl, avg_epa_pctl, avg_recruiting_pctl, non_conf_win_pct_pctl |
-| `api.game_drives` | **Deployed** | 183,603 | Drive-by-drive summary for a game, one row per possession. Columns: game_id, season, drive_number, offense, defense, start_period, start_yards_to_goal, end_yards_to_goal, plays, yards, drive_result, scoring, start_offense_score, end_offense_score, start_defense_score, end_defense_score, start_time_minutes, start_time_seconds, elapsed_minutes, elapsed_seconds, is_home_offense |
-| `api.game_plays` | **Deployed** | 3,611,707 | Play-by-play for a game, one row per snap, unfiltered by play type (cfb-app filters client-side). Columns: game_id, season, drive_number, play_number, offense, defense, period, clock_minutes, clock_seconds, down, distance, yards_to_goal, yards_gained, play_type, play_text, ppa, scoring, offense_score, defense_score |
-| `api.poll_rankings` | **Deployed** | 29,579 | Weekly poll rankings (AP Top 25, Coaches Poll, CFP, etc). Columns: season, week, poll, rank, school, conference, first_place_votes, points. Known risk: postseason rows may collide with regular-season week 1 -- see `src/schemas/api/021_poll_rankings.sql` |
+| `api.team_wepa_season` | **Deployed** | -- | Opponent-adjusted EPA (WEPA) by team-season. One row per team-season. Columns: season, team_id, team, conference, epa_total, epa_passing, epa_rushing, epa_allowed_total, epa_allowed_passing, epa_allowed_rushing, success_rate_total (+ standard/passing-downs and allowed variants), rushing line/second-level/open-field/highlight yards (+ allowed), explosiveness, explosiveness_allowed, epa_rank, defense_rank |
+| `api.player_wepa_leaders` | **Deployed** | -- | Player WEPA leaders: passing/rushing WEPA and kicker PAAR, tall grain. One row per season-athlete-category. Columns: season, athlete_id, athlete_name, position, team, conference, category (passing/rushing/kicking), wepa, paar, metric, plays, season_rank |
+| `api.team_returning_production` | **Deployed** | -- | Returning production by team-season: total and percent of last season's PPA returning. One row per team-season. Columns: season, team, conference, total_ppa, total_passing_ppa, total_receiving_ppa, total_rushing_ppa, returning_ppa_pct, returning_passing_ppa_pct, returning_receiving_ppa_pct, returning_rushing_ppa_pct, usage, passing_usage, receiving_usage, rushing_usage, returning_rank |
+| `api.player_usage_leaders` | **Deployed** | -- | Player usage rates by season: share of team plays overall and by down/situation. One row per season-athlete. Columns: season, athlete_id, player_name, position, team, conference, usage_overall, usage_pass, usage_rush, usage_first_down, usage_second_down, usage_third_down, usage_standard_downs, usage_passing_downs |
+| `api.team_ats` | **Deployed** | -- | Team against-the-spread (ATS) records by season. One row per team-season. Columns: season, team_id, team, conference, games, ats_wins, ats_losses, ats_pushes, avg_cover_margin, ats_win_pct |
+| `api.line_movement` | **Deployed** | -- | Betting line movement history from append-only daily snapshots of pending games. One row per (game, provider, captured_at) snapshot. Columns: captured_at, game_id, season, week, home_team, away_team, provider, spread, formatted_spread, over_under, home_moneyline, away_moneyline, line_hash |
+| `api.game_drives` | **Pending deploy** | 183,603 | Drive-by-drive summary for a game, one row per possession. Columns: game_id, season, drive_number, offense, defense, start_period, start_yards_to_goal, end_yards_to_goal, plays, yards, drive_result, scoring, start_offense_score, end_offense_score, start_defense_score, end_defense_score, start_time_minutes, start_time_seconds, elapsed_minutes, elapsed_seconds, is_home_offense |
+| `api.game_plays` | **Pending deploy** | 3,611,707 | Play-by-play for a game, one row per snap, unfiltered by play type (cfb-app filters client-side). Columns: game_id, season, drive_number, play_number, offense, defense, period, clock_minutes, clock_seconds, down, distance, yards_to_goal, yards_gained, play_type, play_text, ppa, scoring, offense_score, defense_score |
+| `api.poll_rankings` | **Pending deploy** | 29,579 | Weekly poll rankings (AP Top 25, Coaches Poll, CFP, etc). Columns: season, week, poll, rank, school, conference, first_place_votes, points. Known risk: postseason rows may collide with regular-season week 1 -- see `src/schemas/api/027_poll_rankings.sql` |
 
 ### Marts (schema: `marts`) -- Materialized Views
 
@@ -109,6 +143,11 @@ cfb-app for advanced features.
 | `marts.conference_comparison` | Deployed | Per-conference per-season aggregates with PERCENT_RANK percentiles. 347 rows. |
 | `marts.conference_head_to_head` | Deployed | Conference vs conference records by season. Alphabetical ordering to avoid duplicate pairs. 4,818 rows. |
 | `marts.data_freshness` | Deployed | Data freshness tracking for 23 key tables. Row counts, last activity, staleness detection. |
+| `marts.team_wepa_season` | Deployed | Opponent-adjusted EPA (WEPA) by team-season, passthrough of `metrics.wepa_team_season`. Grain: `(team, season)`. Unique key: `(team, season)`. |
+| `marts.player_wepa_season` | Deployed | Player WEPA (passing/rushing) and kicker PAAR, tall union of `metrics.wepa_players_*`. Grain: `(season, athlete_id, category)`. Unique key: `(season, athlete_id, category)`. |
+| `marts.returning_production` | Deployed | Returning production by team-season (PPA and usage returning from prior season), passthrough of `stats.player_returning`. Grain: `(season, team)`. Unique key: `(team, season)`. |
+| `marts.player_usage` | Deployed | Player usage rates by season (overall/pass/rush/down-split shares), passthrough of `stats.player_usage`. Grain: `(season, athlete_id)`. Unique key: `(season, athlete_id)`. |
+| `marts.team_ats_records` | Deployed | Team against-the-spread records by season, passthrough of `betting.team_ats` plus computed `ats_win_pct`. Grain: `(season, team_id)`. Unique key: `(team_id, season)`. |
 
 ### Public Schema Views
 
@@ -138,13 +177,14 @@ Server-side functions callable via `supabase.rpc()`.
 | Function | Schema | Arguments | Description |
 |----------|--------|-----------|-------------|
 | `get_drive_patterns` | `public` | `(p_team, p_season)` | Drive start/end zones with outcome buckets |
-| `get_down_distance_splits` | `public` | `(p_team, p_season)` | Success rate and EPA by down and distance |
-| `get_red_zone_splits` | `public` | `(p_team, p_season)` | Red zone efficiency: TD rate, FG rate, scoring rate |
-| `get_field_position_splits` | `public` | `(p_team, p_season)` | EPA and success rate by field position zone |
-| `get_home_away_splits` | `public` | `(p_team, p_season)` | Home vs away performance comparison |
-| `get_conference_splits` | `public` | `(p_team, p_season)` | Performance vs conference, non-conference, ranked opponents |
+| `get_down_distance_splits` | `public` | `(p_team, p_season)` | Success rate and EPA by down and distance (excludes garbage time as of 2026-07-19) |
+| `get_red_zone_splits` | `public` | `(p_team, p_season)` | Red zone efficiency: TD rate, FG rate, scoring rate (excludes garbage time as of 2026-07-19) |
+| `get_field_position_splits` | `public` | `(p_team, p_season)` | EPA and success rate by field position zone (excludes garbage time as of 2026-07-19) |
+| `get_home_away_splits` | `public` | `(p_team, p_season)` | Home vs away performance comparison (excludes garbage time as of 2026-07-19) |
+| `get_conference_splits` | `public` | `(p_team, p_season)` | Performance vs conference, non-conference, ranked opponents (excludes garbage time as of 2026-07-19) |
 | `get_trajectory_averages` | `public` | `(p_conference, p_season_start?, p_season_end?)` | Conference and FBS average benchmarks. Omitted `p_season_end` resolves to the latest loaded season (changed 2026-07-19; previously pinned to 2025). |
 | `get_player_season_stats_pivoted` | `public` | `(p_team, p_season)` | Pivoted player stats (pass/rush/rec/def/kick in columns) |
+| `get_player_detail` | `public` | `(p_player_id, p_season?)` | Single player page: bio, recruiting, season stats, PPA. Gains `wepa_passing`, `wepa_rushing`, `paar` (opponent-adjusted EPA and kicker PAAR from `marts.player_wepa_season`), added 2026-07-19. |
 | `get_player_search` | `public` | `(p_query text, p_position?, p_team?, p_season?, p_limit? default 25)` | Fuzzy player name search using pg_trgm. Returns player_id, name, team, position, season, height, weight, jersey, stars, recruit_rating, similarity_score. Supports typo tolerance. |
 | `get_available_seasons` | `public` | `()` | List of seasons with data |
 | `get_available_weeks` | `public` | `(p_season)` | List of weeks for a given season |
@@ -167,7 +207,7 @@ These reference tables are stable enough for direct access.
 |----------|--------|-------------|
 | `ref.get_era` | `ref` | Returns era code/name for a given year |
 | `analytics.refresh_all_views` | `analytics` | Refreshes all analytics materialized views (admin use) |
-| `marts.refresh_all` | `marts` | Refreshes all 27 mart materialized views in dependency order (5 layers). Returns (view_name, duration_ms, status). |
+| `marts.refresh_all` | `marts` | Refreshes all 32 mart materialized views in dependency order (5 layers). Returns (view_name, duration_ms, status). |
 
 ---
 
@@ -228,7 +268,7 @@ These objects are implementation details. Do not depend on them from downstream 
 | `stats` | `team_season_stats`, `player_season_stats`, `advanced_team_stats`, `advanced_game_stats`, `game_havoc`, `play_stats`, `player_usage`, `player_returning` |
 | `ratings` | `sp_ratings`, `sp_conference_ratings`, `elo_ratings`, `fpi_ratings`, `srs_ratings` |
 | `recruiting` | `recruits`, `team_recruiting`, `team_talent`, `transfer_portal`, `recruiting_groups` |
-| `betting` | `lines`, `team_ats` |
+| `betting` | `lines`, `team_ats`, `line_snapshots` (append-only line movement snapshots, no PK, `captured_at` stamped per run) |
 | `draft` | `draft_picks` |
 | `metrics` | `ppa_teams`, `ppa_games`, `ppa_players_season`, `ppa_players_games`, `pregame_win_probability`, `fg_expected_points`, `wepa_team_season`, `wepa_players_passing`, `wepa_players_rushing`, `wepa_players_kicking` |
 | `ref` | `conferences`, `venues`, `coaches`, `coaches__seasons`, `play_types`, `play_stat_types`, `teams__alternate_names`, `teams__logos` |

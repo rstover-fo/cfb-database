@@ -1,8 +1,6 @@
 {
   "action": "apply",
-  "marts_from": "029",
   "files": [
-    "src/schemas/marts/005_defensive_havoc.sql",
     "src/schemas/marts/011_player_game_epa.sql",
     "src/schemas/marts/012_player_season_epa.sql",
     "src/schemas/api/019_team_wepa_season.sql",

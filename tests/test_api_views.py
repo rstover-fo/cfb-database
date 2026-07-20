@@ -1,6 +1,6 @@
 """Tests for API views in the api schema.
 
-Verifies all 11 API views exist, return expected row counts,
+Verifies all 14 API views exist, return expected row counts,
 expose the correct columns, and respond to filtered queries.
 """
 
@@ -210,6 +210,63 @@ RECRUIT_LOOKUP_COLUMNS = {
     "country",
 }
 
+GAME_DRIVES_COLUMNS = {
+    "game_id",
+    "season",
+    "drive_number",
+    "offense",
+    "defense",
+    "start_period",
+    "start_yards_to_goal",
+    "end_yards_to_goal",
+    "plays",
+    "yards",
+    "drive_result",
+    "scoring",
+    "start_offense_score",
+    "end_offense_score",
+    "start_defense_score",
+    "end_defense_score",
+    "start_time_minutes",
+    "start_time_seconds",
+    "elapsed_minutes",
+    "elapsed_seconds",
+    "is_home_offense",
+}
+
+GAME_PLAYS_COLUMNS = {
+    "game_id",
+    "season",
+    "drive_number",
+    "play_number",
+    "offense",
+    "defense",
+    "period",
+    "clock_minutes",
+    "clock_seconds",
+    "down",
+    "distance",
+    "yards_to_goal",
+    "yards_gained",
+    "play_type",
+    "play_text",
+    "ppa",
+    "scoring",
+    "offense_score",
+    "defense_score",
+}
+
+POLL_RANKINGS_COLUMNS = {
+    "season",
+    "week",
+    "poll",
+    "rank",
+    "school",
+    "conference",
+    "first_place_votes",
+    "points",
+}
+
 
 # ---------------------------------------------------------------------------
 # Test: views exist and return rows
@@ -229,6 +286,16 @@ class TestViewsExistAndReturnRows:
             ("api.leaderboard_teams", 3000),
             ("api.roster_lookup", 300000),
             ("api.recruit_lookup", 60000),
+            # Floors below actual counts from docs/db-snapshot-current.json
+            # (2026-01-28: core.drives=183,603, core.plays=3,611,707,
+            # core.rankings=29,579). Not re-verified live in this environment --
+            # the Supabase REST endpoint was unreachable through the outbound
+            # proxy (curl exit 56 / gateway 502 on CONNECT to
+            # uvzwxwfjiunyceplmiru.supabase.co). Data only grows over time via
+            # the merge-disposition pipeline, so these floors should hold.
+            ("api.game_drives", 150000),
+            ("api.game_plays", 3000000),
+            ("api.poll_rankings", 20000),
         ],
         ids=[
             "team_detail",
@@ -238,6 +305,9 @@ class TestViewsExistAndReturnRows:
             "leaderboard_teams",
             "roster_lookup",
             "recruit_lookup",
+            "game_drives",
+            "game_plays",
+            "poll_rankings",
         ],
     )
     def test_view_returns_rows(self, db_conn, view_name, min_rows):
@@ -264,6 +334,9 @@ class TestViewColumns:
             ("api.leaderboard_teams", LEADERBOARD_TEAMS_COLUMNS),
             ("api.roster_lookup", ROSTER_LOOKUP_COLUMNS),
             ("api.recruit_lookup", RECRUIT_LOOKUP_COLUMNS),
+            ("api.game_drives", GAME_DRIVES_COLUMNS),
+            ("api.game_plays", GAME_PLAYS_COLUMNS),
+            ("api.poll_rankings", POLL_RANKINGS_COLUMNS),
         ],
         ids=[
             "team_detail",
@@ -273,6 +346,9 @@ class TestViewColumns:
             "leaderboard_teams",
             "roster_lookup",
             "recruit_lookup",
+            "game_drives",
+            "game_plays",
+            "poll_rankings",
         ],
     )
     def test_columns_present(self, db_conn, view_name, expected_columns):
@@ -640,3 +716,162 @@ class TestRecruitLookup:
             ("QB",),
         )
         assert count >= 100, f"QBs in recruit_lookup: {count}, expected 100+"
+
+
+# ---------------------------------------------------------------------------
+# Test: game_drives filters and ordering
+# ---------------------------------------------------------------------------
+
+# Known game used as an example throughout the repo (docs/pipeline-manifest.md,
+# api.game_player_leaders PostgREST examples).
+EXAMPLE_GAME_ID = 401628455
+
+
+class TestGameDrives:
+    """api.game_drives — drive-by-drive summary for a game."""
+
+    def test_filter_by_game_id_ordered_by_drive_number(self, db_conn):
+        """A known game_id returns drives ordered by drive_number."""
+        rows, columns = _fetch_all(
+            db_conn,
+            """
+            SELECT drive_number
+            FROM api.game_drives
+            WHERE game_id = %s
+            ORDER BY drive_number
+            """,
+            (EXAMPLE_GAME_ID,),
+        )
+        assert len(rows) > 0, f"No drives found for game_id {EXAMPLE_GAME_ID}"
+        drive_numbers = [r[0] for r in rows]
+        assert drive_numbers == sorted(drive_numbers), (
+            "Drives are not ordered by drive_number"
+        )
+
+    def test_offense_and_defense_populated(self, db_conn):
+        """Drives for a completed game should have offense/defense teams."""
+        count_missing = _fetch_count(
+            db_conn,
+            """
+            SELECT COUNT(*)
+            FROM api.game_drives
+            WHERE game_id = %s
+              AND (offense IS NULL OR defense IS NULL)
+            """,
+            (EXAMPLE_GAME_ID,),
+        )
+        assert count_missing == 0, (
+            f"Found {count_missing} drives with NULL offense/defense"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test: game_plays filters
+# ---------------------------------------------------------------------------
+
+
+class TestGamePlays:
+    """api.game_plays — play-by-play for a game."""
+
+    def test_filter_by_game_id_returns_plays(self, db_conn):
+        """Plays for a known game_id are non-empty."""
+        count = _fetch_count(
+            db_conn,
+            "SELECT COUNT(*) FROM api.game_plays WHERE game_id = %s",
+            (EXAMPLE_GAME_ID,),
+        )
+        assert count > 0, f"No plays found for game_id {EXAMPLE_GAME_ID}"
+
+    def test_play_types_are_not_filtered(self, db_conn):
+        """View should expose more than one distinct play_type (no filtering)."""
+        rows, _ = _fetch_all(
+            db_conn,
+            "SELECT DISTINCT play_type FROM api.game_plays WHERE game_id = %s",
+            (EXAMPLE_GAME_ID,),
+        )
+        distinct_types = {r[0] for r in rows}
+        assert len(distinct_types) > 1, (
+            f"Expected multiple play_types for game_id {EXAMPLE_GAME_ID}, "
+            f"got {distinct_types} (view may be filtering play types)"
+        )
+
+    def test_plays_ordered_by_drive_and_play_number(self, db_conn):
+        """Plays for a game can be ordered by drive_number, play_number."""
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT drive_number, play_number
+            FROM api.game_plays
+            WHERE game_id = %s
+            ORDER BY drive_number, play_number
+            """,
+            (EXAMPLE_GAME_ID,),
+        )
+        assert len(rows) > 0
+        pairs = [(r[0], r[1]) for r in rows]
+        assert pairs == sorted(pairs), "Plays are not ordered by drive_number, play_number"
+
+
+# ---------------------------------------------------------------------------
+# Test: poll_rankings filters
+# ---------------------------------------------------------------------------
+
+
+class TestPollRankings:
+    """api.poll_rankings — weekly poll rankings."""
+
+    def test_ap_top_25_has_25_rows_for_a_2024_week(self, db_conn):
+        """AP Top 25 for a 2024 regular-season week should have 25 rows."""
+        count = _fetch_count(
+            db_conn,
+            """
+            SELECT COUNT(*)
+            FROM api.poll_rankings
+            WHERE season = %s AND poll = %s AND week = %s
+            """,
+            (2024, "AP Top 25", 10),
+        )
+        assert count == 25, f"AP Top 25 week 10, 2024 has {count} rows, expected 25"
+
+    def test_rank_range(self, db_conn):
+        """Rank should be between 1 and 25 for AP Top 25."""
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT MIN(rank), MAX(rank)
+            FROM api.poll_rankings
+            WHERE poll = %s
+            """,
+            ("AP Top 25",),
+        )
+        min_rank, max_rank = rows[0]
+        assert min_rank >= 1, f"Min rank is {min_rank}, expected >= 1"
+        assert max_rank <= 25, f"Max rank is {max_rank}, expected <= 25"
+
+    def test_week_1_not_clobbered_by_postseason(self, db_conn):
+        """Documented risk (021_poll_rankings.sql): the pipeline's merge key
+        [season, week, poll, rank] has no season_type, and CFBD's postseason
+        payload commonly reports "week": 1 -- the same key as regular-season
+        week 1. A true collision upserts one over the other, so duplicate rows
+        can never appear in this table (the merge key forbids it); the failure
+        mode is silent overwrite, not duplication.
+
+        This can only assert the row count still looks like a normal week-1
+        poll (25 for AP Top 25). It cannot, on its own, prove which payload
+        "won" the merge -- that requires comparing against a known-correct
+        week-1 ranking snapshot from CFBD, which is a follow-up once DB/API
+        access is available (see the view's header comment).
+        """
+        count = _fetch_count(
+            db_conn,
+            """
+            SELECT COUNT(*)
+            FROM api.poll_rankings
+            WHERE season = %s AND poll = %s AND week = %s
+            """,
+            (2024, "AP Top 25", 1),
+        )
+        assert count == 25, (
+            f"AP Top 25 week 1, 2024 has {count} rows, expected 25 -- "
+            "investigate for postseason/week-1 collision (see 021_poll_rankings.sql)"
+        )

@@ -48,6 +48,7 @@ BEGIN
           AND pe.down BETWEEN 1 AND 4
           AND pe.distance IS NOT NULL
           AND pe.distance > 0
+          AND NOT pe.is_garbage_time
     )
     SELECT
         bp.down::INT,
@@ -116,6 +117,7 @@ BEGIN
         WHERE pe.season = p_season
           AND (pe.offense = p_team OR pe.defense = p_team)
           AND pe.yards_to_goal IS NOT NULL
+          AND NOT pe.is_garbage_time
     )
     SELECT
         zp.zone::TEXT,
@@ -163,6 +165,11 @@ AS $function$
 BEGIN
     RETURN QUERY
     WITH red_zone_drives AS (
+        -- Garbage-time exclusion is intentionally NOT applied here: core.drives
+        -- has no play-level period/score_diff joined in (only its own
+        -- start_period/start_offense_score/start_defense_score, which do not
+        -- match is_garbage_time's per-play grain), so drive-level trips/scores
+        -- stay unfiltered per the Phase 1 garbage-time centralization plan.
         SELECT
             CASE WHEN d.offense = p_team THEN 'offense' ELSE 'defense' END AS side,
             d.id AS drive_id,
@@ -184,6 +191,7 @@ BEGIN
         WHERE g.season = p_season
           AND (p.offense = p_team OR p.defense = p_team)
           AND p.yardline >= 80
+          AND NOT public.is_garbage_time(p.period, p.score_diff)
     )
     SELECT
         rzd.side::TEXT,

@@ -66,6 +66,16 @@ def get_db_url() -> str:
     )
 
 
+def _disable_statement_timeout(conn) -> None:
+    """Heavy DDL (large matview creates) exceeds Supabase's default timeout,
+    and multi-million-row hash joins spill to disk under the small default
+    work_mem. One admin session; 64MB is safe on small compute tiers."""
+    with conn.cursor() as cur:
+        cur.execute("SET statement_timeout = 0")
+        cur.execute("SET work_mem = '64MB'")
+    conn.commit()
+
+
 def run_migration(sql_file: Path, conn, dry_run: bool = False) -> None:
     """Execute a single migration file."""
     sql = sql_file.read_text()
@@ -117,6 +127,7 @@ def main() -> None:
 
         conn = psycopg2.connect(get_db_url())
         try:
+            _disable_statement_timeout(conn)
             run_migration(sql_path, conn)
         finally:
             conn.close()
@@ -153,6 +164,7 @@ def main() -> None:
     conn = psycopg2.connect(db_url)
 
     try:
+        _disable_statement_timeout(conn)
         for m in migrations:
             run_migration(SCHEMAS_DIR / m, conn)
         logger.info("All migrations completed successfully")

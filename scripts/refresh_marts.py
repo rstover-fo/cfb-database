@@ -33,6 +33,11 @@ MARTS_VIEWS = [
     "marts.play_epa",
     "marts.player_comparison",
     "marts.conference_head_to_head",
+    "marts.team_wepa_season",
+    "marts.player_wepa_season",
+    "marts.returning_production",
+    "marts.player_usage",
+    "marts.team_ats_records",
     # Layer 2: Depends on Layer 1
     "marts.team_epa_season",
     "marts.team_season_summary",

@@ -1,5 +1,11 @@
 -- Get detailed player information for a single player
--- Pulls from marts.player_comparison for pre-computed stats
+-- Pulls from marts.player_comparison for pre-computed stats, plus WEPA/PAAR
+-- (marts.player_wepa_season) for opponent-adjusted passing/rushing EPA and kicker PAAR.
+--
+-- Changing the RETURNS TABLE column list is a return-type change: CREATE OR REPLACE
+-- fails against a live function with a different signature, so the function must be
+-- dropped first.
+DROP FUNCTION IF EXISTS public.get_player_detail(text, integer);
 
 CREATE OR REPLACE FUNCTION public.get_player_detail(p_player_id text, p_season integer DEFAULT NULL::integer)
 RETURNS TABLE(
@@ -42,7 +48,10 @@ RETURNS TABLE(
     fg_att numeric,
     xp_made numeric,
     xp_att numeric,
-    punt_yds numeric
+    punt_yds numeric,
+    wepa_passing double precision,
+    wepa_rushing double precision,
+    paar double precision
 )
 LANGUAGE sql
 STABLE
@@ -88,8 +97,23 @@ AS $function$
     NULL::numeric AS fg_att,
     NULL::numeric AS xp_made,
     NULL::numeric AS xp_att,
-    NULL::numeric AS punt_yds
+    NULL::numeric AS punt_yds,
+    wp_pass.wepa::double precision AS wepa_passing,
+    wp_rush.wepa::double precision AS wepa_rushing,
+    wp_kick.paar::double precision AS paar
   FROM marts.player_comparison pc
+  LEFT JOIN marts.player_wepa_season wp_pass
+    ON wp_pass.athlete_id::text = pc.player_id::text
+    AND wp_pass.season = pc.season
+    AND wp_pass.category = 'passing'
+  LEFT JOIN marts.player_wepa_season wp_rush
+    ON wp_rush.athlete_id::text = pc.player_id::text
+    AND wp_rush.season = pc.season
+    AND wp_rush.category = 'rushing'
+  LEFT JOIN marts.player_wepa_season wp_kick
+    ON wp_kick.athlete_id::text = pc.player_id::text
+    AND wp_kick.season = pc.season
+    AND wp_kick.category = 'kicking'
   WHERE pc.player_id = p_player_id
     AND (p_season IS NULL OR pc.season = p_season)
   ORDER BY pc.season DESC

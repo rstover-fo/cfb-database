@@ -19,7 +19,9 @@ SELECT
     turnovers_forced,
     stuffs,
     stuff_rate,
-    tfls
+    tfls,
+    front_seven_havoc_rate,
+    db_havoc_rate
 FROM marts.defensive_havoc;
 
 CREATE OR REPLACE VIEW public.team_epa_season

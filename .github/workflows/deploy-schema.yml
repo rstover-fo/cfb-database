@@ -1,0 +1,103 @@
+name: Deploy Schema
+
+# Push-triggered schema deploys. Push-triggered workflows run from the pushed
+# ref itself, so a deploy/** branch doesn't need to land on main first --
+# see docs/plans/2026-07-19-tier1-analytics-unlock-plan.md ("Deploy mechanism").
+#
+# On push, scripts/deploy_schema.py reads deploy-manifest.json committed at
+# the repo root of the deploy/** branch. workflow_dispatch is for human use
+# once this workflow exists on main; it maps inputs to CLI flags instead.
+#
+# Requires repo secrets:
+#   CFBD_API_KEY     - collegefootballdata.com API key
+#   SUPABASE_DB_URL  - Supabase SESSION pooler URL (IPv4; the transaction
+#                      pooler rejects the statement_timeout startup option
+#                      that refresh_marts.py appends)
+
+on:
+  push:
+    branches: ["deploy/**"]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Deploy action"
+        required: true
+        type: choice
+        options:
+          - presence_check
+          - apply
+          - backfill
+        default: presence_check
+      marts_from:
+        description: "run_marts.py --from value, e.g. 029 (apply only)"
+        required: false
+        type: string
+      marts_only:
+        description: "run_marts.py --only value, e.g. 011 (apply only, takes precedence over marts_from)"
+        required: false
+        type: string
+      files:
+        description: "Comma-separated SQL files for run_migrations.py --file (apply only)"
+        required: false
+        type: string
+      refresh:
+        description: "Refresh marts schema after apply"
+        required: false
+        type: boolean
+        default: false
+      backfill_start:
+        description: "Backfill: first season, inclusive (backfill only)"
+        required: false
+        type: string
+      backfill_end:
+        description: "Backfill: last season, inclusive (backfill only)"
+        required: false
+        type: string
+      sources:
+        description: "Backfill: comma-separated pipeline sources, e.g. stats,betting (backfill only)"
+        required: false
+        type: string
+
+concurrency:
+  group: deploy-schema
+  cancel-in-progress: false # never kill a mid-deploy run; a queued run waits
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  SOURCES__CFBD__API_KEY: ${{ secrets.CFBD_API_KEY }}
+  SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+jobs:
+  deploy:
+    name: Deploy schema
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e .
+      - name: Set dlt destination credentials
+        # dlt requires the postgres:// scheme (see .dlt/secrets.toml.example)
+        run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
+      - name: Deploy via manifest (push)
+        if: github.event_name == 'push'
+        run: python scripts/deploy_schema.py --manifest deploy-manifest.json
+      - name: Deploy via CLI flags (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          ARGS=(--action "${{ inputs.action }}")
+          if [ -n "${{ inputs.marts_from }}" ]; then ARGS+=(--marts-from "${{ inputs.marts_from }}"); fi
+          if [ -n "${{ inputs.marts_only }}" ]; then ARGS+=(--marts-only "${{ inputs.marts_only }}"); fi
+          if [ -n "${{ inputs.files }}" ]; then ARGS+=(--files "${{ inputs.files }}"); fi
+          if [ "${{ inputs.refresh }}" = "true" ]; then ARGS+=(--refresh); fi
+          if [ -n "${{ inputs.backfill_start }}" ]; then ARGS+=(--backfill-start "${{ inputs.backfill_start }}"); fi
+          if [ -n "${{ inputs.backfill_end }}" ]; then ARGS+=(--backfill-end "${{ inputs.backfill_end }}"); fi
+          if [ -n "${{ inputs.sources }}" ]; then ARGS+=(--sources "${{ inputs.sources }}"); fi
+          python scripts/deploy_schema.py "${ARGS[@]}"

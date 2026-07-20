@@ -1,7 +1,8 @@
 -- Refresh all materialized views in the marts schema in dependency order.
 --
 -- Layers:
---   1: _game_epa_calc, play_epa, player_comparison, conference_head_to_head (no mart dependencies)
+--   1: _game_epa_calc, play_epa, player_comparison, conference_head_to_head, team_wepa_season,
+--      player_wepa_season, returning_production, player_usage, team_ats_records (no mart dependencies)
 --   2: team_epa_season, team_season_summary, player_game_epa, defensive_havoc, scoring_opportunities,
 --      team_playcalling_tendencies, team_situational_success
 --   3: situational_splits, player_season_epa, coach_record, matchup_history, recruiting_class,
@@ -31,7 +32,12 @@ BEGIN
         '_game_epa_calc',
         'play_epa',
         'player_comparison',
-        'conference_head_to_head'
+        'conference_head_to_head',
+        'team_wepa_season',
+        'player_wepa_season',
+        'returning_production',
+        'player_usage',
+        'team_ats_records'
     ];
     v_layer := 1;
 
@@ -171,5 +177,5 @@ END;
 $$;
 
 COMMENT ON FUNCTION marts.refresh_all IS
-'Refreshes all 28 materialized views in the marts schema in dependency order (5 layers). '
+'Refreshes all 32 materialized views in the marts schema in dependency order (5 layers). '
 'Returns timing and status for each view. Errors are caught per-view so one failure does not abort the rest.';

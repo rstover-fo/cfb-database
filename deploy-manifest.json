@@ -2,6 +2,7 @@
   "action": "apply",
   "files": [
     "src/schemas/migrations/021_prep_player_epa_build.sql",
+    "src/schemas/migrations/022_player_epa_staged_build.sql",
     "src/schemas/marts/011_player_game_epa.sql",
     "src/schemas/marts/012_player_season_epa.sql",
     "src/schemas/api/019_team_wepa_season.sql",

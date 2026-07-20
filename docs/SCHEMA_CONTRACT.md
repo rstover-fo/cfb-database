@@ -4,11 +4,19 @@
 > only depend on objects listed here as **public**. Everything else is internal and may change
 > without notice.
 
-Last updated: 2026-07-19
+Last updated: 2026-07-20
 
 ---
 
 ## Recent Contract Changes
+
+- **2026-07-20 — Added `api.game_drives`, `api.game_plays`, `api.poll_rankings`.**
+  Closes the Phase 0 Lane D gap where cfb-app queried `core.drives`, `core.plays`, and
+  `core.rankings` directly, in violation of Contract Rule 4. Direct downstream access to
+  those three raw `core.*` tables is now **deprecated** -- migrate to the new `api.*`
+  views. `api.poll_rankings` carries a known, unconfirmed data-integrity risk: see the
+  header comment in `src/schemas/api/021_poll_rankings.sql` (postseason rows may collide
+  with regular-season week 1 under the pipeline's current merge key).
 
 - **2026-07-19 — `get_trajectory_averages` default season end now tracks loaded data.**
   `p_season_end` default changed from a pinned `2025` to `NULL`, which resolves to the
@@ -63,6 +71,9 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.recruiting_roi` | **Deployed** | 1,324 | Recruiting investment vs on-field outcomes. 4-year rolling BCR, wins over expected, draft production. One row per team-season. Columns: team, season, conference, blue_chip_ratio, avg_recruit_rating, total_wins, win_pct, epa_per_play, players_drafted, wins_over_expected, recruiting_efficiency, win_pct_pctl, epa_pctl, recruiting_efficiency_pctl |
 | `api.transfer_portal_impact` | **Deployed** | 1,374 | Transfer portal activity correlated with team performance changes. Portal era (2021+). One row per team-season. Columns: team, season, conference, transfers_in, transfers_out, net_transfers, avg_transfer_stars, portal_dependency, win_delta, net_transfers_pctl, win_delta_pctl, portal_dependency_pctl |
 | `api.conference_comparison` | **Deployed** | 347 | Conference-level season analytics with percentile rankings. One row per conference-season. Columns: conference, season, member_count, avg_wins, avg_sp_rating, avg_epa, avg_recruiting_rank, non_conf_win_pct, avg_sp_pctl, avg_epa_pctl, avg_recruiting_pctl, non_conf_win_pct_pctl |
+| `api.game_drives` | **Deployed** | 183,603 | Drive-by-drive summary for a game, one row per possession. Columns: game_id, season, drive_number, offense, defense, start_period, start_yards_to_goal, end_yards_to_goal, plays, yards, drive_result, scoring, start_offense_score, end_offense_score, start_defense_score, end_defense_score, start_time_minutes, start_time_seconds, elapsed_minutes, elapsed_seconds, is_home_offense |
+| `api.game_plays` | **Deployed** | 3,611,707 | Play-by-play for a game, one row per snap, unfiltered by play type (cfb-app filters client-side). Columns: game_id, season, drive_number, play_number, offense, defense, period, clock_minutes, clock_seconds, down, distance, yards_to_goal, yards_gained, play_type, play_text, ppa, scoring, offense_score, defense_score |
+| `api.poll_rankings` | **Deployed** | 29,579 | Weekly poll rankings (AP Top 25, Coaches Poll, CFP, etc). Columns: season, week, poll, rank, school, conference, first_place_votes, points. Known risk: postseason rows may collide with regular-season week 1 -- see `src/schemas/api/021_poll_rankings.sql` |
 
 ### Marts (schema: `marts`) -- Materialized Views
 

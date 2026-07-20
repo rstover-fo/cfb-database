@@ -72,6 +72,11 @@
 -- added to the VALUES list above.
 -- =============================================================================
 
+-- Fail fast rather than run unbounded: a healthy build of this mart takes
+-- minutes; if the plan degenerates, die at 30 minutes so the failure is
+-- visible instead of a multi-hour hang (see migrations/021_prep_player_epa_build.sql).
+SET statement_timeout = '1800s';
+
 DROP MATERIALIZED VIEW IF EXISTS marts.player_game_epa CASCADE;
 
 CREATE MATERIALIZED VIEW marts.player_game_epa AS

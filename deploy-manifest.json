@@ -1,0 +1,6 @@
+{
+  "action": "apply",
+  "files": [
+    "src/schemas/migrations/023_rankings_rekey_reset.sql"
+  ]
+}

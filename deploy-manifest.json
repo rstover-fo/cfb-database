@@ -19,5 +19,5 @@
     "src/schemas/public/002_marts_views.sql",
     "src/schemas/migrations/grant_read_access_for_security_invoker.sql"
   ],
-  "refresh": false
+  "refresh": true
 }

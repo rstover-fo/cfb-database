@@ -20,8 +20,10 @@
 -- and ADD 'receiving' for the new receiver role.
 --
 -- =============================================================================
--- ASSUMED stats.play_stats COLUMNS (live table could not be inspected this
--- session -- DB unreachable). Coded to the loader's yielded shape
+-- stats.play_stats COLUMNS. The stat_type VALUE DOMAIN used in the mapping
+-- below is LIVE-VERIFIED (2026-07-20 presence check against production
+-- information_schema: ref.play_stat_types has exactly 26 names). The
+-- remaining structural columns are still coded to the loader's yielded shape
 -- (src/pipelines/sources/stats.py::play_stats_resource, PK
 -- [game_id, play_id, athlete_id, stat_type]); dlt snake_cases the CFBD
 -- /plays/stats (PlayStat) fields. If a CREATE fails with "column does not
@@ -30,7 +32,8 @@
 --   play_id      varchar           -> joins marts.play_epa.play_id (= core.plays.id)
 --   athlete_id   varchar           -> CFBD athleteId (matched to core.roster.id::text)
 --   athlete_name varchar           -> CFBD athleteName (surfaced as player_name)
---   stat_type    varchar           -> CFBD statType NAME (matches ref.play_stat_types.name)
+--   stat_type    varchar           -> CFBD statType NAME (matches ref.play_stat_types.name;
+--                                      live-verified 26-name domain, 2026-07-20)
 --   team         varchar           -> CFBD team/school name (= marts.play_epa.offense
 --                                      for offensive players)
 --   (unused: season, week, conference, opponent, team_score, opponent_score,
@@ -43,27 +46,30 @@
 -- non-fragile attribution.
 --
 -- =============================================================================
--- STAT_TYPE -> ROLE MAPPING (the one correctable knob): the VALUES block below
--- is the single place to fix attribution once the live ref.play_stat_types
--- (26 rows) extract is available. TWO entries carry the highest risk and are
--- the FIRST things to validate against the live extract + an athlete team-side
--- check:
---   * 'Sack'         -- included on the passer (standard EPA charges the sack's
---                       negative EPA to the QB). If CFBD records 'Sack' only on
---                       the DEFENDER, the `ps.team = pe.offense` guard below
---                       already excludes it; drop this VALUES row if it proves
---                       to double-credit.
---   * 'Interception' -- included as the passer's thrown INT. If CFBD's
---                       'Interception' names the intercepting DEFENDER instead,
---                       the `ps.team = pe.offense` guard excludes that defender
---                       (they are on defense); still, verify and drop this row
---                       if it mis-attributes.
--- The `ps.team = pe.offense` guard makes attribution robust to those two
--- ambiguities: only offensive players (passer/rusher/receiver, whose
--- play_stats.team = the play's offense) are ever credited, so a defender-side
--- Sack/INT row cannot leak into an offense's passing EPA. Both team values
--- originate from CFBD, so the equality is safe; if a naming skew ever emptied
--- the mart, the empty-guard at the bottom fails loudly at deploy time.
+-- STAT_TYPE -> ROLE MAPPING: LIVE-VERIFIED 2026-07-20 via a presence check
+-- against production information_schema. ref.play_stat_types has EXACTLY 26
+-- names. The mapping below is drawn from that live 26-name catalog:
+--   passing (credit the passer):  'Completion', 'Incompletion',
+--                                  'Interception Thrown', 'Sack Taken'
+--   rushing:                      'Rush'
+--   receiving:                    'Reception', 'Target'
+-- 'Interception' and 'Sack' (no qualifier) ARE live stat_type names, but the
+-- presence check confirms they name the DEFENDER's event (the tackler/
+-- intercepting player), not the passer's -- they are deliberately EXCLUDED
+-- from this passing mapping rather than included and relied on the guard to
+-- filter out.
+-- There is no 'Passing Touchdown' / 'Rushing Touchdown' / 'Receiving
+-- Touchdown' stat_type in the live catalog. The generic 'Touchdown' stat_type
+-- IS live but is deliberately NOT mapped here: scoring plays already carry a
+-- Completion/Rush/Reception row (crediting the score via that role), and
+-- 'Touchdown' itself is role-ambiguous (it also fires on defensive/special-
+-- teams returns), so mapping it risks crediting a return TD to an offensive
+-- player.
+-- The `ps.team = pe.offense` guard remains as defense-in-depth: only
+-- offensive players (passer/rusher/receiver, whose play_stats.team = the
+-- play's offense) are ever credited, so a defender-side Sack/Interception row
+-- could never leak into an offense's passing EPA even if it were mistakenly
+-- added to the VALUES list above.
 -- =============================================================================
 
 DROP MATERIALIZED VIEW IF EXISTS marts.player_game_epa CASCADE;
@@ -71,25 +77,23 @@ DROP MATERIALIZED VIEW IF EXISTS marts.player_game_epa CASCADE;
 CREATE MATERIALIZED VIEW marts.player_game_epa AS
 WITH stat_type_roles (stat_type, play_category) AS (
     VALUES
-        -- Passer roles -> 'passing'
-        ('Completion',          'passing'),
-        ('Incompletion',        'passing'),
-        ('Passing Touchdown',   'passing'),
-        ('Interception',        'passing'),
-        ('Sack',                'passing'),
+        -- Passer roles -> 'passing' (live-verified 2026-07-20; excludes the
+        -- defender-side 'Interception'/'Sack' stat_types -- see header)
+        ('Completion',           'passing'),
+        ('Incompletion',         'passing'),
+        ('Interception Thrown',  'passing'),
+        ('Sack Taken',           'passing'),
         -- Rusher roles -> 'rushing'
-        ('Rush',                'rushing'),
-        ('Rushing Touchdown',   'rushing'),
+        ('Rush',                 'rushing'),
         -- Receiver roles -> 'receiving'
-        ('Reception',           'receiving'),
-        ('Target',              'receiving'),
-        ('Receiving Touchdown', 'receiving')
+        ('Reception',            'receiving'),
+        ('Target',               'receiving')
 ),
 role_plays AS (
     -- One EPA contribution per (game, play, athlete, role). DISTINCT collapses
     -- the multiple play_stats rows a single athlete gets for ONE role on ONE
-    -- play (e.g. Completion + Passing Touchdown; Reception + Target +
-    -- Receiving Touchdown) into a single counted play. The play-level metric
+    -- play (e.g. a completed pass to a receiver fires both 'Reception' and
+    -- 'Target' -- both receiving-role) into a single counted play. The play-level metric
     -- columns (season/team/epa/success/explosive/yards_gained) are functionally
     -- determined by (game_id, play_id) -- marts.play_epa is unique on play_id --
     -- so listing them under DISTINCT does not change the dedup grain. A player

@@ -9,26 +9,38 @@
 -- CFBD's authoritative per-game havoc table instead of the old
 -- play_type ILIKE '%sack%'/'%interception%'/'%fumble%' string heuristic.
 --
--- ASSUMED stats.game_havoc columns (dlt-flattened from the /stats/game/havoc
--- response; the LIVE table could NOT be inspected when this was written, so we
--- code to the API-documented shape). Each game row carries offense/defense
--- havoc splits, each with total / frontSeven / db sub-fields. dlt snake-cases
--- and double-underscores nested objects, so the DEFENSE split (havoc CREATED by
--- this team's defense -- what we want here) is ASSUMED to be:
---     defensive_havoc__total        -- overall defensive havoc rate (fraction 0..1)
---     defensive_havoc__front_seven  -- front-seven havoc rate (fraction 0..1)
---     defensive_havoc__db           -- defensive-back havoc rate (fraction 0..1)
--- (offensive_havoc__* is assumed present but is unused here.)
--- game_id -> season is derived by joining core.games, so NO `season` column is
--- assumed to exist on stats.game_havoc itself.
+-- LIVE-VERIFIED stats.game_havoc columns (2026-07-20 presence check against
+-- production information_schema; supersedes the prior "ASSUMED" column names
+-- below). The relevant columns are:
+--     season                                       bigint -- present directly
+--                                                             on the table; no
+--                                                             core.games join
+--                                                             needed for season
+--     defense__total_plays                         bigint
+--     defense__total_havoc_events                  bigint -- NULL when dlt
+--                                                             type-inferred a
+--                                                             double for a
+--                                                             given row; see
+--                                                             the VARIANT twin
+--                                                             below
+--     defense__total_havoc_events__v_double        float  -- dlt VARIANT twin
+--                                                             of the above;
+--                                                             always COALESCE
+--                                                             the pair
+--     defense__front_seven_havoc_events            bigint
+--     defense__front_seven_havoc_events__v_double  float  -- VARIANT twin
+--     defense__db_havoc_events                     bigint -- no variant column
+--     defense__havoc_rate / __front_seven_havoc_rate / __db_havoc_rate  float
+--       (CFBD-computed PER-GAME rates; NOT used here -- we recompute an
+--       event-weighted SEASON rate from the raw event/play counts instead,
+--       see AGGREGATION CHOICE below)
+-- (offense__* is present but is unused here.)
 --
 -- >>> DEPLOY-FAILURE DIAGNOSIS <<<
--- 1. If CREATE fails with 'column "defensive_havoc__..." does not exist', the
---    live dlt column names differ from the assumption above. Most likely
---    alternative: the API nests under `defense` (not `defensiveHavoc`), giving
---        defense__total / defense__front_seven / defense__db
---    Fix: swap the three column refs in the game_havoc_season CTE below (single
---    edit point) to the live names, then re-deploy.
+-- 1. If CREATE fails with 'column "defense__..." does not exist', the live
+--    dlt column names have drifted from the 2026-07-20 presence check above.
+--    Re-run the presence check against information_schema.columns and fix the
+--    column refs in the game_havoc_season CTE below (single edit point).
 -- 2. If the empty-guard at the bottom RAISEs (havoc_rate NULL for every row),
 --    stats.game_havoc contributed nothing: gate table empty, wrong dlt column
 --    names, or game_havoc.team not matching core.plays.defense naming.
@@ -36,11 +48,17 @@
 --    havoc values are percentages (0..100) not fractions; divide by 100 in the
 --    game_havoc_season CTE.
 --
--- AGGREGATION CHOICE (game -> season): SIMPLE AVG of per-game defensive havoc
--- rates. The endpoint provides RATES ONLY (no per-game defensive-play counts),
--- so snap-weighting is not possible from game_havoc alone. havoc_plays is then
--- reconstructed as ROUND(havoc_rate * defensive_plays); it is NULL for
--- team-seasons with no game_havoc coverage.
+-- AGGREGATION CHOICE (game -> season): EXACT event-weighted rate, upgraded
+-- from the prior simple-AVG-of-per-game-rates approximation now that the live
+-- table exposes per-game EVENT COUNTS (defense__total_havoc_events, etc.), not
+-- just rates:
+--     havoc_rate             = SUM(events) / NULLIF(SUM(defense__total_plays), 0)
+--     front_seven_havoc_rate = SUM(front_seven_events) / NULLIF(SUM(defense__total_plays), 0)
+--     db_havoc_rate          = SUM(db_events) / NULLIF(SUM(defense__total_plays), 0)
+-- where events / front_seven_events COALESCE the bigint column with its dlt
+-- __v_double VARIANT twin (db events have no variant column). havoc_plays is
+-- now the EXACT summed event count (ROUND(SUM(events)) for integer display),
+-- no longer reconstructed via havoc_rate x defensive_plays as before.
 --
 -- DISRUPTIVE COUNTS (sacks/interceptions/fumbles/turnovers_forced/stuffs/
 -- stuff_rate/tfls): RETAINED as play_type-derived APPROXIMATIONS (documented).
@@ -126,18 +144,31 @@ plays_agg AS (
     FROM defensive_plays
     GROUP BY team, season
 ),
--- Authoritative havoc rates from CFBD, aggregated game -> season (simple AVG).
--- game_id -> season via core.games (no season column assumed on game_havoc).
+-- Authoritative havoc rates from CFBD, aggregated game -> season via EXACT
+-- event-weighted SUM(events)/SUM(plays) (see AGGREGATION CHOICE above).
+-- stats.game_havoc carries its own `season` column (live-verified 2026-07-20)
+-- -- no core.games join needed here.
 game_havoc_season AS (
     SELECT
         gh.team,
-        g.season,
-        ROUND(AVG(gh.defensive_havoc__total)::numeric, 4)       AS havoc_rate,
-        ROUND(AVG(gh.defensive_havoc__front_seven)::numeric, 4) AS front_seven_havoc_rate,
-        ROUND(AVG(gh.defensive_havoc__db)::numeric, 4)          AS db_havoc_rate
+        gh.season,
+        ROUND(
+            SUM(COALESCE(gh.defense__total_havoc_events::double precision, gh.defense__total_havoc_events__v_double))
+        ::numeric)::int AS havoc_plays,
+        ROUND(
+            (SUM(COALESCE(gh.defense__total_havoc_events::double precision, gh.defense__total_havoc_events__v_double))
+                / NULLIF(SUM(gh.defense__total_plays), 0))
+        ::numeric, 4) AS havoc_rate,
+        ROUND(
+            (SUM(COALESCE(gh.defense__front_seven_havoc_events::double precision, gh.defense__front_seven_havoc_events__v_double))
+                / NULLIF(SUM(gh.defense__total_plays), 0))
+        ::numeric, 4) AS front_seven_havoc_rate,
+        ROUND(
+            (SUM(gh.defense__db_havoc_events::double precision)
+                / NULLIF(SUM(gh.defense__total_plays), 0))
+        ::numeric, 4) AS db_havoc_rate
     FROM stats.game_havoc gh
-    JOIN core.games g ON gh.game_id = g.id
-    GROUP BY gh.team, g.season
+    GROUP BY gh.team, gh.season
 )
 SELECT
     pa.team,
@@ -148,12 +179,13 @@ SELECT
     pa.opp_epa_per_play,
     pa.opp_success_rate,
 
-    -- Havoc plays: reconstructed count = authoritative season rate x competitive
-    -- defensive plays (game_havoc supplies rates, not counts). NULL when the
+    -- Havoc plays: EXACT event count summed directly from stats.game_havoc
+    -- (defense__total_havoc_events, COALESCEd with its dlt VARIANT double
+    -- column). No longer reconstructed from rate x plays. NULL when the
     -- team-season has no game_havoc coverage.
-    ROUND(gh.havoc_rate * pa.defensive_plays)::int AS havoc_plays,
+    gh.havoc_plays,
 
-    -- Authoritative havoc rate (CFBD stats.game_havoc, season AVG)
+    -- Authoritative havoc rate (CFBD stats.game_havoc, event-weighted season rate)
     gh.havoc_rate,
 
     -- Disruptive counts (play_type-derived approximations; see header)
@@ -165,7 +197,7 @@ SELECT
     pa.stuff_rate,
     pa.tfls,
 
-    -- Additive havoc splits (CFBD stats.game_havoc, season AVG)
+    -- Additive havoc splits (CFBD stats.game_havoc, event-weighted season rate)
     gh.front_seven_havoc_rate,
     gh.db_havoc_rate
 
@@ -198,8 +230,9 @@ BEGIN
         RAISE EXCEPTION
             'marts.defensive_havoc: havoc_rate is NULL for every row -- '
             'stats.game_havoc contributed nothing. Verify the gate table is '
-            'loaded, that the assumed dlt columns (defensive_havoc__total / '
-            '__front_seven / __db) match the live schema, and that '
+            'loaded, that the live-verified dlt columns (defense__total_havoc_events / '
+            '__front_seven_havoc_events / __db_havoc_events, plus their '
+            '__v_double variants) match the live schema, and that '
             'game_havoc.team matches core.plays.defense naming.';
     END IF;
 END $$;

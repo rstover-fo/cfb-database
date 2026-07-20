@@ -5,35 +5,38 @@
 -- Grain: (season, athlete_id) -- one row per player per season
 -- Source: stats.player_usage (CFBD GET /player/usage)
 --
--- ASSUMED SOURCE COLUMNS -- confidence: HIGH (verified against the live CFBD
--- OpenAPI spec at api.collegefootballdata.com/api-docs.json, response model
--- "PlayerUsage"), but NOT verified against the actual populated
--- stats.player_usage table -- the live DB was unreachable this session.
--- The loader (src/pipelines/sources/stats.py::player_usage_resource,
--- ~L184-216) yields the raw API dict unmodified. The primary key is
--- ["season", "id"] (src/pipelines/config/endpoints.py), confirming a top-level
--- "id" column survives dlt normalization untouched (it is already snake_case).
--- The response's "usage" field is a NESTED OBJECT (unlike stats.player_returning's
+-- LIVE-VERIFIED SOURCE COLUMNS (2026-07-20 presence check against production
+-- information_schema; supersedes the prior "ASSUMED" column list). The loader
+-- (src/pipelines/sources/stats.py::player_usage_resource, ~L184-216) yields
+-- the raw API dict unmodified. The primary key is ["season", "id"]
+-- (src/pipelines/config/endpoints.py), confirming a top-level "id" column
+-- survives dlt normalization untouched (it is already snake_case). The
+-- response's "usage" field is a NESTED OBJECT (unlike stats.player_returning's
 -- scalar "usage"), so dlt's default naming convention flattens it with a
 -- double-underscore separator:
---   season          (int)     -- primary key component
+--   season          (bigint)  -- primary key component
 --   id              (text)    -- primary key component; athlete id, exposed as athlete_id
 --   name            (text)    -- exposed as player_name
 --   position        (text)
 --   team            (text)
 --   conference      (text)
---   usage__overall         (double)  <- usage.overall
---   usage__pass            (double)  <- usage.pass
---   usage__rush            (double)  <- usage.rush
---   usage__first_down      (double)  <- usage.firstDown
---   usage__second_down     (double)  <- usage.secondDown
---   usage__third_down      (double)  <- usage.thirdDown
---   usage__standard_downs  (double)  <- usage.standardDowns
---   usage__passing_downs   (double)  <- usage.passingDowns
--- If deploy fails with "column ... does not exist", check
--- information_schema.columns for stats.player_usage and fix names above --
--- in particular re-check whether dlt used a single or double underscore
--- separator for the flattened "usage" sub-columns.
+--   usage__overall         (float)   <- usage.overall
+--   usage__pass            (bigint)  <- usage.pass -- dlt type-inferred bigint;
+--                                        a double-typed row's value instead
+--                                        lands in the VARIANT twin below --
+--                                        ALWAYS COALESCE the pair
+--   usage__pass__v_double  (float)   -- dlt VARIANT twin of usage__pass
+--   usage__rush            (float)   <- usage.rush
+--   usage__first_down      (float)   <- usage.firstDown
+--   usage__second_down     (float)   <- usage.secondDown
+--   usage__third_down      (bigint)  <- usage.thirdDown -- same bigint/VARIANT
+--                                        split as usage__pass; COALESCE it
+--   usage__third_down__v_double (float)  -- dlt VARIANT twin of usage__third_down
+--   usage__standard_downs  (float)   <- usage.standardDowns
+--   usage__passing_downs   (float)   <- usage.passingDowns
+-- If a future deploy fails with "column ... does not exist", re-run the
+-- presence check against information_schema.columns for stats.player_usage --
+-- dlt's variant-typing behavior can add new __v_* columns as data shape shifts.
 
 DROP MATERIALIZED VIEW IF EXISTS marts.player_usage CASCADE;
 
@@ -46,13 +49,15 @@ SELECT
     u.team,
     u.conference,
 
-    -- Usage shares, flattened from the nested "usage" object
+    -- Usage shares, flattened from the nested "usage" object. usage__pass and
+    -- usage__third_down COALESCE the bigint column with its dlt __v_double
+    -- VARIANT twin so variant-typed rows aren't silently NULLed out.
     ROUND(u."usage__overall"::numeric, 4) AS usage_overall,
-    ROUND(u."usage__pass"::numeric, 4) AS usage_pass,
+    ROUND(COALESCE(u."usage__pass"::double precision, u."usage__pass__v_double")::numeric, 4) AS usage_pass,
     ROUND(u."usage__rush"::numeric, 4) AS usage_rush,
     ROUND(u."usage__first_down"::numeric, 4) AS usage_first_down,
     ROUND(u."usage__second_down"::numeric, 4) AS usage_second_down,
-    ROUND(u."usage__third_down"::numeric, 4) AS usage_third_down,
+    ROUND(COALESCE(u."usage__third_down"::double precision, u."usage__third_down__v_double")::numeric, 4) AS usage_third_down,
     ROUND(u."usage__standard_downs"::numeric, 4) AS usage_standard_downs,
     ROUND(u."usage__passing_downs"::numeric, 4) AS usage_passing_downs
 

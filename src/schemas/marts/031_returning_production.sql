@@ -5,32 +5,34 @@
 -- Grain: (season, team) -- one row per team per season
 -- Source: stats.player_returning (CFBD GET /player/returning)
 --
--- ASSUMED SOURCE COLUMNS -- confidence: HIGH (verified against the live CFBD
--- OpenAPI spec at api.collegefootballdata.com/api-docs.json, response model
--- "ReturningProduction"), but NOT verified against the actual populated
--- stats.player_returning table -- the live DB was unreachable this session.
--- The loader (src/pipelines/sources/stats.py::player_returning_resource,
--- ~L219-251) yields the raw API dict unmodified, so dlt's default naming
--- convention 1:1 snake_cases each camelCase field below. The endpoint's
--- response has NO nested objects, so no double-underscore columns are
--- expected here (contrast with stats.player_usage's nested "usage" object).
---   season                (int)    -- primary key component
+-- LIVE-VERIFIED SOURCE COLUMNS (2026-07-20 presence check against production
+-- information_schema; supersedes the prior "ASSUMED" column list). The loader
+-- (src/pipelines/sources/stats.py::player_returning_resource, ~L219-251)
+-- yields the raw API dict unmodified, so dlt's default naming convention 1:1
+-- snake_cases each camelCase field below. The endpoint's response has NO
+-- nested objects, so no double-underscore columns are expected here (contrast
+-- with stats.player_usage's nested "usage" object) -- EXCEPT for
+-- total_receiving_ppa, where dlt type-inferred a bigint for some rows; a
+-- double-typed row's value instead lands in the VARIANT twin
+-- total_receiving_ppa__v_double -- ALWAYS COALESCE the pair.
+--   season                (bigint) -- primary key component
 --   team                  (text)   -- primary key component
 --   conference            (text)
---   total_ppa             (double)  <- totalPPA
---   total_passing_ppa     (double)  <- totalPassingPPA
---   total_receiving_ppa   (double)  <- totalReceivingPPA
---   total_rushing_ppa     (double)  <- totalRushingPPA
---   percent_ppa           (double)  <- percentPPA
---   percent_passing_ppa   (double)  <- percentPassingPPA
---   percent_receiving_ppa (double)  <- percentReceivingPPA
---   percent_rushing_ppa   (double)  <- percentRushingPPA
---   usage                 (double)  <- usage (scalar, NOT nested -- unlike player_usage)
---   passing_usage         (double)  <- passingUsage
---   receiving_usage       (double)  <- receivingUsage
---   rushing_usage         (double)  <- rushingUsage
--- If deploy fails with "column ... does not exist", check
--- information_schema.columns for stats.player_returning and fix names above.
+--   total_ppa             (float)   <- totalPPA
+--   total_passing_ppa     (float)   <- totalPassingPPA
+--   total_receiving_ppa   (bigint)  <- totalReceivingPPA -- COALESCE with
+--                                       total_receiving_ppa__v_double (float)
+--   total_rushing_ppa     (float)   <- totalRushingPPA
+--   percent_ppa           (float)   <- percentPPA
+--   percent_passing_ppa   (float)   <- percentPassingPPA
+--   percent_receiving_ppa (float)   <- percentReceivingPPA
+--   percent_rushing_ppa   (float)   <- percentRushingPPA
+--   usage                 (float)   <- usage (scalar, NOT nested -- unlike player_usage)
+--   passing_usage         (float)   <- passingUsage
+--   receiving_usage       (float)   <- receivingUsage
+--   rushing_usage         (float)   <- rushingUsage
+-- If a future deploy fails with "column ... does not exist", re-run the
+-- presence check against information_schema.columns for stats.player_returning.
 
 DROP MATERIALIZED VIEW IF EXISTS marts.returning_production CASCADE;
 
@@ -40,10 +42,12 @@ SELECT
     p.team,
     p.conference,
 
-    -- Total PPA returning (absolute)
+    -- Total PPA returning (absolute). total_receiving_ppa COALESCEs the
+    -- bigint column with its dlt __v_double VARIANT twin so variant-typed
+    -- rows aren't silently NULLed out.
     ROUND(p.total_ppa::numeric, 2) AS total_ppa,
     ROUND(p.total_passing_ppa::numeric, 2) AS total_passing_ppa,
-    ROUND(p.total_receiving_ppa::numeric, 2) AS total_receiving_ppa,
+    ROUND(COALESCE(p.total_receiving_ppa::double precision, p.total_receiving_ppa__v_double)::numeric, 2) AS total_receiving_ppa,
     ROUND(p.total_rushing_ppa::numeric, 2) AS total_rushing_ppa,
 
     -- Percent of last season's PPA returning (renamed from percent_* for clarity)

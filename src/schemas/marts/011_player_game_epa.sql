@@ -89,34 +89,46 @@ WITH stat_type_roles (stat_type, play_category) AS (
         ('Reception',            'receiving'),
         ('Target',               'receiving')
 ),
-role_plays AS (
-    -- One EPA contribution per (game, play, athlete, role). DISTINCT collapses
-    -- the multiple play_stats rows a single athlete gets for ONE role on ONE
-    -- play (e.g. a completed pass to a receiver fires both 'Reception' and
-    -- 'Target' -- both receiving-role) into a single counted play. The play-level metric
-    -- columns (season/team/epa/success/explosive/yards_gained) are functionally
-    -- determined by (game_id, play_id) -- marts.play_epa is unique on play_id --
-    -- so listing them under DISTINCT does not change the dedup grain. A player
-    -- may still earn credit in TWO categories on the same play (passer + rusher
-    -- on a trick play): those are distinct roles and are intended.
+role_athletes AS (
+    -- One row per (game, play, athlete, team, role), deduped BEFORE the EPA
+    -- join. The multiple play_stats rows a single athlete gets for ONE role on
+    -- ONE play (e.g. a completed pass fires both 'Reception' and 'Target' --
+    -- both receiving-role) collapse here over a narrow all-text/int key, which
+    -- is far cheaper than deduping the joined set with its float metric
+    -- columns. A player may still earn credit in TWO categories on the same
+    -- play (passer + rusher on a trick play): distinct roles, intended.
     SELECT DISTINCT
+        ps.game_id,
+        ps.play_id,
+        ps.athlete_id,
+        ps.team,
+        r.play_category
+    FROM stats.play_stats ps
+    JOIN stat_type_roles r ON r.stat_type = ps.stat_type
+),
+role_plays AS (
+    -- marts.play_epa is unique per play_id, so joining the pre-deduped
+    -- role_athletes cannot re-introduce duplicates -- no DISTINCT needed here.
+    -- The season floor matches stats.play_stats coverage (~2014+) and prunes
+    -- the play_epa scan for the planner.
+    SELECT
         pe.game_id,
         pe.season,
         pe.offense AS team,
-        ps.athlete_id,
-        r.play_category,
-        ps.play_id,
+        ra.athlete_id,
+        ra.play_category,
+        ra.play_id,
         pe.epa,
         pe.success,
         pe.explosive,
         pe.yards_gained
-    FROM stats.play_stats ps
-    JOIN stat_type_roles r ON r.stat_type = ps.stat_type
+    FROM role_athletes ra
     JOIN marts.play_epa pe
-        ON pe.game_id = ps.game_id
-       AND pe.play_id = ps.play_id
-    WHERE ps.team = pe.offense      -- credit only the offense (see header)
+        ON pe.game_id = ra.game_id
+       AND pe.play_id = ra.play_id
+    WHERE ra.team = pe.offense      -- credit only the offense (see header)
       AND NOT pe.is_garbage_time
+      AND pe.season >= 2014         -- play_stats coverage floor (see header)
 ),
 athlete_names AS (
     -- One display name per (game, athlete). play_stats.athlete_name repeats

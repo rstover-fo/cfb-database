@@ -744,9 +744,7 @@ class TestGameDrives:
         )
         assert len(rows) > 0, f"No drives found for game_id {EXAMPLE_GAME_ID}"
         drive_numbers = [r[0] for r in rows]
-        assert drive_numbers == sorted(drive_numbers), (
-            "Drives are not ordered by drive_number"
-        )
+        assert drive_numbers == sorted(drive_numbers), "Drives are not ordered by drive_number"
 
     def test_offense_and_defense_populated(self, db_conn):
         """Drives for a completed game should have offense/defense teams."""
@@ -760,9 +758,7 @@ class TestGameDrives:
             """,
             (EXAMPLE_GAME_ID,),
         )
-        assert count_missing == 0, (
-            f"Found {count_missing} drives with NULL offense/defense"
-        )
+        assert count_missing == 0, f"Found {count_missing} drives with NULL offense/defense"
 
 
 # ---------------------------------------------------------------------------

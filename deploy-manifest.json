@@ -1,0 +1,23 @@
+{
+  "action": "apply",
+  "marts_from": "029",
+  "files": [
+    "src/schemas/marts/005_defensive_havoc.sql",
+    "src/schemas/marts/011_player_game_epa.sql",
+    "src/schemas/marts/012_player_season_epa.sql",
+    "src/schemas/api/019_team_wepa_season.sql",
+    "src/schemas/api/020_player_wepa_leaders.sql",
+    "src/schemas/api/021_team_returning_production.sql",
+    "src/schemas/api/022_player_usage_leaders.sql",
+    "src/schemas/api/023_team_ats.sql",
+    "src/schemas/functions/get_player_detail.sql",
+    "src/schemas/functions/get_player_game_log.sql",
+    "src/schemas/functions/is_garbage_time.sql",
+    "src/schemas/functions/refresh_all_marts.sql",
+    "src/schemas/public/006_play_analysis_functions.sql",
+    "src/schemas/public/005_team_split_functions.sql",
+    "src/schemas/public/002_marts_views.sql",
+    "src/schemas/migrations/grant_read_access_for_security_invoker.sql"
+  ],
+  "refresh": true
+}

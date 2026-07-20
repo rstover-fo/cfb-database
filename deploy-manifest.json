@@ -1,6 +1,7 @@
 {
   "action": "apply",
   "files": [
+    "src/schemas/migrations/021_prep_player_epa_build.sql",
     "src/schemas/marts/011_player_game_epa.sql",
     "src/schemas/marts/012_player_season_epa.sql",
     "src/schemas/api/019_team_wepa_season.sql",
@@ -17,5 +18,5 @@
     "src/schemas/public/002_marts_views.sql",
     "src/schemas/migrations/grant_read_access_for_security_invoker.sql"
   ],
-  "refresh": true
+  "refresh": false
 }

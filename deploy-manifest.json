@@ -1,8 +1,6 @@
 {
-  "action": "backfill",
-  "backfill": {
-    "start": 2000,
-    "end": 2025,
-    "sources": "rankings"
-  }
+  "action": "apply",
+  "files": [
+    "src/schemas/api/027_poll_rankings.sql"
+  ]
 }

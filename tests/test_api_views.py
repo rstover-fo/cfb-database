@@ -258,6 +258,7 @@ GAME_PLAYS_COLUMNS = {
 
 POLL_RANKINGS_COLUMNS = {
     "season",
+    "season_type",
     "week",
     "poll",
     "rank",
@@ -817,17 +818,41 @@ class TestPollRankings:
     """api.poll_rankings — weekly poll rankings."""
 
     def test_ap_top_25_has_25_rows_for_a_2024_week(self, db_conn):
-        """AP Top 25 for a 2024 regular-season week should have 25 rows."""
+        """AP Top 25 for a 2024 regular-season week should have 25 rows.
+
+        Regression: under the old [season, week, poll, rank] merge key this
+        week had only 24 rows -- two teams were tied at #11 (rank 12 skipped)
+        and the rank-keyed merge silently dropped one of them. The key now
+        includes school, so tied teams both survive.
+        """
         count = _fetch_count(
             db_conn,
             """
             SELECT COUNT(*)
             FROM api.poll_rankings
-            WHERE season = %s AND poll = %s AND week = %s
+            WHERE season = %s AND poll = %s AND week = %s AND season_type = %s
             """,
-            (2024, "AP Top 25", 10),
+            (2024, "AP Top 25", 10, "regular"),
         )
         assert count == 25, f"AP Top 25 week 10, 2024 has {count} rows, expected 25"
+
+    def test_tied_ranks_are_preserved(self, db_conn):
+        """2024 week 10 had two teams tied at #11 (and therefore no #12).
+        Both tied teams must be present -- the tie is the exact shape the old
+        rank-keyed merge destroyed."""
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT COUNT(*) FILTER (WHERE rank = 11),
+                   COUNT(*) FILTER (WHERE rank = 12)
+            FROM api.poll_rankings
+            WHERE season = %s AND poll = %s AND week = %s AND season_type = %s
+            """,
+            (2024, "AP Top 25", 10, "regular"),
+        )
+        at_11, at_12 = rows[0]
+        assert at_11 == 2, f"Expected 2 teams tied at rank 11, got {at_11}"
+        assert at_12 == 0, f"Expected rank 12 to be skipped (tie above), got {at_12} rows"
 
     def test_rank_range(self, db_conn):
         """Rank should be between 1 and 25 for AP Top 25."""
@@ -845,29 +870,33 @@ class TestPollRankings:
         assert max_rank <= 25, f"Max rank is {max_rank}, expected <= 25"
 
     def test_week_1_not_clobbered_by_postseason(self, db_conn):
-        """Documented risk (027_poll_rankings.sql): the pipeline's merge key
-        [season, week, poll, rank] has no season_type, and CFBD's postseason
-        payload commonly reports "week": 1 -- the same key as regular-season
-        week 1. A true collision upserts one over the other, so duplicate rows
-        can never appear in this table (the merge key forbids it); the failure
-        mode is silent overwrite, not duplication.
-
-        This can only assert the row count still looks like a normal week-1
-        poll (25 for AP Top 25). It cannot, on its own, prove which payload
-        "won" the merge -- that requires comparing against a known-correct
-        week-1 ranking snapshot from CFBD, which is a follow-up once DB/API
-        access is available (see the view's header comment).
+        """CFBD reports the final (postseason) poll as week 1. Under the old
+        [season, week, poll, rank] merge key that collided with the actual
+        regular-season week 1 poll and one silently overwrote the other. The
+        key now includes season_type, so both coexist: this asserts the
+        regular-season week 1 poll is a full 25 rows AND the postseason final
+        poll exists as its own distinct rows.
         """
-        count = _fetch_count(
+        regular = _fetch_count(
             db_conn,
             """
             SELECT COUNT(*)
             FROM api.poll_rankings
-            WHERE season = %s AND poll = %s AND week = %s
+            WHERE season = %s AND poll = %s AND week = %s AND season_type = %s
             """,
-            (2024, "AP Top 25", 1),
+            (2024, "AP Top 25", 1, "regular"),
         )
-        assert count == 25, (
-            f"AP Top 25 week 1, 2024 has {count} rows, expected 25 -- "
-            "investigate for postseason/week-1 collision (see 027_poll_rankings.sql)"
+        assert regular == 25, f"AP Top 25 regular week 1, 2024 has {regular} rows, expected 25"
+
+        postseason = _fetch_count(
+            db_conn,
+            """
+            SELECT COUNT(*)
+            FROM api.poll_rankings
+            WHERE season = %s AND poll = %s AND season_type = %s
+            """,
+            (2024, "AP Top 25", "postseason"),
+        )
+        assert postseason == 25, (
+            f"AP Top 25 postseason (final) poll for 2024 has {postseason} rows, expected 25"
         )

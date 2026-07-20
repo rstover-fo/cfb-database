@@ -441,7 +441,7 @@ RANKINGS_ENDPOINTS = {
     "rankings": EndpointConfig(
         path="/rankings",
         table_name="rankings",
-        primary_key=["season", "week", "poll", "rank"],
+        primary_key=["season", "season_type", "week", "poll", "school"],
         schema="core",
         write_disposition="merge",
     ),

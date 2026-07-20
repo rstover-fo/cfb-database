@@ -80,14 +80,16 @@ class TestPlayerGameEpaRebuild:
     """
 
     def test_athlete_id_column_exists(self, db_conn):
+        # information_schema.columns does NOT list materialized-view columns
+        # in Postgres; introspect pg_attribute instead.
         row = _fetch_one(
             db_conn,
             """
             SELECT 1
-            FROM information_schema.columns
-            WHERE table_schema = 'marts'
-              AND table_name = 'player_game_epa'
-              AND column_name = 'athlete_id'
+            FROM pg_attribute
+            WHERE attrelid = 'marts.player_game_epa'::regclass
+              AND attname = 'athlete_id'
+              AND NOT attisdropped
             """,
         )
         assert row is not None, "marts.player_game_epa should expose an athlete_id column"

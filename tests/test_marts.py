@@ -37,6 +37,11 @@ MARTS_VIEWS = [
     "team_style_profile",
     "team_talent_composite",
     "team_tempo_metrics",
+    "team_wepa_season",
+    "player_wepa_season",
+    "returning_production",
+    "player_usage",
+    "team_ats_records",
     "transfer_portal_impact",
 ]
 

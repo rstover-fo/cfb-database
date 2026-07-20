@@ -138,7 +138,10 @@ def load_season(
         print(f"\n  Total estimated:  ~{total_est:,} calls")
         print(f"  Budget remaining: {remaining:,} calls")
         if upcoming_schedule:
-            print(f"  + Refresh {upcoming_schedule} schedule (games source, ~15 calls)")
+            print(
+                f"  + Refresh {upcoming_schedule} schedule + betting lines "
+                "(games + betting sources, ~20 calls)"
+            )
         if not skip_refresh:
             print("  + Refresh all materialized views after loading")
         return {"dry_run": True, "estimated_calls": total_est}
@@ -184,26 +187,35 @@ def load_season(
             results[src] = {"status": "error", "duration_s": round(elapsed, 1), "error": str(e)}
             logger.error(f"  {src} failed after {elapsed:.1f}s: {e}")
 
-    # Off-season: keep the upcoming season's published schedule fresh
+    # Off-season: keep the upcoming season's published schedule and betting
+    # lines fresh. Betting matters here because line_snapshots only records
+    # pending games -- pre-August, only the upcoming season has any, so
+    # skipping it would lose exactly the preseason line-movement history the
+    # append-only snapshot feature exists to capture.
     if upcoming_schedule:
-        logger.info(f"Refreshing upcoming season {upcoming_schedule} schedule...")
-        src_start = time.time()
-        try:
-            info = run_games_pipeline(years=[upcoming_schedule])
-            elapsed = time.time() - src_start
-            results["games_upcoming"] = {
-                "status": "ok",
-                "duration_s": round(elapsed, 1),
-                "info": str(info),
-            }
-        except Exception as e:
-            elapsed = time.time() - src_start
-            results["games_upcoming"] = {
-                "status": "error",
-                "duration_s": round(elapsed, 1),
-                "error": str(e),
-            }
-            logger.error(f"  upcoming schedule failed after {elapsed:.1f}s: {e}")
+        upcoming_runners = {
+            "games_upcoming": lambda: run_games_pipeline(years=[upcoming_schedule]),
+            "betting_upcoming": lambda: run_betting_pipeline(years=[upcoming_schedule]),
+        }
+        for name, runner in upcoming_runners.items():
+            logger.info(f"Refreshing upcoming season {upcoming_schedule}: {name}...")
+            src_start = time.time()
+            try:
+                info = runner()
+                elapsed = time.time() - src_start
+                results[name] = {
+                    "status": "ok",
+                    "duration_s": round(elapsed, 1),
+                    "info": str(info),
+                }
+            except Exception as e:
+                elapsed = time.time() - src_start
+                results[name] = {
+                    "status": "error",
+                    "duration_s": round(elapsed, 1),
+                    "error": str(e),
+                }
+                logger.error(f"  {name} failed after {elapsed:.1f}s: {e}")
 
     # Refresh marts
     if not skip_refresh:

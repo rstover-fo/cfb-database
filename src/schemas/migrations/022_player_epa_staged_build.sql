@@ -16,6 +16,9 @@
 -- bounds and bumping the horizon in marts/011 (noted in the 2027-proofing
 -- follow-up list).
 
+-- NOTE: this CREATE TABLE is intentionally duplicated in
+-- marts/011_player_game_epa.sql so the mart file stands alone in any
+-- provisioning order; keep the two definitions in sync.
 CREATE TABLE IF NOT EXISTS analytics.player_game_epa_build (
     game_id BIGINT NOT NULL,
     season BIGINT,

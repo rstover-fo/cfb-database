@@ -77,6 +77,29 @@
 -- visible instead of a multi-hour hang (see migrations/021_prep_player_epa_build.sql).
 SET statement_timeout = '1800s';
 
+-- Prerequisite: the staging table this matview reads history from. DDL is
+-- intentionally duplicated from migrations/022_player_epa_staged_build.sql
+-- (which also POPULATES it) so this file stands alone in any provisioning
+-- order -- a clean-database run_marts.py pass creates the mart with empty
+-- history plus the live arm, and the empty-guard below directs the operator
+-- to run 022 for the historical seasons.
+CREATE TABLE IF NOT EXISTS analytics.player_game_epa_build (
+    game_id BIGINT NOT NULL,
+    season BIGINT,
+    team VARCHAR NOT NULL,
+    player_name VARCHAR,
+    athlete_id VARCHAR NOT NULL,
+    play_category TEXT NOT NULL,
+    plays BIGINT,
+    total_epa NUMERIC(8, 2),
+    epa_per_play NUMERIC(6, 4),
+    success_rate NUMERIC(5, 3),
+    explosive_plays BIGINT,
+    total_yards BIGINT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS player_game_epa_build_key
+    ON analytics.player_game_epa_build (game_id, team, athlete_id, play_category);
+
 DROP MATERIALIZED VIEW IF EXISTS marts.player_game_epa CASCADE;
 
 -- STAGED-BUILD STRUCTURE (2026-07-20): a single-query build of the full
@@ -203,6 +226,6 @@ CREATE INDEX ON marts.player_game_epa (total_epa DESC);
 DO $$
 BEGIN
     IF (SELECT count(*) FROM marts.player_game_epa) = 0 THEN
-        RAISE EXCEPTION 'marts.player_game_epa is empty: stats.play_stats has no matching rows (backfill the stats source -- deploy/tier1-backfill, action=backfill, sources=stats -- then refresh this mart), OR the stat_type/team assumptions in this file no longer match the live table (see header comment).';
+        RAISE EXCEPTION 'marts.player_game_epa is empty: run migrations/022_player_epa_staged_build.sql to populate the analytics.player_game_epa_build history table (and backfill stats.play_stats first if it is empty), then refresh this mart. If both are populated, the stat_type/team assumptions in this file no longer match the live table (see header comment).';
     END IF;
 END $$;

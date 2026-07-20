@@ -79,7 +79,28 @@ SET statement_timeout = '1800s';
 
 DROP MATERIALIZED VIEW IF EXISTS marts.player_game_epa CASCADE;
 
+-- STAGED-BUILD STRUCTURE (2026-07-20): a single-query build of the full
+-- 2014+ history exceeds this compute tier (see migrations/
+-- 022_player_epa_staged_build.sql, which builds seasons 2014-2025 into
+-- analytics.player_game_epa_build one season at a time). This matview reads
+-- that static history and computes ONLY the current season (>= 2026) live,
+-- so REFRESH stays one-season-sized in perpetuity. HISTORY HORIZON: after
+-- the 2026 season, fold 2026 into the staging table (extend 022's loop) and
+-- bump both the <= 2025 and >= 2026 bounds here (2027-proofing follow-up).
+
 CREATE MATERIALIZED VIEW marts.player_game_epa AS
+SELECT
+    game_id, season, team, player_name, athlete_id, play_category,
+    plays, total_epa, epa_per_play, success_rate, explosive_plays, total_yards
+FROM analytics.player_game_epa_build
+WHERE season <= 2025
+
+UNION ALL
+
+SELECT
+    game_id, season, team, player_name, athlete_id, play_category,
+    plays, total_epa, epa_per_play, success_rate, explosive_plays, total_yards
+FROM (
 WITH stat_type_roles (stat_type, play_category) AS (
     VALUES
         -- Passer roles -> 'passing' (live-verified 2026-07-20; excludes the
@@ -110,6 +131,7 @@ role_athletes AS (
         r.play_category
     FROM stats.play_stats ps
     JOIN stat_type_roles r ON r.stat_type = ps.stat_type
+    WHERE ps.season >= 2026         -- live arm: current season only (history horizon)
 ),
 role_plays AS (
     -- marts.play_epa is unique per play_id, so joining the pre-deduped
@@ -133,7 +155,7 @@ role_plays AS (
        AND pe.play_id = ra.play_id
     WHERE ra.team = pe.offense      -- credit only the offense (see header)
       AND NOT pe.is_garbage_time
-      AND pe.season >= 2014         -- play_stats coverage floor (see header)
+      AND pe.season >= 2026         -- live arm: current season only (history horizon)
 ),
 athlete_names AS (
     -- One display name per (game, athlete). play_stats.athlete_name repeats
@@ -144,6 +166,7 @@ athlete_names AS (
         athlete_id,
         MAX(athlete_name) AS player_name
     FROM stats.play_stats
+    WHERE season >= 2026            -- live arm: current season only
     GROUP BY game_id, athlete_id
 )
 SELECT
@@ -164,7 +187,8 @@ LEFT JOIN athlete_names an
     ON an.game_id = rp.game_id
    AND an.athlete_id = rp.athlete_id
 GROUP BY rp.game_id, rp.season, rp.team, rp.athlete_id, rp.play_category
-HAVING COUNT(*) >= 3;  -- Minimum 3 plays per player/game/category
+HAVING COUNT(*) >= 3   -- Minimum 3 plays per player/game/category
+) AS live_current_season;
 
 -- Unique index: rekeyed on athlete_id (required for REFRESH CONCURRENTLY).
 CREATE UNIQUE INDEX ON marts.player_game_epa (game_id, team, athlete_id, play_category);

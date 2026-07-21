@@ -223,14 +223,14 @@ SELECT
     edge_threshold,
     n_games,
     n_with_market,
-    ROUND(margin_mae, 4) AS margin_mae,
-    ROUND(margin_rmse, 4) AS margin_rmse,
+    ROUND(margin_mae::numeric, 4) AS margin_mae,
+    ROUND(margin_rmse::numeric, 4) AS margin_rmse,
     ats_wins,
     ats_losses,
     ats_pushes,
     ROUND(ats_wins::numeric / NULLIF(ats_wins + ats_losses, 0), 4) AS ats_hit_rate,
-    ROUND(brier, 6) AS brier,
-    ROUND(cfbd_brier, 6) AS cfbd_brier,
+    ROUND(brier::numeric, 6) AS brier,
+    ROUND(cfbd_brier::numeric, 6) AS cfbd_brier,
     n_scored_win_prob
 FROM agg;
 

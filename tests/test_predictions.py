@@ -20,10 +20,12 @@ from scripts.compute_predictions import (
     build_predictions_for_game,
     carryover_rating,
     compute_edge,
+    compute_week_index,
     elo_margin,
     elo_win_prob,
     epa_margin,
     lookup_epa_coefs,
+    lookup_epa_coefs_asof,
     resolve_elo,
 )
 
@@ -241,3 +243,93 @@ class TestBuildPredictionsForGame:
         for r in rows:
             assert r["market_home_margin"] == pytest.approx(7.0)
             assert r["market_spread"] == pytest.approx(-7.0)
+
+
+class TestComputeWeekIndex:
+    def test_regular_passthrough(self):
+        assert compute_week_index(1, "regular") == 1
+        assert compute_week_index(15, "regular") == 15
+
+    def test_postseason_offset(self):
+        assert compute_week_index(1, "postseason") == 101
+
+
+class TestLookupEpaCoefsAsof:
+    WEEK_ROWS = {
+        "Alabama": [
+            (2, {"off_coef": 0.05, "def_coef": -0.02, "hfa_coef": 0.1, "plays": 70}),
+            (4, {"off_coef": 0.10, "def_coef": -0.04, "hfa_coef": 0.1, "plays": 210}),
+            (8, {"off_coef": 0.20, "def_coef": -0.06, "hfa_coef": 0.1, "plays": 500}),
+        ]
+    }
+    PRIOR = {("Alabama", 2018): {"off_coef": 0.15, "def_coef": -0.05, "hfa_coef": 0.1}}
+
+    def test_greatest_qualifying_week_at_or_before_wi(self):
+        row, src = lookup_epa_coefs_asof(self.WEEK_ROWS, self.PRIOR, "Alabama", 2019, 6)
+        assert src == "week"
+        assert row["off_coef"] == 0.10
+
+    def test_thin_plays_routes_to_prior_season(self):
+        # entering week 2: only the 70-play row qualifies by position but
+        # fails the plays >= 150 predicate -> prior-season fallback
+        row, src = lookup_epa_coefs_asof(self.WEEK_ROWS, self.PRIOR, "Alabama", 2019, 2)
+        assert src == "prior_season"
+        assert row["off_coef"] == 0.15
+
+    def test_future_weeks_excluded(self):
+        row, src = lookup_epa_coefs_asof(self.WEEK_ROWS, self.PRIOR, "Alabama", 2019, 8)
+        assert src == "week"
+        assert row["off_coef"] == 0.20  # wi=8 row IS the entering-week-8 fit
+        row6, _ = lookup_epa_coefs_asof(self.WEEK_ROWS, self.PRIOR, "Alabama", 2019, 7)
+        assert row6["off_coef"] == 0.10  # week-8 boundary not visible at wi=7
+
+    def test_unknown_team_no_prior_returns_none(self):
+        row, src = lookup_epa_coefs_asof(self.WEEK_ROWS, {}, "Rice", 2019, 6)
+        assert row is None
+        assert src == "none"
+
+    def test_postseason_wi_resolves_to_last_boundary(self):
+        row, src = lookup_epa_coefs_asof(self.WEEK_ROWS, self.PRIOR, "Alabama", 2019, 101)
+        assert src == "week"
+        assert row["off_coef"] == 0.20
+
+
+class TestBuildPredictionsAsOfBypass:
+    GAME = {
+        "game_id": 1,
+        "season": 2019,
+        "week": 6,
+        "season_type": "regular",
+        "home_team": "Alabama",
+        "away_team": "Auburn",
+        "neutral_site": False,
+    }
+
+    def test_epa_rows_bypass_ignores_lookup_dict(self):
+        home = {"off_coef": 0.2, "def_coef": -0.1, "hfa_coef": 0.1}
+        away = {"off_coef": 0.1, "def_coef": -0.05, "hfa_coef": 0.1}
+        rows = build_predictions_for_game(
+            self.GAME, 1600, 1500, {}, epa_lookback=0, market=None, epa_rows=(home, away)
+        )
+        blend = next(r for r in rows if r["model_version"] == MODEL_BLEND)
+        assert blend["epa_margin"] is not None
+
+    def test_elo_row_identical_with_and_without_epa_rows(self):
+        home = {"off_coef": 0.2, "def_coef": -0.1, "hfa_coef": 0.1}
+        away = {"off_coef": 0.1, "def_coef": -0.05, "hfa_coef": 0.1}
+        with_rows = build_predictions_for_game(
+            self.GAME, 1600, 1500, {}, epa_lookback=0, market=None, epa_rows=(home, away)
+        )
+        without = build_predictions_for_game(self.GAME, 1600, 1500, {}, epa_lookback=0, market=None)
+        elo_a = next(r for r in with_rows if r["model_version"] == MODEL_ELO)
+        elo_b = next(r for r in without if r["model_version"] == MODEL_ELO)
+        assert elo_a == elo_b
+
+    def test_none_side_falls_back_to_elo_only_blend(self):
+        rows = build_predictions_for_game(
+            self.GAME, 1600, 1500, {}, epa_lookback=0, market=None, epa_rows=(None, None)
+        )
+        blend = next(r for r in rows if r["model_version"] == MODEL_BLEND)
+        elo = next(r for r in rows if r["model_version"] == MODEL_ELO)
+        assert blend["epa_margin"] is None
+        assert blend["expected_home_margin"] == elo["expected_home_margin"]

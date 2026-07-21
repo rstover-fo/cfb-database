@@ -17,6 +17,9 @@ dev = [
 compute = [
     "numpy>=1.26",
 ]
+recaps = [
+    "anthropic>=0.40.0",
+]
 
 [project.scripts]
 cfb-pipeline = "src.pipelines.run:main"

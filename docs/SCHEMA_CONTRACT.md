@@ -15,6 +15,23 @@ Last updated: 2026-07-21
 
 ## Recent Contract Changes
 
+- **2026-07-21 — `api.game_recaps` added (Pending deploy).** P3.3 Lane D: nightly
+  LLM-generated game recaps, one row per completed FBS game (season >= 2014), written by
+  `scripts/generate_recaps.py` (model `claude-haiku-4-5`) from warehouse facts only --
+  scores, top-EPA plays, win-probability swings when available, box-score leaders, and the
+  betting-line result. **Content is LLM-generated from warehouse facts, not CFBD data** --
+  treat as editorial/narrative content, not a structured stat, and do not assume two reads
+  of the same game return byte-identical prose. A game is regenerated only when an operator
+  flips `analytics.game_recaps.regenerate` true; otherwise a recap is written once and left
+  as-is. A missing `game_id` means "not yet generated," not "no recap available." cfb-app
+  consumer note: render `headline`/`recap` as prose, not as data to parse or chart, and treat
+  `wp_available = false` as a signal the recap's momentum framing came from an EPA-only
+  fallback rather than real win-probability data. Backed by `analytics.game_recaps`
+  (`src/schemas/migrations/027_game_recaps.sql`); exposed via
+  `src/schemas/api/034_game_recaps.sql`. **Pending deploy** -- not yet live (see
+  `deploys/p33-apply-manifest.json`); do not query until this entry is updated to
+  **Live**/**Deployed**.
+
 - **2026-07-21 — Tier 2 analytics: house Elo, ridge-adjusted EPA, scored edges, predictions.**
   Five new `marts.*` materialized views and five new `api.*` views add a house-generated
   opinion layer on top of the warehouse's authoritative CFBD data. All of it is
@@ -170,6 +187,7 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.scored_matchup_edges` | **Live** | Varies (in-season) | House model expected margin/win probability vs. the market line for upcoming games, with the resulting edge. Empty out of season by design -- not a failure. Columns: game_id, season, week, season_type, start_date, home_team, away_team, neutral_site, model_version, prediction_date, home_elo_pregame, away_elo_pregame, elo_margin, epa_margin, expected_home_margin, home_win_prob, market_provider, market_spread, market_home_margin, market_captured_at, edge, edge_pick, abs_edge |
 | `api.prediction_accuracy` | **Live** | ~90 | Retroactive scoring of house predictions by season/model/edge-threshold: margin MAE/RMSE, ATS record, Brier score (house vs. CFBD). Columns: model_version, season, edge_threshold, n_games, n_with_market, margin_mae, margin_rmse, ats_wins, ats_losses, ats_pushes, ats_hit_rate, brier, cfbd_brier, n_scored_win_prob |
 | `api.game_predictions` | **Live** | ~20,000+ | Latest house prediction snapshot per (game, model), from the append-only `predictions.game_predictions` log. Columns: prediction_id, computed_at, prediction_date, model_version, game_id, season, week, season_type, home_team, away_team, neutral_site, home_elo_pregame, away_elo_pregame, elo_margin, epa_margin, expected_home_margin, home_win_prob, market_provider, market_home_margin, market_spread, market_captured_at, edge, edge_pick |
+| `api.game_recaps` | **Pending deploy** | -- | Nightly LLM-generated game recap. **Content is LLM-generated from warehouse facts, not CFBD data** -- regenerated only via the `regenerate` flag; a missing `game_id` means not yet generated. cfb-app should render `headline`/`recap` as prose, not structured stats. Columns: game_id, season, week, headline, recap, wp_available, model, generated_at |
 
 ### Marts (schema: `marts`) -- Materialized Views
 

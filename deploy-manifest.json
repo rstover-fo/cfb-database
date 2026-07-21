@@ -1,4 +1,6 @@
 {
   "action": "compute",
-  "compute": {"script": "train_model", "args": ["--seasons", "2018", "2025"]}
+  "compute": {"script": "score_fitted", "args": ["--backfill", "2018", "2025"]},
+  "refresh": true,
+  "refresh_views": ["marts.prediction_accuracy"]
 }

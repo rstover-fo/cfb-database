@@ -1,0 +1,6 @@
+{
+  "action": "compute",
+  "compute": {"script": "compute_predictions", "args": ["--backfill", "2015", "2025", "--as-of-week"]},
+  "refresh": true,
+  "refresh_views": ["marts.prediction_accuracy", "marts.scored_matchup_edges"]
+}

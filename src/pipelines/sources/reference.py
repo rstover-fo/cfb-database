@@ -162,11 +162,20 @@ def draft_positions_resource():
     primary_key=["location", "nickname"],
 )
 def draft_teams_resource():
-    """Load NFL draft teams."""
+    """Load NFL draft teams.
+
+    CFBD's DraftTeam.nickname is nullable, but it's part of the merge key
+    (location alone isn't unique -- e.g. New York Giants/Jets share
+    location "New York"). A NULL nickname makes dlt's NormalizeJobFailed
+    reject the row ("Cannot coerce NULL ... column nickname which is not
+    nullable"), so stamp any missing nickname to "" before it reaches dlt.
+    """
     client = get_client()
     try:
         data = make_request(client, "/draft/teams")
-        yield from data
+        for row in data:
+            row["nickname"] = row.get("nickname") or ""
+            yield row
     finally:
         client.close()
 

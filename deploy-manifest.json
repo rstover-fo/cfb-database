@@ -1,0 +1,4 @@
+{
+  "action": "apply",
+  "files": ["src/schemas/public/005_team_split_functions.sql", "src/schemas/public/006_play_analysis_functions.sql"]
+}

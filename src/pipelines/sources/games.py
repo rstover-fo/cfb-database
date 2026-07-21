@@ -82,6 +82,12 @@ def games_resource(years: list[int]) -> Iterator[dict]:
 def drives_resource(years: list[int]) -> Iterator[dict]:
     """Load drives for specified years.
 
+    CFBD's /drives can return drives for game ids that /games no longer
+    lists for the same year (e.g. 2025's 401754543 -- cancelled/delisted
+    games whose partial drive data lingers). Such rows have no parent for
+    fk_drives_game, so each year's drives are filtered against that year's
+    /games id set; dropped drives are logged, never loaded.
+
     Args:
         years: List of years to load drives for
     """
@@ -90,21 +96,41 @@ def drives_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading drives for {year}...")
 
+            game_ids = {
+                game["id"] for game in make_request(client, "/games", params={"year": year})
+            }
+
+            year_drives: list[dict] = []
+            orphan_ids: set[int | None] = set()
+            dropped = 0
+
             # CFBD drives endpoint requires seasonType parameter
-            data = make_request(client, "/drives", params={"year": year, "seasonType": "regular"})
+            for season_type in ("regular", "postseason"):
+                data = make_request(
+                    client, "/drives", params={"year": year, "seasonType": season_type}
+                )
+                for drive in data:
+                    gid = drive.get("gameId", drive.get("game_id"))
+                    if gid not in game_ids:
+                        orphan_ids.add(gid)
+                        dropped += 1
+                        continue
+                    drive["season"] = year
+                    year_drives.append(drive)
 
-            for drive in data:
-                drive["season"] = year
-                yield drive
+            if orphan_ids:
+                logger.warning(
+                    f"Dropping {dropped} drive(s) for {len(orphan_ids)} game(s) absent "
+                    f"from /games?year={year}: {sorted(map(str, orphan_ids))[:10]}"
+                )
+            total = dropped + len(year_drives)
+            if total and dropped / total > 0.25:
+                raise ValueError(
+                    f"Orphan filter would drop {dropped}/{total} drives for {year} -- "
+                    "that is field-rename/coverage breakage, not stray game ids"
+                )
 
-            # Also load postseason drives
-            postseason_data = make_request(
-                client, "/drives", params={"year": year, "seasonType": "postseason"}
-            )
-
-            for drive in postseason_data:
-                drive["season"] = year
-                yield drive
+            yield from year_drives
 
     finally:
         client.close()

@@ -153,6 +153,14 @@ def team_talent_resource(years: list[int]) -> Iterator[dict]:
 def recruiting_groups_resource(years: list[int]) -> Iterator[dict]:
     """Load recruiting data by position group.
 
+    CFBD v2 changed /recruiting/groups to an aggregate over a
+    startYear/endYear range (the old year param is gone) and dropped the
+    year field from the response entirely. Requesting one year at a time
+    and stamping it locally preserves the (year, team, position_group)
+    grain the table has always had. positionGroup is nullable in the v2
+    schema; the merge key requires it, so a missing value gets the
+    "All Positions" label CFBD uses for the cross-position aggregate.
+
     Args:
         years: List of years to load recruiting groups for
     """
@@ -161,9 +169,15 @@ def recruiting_groups_resource(years: list[int]) -> Iterator[dict]:
         for year in years:
             logger.info(f"Loading recruiting groups for {year}...")
 
-            data = make_request(client, "/recruiting/groups", params={"year": year})
+            data = make_request(
+                client, "/recruiting/groups", params={"startYear": year, "endYear": year}
+            )
 
-            yield from data
+            for row in data:
+                row["year"] = year
+                if not row.get("positionGroup") and not row.get("position_group"):
+                    row["positionGroup"] = "All Positions"
+                yield row
 
     finally:
         client.close()

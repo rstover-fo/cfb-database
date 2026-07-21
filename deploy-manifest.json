@@ -1,6 +1,4 @@
 {
   "action": "compute",
-  "compute": {"script": "score_fitted", "args": ["--backfill", "2018", "2025"]},
-  "refresh": true,
-  "refresh_views": ["marts.prediction_accuracy"]
+  "compute": {"script": "check_backtest", "args": []}
 }

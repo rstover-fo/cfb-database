@@ -191,7 +191,7 @@ BEGIN
         WHERE g.season = p_season
           AND (p.offense = p_team OR p.defense = p_team)
           AND p.yardline >= 80
-          AND NOT public.is_garbage_time(p.period, p.score_diff)
+          AND NOT public.is_garbage_time(p.period::integer, p.score_diff::integer)
     )
     SELECT
         rzd.side::TEXT,

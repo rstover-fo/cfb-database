@@ -25,10 +25,27 @@ async def test_query_games_filters_and_or_clause():
     request = route.calls.last.request
     assert request.url.params["season"] == "eq.2024"
     assert request.url.params["week"] == "eq.5"
-    assert request.url.params["or"] == "(home_team.eq.Oklahoma,away_team.eq.Oklahoma)"
+    assert request.url.params["or"] == '(home_team.eq."Oklahoma",away_team.eq."Oklahoma")'
     assert request.url.params["excitement_index"] == "gte.6.5"
     assert request.url.params["order"] == "start_date.desc"
     assert request.url.params["limit"] == "100"
+    # Tool-level guard: reads must stay confined to the contracted api schema
+    assert request.headers["Accept-Profile"] == "api"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_query_games_quotes_reserved_chars_in_team_name():
+    """Parens/commas are structural in PostgREST logic trees; quoting keeps
+    names like "Miami (OH)" from corrupting the or= filter."""
+    route = respx.get(f"{TEST_BASE_URL}/rest/v1/game_detail").mock(
+        return_value=httpx.Response(200, json=[{"game_id": 1}])
+    )
+
+    await query_games(season=2024, team="Miami (OH)")
+
+    or_param = route.calls.last.request.url.params["or"]
+    assert or_param == '(home_team.eq."Miami (OH)",away_team.eq."Miami (OH)")'
 
 
 @pytest.mark.asyncio

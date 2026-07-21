@@ -245,7 +245,10 @@ async def query_games(
     if week is not None:
         params["week"] = eq(week)
     if team is not None:
-        params["or"] = f"(home_team.eq.{team},away_team.eq.{team})"
+        # Double-quote the value: ( ) , are structural in PostgREST logic-tree
+        # syntax, so names like "Miami (OH)" would otherwise corrupt the filter.
+        quoted = team.replace('"', '""')
+        params["or"] = f'(home_team.eq."{quoted}",away_team.eq."{quoted}")'
     if min_excitement is not None:
         params["excitement_index"] = gte(min_excitement)
     params["order"] = "start_date.desc"
@@ -298,6 +301,8 @@ async def query_matchup(
     (rows has 0 or 1 entries), or a plain "No matchup history found..."
     string if the teams have never played or a name is misspelled.
     """
+    # NOTE: Python code-point sort assumed to match the DB collation used by the
+    # view's LEAST/GREATEST pair ordering; holds for current CFBD ASCII names.
     lo, hi = sorted((team_a, team_b))
     client = PostgrestClient()
     try:

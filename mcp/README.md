@@ -20,8 +20,9 @@ leaderboards, situational splits, player search, and data freshness.
   one of those objects, the corresponding tool will start returning a `404` error from
   PostgREST -- see [RLS / permissions posture](#rls--permissions-posture) for why that fails
   safe rather than falling back to a broader query.
-- **Hard row cap.** Every read is capped at 100 rows server-side (`postgrest.DEFAULT_ROW_CAP`).
-  Tools that accept a `limit` argument can request fewer rows, never more.
+- **Hard row cap.** Every view read is capped at 100 rows server-side (`postgrest.DEFAULT_ROW_CAP`).
+  Tools that accept a `limit` argument can request fewer rows, never more. RPC-backed tools
+  are bounded by their own `p_limit` arguments or inherently small result sets.
 
 ## Install
 

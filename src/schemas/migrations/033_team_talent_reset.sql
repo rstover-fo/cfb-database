@@ -1,0 +1,39 @@
+-- One-off reset BEFORE reloading team_talent under the widened merge key
+-- =============================================================================
+-- src/pipelines/sources/recruiting.py and src/pipelines/config/endpoints.py
+-- now merge recruiting.team_talent on [year, team] instead of [year, school]
+-- -- CFBD's v2 /talent response renamed the "school" field to "team", so
+-- the pipeline was writing rows with no "school" value at all.
+--
+-- The reload cannot run against the old table: prod's recruiting.team_talent
+-- was built under the old [year, school] key, so its rows have "school"
+-- populated and no "team" column exists. dlt adds new merge-key columns as
+-- NOT NULL, and since none of the existing rows can supply a value, the
+-- first reload attempt fails the same way the rankings rekey did (see
+-- 023_rankings_rekey_reset.sql) --
+--   table "team_talent" did not receive any data for column "school"
+--   (non-nullable primary key) [UnboundColumnException]
+-- Dropping the table (rather than trying to rename/backfill the column)
+-- also sheds the old [year, school] unique index, which would reject the
+-- new [year, team] key. dlt recreates the table with the new schema on the
+-- next load.
+--
+-- Safe because recruiting.team_talent is small (one row per team per
+-- season) and fully reproducible from the CFBD /talent endpoint -- the next
+-- daily run (or a manual `python -m src.pipelines.run --source recruiting`)
+-- reloads it in full under the new key.
+--
+-- Dependent-view check: grepped src/schemas/ for `recruiting.team_talent`
+-- and `team_talent`'s `school` column -- nothing reads from this table.
+-- marts.team_talent_composite (017_team_talent_composite.sql) sounds like a
+-- dependent but isn't: it computes its own talent score from
+-- core.roster + recruiting.recruits + recruiting.transfer_portal and never
+-- touches recruiting.team_talent. So no view needs to be dropped or
+-- rewritten here. (If a future view does read recruiting.team_talent, it
+-- must select `team`, not `school`, and will need to be re-applied after
+-- the reload since this migration only drops the base table.)
+--
+-- Not in MIGRATION_ORDER: applied via run_migrations.py --file (deploy
+-- manifest), like 019-023. Idempotent (IF EXISTS).
+
+DROP TABLE IF EXISTS recruiting.team_talent;

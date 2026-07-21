@@ -175,7 +175,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 52 | `/teams/matchup` | core.team_matchups | — | — | — | DEFERRED | team1, team2, season | — | Computed from games via matchup_history mart |
 | 53 | `/teams/ats` | betting.team_ats | betting.py | team_ats_resource | YES | merge | year, team_id | 2013-2026 | WORKING |
 | 54 | `/roster` | core.rosters | rosters.py | rosters_resource | YES | merge | id, team, year | 2004-2026 | WORKING (requires team list) |
-| 55 | `/talent` | recruiting.team_talent | recruiting.py | team_talent_resource | YES | merge | year, school | 2000-2026 | WORKING |
+| 55 | `/talent` | recruiting.team_talent | recruiting.py | team_talent_resource | YES | merge | year, team | 2000-2026 | WORKING |
 
 ### Adjusted Metrics (WEPA)
 

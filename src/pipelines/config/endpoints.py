@@ -305,7 +305,8 @@ RECRUITING_ENDPOINTS = {
     "team_talent": EndpointConfig(
         path="/talent",
         table_name="team_talent",
-        primary_key=["year", "school"],
+        # CFBD v2 renamed the /talent response field from "school" to "team".
+        primary_key=["year", "team"],
         schema="recruiting",
         write_disposition="merge",
     ),

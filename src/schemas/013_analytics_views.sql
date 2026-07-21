@@ -148,8 +148,13 @@ WITH ranked AS (
 )
 SELECT
     r.player_id,
-    r.player,
-    r.position,
+    -- last player name / position (most recent season) -- player/position
+    -- can vary across seasons for the same player_id (name formatting,
+    -- position changes), and the unique index below is keyed on just
+    -- (player_id, category, stat_type), so these must be aggregated
+    -- the same way team/conference are, not grouped on directly.
+    MAX(CASE WHEN r.rn = 1 THEN r.player END) AS player,
+    MAX(CASE WHEN r.rn = 1 THEN r.position END) AS position,
     -- last team / conference (most recent season)
     MAX(CASE WHEN r.rn = 1 THEN r.team END) AS team,
     MAX(CASE WHEN r.rn = 1 THEN r.conference END) AS conference,
@@ -161,7 +166,7 @@ SELECT
     SUM(r.stat::numeric) AS total_stat,
     ROUND(SUM(r.stat::numeric) / NULLIF(COUNT(DISTINCT r.season), 0), 2) AS avg_stat_per_season
 FROM ranked r
-GROUP BY r.player_id, r.player, r.position, r.category, r.stat_type;
+GROUP BY r.player_id, r.category, r.stat_type;
 
 -- Unique index required for CONCURRENTLY refresh
 CREATE UNIQUE INDEX IF NOT EXISTS ux_player_career_stats

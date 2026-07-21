@@ -119,13 +119,18 @@ def transfer_portal_resource(years: list[int]) -> Iterator[dict]:
 @dlt.resource(
     name="team_talent",
     write_disposition="merge",
-    primary_key=["year", "school"],
+    primary_key=["year", "team"],
 )
 def team_talent_resource(years: list[int]) -> Iterator[dict]:
     """Load team talent composite ratings.
 
     Args:
         years: List of years to load talent data for
+
+    Note: CFBD v2 renamed the /talent response field from "school" to
+    "team" -- the merge key follows that rename. See
+    src/schemas/migrations/033_team_talent_reset.sql for the one-time
+    table reset this required.
     """
     client = get_client()
     try:

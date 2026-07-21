@@ -65,6 +65,12 @@ COMPUTE_SCRIPTS = {
     "compute_adjusted_epa",
     "compute_predictions",
     "check_backtest",
+    # TEMPORARY (P3.2 Lane B): read-only field-shape probe for /metrics/wp,
+    # scripts/probe_metrics_wp.py. Remove this entry once the win-probability
+    # deploy sequence (docs/pipeline-manifest.md row 47) is done -- it exists
+    # only so the probe can run through the same deploy/compute mechanism as
+    # everything else instead of a one-off workflow.
+    "probe_metrics_wp",
 }
 
 # Marts refreshed after a compute run when plan.refresh is set. One home for

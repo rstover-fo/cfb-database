@@ -1,0 +1,4 @@
+{
+  "action": "compute",
+  "compute": {"script": "poll_scoreboard", "args": ["--dry-run"]}
+}

@@ -1,0 +1,4 @@
+{
+  "action": "apply",
+  "files": ["src/schemas/migrations/026_win_probability_indexes.sql", "src/schemas/api/033_game_win_probability.sql"]
+}

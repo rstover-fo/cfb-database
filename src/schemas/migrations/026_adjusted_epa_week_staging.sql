@@ -4,16 +4,29 @@
 -- Phase 1.
 --
 -- analytics.adjusted_epa_week_build mirrors analytics.adjusted_epa_build
--- (see 025) with one addition: a `week` column. Coefficient semantics:
+-- (see 025) with one addition: a `week_index` column. Coefficient semantics:
 --
---   Row (team, season, week) = the ridge coefficients ENTERING week W --
---   i.e. fit on that season's plays with week < W only. This is a
---   walk-forward, as-of rating: the value stored for week W reflects
---   nothing that happened in week W or later, so it is safe to join onto
---   a week-W game without leaking that game's own result into its own
+--   Row (team, season, week_index) = the ridge coefficients ENTERING that
+--   week -- i.e. fit on that season's plays with week_index < WI only. This
+--   is a walk-forward, as-of rating: the value stored for week WI reflects
+--   nothing that happened in that week or later, so it is safe to join onto
+--   that week's game without leaking the game's own result into its own
 --   pregame rating. (Team identity/column layout is fixed from the full
 --   season's team list per the plan -- that's not leakage, only the fitted
 --   coefficients are as-of.)
+--
+-- week_index, not raw CFBD week: CFBD restarts week numbering at 1 for
+-- season_type='postseason' (bowls are week 1), so raw week cannot order a
+-- season monotonically. Convention (shared with features.team_week, see
+-- docs/brainstorms/2026-07-21-team-week-feature-design.md):
+--
+--   week_index = week            for season_type = 'regular'
+--   week_index = 100 + week      for season_type = 'postseason'
+--
+-- The build emits one row per regular-week boundary plus one ENTERING-
+-- POSTSEASON boundary (week_index 100 + first postseason week), whose state
+-- is the full regular season -- so bowl-game lookups ("greatest week_index
+-- <= WI") see every regular-season play, including the final week's.
 --
 -- Written by scripts/compute_adjusted_epa_week.py (RidgeAccumulator is
 -- additive, so the script streams each season's plays ordered by week and
@@ -30,8 +43,9 @@
 -- manifest), like 019-025. Idempotent (IF NOT EXISTS throughout).
 
 -- -----------------------------------------------------------------------------
--- Ridge-adjusted EPA, as-of-week grain: one row per (team, season, week)
--- with the fitted offense/defense coefficients entering that week.
+-- Ridge-adjusted EPA, as-of-week grain: one row per (team, season,
+-- week_index) with the fitted offense/defense coefficients entering that
+-- week (week_index convention documented above).
 --
 -- Sign convention (matches analytics.adjusted_epa_build): off_coef higher =
 -- better offense (more EPA/play above average); def_coef LOWER / more
@@ -44,7 +58,7 @@
 CREATE TABLE IF NOT EXISTS analytics.adjusted_epa_week_build (
     team VARCHAR NOT NULL,
     season BIGINT NOT NULL,
-    week INTEGER NOT NULL,
+    week_index INTEGER NOT NULL,
     off_coef NUMERIC(8, 5),
     def_coef NUMERIC(8, 5),
     hfa_coef NUMERIC(8, 5),
@@ -55,13 +69,13 @@ CREATE TABLE IF NOT EXISTS analytics.adjusted_epa_week_build (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS adjusted_epa_week_build_key
-    ON analytics.adjusted_epa_week_build (team, season, week);
+    ON analytics.adjusted_epa_week_build (team, season, week_index);
 
 CREATE INDEX IF NOT EXISTS adjusted_epa_week_build_season_week_idx
-    ON analytics.adjusted_epa_week_build (season, week);
+    ON analytics.adjusted_epa_week_build (season, week_index);
 
 COMMENT ON TABLE analytics.adjusted_epa_week_build IS
-    'Walk-forward ridge-regressed opponent-adjusted EPA per (team, season, week): coefficients ENTERING week W, fit on plays with week < W only (as-of rating, no leakage of week W or later). Sign convention: off_coef higher = better offense; def_coef LOWER/more negative = better defense (EPA allowed above average). lambda is the ridge penalty recorded per row for auditability across tunable-ledger changes.';
+    'Walk-forward ridge-regressed opponent-adjusted EPA per (team, season, week_index): coefficients ENTERING that week, fit on plays with week_index < WI only (week_index = week for regular season, 100 + week for postseason) (as-of rating, no leakage of week W or later). Sign convention: off_coef higher = better offense; def_coef LOWER/more negative = better defense (EPA allowed above average). lambda is the ridge penalty recorded per row for auditability across tunable-ledger changes.';
 
 -- Grant USAGE + read-only SELECT per the repo's read-access pattern
 -- (see grant_read_access_for_security_invoker.sql).

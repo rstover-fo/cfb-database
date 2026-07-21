@@ -15,6 +15,35 @@ Last updated: 2026-07-21
 
 ## Recent Contract Changes
 
+- **2026-07-21 — `api.game_win_probability` authored, pending deploy (P3.2 Lane B).**
+  New view over a new `metrics.win_probability` table: in-game (per-play) win
+  probability, one row per snap, loaded per-game from `/metrics/wp?gameId=<id>`
+  (`src/pipelines/sources/metrics.py::win_probability_resource`,
+  `src/pipelines/run.py::run_metrics_wp_pipeline`; replaces a dead year-driven
+  resource that always 400'd -- see `docs/pipeline-manifest.md` row 47).
+  **This is distinct from Tier 2's house win probability
+  (`api.game_elo_history`/`api.game_predictions`):** this view is CFBD's own
+  in-play model, driven by real-time game state across the whole game;
+  Tier 2's is a single pregame number per model per game, computed from house
+  Elo/EPA. **Status is Pending deploy, not Live** -- the source, migration
+  (`src/schemas/migrations/026_win_probability_indexes.sql`), and view
+  (`src/schemas/api/033_game_win_probability.sql`) are authored and
+  unit-tested but have not run against the live database yet; see
+  `deploys/p32-backfill-manifests.md` for the deploy sequence. **Coverage
+  caveat:** even once deployed, coverage starts at 2014 (the `metrics` year
+  range) and is only as complete as the backfill that has actually run --
+  query `metrics.win_probability` (or this view) for a specific `game_id`
+  and expect zero rows for any game not yet backfilled, not an error.
+  **Absent-rows fallback:** a game with no in-game win-probability rows
+  (not yet backfilled, or CFBD never computed WP for it) simply returns an
+  empty result set from this view -- callers should treat that as "not
+  available for this game" and fall back to `api.game_elo_history`'s
+  pregame number if a win-probability figure is required, not treat it as a
+  data-quality failure the way an empty `api.game_detail` row would be.
+  Do not add this view to `tests/test_api_views.py`'s inventory until it is
+  confirmed live (repo sequencing rule, see
+  `docs/plans/2026-07-19-tier1-analytics-unlock-plan.md`).
+
 - **2026-07-21 — Tier 2 analytics: house Elo, ridge-adjusted EPA, scored edges, predictions.**
   Five new `marts.*` materialized views and five new `api.*` views add a house-generated
   opinion layer on top of the warehouse's authoritative CFBD data. All of it is
@@ -170,6 +199,7 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.scored_matchup_edges` | **Live** | Varies (in-season) | House model expected margin/win probability vs. the market line for upcoming games, with the resulting edge. Empty out of season by design -- not a failure. Columns: game_id, season, week, season_type, start_date, home_team, away_team, neutral_site, model_version, prediction_date, home_elo_pregame, away_elo_pregame, elo_margin, epa_margin, expected_home_margin, home_win_prob, market_provider, market_spread, market_home_margin, market_captured_at, edge, edge_pick, abs_edge |
 | `api.prediction_accuracy` | **Live** | ~90 | Retroactive scoring of house predictions by season/model/edge-threshold: margin MAE/RMSE, ATS record, Brier score (house vs. CFBD). Columns: model_version, season, edge_threshold, n_games, n_with_market, margin_mae, margin_rmse, ats_wins, ats_losses, ats_pushes, ats_hit_rate, brier, cfbd_brier, n_scored_win_prob |
 | `api.game_predictions` | **Live** | ~20,000+ | Latest house prediction snapshot per (game, model), from the append-only `predictions.game_predictions` log. Columns: prediction_id, computed_at, prediction_date, model_version, game_id, season, week, season_type, home_team, away_team, neutral_site, home_elo_pregame, away_elo_pregame, elo_margin, epa_margin, expected_home_margin, home_win_prob, market_provider, market_home_margin, market_spread, market_captured_at, edge, edge_pick |
+| `api.game_win_probability` | **Pending deploy** | -- | In-game (per-play) win probability for a game -- CFBD's own in-play model (real-time, one row per snap), distinct from the Tier 2 pregame house win probability above (`api.game_elo_history`/`api.game_predictions`). Coverage 2014+, only as complete as the backfill that has run (empty result set, not an error, for a not-yet-backfilled game -- see Recent Contract Changes entry above). Columns: game_id, season, play_id, home_team, away_team, home_win_probability, down, distance, yard_line, play_text, period, clock_minutes, clock_seconds. period/clock_minutes/clock_seconds come from a defensive join to `core.plays` and may be NULL. Backed by `metrics.win_probability` (`src/schemas/api/033_game_win_probability.sql`). Not yet loaded live -- see `deploys/p32-backfill-manifests.md`. |
 
 ### Marts (schema: `marts`) -- Materialized Views
 

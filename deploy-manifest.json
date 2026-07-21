@@ -1,0 +1,4 @@
+{
+  "action": "compute",
+  "compute": { "script": "compute_adjusted_epa", "args": ["--from", "2004"] }
+}

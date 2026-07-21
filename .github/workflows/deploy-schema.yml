@@ -27,6 +27,7 @@ on:
           - presence_check
           - apply
           - backfill
+          - compute
         default: presence_check
       marts_from:
         description: "run_marts.py --from value, e.g. 029 (apply only)"
@@ -57,6 +58,14 @@ on:
         description: "Backfill: comma-separated pipeline sources, e.g. stats,betting (backfill only)"
         required: false
         type: string
+      compute_script:
+        description: "Compute script name, e.g. compute_house_elo (compute only)"
+        required: false
+        type: string
+      compute_args:
+        description: "Comma-separated args passed to the compute script (compute only)"
+        required: false
+        type: string
 
 concurrency:
   group: deploy-schema
@@ -81,7 +90,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-      - run: pip install -e .
+      - run: pip install -e ".[compute]"
       - name: Set dlt destination credentials
         # dlt requires the postgres:// scheme (see .dlt/secrets.toml.example)
         run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
@@ -100,4 +109,6 @@ jobs:
           if [ -n "${{ inputs.backfill_start }}" ]; then ARGS+=(--backfill-start "${{ inputs.backfill_start }}"); fi
           if [ -n "${{ inputs.backfill_end }}" ]; then ARGS+=(--backfill-end "${{ inputs.backfill_end }}"); fi
           if [ -n "${{ inputs.sources }}" ]; then ARGS+=(--sources "${{ inputs.sources }}"); fi
+          if [ -n "${{ inputs.compute_script }}" ]; then ARGS+=(--compute-script "${{ inputs.compute_script }}"); fi
+          if [ -n "${{ inputs.compute_args }}" ]; then ARGS+=(--compute-args "${{ inputs.compute_args }}"); fi
           python scripts/deploy_schema.py "${ARGS[@]}"

@@ -9,12 +9,13 @@ run_migrations.py, refresh_marts.py, load_season.py, and check_presence.py.
 
 Manifest schema:
     {
-      "action": "presence_check" | "apply" | "backfill",
+      "action": "presence_check" | "apply" | "backfill" | "compute",
       "marts_from": "029",
       "marts_only": "011",
       "files": ["src/schemas/api/019_x.sql", ...],
       "refresh": true,
-      "backfill": {"start": 2014, "end": 2025, "sources": "stats,betting"}
+      "backfill": {"start": 2014, "end": 2025, "sources": "stats,betting"},
+      "compute": {"script": "compute_house_elo", "args": ["--full"]}
     }
 
 All fields besides "action" are optional and only consulted by the action
@@ -54,7 +55,22 @@ REFRESH_MARTS = SCRIPTS_DIR / "refresh_marts.py"
 LOAD_SEASON = SCRIPTS_DIR / "load_season.py"
 CHECK_PRESENCE = SCRIPTS_DIR / "check_presence.py"
 
-VALID_ACTIONS = {"presence_check", "apply", "backfill"}
+VALID_ACTIONS = {"presence_check", "apply", "backfill", "compute"}
+
+# Allowlist of compute scripts the "compute" action may run (scripts/<name>.py).
+# These land in later Tier 2 phases -- membership is checked, not file existence,
+# so this action can be wired up before the scripts themselves exist.
+COMPUTE_SCRIPTS = {"compute_house_elo", "compute_adjusted_epa", "compute_predictions"}
+
+# Marts refreshed after a compute run when plan.refresh is set. One home for
+# this list so deploy_schema.py and any caller agree on the Tier 2 mart names.
+TIER2_MART_VIEWS = [
+    "marts.house_elo",
+    "marts.house_elo_game",
+    "marts.team_adjusted_epa",
+    "marts.scored_matchup_edges",
+    "marts.prediction_accuracy",
+]
 
 
 @dataclass
@@ -62,6 +78,12 @@ class BackfillSpec:
     start: int | None
     end: int | None
     sources: str = ""
+
+
+@dataclass
+class ComputeSpec:
+    script: str
+    args: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -73,6 +95,7 @@ class Plan:
     refresh: bool = False
     backfill: BackfillSpec | None = None
     strict: bool = False
+    compute: ComputeSpec | None = None
 
 
 # --------------------------------------------------------------------------
@@ -96,6 +119,15 @@ def validate_plan(plan: Plan) -> None:
                 f"end season ({plan.backfill.end})"
             )
 
+    if plan.action == "compute":
+        if plan.compute is None:
+            raise ValueError("compute action requires a compute block")
+        if plan.compute.script not in COMPUTE_SCRIPTS:
+            raise ValueError(
+                f"invalid compute script {plan.compute.script!r}; "
+                f"must be one of {sorted(COMPUTE_SCRIPTS)}"
+            )
+
 
 def load_manifest(path: str) -> dict:
     with open(path) as f:
@@ -113,6 +145,14 @@ def plan_from_manifest(manifest: dict) -> Plan:
             sources=str(bf.get("sources", "")),
         )
 
+    compute = None
+    cp = manifest.get("compute")
+    if cp:
+        compute = ComputeSpec(
+            script=cp.get("script"),
+            args=list(cp.get("args") or []),
+        )
+
     plan = Plan(
         action=manifest.get("action"),
         marts_from=manifest.get("marts_from"),
@@ -121,6 +161,7 @@ def plan_from_manifest(manifest: dict) -> Plan:
         refresh=bool(manifest.get("refresh", False)),
         backfill=backfill,
         strict=bool(manifest.get("strict", False)),
+        compute=compute,
     )
     validate_plan(plan)
     return plan
@@ -137,11 +178,14 @@ def plan_from_cli(
     backfill_end: int | None = None,
     sources: str | None = None,
     strict: bool = False,
+    compute_script: str | None = None,
+    compute_args: str | None = None,
 ) -> Plan:
     """Build and validate a Plan from workflow_dispatch-style CLI flags.
 
-    `files` and `sources` are comma-separated strings (workflow_dispatch inputs
-    are plain text), matching the manifest's list/string fields once parsed.
+    `files`, `sources`, and `compute_args` are comma-separated strings
+    (workflow_dispatch inputs are plain text), matching the manifest's
+    list/string fields once parsed.
     """
     file_list = [f.strip() for f in files.split(",") if f.strip()] if files else []
 
@@ -153,6 +197,11 @@ def plan_from_cli(
             sources=sources or "",
         )
 
+    compute = None
+    if compute_script is not None:
+        arg_list = [a.strip() for a in compute_args.split(",") if a.strip()] if compute_args else []
+        compute = ComputeSpec(script=compute_script, args=arg_list)
+
     plan = Plan(
         action=action,
         marts_from=marts_from,
@@ -161,6 +210,7 @@ def plan_from_cli(
         refresh=refresh,
         backfill=backfill,
         strict=strict,
+        compute=compute,
     )
     validate_plan(plan)
     return plan
@@ -256,6 +306,29 @@ def run_backfill(plan: Plan) -> int:
     return run_cmd([sys.executable, str(CHECK_PRESENCE)], "check_presence")
 
 
+def run_compute(plan: Plan) -> int:
+    c = plan.compute
+    # validate_plan guarantees a compute block with an allowlisted script.
+    assert c is not None
+    rc = run_cmd(
+        [sys.executable, str(SCRIPTS_DIR / f"{c.script}.py"), *c.args],
+        f"compute {c.script}",
+    )
+    if rc:
+        return rc
+
+    if plan.refresh:
+        rc = run_cmd(
+            [sys.executable, str(REFRESH_MARTS), "--views", ",".join(TIER2_MART_VIEWS)],
+            "refresh_marts --views (tier2)",
+        )
+        if rc:
+            return rc
+
+    logger.info("compute plan completed successfully")
+    return 0
+
+
 def execute_plan(plan: Plan) -> int:
     logger.info(f"executing plan: {plan}")
     if plan.action == "presence_check":
@@ -264,6 +337,8 @@ def execute_plan(plan: Plan) -> int:
         return run_apply(plan)
     if plan.action == "backfill":
         return run_backfill(plan)
+    if plan.action == "compute":
+        return run_compute(plan)
     raise ValueError(f"unknown action: {plan.action}")  # unreachable after validate_plan
 
 
@@ -290,6 +365,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--strict", action="store_true", help="Pass --strict through to check_presence.py"
     )
+    parser.add_argument(
+        "--compute-script",
+        dest="compute_script",
+        help="Compute script to run, e.g. compute_house_elo (see COMPUTE_SCRIPTS)",
+    )
+    parser.add_argument(
+        "--compute-args",
+        dest="compute_args",
+        help="Comma-separated args passed through to the compute script",
+    )
     return parser
 
 
@@ -313,6 +398,8 @@ def main(argv: list[str] | None = None) -> None:
             backfill_end=args.backfill_end,
             sources=args.sources,
             strict=args.strict,
+            compute_script=args.compute_script,
+            compute_args=args.compute_args,
         )
 
     sys.exit(execute_plan(plan))

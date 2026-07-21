@@ -7,6 +7,9 @@ Usage:
     python scripts/refresh_marts.py --schema marts     # Only marts schema
     python scripts/refresh_marts.py --schema analytics # Only analytics schema
     python scripts/refresh_marts.py --dry-run          # Print SQL without executing
+    python scripts/refresh_marts.py --views marts.house_elo,marts.house_elo_game
+                                                         # Refresh exactly these views, in order,
+                                                         # instead of the full layered list.
 """
 
 import argparse
@@ -140,14 +143,31 @@ def refresh_marts(
     schema: str | None = None,
     concurrently: bool = True,
     dry_run: bool = False,
+    views: list[str] | None = None,
 ) -> int:
-    """Refresh materialized views. Returns count of failures."""
-    # Build view list based on schema filter
-    views = []
-    if schema is None or schema == "marts":
-        views.extend(MARTS_VIEWS)
-    if schema is None or schema == "analytics":
-        views.extend(ANALYTICS_VIEWS)
+    """Refresh materialized views. Returns count of failures.
+
+    If `views` is given, refresh exactly those views, in the given order,
+    instead of the full layered list (schema is ignored in that case). Each
+    name must be schema-qualified as marts.* or analytics.*; a name that
+    doesn't exist yet is not validated here -- Postgres will error on the
+    REFRESH and that failure surfaces per-view like any other.
+    """
+    if views is not None:
+        invalid = [v for v in views if not (v.startswith("marts.") or v.startswith("analytics."))]
+        if invalid:
+            logger.error(
+                f"Invalid --views entries (must be schema-qualified marts.* or "
+                f"analytics.*): {invalid}"
+            )
+            return 1
+    else:
+        # Build view list based on schema filter
+        views = []
+        if schema is None or schema == "marts":
+            views.extend(MARTS_VIEWS)
+        if schema is None or schema == "analytics":
+            views.extend(ANALYTICS_VIEWS)
 
     if not views:
         logger.error(f"No views found for schema: {schema}")
@@ -202,12 +222,22 @@ def main() -> None:
         action="store_true",
         help="Print SQL without executing",
     )
+    parser.add_argument(
+        "--views",
+        help=(
+            "Comma-separated fully-qualified matview names to refresh, in order "
+            "(overrides --schema and the full layered list)"
+        ),
+    )
     args = parser.parse_args()
+
+    view_list = [v.strip() for v in args.views.split(",") if v.strip()] if args.views else None
 
     failures = refresh_marts(
         schema=args.schema,
         concurrently=not args.no_concurrent,
         dry_run=args.dry_run,
+        views=view_list,
     )
     sys.exit(failures)
 

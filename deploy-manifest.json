@@ -1,0 +1,5 @@
+{
+  "action": "compute",
+  "compute": { "script": "compute_predictions", "args": ["--backfill", "2015", "2025"] },
+  "refresh": true
+}

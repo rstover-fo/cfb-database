@@ -186,11 +186,21 @@ def draft_teams_resource():
     primary_key="name",
 )
 def stat_categories_resource():
-    """Load stat category definitions."""
+    """Load stat category definitions.
+
+    CFBD v2 returns /stats/categories as a bare array of strings; the
+    merge key is the `name` column, so each string is wrapped as
+    {"name": value}. Dict rows (the old object shape) pass through
+    unchanged, so both response shapes bind the key column.
+    """
     client = get_client()
     try:
         data = make_request(client, "/stats/categories")
-        yield from data
+        for row in data:
+            if isinstance(row, str):
+                yield {"name": row}
+            else:
+                yield row
     finally:
         client.close()
 

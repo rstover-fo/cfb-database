@@ -371,6 +371,17 @@ GAME_PREDICTIONS_COLUMNS = {
 }
 
 
+GAME_RECAPS_COLUMNS = {
+    "game_id",
+    "season",
+    "week",
+    "headline",
+    "recap",
+    "wp_available",
+    "model",
+    "generated_at",
+}
+
 # ---------------------------------------------------------------------------
 # Test: views exist and return rows
 # ---------------------------------------------------------------------------
@@ -455,6 +466,9 @@ class TestViewColumns:
             ("api.scored_matchup_edges", SCORED_MATCHUP_EDGES_COLUMNS),
             ("api.prediction_accuracy", PREDICTION_ACCURACY_COLUMNS),
             ("api.game_predictions", GAME_PREDICTIONS_COLUMNS),
+            # game_recaps starts empty (fills nightly) -- column check only, no
+            # row-count entry in TestViewsExistAndReturnRows.
+            ("api.game_recaps", GAME_RECAPS_COLUMNS),
         ],
         ids=[
             "team_detail",
@@ -472,6 +486,7 @@ class TestViewColumns:
             "scored_matchup_edges",
             "prediction_accuracy",
             "game_predictions",
+            "game_recaps",
         ],
     )
     def test_columns_present(self, db_conn, view_name, expected_columns):

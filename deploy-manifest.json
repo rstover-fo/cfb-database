@@ -1,4 +1,9 @@
 {
-  "action": "compute",
-  "compute": {"script": "build_features", "args": ["--from", "2015"]}
+  "action": "apply",
+  "marts_from": "039",
+  "files": [
+    "src/schemas/api/034_team_week_features.sql",
+    "src/schemas/api/035_live_scoreboard.sql",
+    "src/schemas/api/036_adjusted_epa_week.sql"
+  ]
 }

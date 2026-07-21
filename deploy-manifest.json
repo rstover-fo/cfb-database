@@ -1,0 +1,7 @@
+{
+  "action": "apply",
+  "files": [
+    "src/schemas/migrations/024_predictions_schema.sql",
+    "src/schemas/migrations/025_tier2_analytics_staging.sql"
+  ]
+}

@@ -1,5 +1,4 @@
 {
   "action": "compute",
-  "compute": { "script": "compute_predictions", "args": [] },
-  "refresh": true
+  "compute": { "script": "check_backtest", "args": [] }
 }

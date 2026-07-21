@@ -6,6 +6,11 @@
 
 Last updated: 2026-07-21
 
+> **Note on cfb-analytics:** the retired OU-only app (rstover-fo/cfb-analytics) was never a
+> warehouse consumer -- it ran its own DuckDB ingestion. Its unique features (rivals page,
+> compare page, CSV export, a11y patterns, query tests) were ported into cfb-app in July 2026
+> and the repo is kept for reference only. cfb-app and cfb-scout remain the two consumers.
+
 ---
 
 ## Recent Contract Changes
@@ -46,6 +51,12 @@ Last updated: 2026-07-21
     `refresh_marts.py --views` pass over the 5 new Tier 2 marts after the season load step.
   - cfb-app should regenerate `supabase gen types` to pick up the new `predictions` schema and
     the new/changed views.
+
+- **2026-07-20 — cfb-app fully contract-compliant.** As of cfb-app PRs #15-#17, the app has
+  zero direct `core.*` access (a repo-side contract-guard test enforces this), consumes
+  `api.game_drives` / `api.game_plays` / `api.poll_rankings` / `api.matchup`, and ships new
+  `/rivals` and `/compare` pages on the contracted surface. Deprecated raw access from the
+  2026-07-20 views entry below can now be considered fully retired.
 
 - **2026-07-20 — Added `api.game_drives`, `api.game_plays`, `api.poll_rankings`.**
   Closes the Phase 0 Lane D gap where cfb-app queried `core.drives`, `core.plays`, and

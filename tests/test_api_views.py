@@ -370,6 +370,29 @@ GAME_PREDICTIONS_COLUMNS = {
     "edge_pick",
 }
 
+# P3.2 Lane B (docs/pipeline-manifest.md row 47) -- in-game per-play win
+# probability, distinct from the Tier 2 pregame house win probability above
+# (GAME_ELO_HISTORY_COLUMNS / GAME_PREDICTIONS_COLUMNS). NOT added to
+# TestViewsExistAndReturnRows's row-floor list, same treatment as
+# SCORED_MATCHUP_EDGES_COLUMNS: row count depends on how much of the
+# multi-manifest backfill (deploys/p32-backfill-manifests.md) has completed
+# by the time this test runs, not a fixed floor.
+GAME_WIN_PROBABILITY_COLUMNS = {
+    "game_id",
+    "season",
+    "play_id",
+    "home_team",
+    "away_team",
+    "home_win_probability",
+    "down",
+    "distance",
+    "yard_line",
+    "play_text",
+    "period",
+    "clock_minutes",
+    "clock_seconds",
+}
+
 TEAM_WEEK_FEATURES_COLUMNS = {
     "season",
     "season_type",
@@ -530,6 +553,7 @@ class TestViewColumns:
             ("api.scored_matchup_edges", SCORED_MATCHUP_EDGES_COLUMNS),
             ("api.prediction_accuracy", PREDICTION_ACCURACY_COLUMNS),
             ("api.game_predictions", GAME_PREDICTIONS_COLUMNS),
+            ("api.game_win_probability", GAME_WIN_PROBABILITY_COLUMNS),
             ("api.team_week_features", TEAM_WEEK_FEATURES_COLUMNS),
             ("api.live_scoreboard", LIVE_SCOREBOARD_COLUMNS),
             ("api.adjusted_epa_week", ADJUSTED_EPA_WEEK_COLUMNS),
@@ -550,6 +574,7 @@ class TestViewColumns:
             "scored_matchup_edges",
             "prediction_accuracy",
             "game_predictions",
+            "game_win_probability",
             "team_week_features",
             "live_scoreboard",
             "adjusted_epa_week",

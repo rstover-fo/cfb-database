@@ -1,6 +1,7 @@
 """CLI entry point for CFB database pipelines."""
 
 import argparse
+import logging
 import sys
 from typing import NoReturn
 
@@ -10,7 +11,7 @@ from .sources.betting import betting_source
 from .sources.draft import draft_source
 from .sources.game_stats import game_stats_source
 from .sources.games import games_source
-from .sources.metrics import metrics_source
+from .sources.metrics import metrics_source, metrics_wp_source
 from .sources.plays import plays_source
 from .sources.rankings import rankings_source
 from .sources.ratings import ratings_source
@@ -20,6 +21,8 @@ from .sources.rosters import rosters_source
 from .sources.stats import stats_source
 from .sources.wepa import wepa_source
 from .utils.rate_limiter import get_rate_limiter
+
+logger = logging.getLogger(__name__)
 
 
 def batch_years(years: list[int], batch_size: int) -> list[list[int]]:
@@ -72,6 +75,7 @@ Examples:
             "betting",
             "draft",
             "metrics",
+            "metrics_wp",
             "rankings",
             "rosters",
             "wepa",
@@ -429,6 +433,189 @@ def run_metrics_pipeline(years: list[int] | None = None, mode: str = "incrementa
     return info
 
 
+def _metrics_wp_db_url() -> str:
+    """Get database URL from dlt secrets or environment.
+
+    Copied from scripts/refresh_marts.py's get_db_url pattern (the convention
+    every script that needs a raw psycopg2 connection follows -- see
+    scripts/compute_house_elo.py's copy of the same docstring). Duplicated
+    here rather than imported from scripts/ to avoid a src -> scripts
+    dependency; src.pipelines.run is also installed as the `cfb-pipeline`
+    console script (pyproject.toml) and shouldn't depend on the repo's
+    top-level scripts/ directory being importable.
+    """
+    import os
+
+    import dlt as _dlt
+
+    url = None
+    try:
+        creds = _dlt.secrets.get("destination.postgres.credentials")
+        if creds:
+            url = str(creds)
+    except Exception:
+        pass
+
+    if not url:
+        url = os.environ.get("SUPABASE_DB_URL") or os.environ.get("DATABASE_URL")
+
+    if not url:
+        raise RuntimeError(
+            "No database URL found. Set destination.postgres.credentials in "
+            ".dlt/secrets.toml or SUPABASE_DB_URL environment variable."
+        )
+
+    return url
+
+
+# Games considered for win-probability loading: completed, both scores
+# present. Restricted to the requested seasons so a single-season daily call
+# doesn't rescan all of history.
+_METRICS_WP_GAMES_QUERY = """
+    SELECT id, season
+    FROM core.games
+    WHERE completed = true
+      AND home_points IS NOT NULL
+      AND away_points IS NOT NULL
+      AND season = ANY(%s)
+    ORDER BY season, id
+"""
+
+# metrics.win_probability doesn't exist until the first successful pipeline.run()
+# of win_probability_resource creates it (dlt table-on-first-write, same as
+# betting.line_snapshots -- see src/schemas/migrations/020's header). Handled
+# by catching UndefinedTable in run_metrics_wp_pipeline below.
+_METRICS_WP_EXISTING_QUERY = """
+    SELECT DISTINCT game_id
+    FROM metrics.win_probability
+    WHERE season = ANY(%s)
+"""
+
+
+def run_metrics_wp_pipeline(
+    seasons: list[int] | None = None,
+    batch_size: int = 50,
+) -> dict:
+    """Load in-game win probability for completed games missing it.
+
+    Unlike the other run_*_pipeline functions, this isn't a year-fetch-all --
+    /metrics/wp requires one API call per gameId (docs/pipeline-manifest.md
+    row 47), so the call volume must be bounded to games that don't already
+    have win-probability rows. Queries core.games for completed games in
+    `seasons`, LEFT JOIN-style against the game_ids already present in
+    metrics.win_probability (computed as a set difference here rather than a
+    SQL LEFT JOIN so the "table doesn't exist yet" case -- true on a fresh
+    backfill -- degrades to "nothing loaded yet" instead of an error).
+
+    Missing games are loaded in batches of `batch_size` games per
+    pipeline.run() call (~150+ rows/game -> ~8.5K rows/merge at the default
+    50, mirroring run_game_stats_weekly's proven batch size for staying under
+    Supabase's statement timeout).
+
+    Budget math (Tier 3 = 75,000 calls/month, see docs/pipeline-manifest.md
+    and src/pipelines/utils/rate_limiter.py): one call per missing game.
+    Full 2014+ backfill is ~12,000 completed FBS games -> ~12K calls, a
+    one-time cost well inside the monthly budget. Steady-state daily/weekly
+    incremental loads only see newly-completed games since the last run --
+    ~70 games/week in-season (scripts/load_season.py's ESTIMATED_CALLS
+    entry), negligible against the existing ~22K/month worst-case daily-load
+    total.
+
+    Args:
+        seasons: Seasons to check for missing win-probability data. Defaults
+            to the current season (matches every other run_*_pipeline's
+            incremental default).
+        batch_size: Games per pipeline.run() call.
+
+    Returns:
+        Summary dict: seasons, games considered, games missing, batches run,
+        and the list of dlt LoadInfo objects (one per batch).
+    """
+    import psycopg2
+    import psycopg2.errors
+
+    if seasons is None:
+        from .config.years import get_current_season
+
+        seasons = [get_current_season()]
+
+    print(f"\n=== Loading Win Probability Data (seasons={seasons}) ===\n")
+
+    conn = psycopg2.connect(_metrics_wp_db_url())
+    conn.autocommit = True  # each statement stands alone; no transaction to poison on error
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_METRICS_WP_GAMES_QUERY, (seasons,))
+            candidate_games = cur.fetchall()  # [(game_id, season), ...]
+
+            try:
+                cur.execute(_METRICS_WP_EXISTING_QUERY, (seasons,))
+                existing_ids = {row[0] for row in cur.fetchall()}
+            except psycopg2.errors.UndefinedTable:
+                # metrics.win_probability hasn't been created yet (no prior
+                # successful load) -- treat as "nothing loaded", not an error.
+                logger.info("metrics.win_probability does not exist yet; treating as empty")
+                existing_ids = set()
+    finally:
+        conn.close()
+
+    missing = [(gid, season) for gid, season in candidate_games if gid not in existing_ids]
+    game_seasons = dict(missing)
+    game_ids = [gid for gid, _ in missing]
+
+    print(
+        f"  {len(candidate_games)} completed games in {seasons}, "
+        f"{len(existing_ids)} already have win probability, "
+        f"{len(game_ids)} missing"
+    )
+
+    if not game_ids:
+        print("  Nothing to load.")
+        return {"seasons": seasons, "candidates": len(candidate_games), "missing": 0, "batches": 0}
+
+    rate_limiter = get_rate_limiter()
+    if not rate_limiter.check_budget(len(game_ids)):
+        msg = (
+            f"API budget insufficient for {len(game_ids)} win-probability calls "
+            f"({rate_limiter.remaining} calls remaining this month)"
+        )
+        logger.error(msg)
+        print(f"  ERROR: {msg}")
+        return {
+            "seasons": seasons,
+            "candidates": len(candidate_games),
+            "missing": len(game_ids),
+            "batches": 0,
+            "error": msg,
+        }
+
+    batches = batch_years(game_ids, batch_size)  # generic chunker, works on any list
+    print(f"  Processing {len(game_ids)} games in {len(batches)} batches of up to {batch_size}")
+
+    pipeline = dlt.pipeline(
+        pipeline_name="cfbd_metrics_wp",
+        destination="postgres",
+        dataset_name="metrics",
+    )
+
+    all_info = []
+    for i, game_batch in enumerate(batches, 1):
+        print(f"\n  --- Batch {i}/{len(batches)}: {len(game_batch)} games ---")
+        source = metrics_wp_source(game_ids=game_batch, game_seasons=game_seasons)
+        info = pipeline.run(source)
+        all_info.append(info)
+        print(f"  Batch {i} complete: {info}")
+
+    print(f"\n=== Win probability load complete: {len(batches)} batches ===")
+    return {
+        "seasons": seasons,
+        "candidates": len(candidate_games),
+        "missing": len(game_ids),
+        "batches": len(batches),
+        "info": all_info,
+    }
+
+
 def run_rankings_pipeline(years: list[int] | None = None, mode: str = "incremental"):
     """Run the rankings data pipeline."""
     years_str = f"years={years}" if years else f"mode={mode}"
@@ -558,6 +745,7 @@ def main() -> NoReturn:
         "betting": lambda: run_betting_pipeline(args.years, args.mode),
         "draft": lambda: run_draft_pipeline(args.years, args.mode),
         "metrics": lambda: run_metrics_pipeline(args.years, args.mode),
+        "metrics_wp": lambda: run_metrics_wp_pipeline(args.years, args.batch_size or 50),
         "rankings": lambda: run_rankings_pipeline(args.years, args.mode),
         "rosters": lambda: run_rosters_pipeline(args.teams, args.years, args.mode),
         "wepa": lambda: run_wepa_pipeline(args.years, args.mode),

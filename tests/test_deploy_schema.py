@@ -29,6 +29,8 @@ class TestComputeScripts:
             "compute_house_elo",
             "compute_adjusted_epa",
             "compute_predictions",
+            # TEMPORARY (P3.2 Lane B) -- see deploy_schema.py's comment.
+            "probe_metrics_wp",
             "compute_adjusted_epa_week",
             "build_features",
             "train_model",

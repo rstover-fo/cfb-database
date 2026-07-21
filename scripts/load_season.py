@@ -32,7 +32,8 @@ SOURCE_ORDER = [
     "recruiting",  # Recruits, team composites
     "betting",  # Betting lines
     "draft",  # NFL draft picks
-    "metrics",  # PPA, win probability
+    "metrics",  # PPA, pregame win probability
+    "metrics_wp",  # In-game win probability -- game-id-driven, see run_metrics_wp_pipeline
     "rosters",  # Team rosters
 ]
 
@@ -49,6 +50,12 @@ ESTIMATED_CALLS = {
     "betting": 5,
     "draft": 5,
     "metrics": 30,
+    # One call per completed game still missing from metrics.win_probability.
+    # ~70 is a typical in-season week's worth of newly-completed FBS+FCS
+    # games (the steady-state daily/weekly incremental case); a full-season
+    # backfill run resolves far more missing games and costs proportionally
+    # more -- this estimate is for the dry-run printout, not a hard cap.
+    "metrics_wp": 70,
     "rosters": 150,
 }
 
@@ -93,6 +100,7 @@ def load_season(
         run_game_stats_weekly,
         run_games_pipeline,
         run_metrics_pipeline,
+        run_metrics_wp_pipeline,
         run_plays_pipeline,
         run_rankings_pipeline,
         run_ratings_pipeline,
@@ -164,6 +172,7 @@ def load_season(
         "betting": lambda: run_betting_pipeline(years=[season]),
         "draft": lambda: run_draft_pipeline(years=[season]),
         "metrics": lambda: run_metrics_pipeline(years=[season]),
+        "metrics_wp": lambda: run_metrics_wp_pipeline(seasons=[season]),
     }
 
     results = {}

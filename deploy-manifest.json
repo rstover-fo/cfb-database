@@ -1,0 +1,7 @@
+{
+  "action": "apply",
+  "files": [
+    "src/schemas/migrations/027_game_recaps.sql",
+    "src/schemas/api/034_game_recaps.sql"
+  ]
+}

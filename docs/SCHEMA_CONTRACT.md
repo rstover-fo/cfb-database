@@ -15,6 +15,22 @@ Last updated: 2026-07-21
 
 ## Recent Contract Changes
 
+- **2026-07-21 — `api.game_recaps` added (Deployed).** P3.3 Lane D: nightly
+  LLM-generated game recaps, one row per completed FBS game (season >= 2014), written by
+  `scripts/generate_recaps.py` (model `claude-haiku-4-5`) from warehouse facts only --
+  scores, top-EPA plays, win-probability swings when available, box-score leaders, and the
+  betting-line result. **Content is LLM-generated from warehouse facts, not CFBD data** --
+  treat as editorial/narrative content, not a structured stat, and do not assume two reads
+  of the same game return byte-identical prose. A game is regenerated only when an operator
+  flips `analytics.game_recaps.regenerate` true; otherwise a recap is written once and left
+  as-is. A missing `game_id` means "not yet generated," not "no recap available." cfb-app
+  consumer note: render `headline`/`recap` as prose, not as data to parse or chart, and treat
+  `wp_available = false` as a signal the recap's momentum framing came from an EPA-only
+  fallback rather than real win-probability data. Backed by `analytics.game_recaps`
+  (`src/schemas/migrations/031_game_recaps.sql`); exposed via
+  `src/schemas/api/037_game_recaps.sql`. **Deployed 2026-07-21** (see
+  `deploys/p33-apply-manifest.json`); do not query until this entry is updated to
+  **Live**/**Deployed**.
 - **2026-07-21 — `api.game_win_probability` authored, pending deploy (P3.2 Lane B).**
   New view over a new `metrics.win_probability` table: in-game (per-play) win
   probability, one row per snap, loaded per-game from `/metrics/wp?gameId=<id>`
@@ -245,6 +261,7 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.scored_matchup_edges` | **Live** | Varies (in-season) | House model expected margin/win probability vs. the market line for upcoming games, with the resulting edge. Empty out of season by design -- not a failure. Columns: game_id, season, week, season_type, start_date, home_team, away_team, neutral_site, model_version, prediction_date, home_elo_pregame, away_elo_pregame, elo_margin, epa_margin, expected_home_margin, home_win_prob, market_provider, market_spread, market_home_margin, market_captured_at, edge, edge_pick, abs_edge |
 | `api.prediction_accuracy` | **Live** | ~90 | Retroactive scoring of house predictions by season/model/edge-threshold: margin MAE/RMSE, ATS record, Brier score (house vs. CFBD). Columns: model_version, season, edge_threshold, n_games, n_with_market, margin_mae, margin_rmse, ats_wins, ats_losses, ats_pushes, ats_hit_rate, brier, cfbd_brier, n_scored_win_prob |
 | `api.game_predictions` | **Live** | ~20,000+ | Latest house prediction snapshot per (game, model), from the append-only `predictions.game_predictions` log. Columns: prediction_id, computed_at, prediction_date, model_version, game_id, season, week, season_type, home_team, away_team, neutral_site, home_elo_pregame, away_elo_pregame, elo_margin, epa_margin, expected_home_margin, home_win_prob, market_provider, market_home_margin, market_spread, market_captured_at, edge, edge_pick |
+| `api.game_recaps` | **Deployed** | 0 (fills nightly) | Nightly LLM-generated game recap. **Content is LLM-generated from warehouse facts, not CFBD data** -- regenerated only via the `regenerate` flag; a missing `game_id` means not yet generated. cfb-app should render `headline`/`recap` as prose, not structured stats. Columns: game_id, season, week, headline, recap, wp_available, model, generated_at |
 | `api.game_win_probability` | **Pending deploy** | -- | In-game (per-play) win probability for a game -- CFBD's own in-play model (real-time, one row per snap), distinct from the Tier 2 pregame house win probability above (`api.game_elo_history`/`api.game_predictions`). Coverage 2014+, only as complete as the backfill that has run (empty result set, not an error, for a not-yet-backfilled game -- see Recent Contract Changes entry above). Columns: game_id, season, play_id, home_team, away_team, home_win_probability, down, distance, yard_line, play_text, period, clock_minutes, clock_seconds. period/clock_minutes/clock_seconds come from a defensive join to `core.plays` and may be NULL. Backed by `metrics.win_probability` (`src/schemas/api/033_game_win_probability.sql`). Not yet loaded live -- see `deploys/p32-backfill-manifests.md`. |
 | `api.team_week_features` | **Live** | 52,934 | As-of feature vector entering each team's game -- house Elo, opponent-adjusted EPA, season-to-date production/havoc, and preseason-known constants; the `fitted_v1` modeling substrate. Passthrough of `marts.team_week_features`. Columns: season, season_type, week, week_index, team, conference, game_id, games_played_to_date, elo_pregame, adj_epa_off, adj_epa_def, adj_epa_net, adj_epa_hfa, adj_epa_source, off_epa_per_play, off_success_rate, off_explosiveness_rate, off_plays_per_game, def_epa_per_play_allowed, def_success_rate_allowed, def_explosiveness_rate_allowed, havoc_rate_defense, havoc_rate_offense_allowed, returning_ppa_pct, returning_passing_ppa_pct, returning_rushing_ppa_pct, returning_usage, preseason_sp_rating, preseason_sp_offense, preseason_sp_defense, computed_at, feature_build_version. `week_index` = week for `season_type='regular'`, 100 + week for `'postseason'`. |
 | `api.live_scoreboard` | **Live** | Varies (Saturdays only) | Latest `/scoreboard` poll snapshot per game captured within the last 24 hours -- score, clock, possession, market line, CFBD's and the house closed-form live win probability. **Plain view, not materialized** (always current as of the latest 5-minute poll tick). Legitimately empty outside Saturday polling windows -- not a data-quality failure. Passthrough of `live.scoreboard_snapshots`. Columns: game_id, season, week, season_type, status, period, clock, seconds_remaining, home_team, away_team, home_points, away_points, possession, spread, over_under, cfbd_home_wp, house_live_home_wp, pregame_expected_margin, captured_at |

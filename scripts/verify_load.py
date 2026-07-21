@@ -13,9 +13,10 @@ Usage:
 Checks:
     1. plays partition for the season exists (core.plays_yNNNN)
     2. core.games row count for the season matches the CFBD /games count (1 API call)
-    3. completed games have game_team_stats rows (tolerance for FCS games
-       without box scores)
-    4. completed games have plays rows (same tolerance)
+    3. completed FBS-involved games have game_team_stats rows (lower-division
+       games are excluded -- CFBD only reliably publishes box scores for games
+       with an FBS side; small tolerance for stragglers)
+    4. completed FBS-involved games have plays rows (same scope + tolerance)
     5. marts.data_freshness is_stale flags -- heuristic only: the matview infers
        freshness from pg_stat vacuum/analyze timestamps, so staleness WARNs
        off-season and FAILs in-season (or with --strict)
@@ -108,12 +109,20 @@ def check_game_counts(cur, season: int, report: Report) -> None:
     )
 
 
+# core.games mirrors CFBD /games, which spans every classification (FBS, FCS,
+# II, III -- 3800+ rows/season), but box scores and plays are only reliably
+# published for games involving an FBS team. Coverage checks therefore scope
+# to FBS-involved games; a season-wide count would "miss" ~2K lower-division
+# games by construction and could never clear MISSING_STATS_TOLERANCE.
+FBS_INVOLVED = "(g.home_classification = 'fbs' OR g.away_classification = 'fbs')"
+
+
 def check_completed_have_team_stats(cur, season: int, report: Report) -> None:
     cur.execute(
-        """
+        f"""
         SELECT COUNT(*)
         FROM core.games g
-        WHERE g.season = %s AND g.completed
+        WHERE g.season = %s AND g.completed AND {FBS_INVOLVED}
           AND NOT EXISTS (SELECT 1 FROM core.game_team_stats s WHERE s.id = g.id)
         """,
         (season,),
@@ -122,17 +131,17 @@ def check_completed_have_team_stats(cur, season: int, report: Report) -> None:
     report.record(
         evaluate_missing(missing),
         "completed_have_team_stats",
-        f"{missing} completed game(s) missing box scores (tolerance {MISSING_STATS_TOLERANCE})",
+        f"{missing} completed FBS game(s) missing box scores (tolerance {MISSING_STATS_TOLERANCE})",
     )
 
 
 def check_completed_have_plays(cur, season: int, report: Report) -> None:
     # p.season predicate enables partition pruning; plays has no week column
     cur.execute(
-        """
+        f"""
         SELECT COUNT(*)
         FROM core.games g
-        WHERE g.season = %s AND g.completed
+        WHERE g.season = %s AND g.completed AND {FBS_INVOLVED}
           AND NOT EXISTS (
               SELECT 1 FROM core.plays p WHERE p.season = %s AND p.game_id = g.id
           )
@@ -143,7 +152,7 @@ def check_completed_have_plays(cur, season: int, report: Report) -> None:
     report.record(
         evaluate_missing(missing),
         "completed_have_plays",
-        f"{missing} completed game(s) missing plays (tolerance {MISSING_STATS_TOLERANCE})",
+        f"{missing} completed FBS game(s) missing plays (tolerance {MISSING_STATS_TOLERANCE})",
     )
 
 

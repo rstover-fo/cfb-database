@@ -186,7 +186,14 @@ def pregame_win_probability_resource(years: list[int]) -> Iterator[dict]:
     primary_key="play_id",
 )
 def win_probability_resource(years: list[int]) -> Iterator[dict]:
-    """Load in-game win probability by play.
+    """DEPRECATED-BROKEN: loads nothing. /metrics/wp is gameId-scoped, not
+    year-scoped -- every call this makes returns 400 (swallowed below as a
+    per-year skip), so metrics.win_probability stays effectively empty. Use
+    win_probability_by_game_resource(game_ids) instead (see
+    scripts/backfill_ingame_wp.py for the resumable driver over core.games).
+    Left in place -- not wired into anything new -- removal is a later cleanup.
+
+    Load in-game win probability by play.
 
     Note: Data availability varies by year. Years with no data return 400 and are skipped.
 
@@ -206,6 +213,62 @@ def win_probability_resource(years: list[int]) -> Iterator[dict]:
                     logger.warning(f"No win probability data for {year} (400 response), skipping")
                     continue
                 raise
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="win_probability_by_game",
+    write_disposition="merge",
+    primary_key="play_id",
+)
+def win_probability_by_game_resource(game_ids: list[int]) -> Iterator[dict]:
+    """Load in-game win probability by play, scoped to explicit game IDs.
+
+    /metrics/wp is gameId-scoped, not year-scoped -- this is the fix for
+    win_probability_resource above (see its DEPRECATED-BROKEN docstring).
+    Callers pass an explicit list of CFBD game IDs (typically sourced from
+    core.games -- see scripts/backfill_ingame_wp.py for the resumable,
+    budget-guarded driver that runs this in chunks) and this resource makes
+    one `/metrics/wp?gameId={id}` call per game, yielding that game's
+    per-play win-probability rows.
+
+    Per-play response fields (per the CFBD schema): gameId, playId, playText,
+    homeId, home, awayId, away, spread, homeBall, homeScore, awayScore,
+    yardLine, down, distance, homeWinProbability, playNumber. dlt snake_cases
+    these on load (playId -> play_id, homeWinProbability ->
+    home_win_probability, playNumber -> play_number, ...). play_id is a
+    per-play string identifier, unique across the whole dataset, hence the
+    merge key. Rows normally already carry gameId, but it's stamped from the
+    loop variable whenever a row is missing it, so game_id is never null.
+
+    Note: some games (e.g. incomplete/thin data) return 400 for this
+    endpoint; those are skipped with a warning, matching the other metrics
+    resources' pattern.
+
+    Args:
+        game_ids: Explicit CFBD game IDs to load in-game win probability for.
+    """
+    client = get_client()
+    try:
+        for game_id in game_ids:
+            logger.info(f"Loading in-game win probability for game {game_id}...")
+
+            try:
+                data = make_request(client, "/metrics/wp", params={"gameId": game_id})
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 400:
+                    logger.warning(
+                        f"No win probability data for game {game_id} (400 response), skipping"
+                    )
+                    continue
+                raise
+
+            for row in data:
+                if not row.get("gameId"):
+                    row["gameId"] = game_id
+                yield row
 
     finally:
         client.close()

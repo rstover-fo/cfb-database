@@ -106,3 +106,51 @@ def test_drives_resource_raises_on_mass_drop():
         # dlt wraps the resource's ValueError in ResourceExtractionError
         with pytest.raises(ResourceExtractionError, match="Orphan filter"):
             _drives_rows([2025])
+
+
+def test_drives_filter_reuses_shared_games_cache():
+    """The orphan filter must use the exact /games response the games
+    resource loaded -- never a second fetch. Two CFBD /games calls seconds
+    apart can disagree (CDN cache variance, deploy run 29845763420), which
+    re-admits orphans the games merge never saw."""
+    from unittest.mock import MagicMock, patch
+
+    from src.pipelines.sources.games import drives_resource, games_resource
+
+    first_games = [{"id": 100}]
+    diverged_games = [{"id": 100}, {"id": 999}]  # what a second fetch would say
+    drives = {
+        "regular": [
+            {"id": "100-1", "gameId": 100},
+            {"id": "100-2", "gameId": 100},
+            {"id": "100-3", "gameId": 100},
+            {"id": "999-1", "gameId": 999},  # orphan per the FIRST response
+        ],
+        "postseason": [],
+    }
+    games_responses = iter([first_games, diverged_games])
+
+    def side_effect(client, path, params=None):
+        if path == "/games":
+            return next(games_responses)
+        if path == "/drives":
+            return drives[params["seasonType"]]
+        raise AssertionError(f"unexpected path {path}")
+
+    cache: dict[int, list[dict]] = {}
+    with (
+        patch("src.pipelines.sources.games.get_client") as mock_get_client,
+        patch("src.pipelines.sources.games.make_request") as mock_make_request,
+    ):
+        mock_get_client.return_value = MagicMock()
+        mock_make_request.side_effect = side_effect
+
+        games_rows = list(games_resource([2025], cache))
+        drive_rows = list(drives_resource([2025], cache))
+
+    assert [g["id"] for g in games_rows] == [100]
+    # 999-1 dropped: the filter saw first_games via the cache, not the
+    # diverged second response (which was never fetched)
+    assert [d["id"] for d in drive_rows] == ["100-1", "100-2", "100-3"]
+    games_calls = [c for c in mock_make_request.call_args_list if c.args[1] == "/games"]
+    assert len(games_calls) == 1

@@ -24,12 +24,21 @@ logger = logging.getLogger(__name__)
 def games_source(
     years: list[int] | None = None,
     mode: str = "incremental",
+    games_cache: dict[int, list[dict]] | None = None,
 ) -> DltSource:
     """Source for games and drives data.
 
     Args:
         years: Specific years to load. If None, uses mode to determine years.
         mode: "incremental" loads current season, "backfill" loads all historical.
+        games_cache: Optional {year: /games response} cache shared between the
+            games resource and the drives orphan filter (and across the two
+            sequential source instances run_games_pipeline creates). CFBD sits
+            behind a CDN and two /games fetches seconds apart can return
+            different game sets (observed: deploy run 29845763420, id
+            401754543 present in one response and absent from the other), so
+            the drives filter must reuse the exact response the games merge
+            loaded, never a second fetch.
     """
     if years is None:
         if mode == "incremental":
@@ -37,13 +46,23 @@ def games_source(
         else:  # backfill
             years = YEAR_RANGES["games_modern"].to_list()
 
+    if games_cache is None:
+        games_cache = {}
+
     return [
-        games_resource(years),
-        drives_resource(years),
+        games_resource(years, games_cache),
+        drives_resource(years, games_cache),
         game_media_resource(years),
         game_weather_resource(years),
         records_resource(years),
     ]
+
+
+def _fetch_year_games(client, year: int, games_cache: dict[int, list[dict]]) -> list[dict]:
+    """Fetch /games for a year once, serving repeats from the shared cache."""
+    if year not in games_cache:
+        games_cache[year] = make_request(client, "/games", params={"year": year})
+    return games_cache[year]
 
 
 @dlt.resource(
@@ -51,19 +70,24 @@ def games_source(
     write_disposition="merge",
     primary_key="id",
 )
-def games_resource(years: list[int]) -> Iterator[dict]:
+def games_resource(
+    years: list[int], games_cache: dict[int, list[dict]] | None = None
+) -> Iterator[dict]:
     """Load games for specified years.
 
     Args:
         years: List of years to load games for
+        games_cache: Shared {year: /games response} cache (see games_source)
     """
+    if games_cache is None:
+        games_cache = {}
     client = get_client()
     try:
         for year in years:
             logger.info(f"Loading games for {year}...")
 
             # Load FBS games
-            data = make_request(client, "/games", params={"year": year})
+            data = _fetch_year_games(client, year, games_cache)
 
             for game in data:
                 # Add year for partitioning if needed
@@ -79,26 +103,32 @@ def games_resource(years: list[int]) -> Iterator[dict]:
     write_disposition="merge",
     primary_key="id",
 )
-def drives_resource(years: list[int]) -> Iterator[dict]:
+def drives_resource(
+    years: list[int], games_cache: dict[int, list[dict]] | None = None
+) -> Iterator[dict]:
     """Load drives for specified years.
 
     CFBD's /drives can return drives for game ids that /games no longer
     lists for the same year (e.g. 2025's 401754543 -- cancelled/delisted
     games whose partial drive data lingers). Such rows have no parent for
     fk_drives_game, so each year's drives are filtered against that year's
-    /games id set; dropped drives are logged, never loaded.
+    /games id set; dropped drives are logged, never loaded. The id set MUST
+    come from the same /games response the games resource loaded (the shared
+    games_cache) -- a second fetch can disagree with the first (CDN cache
+    variance, see games_source) and re-admit an orphan.
 
     Args:
         years: List of years to load drives for
+        games_cache: Shared {year: /games response} cache (see games_source)
     """
+    if games_cache is None:
+        games_cache = {}
     client = get_client()
     try:
         for year in years:
             logger.info(f"Loading drives for {year}...")
 
-            game_ids = {
-                game["id"] for game in make_request(client, "/games", params={"year": year})
-            }
+            game_ids = {game["id"] for game in _fetch_year_games(client, year, games_cache)}
 
             year_drives: list[dict] = []
             orphan_ids: set[int | None] = set()

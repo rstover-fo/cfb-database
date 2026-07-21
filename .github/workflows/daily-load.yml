@@ -68,10 +68,16 @@ jobs:
           else
             python scripts/compute_adjusted_epa.py --season "$(python -c "from src.pipelines.config.years import get_current_season; print(get_current_season())")"
           fi
+      - name: Update as-of weekly EPA
+        run: python scripts/compute_adjusted_epa_week.py --incremental
       - name: Write game predictions
         run: python scripts/compute_predictions.py
-      - name: Refresh Tier 2 marts
-        run: python scripts/refresh_marts.py --views marts.house_elo,marts.house_elo_game,marts.team_adjusted_epa,marts.scored_matchup_edges,marts.prediction_accuracy
+      - name: Rebuild feature substrate
+        run: python scripts/build_features.py --incremental
+      - name: Score fitted model (upcoming)
+        run: python scripts/score_fitted.py --upcoming
+      - name: Refresh Tier 2 + Tier 3 marts
+        run: python scripts/refresh_marts.py --views marts.house_elo,marts.house_elo_game,marts.team_adjusted_epa,marts.scored_matchup_edges,marts.prediction_accuracy,marts.team_week_features,marts.adjusted_epa_week
       - name: Verify load
         run: |
           if [ -n "${{ inputs.season }}" ]; then

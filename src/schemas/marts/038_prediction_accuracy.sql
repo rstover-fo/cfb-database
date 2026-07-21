@@ -83,12 +83,18 @@
 -- ---------------------------------------------------------------------------
 -- CAVEATS (read before trusting a row)
 -- ---------------------------------------------------------------------------
--- * LEAKAGE: 'elo_epa_blend_v1' folds in ridge-adjusted EPA that is fit on the
---   FULL season, so retro rows for early-season games are MILDLY LEAKY (the fit
---   "saw" games that hadn't happened yet at kickoff). Treat 'elo_v1' as the
---   LEAK-FREE reference -- its Elo pregame ratings are strictly sequential, so
---   its backtest metrics are honest walk-forward numbers. Compare the blend
---   against elo_v1, not against its own optimism.
+-- * LEAKAGE -- FIXED (2026-07-21, Tier 3): 'elo_epa_blend_v1' used to fold in
+--   ridge-adjusted EPA fit on the FULL season, so retro rows for early-season
+--   games were MILDLY LEAKY (the fit "saw" games that hadn't happened yet at
+--   kickoff). This is now closed: scripts/compute_predictions.py --as-of-week
+--   backfills each game using analytics.adjusted_epa_week_build coefficients
+--   as of THAT game's week (prior-season fallback when the current season has
+--   no fit yet at that point, Elo-only when neither is available), so both
+--   model_versions are walk-forward honest. The previously documented 56.1%
+--   ATS>=6 hit rate was that leakage, not real edge -- the honest numbers are
+--   elo_epa_blend_v1 ATS>=6 = 50.1% (n=3,462) vs elo_v1 = 50.3%; nobody beats
+--   the closing line. The blend still edges elo_v1 on margin MAE (16.31 vs
+--   16.46).
 -- * CLOSING-LINE PROXY: past-game market_spread comes from betting.lines, which
 --   is approximately the CLOSING line. True line-movement history only begins
 --   accruing 2026-07-21, so pre-2026 ATS/edge figures are scored against

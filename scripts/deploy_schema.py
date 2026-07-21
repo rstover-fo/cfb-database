@@ -60,7 +60,12 @@ VALID_ACTIONS = {"presence_check", "apply", "backfill", "compute"}
 # Allowlist of compute scripts the "compute" action may run (scripts/<name>.py).
 # These land in later Tier 2 phases -- membership is checked, not file existence,
 # so this action can be wired up before the scripts themselves exist.
-COMPUTE_SCRIPTS = {"compute_house_elo", "compute_adjusted_epa", "compute_predictions"}
+COMPUTE_SCRIPTS = {
+    "compute_house_elo",
+    "compute_adjusted_epa",
+    "compute_predictions",
+    "check_backtest",
+}
 
 # Marts refreshed after a compute run when plan.refresh is set. One home for
 # this list so deploy_schema.py and any caller agree on the Tier 2 mart names.

@@ -25,6 +25,7 @@ class TestValidActions:
 class TestComputeScripts:
     def test_expected_allowlist(self):
         assert COMPUTE_SCRIPTS == {
+            "check_backtest",
             "compute_house_elo",
             "compute_adjusted_epa",
             "compute_predictions",

@@ -43,6 +43,11 @@ MARTS_VIEWS = [
     "player_usage",
     "team_ats_records",
     "transfer_portal_impact",
+    "house_elo",
+    "house_elo_game",
+    "team_adjusted_epa",
+    "scored_matchup_edges",
+    "prediction_accuracy",
 ]
 
 ANALYTICS_VIEWS = [

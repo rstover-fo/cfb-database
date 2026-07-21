@@ -268,6 +268,108 @@ POLL_RANKINGS_COLUMNS = {
     "points",
 }
 
+TEAM_ELO_COLUMNS = {
+    "team",
+    "season",
+    "season_end_elo",
+    "elo_rank",
+    "games_played",
+    "low_confidence",
+    "cfbd_elo",
+}
+
+GAME_ELO_HISTORY_COLUMNS = {
+    "game_id",
+    "season",
+    "week",
+    "season_type",
+    "start_date",
+    "neutral_site",
+    "home_team",
+    "away_team",
+    "home_pregame_elo",
+    "away_pregame_elo",
+    "home_postgame_elo",
+    "away_postgame_elo",
+    "home_win_prob",
+    "expected_home_margin",
+    "actual_home_margin",
+    "mov_multiplier",
+    "cfbd_home_pregame_elo",
+    "cfbd_away_pregame_elo",
+    "margin_error",
+    "abs_margin_error",
+}
+
+SCORED_MATCHUP_EDGES_COLUMNS = {
+    "game_id",
+    "season",
+    "week",
+    "season_type",
+    "start_date",
+    "home_team",
+    "away_team",
+    "neutral_site",
+    "model_version",
+    "prediction_date",
+    "home_elo_pregame",
+    "away_elo_pregame",
+    "elo_margin",
+    "epa_margin",
+    "expected_home_margin",
+    "home_win_prob",
+    "market_provider",
+    "market_spread",
+    "market_home_margin",
+    "market_captured_at",
+    "edge",
+    "edge_pick",
+    "abs_edge",
+}
+
+PREDICTION_ACCURACY_COLUMNS = {
+    "model_version",
+    "season",
+    "edge_threshold",
+    "n_games",
+    "n_with_market",
+    "margin_mae",
+    "margin_rmse",
+    "ats_wins",
+    "ats_losses",
+    "ats_pushes",
+    "ats_hit_rate",
+    "brier",
+    "cfbd_brier",
+    "n_scored_win_prob",
+}
+
+GAME_PREDICTIONS_COLUMNS = {
+    "prediction_id",
+    "computed_at",
+    "prediction_date",
+    "model_version",
+    "game_id",
+    "season",
+    "week",
+    "season_type",
+    "home_team",
+    "away_team",
+    "neutral_site",
+    "home_elo_pregame",
+    "away_elo_pregame",
+    "elo_margin",
+    "epa_margin",
+    "expected_home_margin",
+    "home_win_prob",
+    "market_provider",
+    "market_home_margin",
+    "market_spread",
+    "market_captured_at",
+    "edge",
+    "edge_pick",
+}
+
 
 # ---------------------------------------------------------------------------
 # Test: views exist and return rows
@@ -297,6 +399,13 @@ class TestViewsExistAndReturnRows:
             ("api.game_drives", 150000),
             ("api.game_plays", 3000000),
             ("api.poll_rankings", 20000),
+            # Sized from 2026-07-21 Tier 2 backfill: house Elo 1869+, predictions
+            # retro 2015-2025 x 2 models
+            ("api.team_elo", 10000),
+            ("api.game_elo_history", 60000),
+            ("api.scored_matchup_edges", 1),
+            ("api.prediction_accuracy", 80),
+            ("api.game_predictions", 15000),
         ],
         ids=[
             "team_detail",
@@ -309,6 +418,11 @@ class TestViewsExistAndReturnRows:
             "game_drives",
             "game_plays",
             "poll_rankings",
+            "team_elo",
+            "game_elo_history",
+            "scored_matchup_edges",
+            "prediction_accuracy",
+            "game_predictions",
         ],
     )
     def test_view_returns_rows(self, db_conn, view_name, min_rows):
@@ -338,6 +452,11 @@ class TestViewColumns:
             ("api.game_drives", GAME_DRIVES_COLUMNS),
             ("api.game_plays", GAME_PLAYS_COLUMNS),
             ("api.poll_rankings", POLL_RANKINGS_COLUMNS),
+            ("api.team_elo", TEAM_ELO_COLUMNS),
+            ("api.game_elo_history", GAME_ELO_HISTORY_COLUMNS),
+            ("api.scored_matchup_edges", SCORED_MATCHUP_EDGES_COLUMNS),
+            ("api.prediction_accuracy", PREDICTION_ACCURACY_COLUMNS),
+            ("api.game_predictions", GAME_PREDICTIONS_COLUMNS),
         ],
         ids=[
             "team_detail",
@@ -350,6 +469,11 @@ class TestViewColumns:
             "game_drives",
             "game_plays",
             "poll_rankings",
+            "team_elo",
+            "game_elo_history",
+            "scored_matchup_edges",
+            "prediction_accuracy",
+            "game_predictions",
         ],
     )
     def test_columns_present(self, db_conn, view_name, expected_columns):

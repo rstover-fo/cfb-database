@@ -53,13 +53,14 @@ The database uses multiple Postgres schemas organized by data domain:
 | `draft` | NFL draft data | picks, positions |
 | `metrics` | Advanced metrics | PPA, win probability |
 | `analytics` | Computed analytics | EPA, style profiles |
-| `marts` | Materialized views (27) | Denormalized, query-optimized |
-| `api` | API view layer (18) | Contract surface for cfb-app/cfb-scout |
+| `marts` | Materialized views (32) | Denormalized, query-optimized |
+| `api` | API view layer (23) | Contract surface for cfb-app/cfb-scout |
+| `predictions` | Prediction snapshots | game_predictions (append-only daily) |
 | `public` | Convenience views/RPCs (12) | Downstream consumer interface |
 
 ### Marts System
 
-27 materialized views in the `marts` schema provide denormalized, query-optimized data (plus the plain view `analytics.data_quality_dashboard`). Refresh via:
+32 materialized views in the `marts` schema provide denormalized, query-optimized data (plus the plain view `analytics.data_quality_dashboard`). Refresh via:
 ```bash
 python scripts/refresh_marts.py        # Refresh all marts
 ```
@@ -102,9 +103,9 @@ cfb-database/
 │   │   │   └── rate_limiter.py   # Monthly budget tracking
 │   │   └── run.py                # Pipeline orchestration
 │   └── schemas/
-│       ├── api/                  # 18 API view definitions (contract surface)
+│       ├── api/                  # 23 API view definitions (contract surface)
 │       ├── functions/            # SQL functions
-│       ├── marts/                # 27 materialized view definitions (+1 plain view)
+│       ├── marts/                # 32 materialized view definitions (+1 plain view)
 │       ├── public/               # 12 convenience views + RPCs
 │       └── migrations/           # Schema migrations
 ├── scripts/
@@ -112,7 +113,11 @@ cfb-database/
 │   ├── verify_load.py            # Post-load verification checks
 │   ├── refresh_marts.py          # Mart refresh script
 │   ├── run_marts.py              # Apply mart definitions
-│   └── run_migrations.py         # Migration runner (--file for one-off SQL)
+│   ├── run_migrations.py         # Migration runner (--file for one-off SQL)
+│   ├── compute_house_elo.py      # Compute house Elo ratings from game history
+│   ├── compute_adjusted_epa.py   # Compute team adjusted EPA ratings
+│   ├── compute_predictions.py    # Generate game predictions and edges
+│   └── check_backtest.py         # Backtest prediction accuracy and scoring
 ├── tests/                        # Test files + test_sources/
 │   └── conftest.py               # DB connection + mock fixtures
 ├── .dlt/

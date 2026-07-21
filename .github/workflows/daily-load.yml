@@ -48,7 +48,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-      - run: pip install -e .
+      - run: pip install -e ".[compute]"
       - name: Set dlt destination credentials
         # dlt requires the postgres:// scheme (see .dlt/secrets.toml.example)
         run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
@@ -59,6 +59,19 @@ jobs:
           else
             python scripts/load_season.py --weekly
           fi
+      - name: Update house Elo
+        run: python scripts/compute_house_elo.py --incremental
+      - name: Refit adjusted EPA
+        run: |
+          if [ -n "${{ inputs.season }}" ]; then
+            python scripts/compute_adjusted_epa.py --season "${{ inputs.season }}"
+          else
+            python scripts/compute_adjusted_epa.py --season "$(python -c "from src.pipelines.config.years import get_current_season; print(get_current_season())")"
+          fi
+      - name: Write game predictions
+        run: python scripts/compute_predictions.py
+      - name: Refresh Tier 2 marts
+        run: python scripts/refresh_marts.py --views marts.house_elo,marts.house_elo_game,marts.team_adjusted_epa,marts.scored_matchup_edges,marts.prediction_accuracy
       - name: Verify load
         run: |
           if [ -n "${{ inputs.season }}" ]; then

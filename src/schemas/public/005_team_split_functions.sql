@@ -45,7 +45,7 @@ BEGIN
         JOIN core.games g ON p.game_id = g.id
         WHERE g.season = p_season
           AND p.offense = p_team
-          AND NOT public.is_garbage_time(p.period, p.score_diff)
+          AND NOT public.is_garbage_time(p.period::integer, p.score_diff::integer)
     )
     SELECT
         gr.location::TEXT,
@@ -119,7 +119,7 @@ BEGIN
         JOIN public.teams opp ON opp.school = CASE WHEN g.home_team = p_team THEN g.away_team ELSE g.home_team END
         WHERE g.season = p_season
           AND p.offense = p_team
-          AND NOT public.is_garbage_time(p.period, p.score_diff)
+          AND NOT public.is_garbage_time(p.period::integer, p.score_diff::integer)
     )
     SELECT
         gr.opponent_type::TEXT,

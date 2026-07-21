@@ -68,6 +68,12 @@ MARTS_VIEWS = [
     # Layer 5: Depends on Layer 4 + standalone
     "marts.matchup_edges",
     "marts.data_freshness",
+    # Layer 6: Tier 2 analytics (read from analytics.* staging + predictions)
+    "marts.house_elo",
+    "marts.house_elo_game",
+    "marts.team_adjusted_epa",
+    "marts.scored_matchup_edges",
+    "marts.prediction_accuracy",
 ]
 
 ANALYTICS_VIEWS = [

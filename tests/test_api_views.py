@@ -370,6 +370,76 @@ GAME_PREDICTIONS_COLUMNS = {
     "edge_pick",
 }
 
+TEAM_WEEK_FEATURES_COLUMNS = {
+    "season",
+    "season_type",
+    "week",
+    "week_index",
+    "team",
+    "conference",
+    "game_id",
+    "games_played_to_date",
+    "elo_pregame",
+    "adj_epa_off",
+    "adj_epa_def",
+    "adj_epa_net",
+    "adj_epa_hfa",
+    "adj_epa_source",
+    "off_epa_per_play",
+    "off_success_rate",
+    "off_explosiveness_rate",
+    "off_plays_per_game",
+    "def_epa_per_play_allowed",
+    "def_success_rate_allowed",
+    "def_explosiveness_rate_allowed",
+    "havoc_rate_defense",
+    "havoc_rate_offense_allowed",
+    "returning_ppa_pct",
+    "returning_passing_ppa_pct",
+    "returning_rushing_ppa_pct",
+    "returning_usage",
+    "preseason_sp_rating",
+    "preseason_sp_offense",
+    "preseason_sp_defense",
+    "computed_at",
+    "feature_build_version",
+}
+
+LIVE_SCOREBOARD_COLUMNS = {
+    "game_id",
+    "season",
+    "week",
+    "season_type",
+    "status",
+    "period",
+    "clock",
+    "seconds_remaining",
+    "home_team",
+    "away_team",
+    "home_points",
+    "away_points",
+    "possession",
+    "spread",
+    "over_under",
+    "cfbd_home_wp",
+    "house_live_home_wp",
+    "pregame_expected_margin",
+    "captured_at",
+}
+
+ADJUSTED_EPA_WEEK_COLUMNS = {
+    "team",
+    "season",
+    "week_index",
+    "off_coef",
+    "def_coef",
+    "hfa_coef",
+    "mu",
+    "plays",
+    "lambda",
+    "n_teams",
+}
+
 
 # ---------------------------------------------------------------------------
 # Test: views exist and return rows
@@ -405,6 +475,9 @@ class TestViewsExistAndReturnRows:
             ("api.game_elo_history", 40000),
             ("api.prediction_accuracy", 80),
             ("api.game_predictions", 15000),
+            # Tier 3 analytics: feature vectors and adjusted EPA coefficients
+            ("api.team_week_features", 15000),
+            ("api.adjusted_epa_week", 50000),
         ],
         ids=[
             "team_detail",
@@ -421,6 +494,8 @@ class TestViewsExistAndReturnRows:
             "game_elo_history",
             "prediction_accuracy",
             "game_predictions",
+            "team_week_features",
+            "adjusted_epa_week",
         ],
     )
     def test_view_returns_rows(self, db_conn, view_name, min_rows):
@@ -455,6 +530,9 @@ class TestViewColumns:
             ("api.scored_matchup_edges", SCORED_MATCHUP_EDGES_COLUMNS),
             ("api.prediction_accuracy", PREDICTION_ACCURACY_COLUMNS),
             ("api.game_predictions", GAME_PREDICTIONS_COLUMNS),
+            ("api.team_week_features", TEAM_WEEK_FEATURES_COLUMNS),
+            ("api.live_scoreboard", LIVE_SCOREBOARD_COLUMNS),
+            ("api.adjusted_epa_week", ADJUSTED_EPA_WEEK_COLUMNS),
         ],
         ids=[
             "team_detail",
@@ -472,6 +550,9 @@ class TestViewColumns:
             "scored_matchup_edges",
             "prediction_accuracy",
             "game_predictions",
+            "team_week_features",
+            "live_scoreboard",
+            "adjusted_epa_week",
         ],
     )
     def test_columns_present(self, db_conn, view_name, expected_columns):

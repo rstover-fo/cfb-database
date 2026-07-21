@@ -1,6 +1,14 @@
 """Advanced metrics data sources - PPA, win probability.
 
 Predicted Points Added and other advanced analytics.
+
+``win_probability`` (in-game, per-play win probability) is loaded by
+``metrics_wp_source`` / ``win_probability_resource`` below, NOT by
+``metrics_source``. The endpoint requires a ``gameId`` parameter -- year-only
+queries return 400 -- so it cannot share the year-iterated shape every other
+resource in this module uses. See docs/pipeline-manifest.md row 47 and
+``src/pipelines/run.py::run_metrics_wp_pipeline`` for the per-game loader that
+drives it from ``core.games``.
 """
 
 import logging
@@ -40,7 +48,11 @@ def metrics_source(
         ppa_games_resource(years),
         ppa_players_games_resource(years),
         pregame_win_probability_resource(years),
-        win_probability_resource(years),
+        # in-game win_probability (per-play, requires gameId) intentionally
+        # NOT returned here -- see metrics_wp_source() below and
+        # src/pipelines/run.py::run_metrics_wp_pipeline for its game-id-driven
+        # loader. Returning it from this year-driven source was dead code:
+        # the endpoint requires gameId and always 400'd on a year-only query.
         ppa_predicted_resource(),
         fg_expected_points_resource(),
     ]
@@ -180,32 +192,88 @@ def pregame_win_probability_resource(years: list[int]) -> Iterator[dict]:
         client.close()
 
 
+@dlt.source(name="cfbd_metrics_wp")
+def metrics_wp_source(
+    game_ids: list[int],
+    game_seasons: dict[int, int] | None = None,
+) -> DltSource:
+    """Source for in-game (per-play) win probability, loaded one game at a time.
+
+    ``/metrics/wp`` requires a ``gameId`` parameter -- there is no year-level
+    query, which is why this is a separate source from ``metrics_source``
+    rather than another year-iterated resource in it (see module docstring
+    and docs/pipeline-manifest.md row 47). Callers are expected to be
+    ``src.pipelines.run.run_metrics_wp_pipeline``, which resolves the game
+    ids from ``core.games`` (only completed games not already present in
+    ``metrics.win_probability``) and batches them into ~50-game
+    ``pipeline.run()`` calls to stay under Supabase's statement timeout
+    (~150+ rows/game -> ~8.5K rows/merge at batch_size=50, mirroring the
+    proven ``run_game_stats_weekly`` pattern).
+
+    Args:
+        game_ids: CFBD game ids to fetch win probability for, one API call
+            each.
+        game_seasons: Optional {game_id: season} map used to stamp a
+            ``season`` column onto every row (CFBD's per-game response may or
+            may not echo the season back -- confirmed by the W1
+            ``scripts/probe_metrics_wp.py`` probe). If a game_id has no entry,
+            ``season`` is left as whatever (if anything) the API returned.
+    """
+    return [win_probability_resource(game_ids, game_seasons)]
+
+
 @dlt.resource(
     name="win_probability",
     write_disposition="merge",
-    primary_key="play_id",
+    # Compound key, not bare "play_id": CFBD's playId uniqueness scope
+    # (globally unique vs. unique-per-game) is unconfirmed as of this
+    # writing -- see docs/pipeline-manifest.md row 47 investigation note and
+    # scripts/probe_metrics_wp.py, which was written specifically to check
+    # this. (game_id, play_id) is correct either way, so it's the safe
+    # default until the probe confirms play_id alone is sufficient.
+    primary_key=["game_id", "play_id"],
 )
-def win_probability_resource(years: list[int]) -> Iterator[dict]:
-    """Load in-game win probability by play.
+def win_probability_resource(
+    game_ids: list[int],
+    game_seasons: dict[int, int] | None = None,
+) -> Iterator[dict]:
+    """Load in-game win probability by play, one API call per game_id.
 
-    Note: Data availability varies by year. Years with no data return 400 and are skipped.
+    Each completed FBS game returns ~150+ per-play records (playId,
+    playText, homeWinProbability, down, distance, yardLine, ...). Every row
+    is stamped with ``game_id`` (defensively -- in case a given season's
+    response omits it) and, when known, ``season``. A 400 or 404 for a given
+    game_id (e.g. no WP data computed for that game) is logged and skipped
+    rather than aborting the whole batch -- callers may pass game ids for
+    games CFBD hasn't backfilled WP for yet.
 
     Args:
-        years: List of years to load win probability for
+        game_ids: CFBD game ids to fetch win probability for.
+        game_seasons: Optional {game_id: season} map for stamping season.
     """
+    game_seasons = game_seasons or {}
     client = get_client()
     try:
-        for year in years:
-            logger.info(f"Loading in-game win probability for {year}...")
+        for game_id in game_ids:
+            logger.info(f"Loading in-game win probability for game {game_id}...")
 
             try:
-                data = make_request(client, "/metrics/wp", params={"year": year})
-                yield from data
+                data = make_request(client, "/metrics/wp", params={"gameId": game_id})
             except httpx.HTTPStatusError as e:
-                if e.response.status_code == 400:
-                    logger.warning(f"No win probability data for {year} (400 response), skipping")
+                if e.response.status_code in (400, 404):
+                    logger.warning(
+                        f"No win probability data for game {game_id} "
+                        f"({e.response.status_code} response), skipping"
+                    )
                     continue
                 raise
+
+            season = game_seasons.get(game_id)
+            for play in data:
+                play["game_id"] = game_id
+                if season is not None:
+                    play["season"] = season
+                yield play
 
     finally:
         client.close()

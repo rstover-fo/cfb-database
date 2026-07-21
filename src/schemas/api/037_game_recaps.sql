@@ -1,6 +1,6 @@
 -- api.game_recaps
 -- Nightly LLM-generated game recap for a single game. Backed by
--- analytics.game_recaps (src/schemas/migrations/027_game_recaps.sql),
+-- analytics.game_recaps (src/schemas/migrations/031_game_recaps.sql),
 -- written by scripts/generate_recaps.py from warehouse facts only.
 --
 -- Content is LLM-generated, not CFBD-sourced: headline/recap are prose

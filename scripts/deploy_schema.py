@@ -14,6 +14,7 @@ Manifest schema:
       "marts_only": "011",
       "files": ["src/schemas/api/019_x.sql", ...],
       "refresh": true,
+      "refresh_views": ["marts.team_week_features", "marts.adjusted_epa_week"],
       "backfill": {"start": 2014, "end": 2025, "sources": "stats,betting"},
       "compute": {"script": "compute_house_elo", "args": ["--full"]}
     }
@@ -58,13 +59,26 @@ CHECK_PRESENCE = SCRIPTS_DIR / "check_presence.py"
 VALID_ACTIONS = {"presence_check", "apply", "backfill", "compute"}
 
 # Allowlist of compute scripts the "compute" action may run (scripts/<name>.py).
-# These land in later Tier 2 phases -- membership is checked, not file existence,
-# so this action can be wired up before the scripts themselves exist.
+# These land in later Tier 2 + Tier 3 phases -- membership is checked, not file
+# existence, so this action can be wired up before the scripts themselves exist.
 COMPUTE_SCRIPTS = {
     "compute_house_elo",
     "compute_adjusted_epa",
     "compute_predictions",
     "check_backtest",
+    # TEMPORARY (P3.2 Lane B): read-only field-shape probe for /metrics/wp,
+    # scripts/probe_metrics_wp.py. Remove this entry once the win-probability
+    # deploy sequence (docs/pipeline-manifest.md row 47) is done -- it exists
+    # only so the probe can run through the same deploy/compute mechanism as
+    # everything else instead of a one-off workflow.
+    "probe_metrics_wp",
+    "compute_adjusted_epa_week",
+    "build_features",
+    "train_model",
+    "score_fitted",
+    "tune_params",
+    "calibrate_live_wp",
+    "poll_scoreboard",
 }
 
 # Marts refreshed after a compute run when plan.refresh is set. One home for
@@ -75,6 +89,13 @@ TIER2_MART_VIEWS = [
     "marts.team_adjusted_epa",
     "marts.scored_matchup_edges",
     "marts.prediction_accuracy",
+]
+
+# Marts refreshed after the Tier 3 feature-building / adjusted-EPA-week
+# computes, when a plan supplies them explicitly via refresh_views.
+TIER3_MART_VIEWS = [
+    "marts.team_week_features",
+    "marts.adjusted_epa_week",
 ]
 
 
@@ -98,6 +119,7 @@ class Plan:
     marts_only: str | None = None
     files: list[str] = field(default_factory=list)
     refresh: bool = False
+    refresh_views: list[str] = field(default_factory=list)
     backfill: BackfillSpec | None = None
     strict: bool = False
     compute: ComputeSpec | None = None
@@ -133,6 +155,11 @@ def validate_plan(plan: Plan) -> None:
                 f"must be one of {sorted(COMPUTE_SCRIPTS)}"
             )
 
+    if plan.refresh_views:
+        for view in plan.refresh_views:
+            if view.count(".") != 1:
+                raise ValueError(f"invalid refresh_views entry {view!r}; expected 'schema.view'")
+
 
 def load_manifest(path: str) -> dict:
     with open(path) as f:
@@ -164,6 +191,7 @@ def plan_from_manifest(manifest: dict) -> Plan:
         marts_only=manifest.get("marts_only"),
         files=list(manifest.get("files") or []),
         refresh=bool(manifest.get("refresh", False)),
+        refresh_views=list(manifest.get("refresh_views") or []),
         backfill=backfill,
         strict=bool(manifest.get("strict", False)),
         compute=compute,
@@ -179,6 +207,7 @@ def plan_from_cli(
     marts_only: str | None = None,
     files: str | None = None,
     refresh: bool = False,
+    refresh_views: str | None = None,
     backfill_start: int | None = None,
     backfill_end: int | None = None,
     sources: str | None = None,
@@ -188,11 +217,14 @@ def plan_from_cli(
 ) -> Plan:
     """Build and validate a Plan from workflow_dispatch-style CLI flags.
 
-    `files`, `sources`, and `compute_args` are comma-separated strings
-    (workflow_dispatch inputs are plain text), matching the manifest's
+    `files`, `sources`, `refresh_views`, and `compute_args` are comma-separated
+    strings (workflow_dispatch inputs are plain text), matching the manifest's
     list/string fields once parsed.
     """
     file_list = [f.strip() for f in files.split(",") if f.strip()] if files else []
+    refresh_views_list = (
+        [v.strip() for v in refresh_views.split(",") if v.strip()] if refresh_views else []
+    )
 
     backfill = None
     if backfill_start is not None or backfill_end is not None or sources:
@@ -213,6 +245,7 @@ def plan_from_cli(
         marts_only=marts_only,
         files=file_list,
         refresh=refresh,
+        refresh_views=refresh_views_list,
         backfill=backfill,
         strict=strict,
         compute=compute,
@@ -323,9 +356,13 @@ def run_compute(plan: Plan) -> int:
         return rc
 
     if plan.refresh:
+        if plan.refresh_views:
+            views, label = plan.refresh_views, "refresh_marts --views (custom)"
+        else:
+            views, label = TIER2_MART_VIEWS, "refresh_marts --views (tier2)"
         rc = run_cmd(
-            [sys.executable, str(REFRESH_MARTS), "--views", ",".join(TIER2_MART_VIEWS)],
-            "refresh_marts --views (tier2)",
+            [sys.executable, str(REFRESH_MARTS), "--views", ",".join(views)],
+            label,
         )
         if rc:
             return rc
@@ -360,6 +397,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--marts-only", dest="marts_only", help="run_marts.py --only value")
     parser.add_argument("--files", help="Comma-separated SQL files to apply via run_migrations.py")
     parser.add_argument("--refresh", action="store_true", help="Refresh marts schema after apply")
+    parser.add_argument(
+        "--refresh-views",
+        dest="refresh_views",
+        help="Comma-separated marts.<view> names to refresh after compute (overrides tier2)",
+    )
     parser.add_argument(
         "--backfill-start", dest="backfill_start", type=int, help="First backfill season"
     )
@@ -399,6 +441,7 @@ def main(argv: list[str] | None = None) -> None:
             marts_only=args.marts_only,
             files=args.files,
             refresh=args.refresh,
+            refresh_views=args.refresh_views,
             backfill_start=args.backfill_start,
             backfill_end=args.backfill_end,
             sources=args.sources,

@@ -1,4 +1,4 @@
--- Migration: 027_game_recaps
+-- Migration: 031_game_recaps
 --
 -- analytics.game_recaps: nightly LLM-generated game recaps (P3.3 Lane D).
 -- One row per game_id, written by scripts/generate_recaps.py, which selects
@@ -24,7 +24,7 @@
 -- scripts/generate_recaps.py, not from real win-probability data.
 --
 -- Apply via:
---   python scripts/run_migrations.py --file src/schemas/migrations/027_game_recaps.sql
+--   python scripts/run_migrations.py --file src/schemas/migrations/031_game_recaps.sql
 
 CREATE TABLE IF NOT EXISTS analytics.game_recaps (
     game_id         BIGINT PRIMARY KEY,

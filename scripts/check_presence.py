@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Presence/recon check for Tier 1 and Tier 2 gate tables (Phase 0 of the analytics-unlock sprint).
+"""Presence/recon check for Tier 1, 2, and 3 gate tables (Phase 0 analytics-unlock).
 
 Prints live row counts, column dumps, ref.play_stat_types contents, and an
 athlete_id/roster overlap sample for the tables that gate the WEPA, player-EPA,
 havoc, returning-production, player-usage, and ATS work
 (docs/plans/2026-07-19-tier1-analytics-unlock-plan.md, Phase 0). Also reports
-Tier 2 tables (house-Elo, EPA, predictions, line snapshots) and depth metrics
-for backtest benchmarks. Output is grouped into clearly delimited sections so a
-GitHub Actions job log can be read directly without a live DB connection.
+Tier 2 tables (house-Elo, EPA, predictions, line snapshots) and Tier 3 tables
+(walk-forward EPA, features, live data), plus depth metrics for backtest benchmarks.
+Output is grouped into clearly delimited sections so a GitHub Actions job log can
+be read directly without a live DB connection.
 
 Usage:
     python scripts/check_presence.py             # recon mode: always exit 0
@@ -54,6 +55,19 @@ TIER_2_GATE_TABLES: list[tuple[str, str]] = [
     ("analytics", "adjusted_epa_build"),
     ("predictions", "game_predictions"),
     ("betting", "line_snapshots"),
+]
+
+# Tier 3 tables (walk-forward EPA, features, fitted models, live in-game)
+# reported for context but NOT enforced in --strict mode (legitimately
+# absent before Tier 3 phases 1-8).
+TIER_3_GATE_TABLES: list[tuple[str, str]] = [
+    ("analytics", "adjusted_epa_week_build"),
+    ("features", "team_week"),
+    ("features", "model_coefficients"),
+    ("features", "model_metadata"),
+    ("live", "scoreboard_snapshots"),
+    ("live", "wp_params"),
+    ("metrics", "win_probability"),
 ]
 
 # Play-by-play athlete_id linkage only goes back to ~2014; a single recent
@@ -177,6 +191,24 @@ def print_tier_2_row_counts(cur) -> dict[tuple[str, str], int | None]:
     return counts
 
 
+def print_tier_3_row_counts(cur) -> dict[tuple[str, str], int | None]:
+    """Print row counts for TIER_3_GATE_TABLES; return {(schema, table): count or None}.
+
+    Tier 3 tables are reported for context but are not enforced in strict mode.
+    """
+    section("ROW COUNTS - TIER 3 (walk-forward EPA / features / live)")
+    counts: dict[tuple[str, str], int | None] = {}
+    for schema, table in TIER_3_GATE_TABLES:
+        if not table_exists(cur, schema, table):
+            print(f"{schema}.{table}: MISSING")
+            counts[(schema, table)] = None
+            continue
+        count = row_count(cur, schema, table)
+        counts[(schema, table)] = count
+        print(f"{schema}.{table}: {count:,}")
+    return counts
+
+
 def print_depth_checks(cur) -> None:
     """Print season depth and row counts for backtest benchmark tables."""
     section("DEPTH CHECKS - BACKTEST BENCHMARKS")
@@ -213,6 +245,28 @@ def print_depth_checks(cur) -> None:
     else:
         print("metrics.pregame_win_probability: MISSING")
 
+    # marts.play_epa week coverage (via core.games)
+    if not table_exists(cur, "marts", "play_epa"):
+        print("marts.play_epa: MISSING - week coverage skipped")
+    elif not table_exists(cur, "core", "games"):
+        print("core.games: MISSING - week coverage skipped")
+    else:
+        cur.execute(
+            """
+            SELECT MIN(g.week), MAX(g.week),
+                   COUNT(*) FILTER (WHERE g.week IS NULL) AS null_week_plays,
+                   COUNT(*) FILTER (WHERE g.season_type IS NULL) AS null_type_plays,
+                   COUNT(*) AS total_plays
+            FROM marts.play_epa pe JOIN core.games g ON g.id = pe.game_id
+            """
+        )
+        min_week, max_week, null_week, null_type, total = cur.fetchone()
+        print(
+            f"marts.play_epa week coverage (via core.games): min_week={min_week}, "
+            f"max_week={max_week}, null_week_plays={null_week:,}, "
+            f"null_season_type_plays={null_type:,}, total_plays={total:,}"
+        )
+
 
 def evaluate_strict(counts: dict[tuple[str, str], int | None]) -> bool:
     """Return True (pass) iff every strict gate table is present and non-empty."""
@@ -232,6 +286,7 @@ def run(strict: bool) -> int:
             print_play_stat_types(cur, counts)
             print_athlete_overlap(cur, counts)
             print_tier_2_row_counts(cur)
+            print_tier_3_row_counts(cur)
             print_depth_checks(cur)
     finally:
         conn.close()

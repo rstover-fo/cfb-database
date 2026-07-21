@@ -8,6 +8,10 @@
 - **WORKING**: Configured + implemented + wired in source return + CLI registered
 - **CONFIG_ONLY**: Endpoint config exists, resource function may exist, but NOT returned from source
 - **DEFERRED**: Investigated; requires non-standard iteration pattern (per-game or parameter combinations); low priority
+- **PENDING_DEPLOY**: Implemented, unit-tested, and CLI-registered, but not yet loaded against the live
+  database (source, migration, and view are authored on a branch awaiting a deploy sequence). See
+  `deploys/p32-backfill-manifests.md` for the pending sequence and `docs/pipeline-manifest.md`'s
+  investigation-notes Resolution entry for the item currently in this state.
 - **UNMAPPED**: No config or source implementation
 
 ## Database Summary
@@ -153,7 +157,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 44 | `/metrics/wp/pregame` | metrics.pregame_win_probability | metrics.py | pregame_wp_resource | YES | merge | season, game_id | 2014-2026 | WORKING |
 | 45 | `/ppa/games` | metrics.ppa_games | metrics.py | ppa_games_resource | YES | merge | game_id, team | 2014-2026 | WORKING |
 | 46 | `/ppa/players/games` | metrics.ppa_players_games | metrics.py | ppa_players_games_resource | YES | merge | id | 2014-2026 | WORKING |
-| 47 | `/metrics/wp` | — | — | — | NO | merge | play_id | 2014-2026 | DEFERRED |
+| 47 | `/metrics/wp` | metrics.win_probability | metrics.py | win_probability_resource (via metrics_wp_source) | YES | merge | game_id, play_id | 2014-2026 | PENDING_DEPLOY |
 | 48 | `/ppa/predicted` | — | — | — | — | — | down, distance, yard_line | — | DEFERRED |
 | 49 | `/metrics/fg/ep` | metrics.fg_expected_points | metrics.py | fg_expected_points_resource | YES | merge | distance | — | WORKING |
 
@@ -191,7 +195,8 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | WORKING | 52 |
 | WORKING (note) | 1 |
 | CONFIG_ONLY | 0 |
-| DEFERRED | 3 |
+| PENDING_DEPLOY | 1 |
+| DEFERRED | 2 |
 | UNMAPPED | 3 |
 | REMOVED | 1 |
 | **Total** | **60** |
@@ -230,6 +235,34 @@ The current year-based iteration pattern doesn't work for this endpoint. Loading
 
 **Recommendation:**
 Use `pregame_win_probability` (already working) for pre-game predictions. In-game win probability is low priority for analytics use cases. If needed later, implement a targeted loader for specific games of interest rather than full historical backfill.
+
+**Resolution (P3.2 Lane B, pending deploy):**
+Implemented the "targeted loader" this note recommended: `metrics_wp_source` /
+`win_probability_resource` (src/pipelines/sources/metrics.py) now call
+`/metrics/wp?gameId=<id>` once per game instead of the year-only query that
+always 400'd, and the old year-driven `win_probability` resource was removed
+from `metrics_source`'s return list (it was dead code -- see that module's
+header comment). `src/pipelines/run.py::run_metrics_wp_pipeline` bounds the
+call volume the original note worried about: it queries `core.games` for
+completed games in the requested seasons still missing from
+`metrics.win_probability`, so it only ever calls the API for games it
+doesn't already have, not "every game in the database" on every run. Wired
+into `scripts/load_season.py` (`SOURCE_ORDER`/`ESTIMATED_CALLS["metrics_wp"] = 70`)
+so daily/weekly incremental loads pick up newly-completed games automatically
+-- no workflow-file changes needed. Full 2014+ backfill is ~12,000 API calls
+(one-time; see `deploys/p32-backfill-manifests.md`'s budget-math section),
+comfortably inside the 75,000/month Tier 3 budget alongside the existing
+~22K/month daily-load worst case. New table: `metrics.win_probability`
+(indexed by `src/schemas/migrations/026_win_probability_indexes.sql`),
+exposed as `api.game_win_probability`
+(`src/schemas/api/033_game_win_probability.sql`). Status is PENDING_DEPLOY,
+not WORKING, because none of this has run against the live database yet --
+see `deploys/p32-backfill-manifests.md` for the exact deploy sequence
+(probe -> three backfill manifests -> apply migration+view) and its "Open
+assumptions" section for what the field-shape probe (`scripts/probe_metrics_wp.py`)
+must still confirm (CFBD's WP model was reportedly rebuilt in 2025, so the
+`playId`/`down`/`distance`/`yardLine` field names this note originally
+recorded on 2026-01-29 are unverified against current live data).
 
 ### `/ppa/predicted` (Predicted Points Lookup) — DEFERRED
 

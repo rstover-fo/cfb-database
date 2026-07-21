@@ -74,6 +74,9 @@ MARTS_VIEWS = [
     "marts.team_adjusted_epa",
     "marts.scored_matchup_edges",
     "marts.prediction_accuracy",
+    # Layer 7: Tier 3 analytics (computed from play/feature builds, depends on Layer 6)
+    "marts.team_week_features",
+    "marts.adjusted_epa_week",
 ]
 
 ANALYTICS_VIEWS = [

@@ -29,6 +29,15 @@ class TestComputeScripts:
             "compute_house_elo",
             "compute_adjusted_epa",
             "compute_predictions",
+            # TEMPORARY (P3.2 Lane B) -- see deploy_schema.py's comment.
+            "probe_metrics_wp",
+            "compute_adjusted_epa_week",
+            "build_features",
+            "train_model",
+            "score_fitted",
+            "tune_params",
+            "calibrate_live_wp",
+            "poll_scoreboard",
         }
 
 
@@ -139,6 +148,21 @@ class TestPlanFromManifestCompute:
         with pytest.raises(ValueError, match="compute_house_elo"):
             plan_from_manifest(manifest)
 
+    def test_refresh_views_populated(self):
+        manifest = {
+            "action": "compute",
+            "compute": {"script": "compute_adjusted_epa_week"},
+            "refresh": True,
+            "refresh_views": ["marts.team_week_features", "marts.adjusted_epa_week"],
+        }
+        plan = plan_from_manifest(manifest)
+        assert plan.refresh_views == ["marts.team_week_features", "marts.adjusted_epa_week"]
+
+    def test_refresh_views_defaults_empty(self):
+        manifest = {"action": "compute", "compute": {"script": "compute_house_elo"}}
+        plan = plan_from_manifest(manifest)
+        assert plan.refresh_views == []
+
 
 class TestBadAction:
     def test_unknown_action_rejected(self):
@@ -169,6 +193,15 @@ class TestBadAction:
 
     def test_compute_allowlisted_script_accepted_directly(self):
         plan = Plan(action="compute", compute=ComputeSpec(script="compute_house_elo"))
+        validate_plan(plan)  # does not raise
+
+    def test_refresh_views_without_dot_rejected_directly(self):
+        plan = Plan(action="presence_check", refresh_views=["marts_team_week_features"])
+        with pytest.raises(ValueError, match="refresh_views"):
+            validate_plan(plan)
+
+    def test_refresh_views_with_dot_accepted_directly(self):
+        plan = Plan(action="presence_check", refresh_views=["marts.team_week_features"])
         validate_plan(plan)  # does not raise
 
 
@@ -262,6 +295,27 @@ class TestPlanFromCli:
     def test_compute_refresh_flag_mapped(self):
         plan = plan_from_cli(action="compute", compute_script="compute_house_elo", refresh=True)
         assert plan.refresh is True
+
+    def test_refresh_views_flag_mapped(self):
+        plan = plan_from_cli(
+            action="compute",
+            compute_script="compute_adjusted_epa_week",
+            refresh_views="marts.team_week_features, marts.adjusted_epa_week",
+        )
+        # Comma-separated CLI string is split and whitespace-stripped, like files/sources.
+        assert plan.refresh_views == ["marts.team_week_features", "marts.adjusted_epa_week"]
+
+    def test_refresh_views_no_flag_gives_empty_list(self):
+        plan = plan_from_cli(action="compute", compute_script="compute_house_elo")
+        assert plan.refresh_views == []
+
+    def test_refresh_views_blank_entries_dropped(self):
+        plan = plan_from_cli(action="apply", refresh_views="marts.a,,marts.b,")
+        assert plan.refresh_views == ["marts.a", "marts.b"]
+
+    def test_refresh_views_without_dot_rejected(self):
+        with pytest.raises(ValueError, match="refresh_views"):
+            plan_from_cli(action="presence_check", refresh_views="bad_view_name")
 
 
 class TestLoadManifest:

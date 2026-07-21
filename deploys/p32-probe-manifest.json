@@ -1,0 +1,7 @@
+{
+  "action": "compute",
+  "compute": {
+    "script": "probe_metrics_wp",
+    "args": []
+  }
+}

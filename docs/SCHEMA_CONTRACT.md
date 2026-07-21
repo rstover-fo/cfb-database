@@ -27,10 +27,84 @@ Last updated: 2026-07-21
   consumer note: render `headline`/`recap` as prose, not as data to parse or chart, and treat
   `wp_available = false` as a signal the recap's momentum framing came from an EPA-only
   fallback rather than real win-probability data. Backed by `analytics.game_recaps`
-  (`src/schemas/migrations/027_game_recaps.sql`); exposed via
-  `src/schemas/api/034_game_recaps.sql`. **Deployed 2026-07-21** (see
+  (`src/schemas/migrations/031_game_recaps.sql`); exposed via
+  `src/schemas/api/037_game_recaps.sql`. **Deployed 2026-07-21** (see
   `deploys/p33-apply-manifest.json`); do not query until this entry is updated to
   **Live**/**Deployed**.
+- **2026-07-21 — `api.game_win_probability` authored, pending deploy (P3.2 Lane B).**
+  New view over a new `metrics.win_probability` table: in-game (per-play) win
+  probability, one row per snap, loaded per-game from `/metrics/wp?gameId=<id>`
+  (`src/pipelines/sources/metrics.py::win_probability_resource`,
+  `src/pipelines/run.py::run_metrics_wp_pipeline`; replaces a dead year-driven
+  resource that always 400'd -- see `docs/pipeline-manifest.md` row 47).
+  **This is distinct from Tier 2's house win probability
+  (`api.game_elo_history`/`api.game_predictions`):** this view is CFBD's own
+  in-play model, driven by real-time game state across the whole game;
+  Tier 2's is a single pregame number per model per game, computed from house
+  Elo/EPA. **Status is Pending deploy, not Live** -- the source, migration
+  (`src/schemas/migrations/026_win_probability_indexes.sql`), and view
+  (`src/schemas/api/033_game_win_probability.sql`) are authored and
+  unit-tested but have not run against the live database yet; see
+  `deploys/p32-backfill-manifests.md` for the deploy sequence. **Coverage
+  caveat:** even once deployed, coverage starts at 2014 (the `metrics` year
+  range) and is only as complete as the backfill that has actually run --
+  query `metrics.win_probability` (or this view) for a specific `game_id`
+  and expect zero rows for any game not yet backfilled, not an error.
+  **Absent-rows fallback:** a game with no in-game win-probability rows
+  (not yet backfilled, or CFBD never computed WP for it) simply returns an
+  empty result set from this view -- callers should treat that as "not
+  available for this game" and fall back to `api.game_elo_history`'s
+  pregame number if a win-probability figure is required, not treat it as a
+  data-quality failure the way an empty `api.game_detail` row would be.
+  Do not add this view to `tests/test_api_views.py`'s inventory until it is
+  confirmed live (repo sequencing rule, see
+  `docs/plans/2026-07-19-tier1-analytics-unlock-plan.md`).
+- **2026-07-21 — Tier 3: walk-forward honesty (leak-free blend backtest), fitted_v1 model
+  (wired into daily), features.team_week substrate, live scoreboard polling + house live win
+  prob. Honest blend ATS>=6 is 50.1% -- the previously documented 56.1% was in-season EPA
+  leakage, now eliminated.**
+  - **Walk-forward honesty:** `scripts/compute_predictions.py --as-of-week` backfills
+    `elo_epa_blend_v1` using `analytics.adjusted_epa_week_build` coefficients as of each game's
+    own week (prior-season fallback, else Elo-only), closing the in-season EPA leakage that
+    inflated the old backtest. Honest numbers: `elo_epa_blend_v1` ATS at `|edge|>=6` = 50.1%
+    (n=3,462) vs. `elo_v1` = 50.3% -- nobody beats the closing line; the blend still edges
+    `elo_v1` on margin MAE (16.31 vs 16.46). `marts.prediction_accuracy`'s header documents the
+    full methodology.
+  - **`fitted_v1` model (new, wired into the daily load):** a ridge-margin + IRLS/Platt-
+    calibrated win-probability model trained on `features.team_week`
+    (`scripts/train_model.py`, `scripts/tune_params.py`). Gate B passed: `fitted_v1` beats
+    `elo_v1` on walk-forward MAE (14.99 vs 16.46) and Brier (0.182 vs 0.187) every season
+    2018-2025. `scripts/score_fitted.py --upcoming` now runs daily, scoring upcoming games
+    into `predictions.game_predictions`.
+  - **`features.team_week` substrate (new schema):** the as-of feature vector entering each
+    team's game -- house Elo, opponent-adjusted EPA, season-to-date production/havoc, and
+    preseason-known constants -- written by `scripts/build_features.py --incremental`.
+    `features.model_coefficients` / `features.model_metadata` hold frozen walk-forward
+    `fitted_v1` fits. Exposed via `marts.team_week_features` / `api.team_week_features`;
+    `features.*` internals are contract-internal like `analytics.*`.
+  - **`analytics.adjusted_epa_week_build` (new):** walk-forward ridge-adjusted-EPA
+    coefficients per `(team, season, week_index)`, entering that week only (no leakage),
+    written by `scripts/compute_adjusted_epa_week.py --incremental`. Exposed via
+    `marts.adjusted_epa_week` / `api.adjusted_epa_week`.
+  - **Live scoreboard polling (new `live` schema):** `live.scoreboard_snapshots` (append-only
+    `/scoreboard` poll ticks, one row per game per tick) and `live.wp_params` (single-row
+    calibration, `sigma` seeded at 16, fit later by `scripts/calibrate_live_wp.py`). Polled
+    every 5 minutes on Saturdays by `.github/workflows/live-scoreboard.yml`
+    (`scripts/poll_scoreboard.py`, games-today guard). Exposed as `api.live_scoreboard`, a
+    **plain view** (not materialized, so it is always current as of the latest poll tick) --
+    legitimately empty outside Saturday polling windows, not a data-quality failure.
+  - **In-game win probability data** (`metrics.win_probability`, 2014-2025, ~1M+ rows) was
+    loaded by the parallel P3.2 pipeline workstream (`load_season --sources metrics_wp`, their
+    branch, unmerged as of this entry) -- noted here for awareness; that pipeline's own
+    contract entry will follow when it merges.
+  - `api/033` is reserved for the parallel P3.2 win-probability branch
+    (`api.game_win_probability`) -- not claimed by this entry.
+  - New API views: `api.team_week_features` (034), `api.live_scoreboard` (035),
+    `api.adjusted_epa_week` (036). New marts: `marts.team_week_features` (039),
+    `marts.adjusted_epa_week` (040). `marts.refresh_all()` now refreshes 39 materialized views
+    in 7 dependency layers (was 37 in 6 layers); the API view count is now 35 (was 32).
+  - cfb-app should regenerate `supabase gen types` to pick up the new `features`/`live` schemas
+    and the new views.
 
 - **2026-07-21 — Tier 2 analytics: house Elo, ridge-adjusted EPA, scored edges, predictions.**
   Five new `marts.*` materialized views and five new `api.*` views add a house-generated
@@ -188,6 +262,10 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.prediction_accuracy` | **Live** | ~90 | Retroactive scoring of house predictions by season/model/edge-threshold: margin MAE/RMSE, ATS record, Brier score (house vs. CFBD). Columns: model_version, season, edge_threshold, n_games, n_with_market, margin_mae, margin_rmse, ats_wins, ats_losses, ats_pushes, ats_hit_rate, brier, cfbd_brier, n_scored_win_prob |
 | `api.game_predictions` | **Live** | ~20,000+ | Latest house prediction snapshot per (game, model), from the append-only `predictions.game_predictions` log. Columns: prediction_id, computed_at, prediction_date, model_version, game_id, season, week, season_type, home_team, away_team, neutral_site, home_elo_pregame, away_elo_pregame, elo_margin, epa_margin, expected_home_margin, home_win_prob, market_provider, market_home_margin, market_spread, market_captured_at, edge, edge_pick |
 | `api.game_recaps` | **Deployed** | 0 (fills nightly) | Nightly LLM-generated game recap. **Content is LLM-generated from warehouse facts, not CFBD data** -- regenerated only via the `regenerate` flag; a missing `game_id` means not yet generated. cfb-app should render `headline`/`recap` as prose, not structured stats. Columns: game_id, season, week, headline, recap, wp_available, model, generated_at |
+| `api.game_win_probability` | **Pending deploy** | -- | In-game (per-play) win probability for a game -- CFBD's own in-play model (real-time, one row per snap), distinct from the Tier 2 pregame house win probability above (`api.game_elo_history`/`api.game_predictions`). Coverage 2014+, only as complete as the backfill that has run (empty result set, not an error, for a not-yet-backfilled game -- see Recent Contract Changes entry above). Columns: game_id, season, play_id, home_team, away_team, home_win_probability, down, distance, yard_line, play_text, period, clock_minutes, clock_seconds. period/clock_minutes/clock_seconds come from a defensive join to `core.plays` and may be NULL. Backed by `metrics.win_probability` (`src/schemas/api/033_game_win_probability.sql`). Not yet loaded live -- see `deploys/p32-backfill-manifests.md`. |
+| `api.team_week_features` | **Live** | 52,934 | As-of feature vector entering each team's game -- house Elo, opponent-adjusted EPA, season-to-date production/havoc, and preseason-known constants; the `fitted_v1` modeling substrate. Passthrough of `marts.team_week_features`. Columns: season, season_type, week, week_index, team, conference, game_id, games_played_to_date, elo_pregame, adj_epa_off, adj_epa_def, adj_epa_net, adj_epa_hfa, adj_epa_source, off_epa_per_play, off_success_rate, off_explosiveness_rate, off_plays_per_game, def_epa_per_play_allowed, def_success_rate_allowed, def_explosiveness_rate_allowed, havoc_rate_defense, havoc_rate_offense_allowed, returning_ppa_pct, returning_passing_ppa_pct, returning_rushing_ppa_pct, returning_usage, preseason_sp_rating, preseason_sp_offense, preseason_sp_defense, computed_at, feature_build_version. `week_index` = week for `season_type='regular'`, 100 + week for `'postseason'`. |
+| `api.live_scoreboard` | **Live** | Varies (Saturdays only) | Latest `/scoreboard` poll snapshot per game captured within the last 24 hours -- score, clock, possession, market line, CFBD's and the house closed-form live win probability. **Plain view, not materialized** (always current as of the latest 5-minute poll tick). Legitimately empty outside Saturday polling windows -- not a data-quality failure. Passthrough of `live.scoreboard_snapshots`. Columns: game_id, season, week, season_type, status, period, clock, seconds_remaining, home_team, away_team, home_points, away_points, possession, spread, over_under, cfbd_home_wp, house_live_home_wp, pregame_expected_margin, captured_at |
+| `api.adjusted_epa_week` | **Live** | ~70,900 | Walk-forward ridge-adjusted-EPA coefficients per `(team, season, week_index)`, entering that week only (no leakage) -- the raw as-of fit underlying `api.team_week_features`'s `adj_epa_*` columns. Passthrough of `marts.adjusted_epa_week`. Columns: team, season, week_index, off_coef, def_coef, hfa_coef, mu, plays, lambda, n_teams |
 
 ### Marts (schema: `marts`) -- Materialized Views
 
@@ -233,6 +311,8 @@ cfb-app for advanced features.
 | `marts.team_adjusted_epa` | Deployed | Ridge-regressed opponent-adjusted EPA (offense/defense/net, lambda=200) per team-season, 2004+, with CFBD's WEPA joined in as a sanity check. Grain: `(team, season)`. |
 | `marts.scored_matchup_edges` | Deployed | House expected margin/win probability vs. the market line for upcoming games only; legitimately empty out of season (no empty-guard by design). Grain: `(game_id, model_version)`. |
 | `marts.prediction_accuracy` | Deployed | Retroactive scoring of house predictions: margin MAE/RMSE, ATS record, Brier score (house vs. CFBD) by season/model/edge-threshold. Grain: `(model_version, season, edge_threshold)`. |
+| `marts.team_week_features` | Deployed | Thin denormalization of `features.team_week`, the as-of feature vector entering each team's game (`fitted_v1` modeling substrate). Grain: `(game_id, team)`, unique. ~52,934 rows. |
+| `marts.adjusted_epa_week` | Deployed | Thin denormalization of `analytics.adjusted_epa_week_build`, walk-forward ridge-adjusted-EPA coefficients entering each week (no leakage). Grain: `(team, season, week_index)`. ~70,900 rows. |
 
 ### Public Schema Views
 
@@ -292,7 +372,7 @@ These reference tables are stable enough for direct access.
 |----------|--------|-------------|
 | `ref.get_era` | `ref` | Returns era code/name for a given year |
 | `analytics.refresh_all_views` | `analytics` | Refreshes all analytics materialized views (admin use) |
-| `marts.refresh_all` | `marts` | Refreshes all 37 mart materialized views in dependency order (6 layers). Returns (view_name, duration_ms, status). |
+| `marts.refresh_all` | `marts` | Refreshes all 39 mart materialized views in dependency order (7 layers). Returns (view_name, duration_ms, status). |
 
 ---
 

@@ -118,6 +118,10 @@ class TestMartViewsExist:
 class TestMartViewsHaveData:
     """Every materialized view should contain at least one row."""
 
+    # Legitimately empty out of season / before the schedule loads (documented
+    # in the mart headers) -- existence and columns are still asserted above.
+    EMPTY_OK = {("marts", "scored_matchup_edges")}
+
     @pytest.mark.parametrize(
         "schema_name,view_name",
         ALL_MATERIALIZED_VIEWS,
@@ -129,6 +133,8 @@ class TestMartViewsHaveData:
             # Use quoted identifiers to handle leading underscores safely
             cur.execute(f'SELECT COUNT(*) FROM "{schema_name}"."{view_name}"')
             count = cur.fetchone()[0]
+        if (schema_name, view_name) in self.EMPTY_OK and count == 0:
+            pytest.skip(f"{schema_name}.{view_name} legitimately empty out of season")
         assert count > 0, f"{schema_name}.{view_name} is empty (0 rows)"
 
 

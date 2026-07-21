@@ -328,7 +328,13 @@ def compute_seasons(seasons: list[int]) -> int:
             try:
                 result = fit_season(conn, season)
                 if result is None:
-                    failures += 1
+                    # A season with no plays yet is a legitimate pre-season
+                    # state, not a failure: get_current_season() flips to the
+                    # new season on Aug 1 weeks before play_epa has rows, and
+                    # the daily workflow must not die in that window (Codex
+                    # P2, PR #18). Predictions fall back to the previous
+                    # season's coefficients until data exists.
+                    logger.info(f"season={season}: no play data yet, clean no-op")
                     continue
                 accumulator, _teams = result
                 write_season(conn, season, accumulator, LAMBDA)

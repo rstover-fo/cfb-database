@@ -388,6 +388,38 @@ def compute_team_game_counts(season_games: list[dict]) -> dict[str, int]:
     return dict(counts)
 
 
+# Pooling counts come from the FULL season schedule (completed or not), NOT
+# from completed-to-date rows. A mid-season --incremental run sees only a few
+# completed games per team in weeks 1-3; counting those would alias every
+# normal team into the pooled __FCS__ bucket and overwrite their carried
+# ratings with the 1500 pooled rating (Codex P1, PR #18). For fully played-out
+# historical seasons the two counts are identical, so --full is unaffected.
+SCHEDULED_COUNTS_QUERY = """
+    SELECT season, team, COUNT(*) AS n
+    FROM (
+        SELECT season, home_team AS team
+        FROM core.games WHERE season BETWEEN %s AND %s
+        UNION ALL
+        SELECT season, away_team AS team
+        FROM core.games WHERE season BETWEEN %s AND %s
+    ) sides
+    GROUP BY season, team
+"""
+
+
+def fetch_scheduled_counts(conn, start_season: int, end_season: int) -> dict[int, dict[str, int]]:
+    """Per-season {team: scheduled games} over ALL games (see note above)."""
+    counts: dict[int, dict[str, int]] = {}
+    with conn.cursor() as cur:
+        cur.execute(
+            SCHEDULED_COUNTS_QUERY,
+            (start_season, end_season, start_season, end_season),
+        )
+        for season, team, n in cur.fetchall():
+            counts.setdefault(int(season), {})[team] = int(n)
+    return counts
+
+
 def load_games_by_season(conn, start_season: int, end_season: int) -> dict[int, list[dict]]:
     """Stream core.games via a named server-side cursor, bucketed by season.
 
@@ -539,12 +571,13 @@ def write_snapshot(conn, rows: list[dict]) -> None:
 def run_full(conn, start_season: int, end_season: int) -> list[dict]:
     logger.info(f"Loading core.games {start_season}-{end_season}")
     buckets = load_games_by_season(conn, start_season, end_season)
+    scheduled_counts = fetch_scheduled_counts(conn, start_season, end_season)
     engine = EloEngine()
     all_rows: list[dict] = []
     last_season_processed = None
     for season in sorted(buckets):
         season_games = buckets[season]
-        team_game_counts = compute_team_game_counts(season_games)
+        team_game_counts = scheduled_counts.get(season) or compute_team_game_counts(season_games)
         engine.start_season(season, team_game_counts)
         rows = [engine.process_game(to_engine_game(g)) for g in season_games]
         write_season(conn, season, rows)
@@ -571,7 +604,8 @@ def run_season(conn, season: int) -> list[dict]:
     logger.info(f"Loading core.games for season {season}")
     buckets = load_games_by_season(conn, season, season)
     season_games = buckets.get(season, [])
-    team_game_counts = compute_team_game_counts(season_games)
+    scheduled_counts = fetch_scheduled_counts(conn, season, season)
+    team_game_counts = scheduled_counts.get(season) or compute_team_game_counts(season_games)
     engine.start_season(season, team_game_counts)
     rows = [engine.process_game(to_engine_game(g)) for g in season_games]
     logger.info(f"Season {season}: {len(rows)} games computed")

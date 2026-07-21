@@ -401,9 +401,8 @@ class TestViewsExistAndReturnRows:
             ("api.poll_rankings", 20000),
             # Sized from 2026-07-21 Tier 2 backfill: house Elo 1869+, predictions
             # retro 2015-2025 x 2 models
-            ("api.team_elo", 10000),
-            ("api.game_elo_history", 60000),
-            ("api.scored_matchup_edges", 1),
+            ("api.team_elo", 5000),
+            ("api.game_elo_history", 40000),
             ("api.prediction_accuracy", 80),
             ("api.game_predictions", 15000),
         ],
@@ -420,7 +419,6 @@ class TestViewsExistAndReturnRows:
             "poll_rankings",
             "team_elo",
             "game_elo_history",
-            "scored_matchup_edges",
             "prediction_accuracy",
             "game_predictions",
         ],

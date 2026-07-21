@@ -1,0 +1,8 @@
+{
+  "action": "apply",
+  "files": [
+    "src/schemas/migrations/026_adjusted_epa_week_staging.sql",
+    "src/schemas/migrations/027_features_schema.sql",
+    "src/schemas/migrations/028_live_schema.sql"
+  ]
+}

@@ -173,7 +173,16 @@ def run_reference_pipeline():
 
 
 def run_games_pipeline(years: list[int] | None = None, mode: str = "incremental"):
-    """Run the games data pipeline."""
+    """Run the games data pipeline.
+
+    Two sequential loads, not one: games commits first, THEN drives (and
+    media/weather/records). Within a single load package dlt's per-table
+    merge jobs commit independently and in no guaranteed order, so a drives
+    merge can reach its deferred fk_drives_game check before the games merge
+    that carries a new parent row has committed. Sequencing removes the
+    race; the shared games_cache guarantees the drives orphan filter sees
+    exactly the /games response the first load merged (see games_source).
+    """
     years_str = f"years={years}" if years else f"mode={mode}"
     print(f"\n=== Loading Games Data ({years_str}) ===\n")
 
@@ -183,12 +192,21 @@ def run_games_pipeline(years: list[int] | None = None, mode: str = "incremental"
         dataset_name="core",
     )
 
-    source = games_source(years=years, mode=mode)
-    info = pipeline.run(source)
+    games_cache: dict[int, list[dict]] = {}
 
-    print(f"\nLoad info: {info}")
+    games_only = games_source(years=years, mode=mode, games_cache=games_cache).with_resources(
+        "games"
+    )
+    info = pipeline.run(games_only)
+    print(f"\nLoad info (games): {info}")
 
-    return info
+    rest = games_source(years=years, mode=mode, games_cache=games_cache).with_resources(
+        "drives", "game_media", "game_weather", "records"
+    )
+    info_rest = pipeline.run(rest)
+    print(f"\nLoad info (drives/media/weather/records): {info_rest}")
+
+    return info_rest
 
 
 def run_game_stats_pipeline(

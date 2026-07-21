@@ -1,0 +1,97 @@
+name: Live Scoreboard
+
+# Saturday in-game polling (Tier 3 analytics, docs/plans/2026-07-21-tier3-analytics-plan.md,
+# Pillar D). Ticks every 5 minutes from Saturday noon ET through Sunday 3am
+# ET (cron below is in UTC). A guard step checks core.games for any game
+# starting today before ever calling CFBD, so bye Saturdays / off-season
+# ticks are a clean no-op with zero API calls. Each poll that does run is ONE
+# /scoreboard call covering every live game (scripts/poll_scoreboard.py),
+# writing live.scoreboard_snapshots rows with the house closed-form live win
+# probability (src/schemas/migrations/028_live_schema.sql).
+#
+# Requires repo secrets:
+#   CFBD_API_KEY     - collegefootballdata.com API key
+#   SUPABASE_DB_URL  - Supabase SESSION pooler URL (IPv4; see daily-load.yml)
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Fetch + compute + print only, no DB writes"
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    # Sat 12:00pm ET -> Sun ~4:00am ET, every 5 minutes (16:00-23:55 UTC Sat)
+    - cron: "*/5 16-23 * * 6"
+    # Continuation into Sunday morning ET (00:00-07:55 UTC Sun)
+    - cron: "*/5 0-7 * * 0"
+
+concurrency:
+  group: live-scoreboard
+  cancel-in-progress: false # never kill a mid-poll run; a queued tick waits
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  SOURCES__CFBD__API_KEY: ${{ secrets.CFBD_API_KEY }}
+  SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+jobs:
+  poll:
+    name: Poll live scoreboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[compute]"
+      - name: Set dlt destination credentials
+        # dlt requires the postgres:// scheme (see .dlt/secrets.toml.example)
+        run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
+      - name: Check for games today
+        id: guard
+        run: |
+          python - <<'PY'
+          import os
+
+          import psycopg2
+
+          from src.pipelines.config.years import get_current_season
+
+          conn = psycopg2.connect(os.environ["SUPABASE_DB_URL"])
+          try:
+              with conn.cursor() as cur:
+                  cur.execute(
+                      "SELECT EXISTS ("
+                      "SELECT 1 FROM core.games "
+                      "WHERE start_date::date = (now() AT TIME ZONE 'utc')::date "
+                      "AND season = %s)",
+                      (get_current_season(),),
+                  )
+                  (has_games,) = cur.fetchone()
+          finally:
+              conn.close()
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"has_games={'true' if has_games else 'false'}\n")
+
+          if not has_games:
+              print("no games today")
+          PY
+      - name: Poll scoreboard
+        if: steps.guard.outputs.has_games == 'true'
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            python scripts/poll_scoreboard.py --dry-run
+          else
+            python scripts/poll_scoreboard.py
+          fi
+      - name: No games today
+        if: steps.guard.outputs.has_games != 'true'
+        run: echo "no games today -- skipped poll, zero CFBD calls made"

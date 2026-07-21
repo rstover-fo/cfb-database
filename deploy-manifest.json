@@ -1,0 +1,7 @@
+{
+  "action": "apply",
+  "files": [
+    "src/schemas/migrations/020_line_snapshot_indexes.sql",
+    "src/schemas/api/024_line_movement.sql"
+  ]
+}

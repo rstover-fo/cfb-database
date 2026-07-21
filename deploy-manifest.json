@@ -1,0 +1,4 @@
+{
+  "action": "apply",
+  "files": ["src/schemas/migrations/030_team_week_game_grain.sql"]
+}

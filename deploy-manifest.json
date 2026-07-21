@@ -1,0 +1,12 @@
+{
+  "action": "apply",
+  "marts_from": "038",
+  "files": [
+    "src/schemas/api/028_team_elo.sql",
+    "src/schemas/api/029_game_elo_history.sql",
+    "src/schemas/api/030_scored_matchup_edges.sql",
+    "src/schemas/api/031_prediction_accuracy.sql",
+    "src/schemas/api/032_game_predictions.sql",
+    "src/schemas/functions/refresh_all_marts.sql"
+  ]
+}

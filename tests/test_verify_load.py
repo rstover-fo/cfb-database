@@ -62,3 +62,40 @@ class TestEvaluateStaleness:
     def test_seasonal_always_warns(self):
         assert evaluate_staleness("seasonal", in_season=True, strict=False) == WARN
         assert evaluate_staleness("seasonal", in_season=False, strict=True) == WARN
+
+
+class TestCoverageChecksScopedToFbs:
+    """Coverage checks must not count lower-division games (run 29866568883:
+    a season-wide count reported 2,178 'missing' games -- every FCS/II/III
+    game in core.games -- and can never clear the tolerance)."""
+
+    class _RecordingCursor:
+        def __init__(self):
+            self.queries = []
+
+        def execute(self, sql, params=None):
+            self.queries.append(sql)
+
+        def fetchone(self):
+            return (0,)
+
+    def _check_sql(self, check_fn):
+        from scripts.verify_load import Report
+
+        cur = self._RecordingCursor()
+        check_fn(cur, 2025, Report())
+        return cur.queries[0]
+
+    def test_team_stats_check_scoped_to_fbs_involved_games(self):
+        from scripts.verify_load import check_completed_have_team_stats
+
+        sql = self._check_sql(check_completed_have_team_stats)
+        assert "g.home_classification = 'fbs'" in sql
+        assert "g.away_classification = 'fbs'" in sql
+
+    def test_plays_check_scoped_to_fbs_involved_games(self):
+        from scripts.verify_load import check_completed_have_plays
+
+        sql = self._check_sql(check_completed_have_plays)
+        assert "g.home_classification = 'fbs'" in sql
+        assert "g.away_classification = 'fbs'" in sql

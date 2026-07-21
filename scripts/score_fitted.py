@@ -171,11 +171,9 @@ def _score_games_query(where_clause: str) -> str:
            {away_cols}
         FROM core.games g
         JOIN features.team_week h
-          ON h.season = g.season AND h.season_type = g.season_type
-         AND h.week = g.week AND h.team = g.home_team
+          ON h.game_id = g.id AND h.team = g.home_team
         JOIN features.team_week a
-          ON a.season = g.season AND a.season_type = g.season_type
-         AND a.week = g.week AND a.team = g.away_team
+          ON a.game_id = g.id AND a.team = g.away_team
         WHERE {where_clause}
         ORDER BY g.season, g.start_date NULLS LAST, g.id
     """

@@ -39,8 +39,11 @@ CREATE MATERIALIZED VIEW marts.team_week_features AS
 SELECT * FROM features.team_week;
 
 -- Required for REFRESH CONCURRENTLY; also the natural grain key (matches
--- features.team_week's own UNIQUE (season, season_type, week, team)).
-CREATE UNIQUE INDEX ON marts.team_week_features (season, season_type, week, team);
+-- features.team_week's own UNIQUE (game_id, team) -- one row per team-game;
+-- a team can play two postseason games in the same CFBD week (CFP semi +
+-- final), so the calendar tuple is NOT unique. See migration 030.
+CREATE UNIQUE INDEX ON marts.team_week_features (game_id, team);
+CREATE INDEX ON marts.team_week_features (season, season_type, week, team);
 
 -- Query indexes
 CREATE INDEX ON marts.team_week_features (team, season);

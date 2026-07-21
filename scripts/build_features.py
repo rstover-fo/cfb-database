@@ -243,10 +243,6 @@ def get_db_url() -> str:
             ".dlt/secrets.toml or SUPABASE_DB_URL environment variable."
         )
 
-    if "options=" not in url:
-        separator = "&" if "?" in url else "?"
-        url = f"{url}{separator}options=-c%20statement_timeout%3D0"
-
     return url
 
 
@@ -636,6 +632,13 @@ def compute_seasons(seasons: list[int]) -> int:
     import psycopg2
 
     conn = psycopg2.connect(get_db_url())
+    # The Supabase session pooler (PgBouncer) drops the `options` startup
+    # parameter, so a URL-level statement_timeout never reaches the backend;
+    # set it explicitly on the session. The per-season INSERT..SELECT can
+    # legitimately exceed the 2-minute default on 2021+ play volumes.
+    with conn.cursor() as cur:
+        cur.execute("SET statement_timeout = '900s'")
+    conn.commit()
     failures = 0
     try:
         elo_current = fetch_elo_current(conn)

@@ -20,9 +20,13 @@ Upstream dependencies already fixed by the plan:
 
 ## 0. Grain, week keying, and the as-of window
 
-**Grain:** one row per `(season, season_type, week, team)` — i.e. one row per
-team per game it plays (a team plays ≤ 1 game/week). Both the home and away
-side of every game get a row.
+**Grain:** one row per **team-game**, `UNIQUE (game_id, team)`. Both the home
+and away side of every game get a row. (CORRECTED post-first-build: the
+original `(season, season_type, week, team)` key assumed a team plays ≤ 1
+game/week, but CFP semifinal + championship are BOTH postseason week 1, and
+data quirks can duplicate a regular week — see migration 030. All as-of
+semantics are unchanged; same-week rows carry identical as-of features and
+differ only in game identity. Model joins key on `(game_id, team)`.)
 
 **Week keying decision (pick ONE, justified):** store the natural CFBD `week`
 plus `season_type`, and **UNIQUE (season, season_type, week, team)** — *not*

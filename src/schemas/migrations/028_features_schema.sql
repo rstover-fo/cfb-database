@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS features.team_week (
     week_index BIGINT NOT NULL,
     team VARCHAR NOT NULL,
     conference VARCHAR,
-    game_id BIGINT,
+    game_id BIGINT NOT NULL,
     games_played_to_date BIGINT NOT NULL,
 
     -- 1b. House Elo (pregame entering week W; walk-forward, never NULL)
@@ -100,11 +100,16 @@ CREATE TABLE IF NOT EXISTS features.team_week (
     feature_build_version VARCHAR
 );
 
--- Grain key: season_type is required in the key (not just season, week,
--- team) because CFBD restarts week numbering at 1 for season_type =
--- 'postseason' (bowls are week 1), so regular week 1 and postseason week 1
--- would otherwise collide.
+-- Grain key: one row per TEAM-GAME. (game_id, team), NOT the calendar key
+-- (season, season_type, week, team): a team can play two postseason games
+-- both numbered week 1 (CFP semifinal + championship), and data quirks can
+-- duplicate a regular week -- see migration 030's header. The spine is
+-- core.games team-sides, so game_id is never NULL.
 CREATE UNIQUE INDEX IF NOT EXISTS team_week_key
+    ON features.team_week (game_id, team);
+
+-- Calendar-grain lookups (joins from rankings/predictions surfaces).
+CREATE INDEX IF NOT EXISTS team_week_calendar_idx
     ON features.team_week (season, season_type, week, team);
 
 -- As-of / ordering lookups keyed on the monotone week_index (design doc

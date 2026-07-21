@@ -1,0 +1,4 @@
+{
+  "action": "compute",
+  "compute": {"script": "calibrate_live_wp", "args": ["--write"]}
+}

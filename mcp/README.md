@@ -1,5 +1,12 @@
 # cfb-mcp
 
+> **Superseded (2026-07-21):** the primary MCP interface is now the streamable-HTTP
+> server hosted inside cfb-app at `https://v0-production-data-application.vercel.app/api/mcp`
+> (bearer-token protected; see cfb-app's `docs/MCP.md`). It ports this server's tool
+> design 1:1 and is reachable from claude.ai, Claude Code, and Claude Desktop without
+> local setup. This Python stdio server remains functional for local/offline use and
+> as the reference implementation, but new tool work should land in cfb-app.
+
 A read-only [MCP](https://modelcontextprotocol.io) server over the `cfb-database` Supabase
 warehouse. Local **stdio** transport, built with the official Python `mcp` SDK (FastMCP
 style). It exposes eight LLM-facing tools covering teams, games, matchups, rankings,

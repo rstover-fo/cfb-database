@@ -53,14 +53,16 @@ The database uses multiple Postgres schemas organized by data domain:
 | `draft` | NFL draft data | picks, positions |
 | `metrics` | Advanced metrics | PPA, win probability |
 | `analytics` | Computed analytics | EPA, style profiles |
-| `marts` | Materialized views (32) | Denormalized, query-optimized |
-| `api` | API view layer (23) | Contract surface for cfb-app/cfb-scout |
+| `features` | Fitted-model substrate | team_week (as-of feature vector), model_coefficients, model_metadata |
+| `live` | In-game polling | scoreboard_snapshots, wp_params (house live win prob) |
+| `marts` | Materialized views (39) | Denormalized, query-optimized |
+| `api` | API view layer (35) | Contract surface for cfb-app/cfb-scout |
 | `predictions` | Prediction snapshots | game_predictions (append-only daily) |
 | `public` | Convenience views/RPCs (12) | Downstream consumer interface |
 
 ### Marts System
 
-32 materialized views in the `marts` schema provide denormalized, query-optimized data (plus the plain view `analytics.data_quality_dashboard`). Refresh via:
+39 materialized views in the `marts` schema provide denormalized, query-optimized data (plus the plain view `analytics.data_quality_dashboard`). Refresh via:
 ```bash
 python scripts/refresh_marts.py        # Refresh all marts
 ```
@@ -69,9 +71,13 @@ Or use the `refresh_all_marts()` RPC.
 ### Daily Automation
 
 `.github/workflows/daily-load.yml` runs daily at 10:00 UTC from `main`: loads the
-current season (`scripts/load_season.py --weekly`, mart refresh included), then runs
-post-load checks (`scripts/verify_load.py`). Failures open/update a rolling GitHub
-issue. Requires repo secrets `CFBD_API_KEY` and `SUPABASE_DB_URL` (session pooler).
+current season (`scripts/load_season.py --weekly`, mart refresh included), refits house
+Elo/adjusted EPA (including the as-of weekly EPA build) and the fitted_v1 model's upcoming
+scores, then runs post-load checks (`scripts/verify_load.py`). Failures open/update a
+rolling GitHub issue. Requires repo secrets `CFBD_API_KEY` and `SUPABASE_DB_URL` (session
+pooler). `.github/workflows/live-scoreboard.yml` separately polls CFBD's `/scoreboard` every
+5 minutes on Saturdays (games-today guard) to feed `live.scoreboard_snapshots` and the house
+live win-probability model.
 
 ### dlt Table Conventions
 
@@ -103,9 +109,9 @@ cfb-database/
 │   │   │   └── rate_limiter.py   # Monthly budget tracking
 │   │   └── run.py                # Pipeline orchestration
 │   └── schemas/
-│       ├── api/                  # 23 API view definitions (contract surface)
+│       ├── api/                  # 35 API view definitions (contract surface)
 │       ├── functions/            # SQL functions
-│       ├── marts/                # 32 materialized view definitions (+1 plain view)
+│       ├── marts/                # 39 materialized view definitions (+1 plain view)
 │       ├── public/               # 12 convenience views + RPCs
 │       └── migrations/           # Schema migrations
 ├── scripts/
@@ -116,14 +122,21 @@ cfb-database/
 │   ├── run_migrations.py         # Migration runner (--file for one-off SQL)
 │   ├── compute_house_elo.py      # Compute house Elo ratings from game history
 │   ├── compute_adjusted_epa.py   # Compute team adjusted EPA ratings
+│   ├── compute_adjusted_epa_week.py # Walk-forward as-of weekly adjusted EPA (--incremental)
 │   ├── compute_predictions.py    # Generate game predictions and edges
-│   └── check_backtest.py         # Backtest prediction accuracy and scoring
+│   ├── check_backtest.py         # Backtest prediction accuracy and scoring
+│   ├── build_features.py         # Build features.team_week substrate (--incremental)
+│   ├── train_model.py            # Fit fitted_v1 walk-forward model coefficients
+│   ├── tune_params.py            # Hyperparameter search for fitted_v1
+│   ├── score_fitted.py           # Score games with fitted_v1 (--upcoming default)
+│   ├── calibrate_live_wp.py      # Fit live.wp_params sigma against historical win prob
+│   └── poll_scoreboard.py        # Poll CFBD /scoreboard, write live.scoreboard_snapshots
 ├── tests/                        # Test files + test_sources/
 │   └── conftest.py               # DB connection + mock fixtures
 ├── .dlt/
 │   ├── config.toml               # Runtime config (workers, rate limit budget)
 │   └── secrets.toml              # API keys (not committed)
-├── .github/workflows/            # CI + daily season load
+├── .github/workflows/            # CI + daily season load + Saturday live-scoreboard polling
 └── .githooks/pre-push            # Runs ruff + pytest before push
 ```
 

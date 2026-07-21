@@ -47,6 +47,18 @@ Usage:
         make_date(season, 1, 1) when start_date is NULL, so re-running a
         backfill is idempotent under the (game_id, model_version,
         prediction_date) unique key. Commits once per season.
+
+    python scripts/compute_predictions.py --backfill 2015 2025 --as-of-week
+        Same as --backfill but LEAK-FREE for the blend (Tier 3 Pillar A):
+        the EPA arm reads analytics.adjusted_epa_week_build coefficients
+        ENTERING each game's week (greatest stored week_index <= the game's
+        week_index with plays >= MIN_TEAM_PLAYS), falling back to the
+        PRIOR-season full-season fit (known before the season started), else
+        Elo-only for that game's blend. The Elo arm is untouched -- elo_v1
+        rows are byte-identical with or without this flag, which is exactly
+        the Gate A invariant. week_index convention matches
+        scripts/build_features.py: week for regular season, 100 + week for
+        postseason.
 """
 
 import argparse
@@ -69,6 +81,12 @@ BLEND_ELO = 0.6
 BLEND_EPA = 0.4
 MODEL_ELO = "elo_v1"
 MODEL_BLEND = "elo_epa_blend_v1"
+
+# As-of-week EPA lookup (--as-of-week backfill). Values mirror
+# scripts/build_features.py (which cannot be imported here -- it imports
+# resolve_elo/fetch_elo_current from this module); keep the two in sync.
+POSTSEASON_WEEK_OFFSET = 100
+MIN_TEAM_PLAYS = 150
 
 
 def elo_margin(home_elo: float, away_elo: float, neutral: bool) -> float:
@@ -172,6 +190,46 @@ def lookup_epa_coefs(
     return None
 
 
+def compute_week_index(week: int, season_type: str) -> int:
+    """Monotone week ordering: raw week for regular season, 100 + week for
+    postseason (CFBD restarts postseason week numbering at 1). Must match
+    scripts/build_features.py / migration 027's convention."""
+    if season_type == "postseason":
+        return POSTSEASON_WEEK_OFFSET + week
+    return week
+
+
+def lookup_epa_coefs_asof(
+    week_rows_by_team: dict[str, list[tuple[int, dict]]],
+    prior_by_team_season: dict[tuple[str, int], dict],
+    team: str,
+    season: int,
+    week_index: int,
+    min_plays: int = MIN_TEAM_PLAYS,
+) -> tuple[dict | None, str]:
+    """As-of EPA ladder for one team entering `week_index` (Tier 3 Pillar A).
+
+    1. Greatest analytics.adjusted_epa_week_build entry with stored
+       week_index <= the game's week_index AND plays >= min_plays -> "week".
+    2. Else the team's PRIOR-season (season-1) full-season fit -> "prior_season".
+    3. Else (None, "none") -- caller's blend falls back to Elo-only.
+
+    `week_rows_by_team[team]` must be sorted ascending by week_index.
+    """
+    best: dict | None = None
+    for wi, row in week_rows_by_team.get(team, []):
+        if wi > week_index:
+            break
+        if row.get("plays") is not None and row["plays"] >= min_plays:
+            best = row
+    if best is not None:
+        return best, "week"
+    prior = prior_by_team_season.get((team, season - 1))
+    if prior is not None:
+        return prior, "prior_season"
+    return None, "none"
+
+
 def build_predictions_for_game(
     game: dict,
     home_elo: float,
@@ -179,22 +237,30 @@ def build_predictions_for_game(
     epa_by_team_season: dict[tuple[str, int], dict],
     epa_lookback: int,
     market: dict | None,
+    epa_rows: tuple[dict | None, dict | None] | None = None,
 ) -> list[dict]:
     """Build the two model_version rows (elo_v1, elo_epa_blend_v1) for one
     game. `game` needs: game_id, season, week, season_type, home_team,
     away_team, neutral_site. `market` is {"provider", "spread",
     "captured_at"} or None. Returns dicts with every predictions.game_predictions
-    value column except computed_at/prediction_date (added by the caller)."""
+    value column except computed_at/prediction_date (added by the caller).
+
+    `epa_rows` (as-of-week mode): pre-resolved (home_row, away_row) from
+    lookup_epa_coefs_asof, bypassing the internal same-season lookup. The
+    Elo arm never depends on it -- elo_v1 output is identical either way."""
     neutral = bool(game.get("neutral_site"))
     elo_m = elo_margin(home_elo, away_elo, neutral)
     win_prob = elo_win_prob(home_elo, away_elo, neutral)
 
-    home_epa_row = lookup_epa_coefs(
-        epa_by_team_season, game["home_team"], game["season"], epa_lookback
-    )
-    away_epa_row = lookup_epa_coefs(
-        epa_by_team_season, game["away_team"], game["season"], epa_lookback
-    )
+    if epa_rows is not None:
+        home_epa_row, away_epa_row = epa_rows
+    else:
+        home_epa_row = lookup_epa_coefs(
+            epa_by_team_season, game["home_team"], game["season"], epa_lookback
+        )
+        away_epa_row = lookup_epa_coefs(
+            epa_by_team_season, game["away_team"], game["season"], epa_lookback
+        )
     epa_m = None
     if home_epa_row is not None and away_epa_row is not None:
         epa_m = epa_margin(
@@ -433,6 +499,37 @@ def fetch_elo_current(conn) -> dict[str, tuple[float, int]]:
     return result
 
 
+def fetch_epa_week_coefs(conn, season: int) -> dict[str, list[tuple[int, dict]]]:
+    """Per-team as-of week coefficients for one season, sorted ascending by
+    week_index (the order lookup_epa_coefs_asof requires)."""
+    result: dict[str, list[tuple[int, dict]]] = {}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT team, week_index, off_coef, def_coef, hfa_coef, plays
+            FROM analytics.adjusted_epa_week_build
+            WHERE season = %s
+            ORDER BY team, week_index
+            """,
+            (season,),
+        )
+        for team, week_index, off_coef, def_coef, hfa_coef, plays in cur.fetchall():
+            if off_coef is None or def_coef is None or hfa_coef is None:
+                continue
+            result.setdefault(team, []).append(
+                (
+                    int(week_index),
+                    {
+                        "off_coef": float(off_coef),
+                        "def_coef": float(def_coef),
+                        "hfa_coef": float(hfa_coef),
+                        "plays": int(plays) if plays is not None else None,
+                    },
+                )
+            )
+    return result
+
+
 def fetch_epa_coefs(conn, season: int | None = None) -> dict[tuple[str, int], dict]:
     query = "SELECT team, season, off_coef, def_coef, hfa_coef FROM analytics.adjusted_epa_build"
     params: tuple = ()
@@ -545,7 +642,7 @@ def run_upcoming(conn) -> None:
     )
 
 
-def run_backfill(conn, start: int, end: int) -> None:
+def run_backfill(conn, start: int, end: int, as_of_week: bool = False) -> None:
     total_games = total_rows = total_with_market = 0
     for season in range(start, end + 1):
         games = fetch_backfill_games(conn, season)
@@ -555,12 +652,20 @@ def run_backfill(conn, start: int, end: int) -> None:
             )
             continue
 
-        epa_by_team_season = fetch_epa_coefs(conn, season=season)
+        if as_of_week:
+            epa_by_team_season = {}
+            week_coefs = fetch_epa_week_coefs(conn, season)
+            prior_coefs = fetch_epa_coefs(conn, season=season - 1)
+        else:
+            epa_by_team_season = fetch_epa_coefs(conn, season=season)
+            week_coefs = {}
+            prior_coefs = {}
         game_ids = [g["game_id"] for g in games]
         market_by_game = fetch_market_from_lines(conn, game_ids)
 
         rows: list[dict] = []
         n_with_market = 0
+        src_counts = {"week": 0, "prior_season": 0, "none": 0}
         for game in games:
             home_elo = (
                 float(game["home_pregame_elo"])
@@ -579,14 +684,44 @@ def run_backfill(conn, start: int, end: int) -> None:
             start_date = game["start_date"]
             prediction_date = start_date.date() if start_date is not None else date(season, 1, 1)
 
+            epa_rows = None
+            if as_of_week:
+                wi = compute_week_index(int(game["week"]), game["season_type"] or "regular")
+                home_row, home_src = lookup_epa_coefs_asof(
+                    week_coefs, prior_coefs, game["home_team"], season, wi
+                )
+                away_row, away_src = lookup_epa_coefs_asof(
+                    week_coefs, prior_coefs, game["away_team"], season, wi
+                )
+                # A game's blend uses EPA only when BOTH sides resolved; count
+                # the weaker source so the log reflects effective coverage.
+                if home_row is None or away_row is None:
+                    src_counts["none"] += 1
+                elif "prior_season" in (home_src, away_src):
+                    src_counts["prior_season"] += 1
+                else:
+                    src_counts["week"] += 1
+                epa_rows = (home_row, away_row)
+
             game_rows = build_predictions_for_game(
-                game, home_elo, away_elo, epa_by_team_season, epa_lookback=0, market=market
+                game,
+                home_elo,
+                away_elo,
+                epa_by_team_season,
+                epa_lookback=0,
+                market=market,
+                epa_rows=epa_rows,
             )
             for row in game_rows:
                 row["prediction_date"] = prediction_date
             rows.extend(game_rows)
 
         write_backfill_season(conn, rows)
+        if as_of_week:
+            logger.info(
+                f"AS_OF_EPA season={season} src_week={src_counts['week']} "
+                f"src_prior={src_counts['prior_season']} src_none={src_counts['none']}"
+            )
         logger.info(
             f"season={season}: {len(games)} game(s), wrote {len(rows)} row(s) "
             f"({n_with_market} with a market line)"
@@ -616,7 +751,17 @@ def main() -> None:
         "game's start_date (fallback: Jan 1 of its season). Default (no flag): "
         "score upcoming/pending games using current ratings.",
     )
+    parser.add_argument(
+        "--as-of-week",
+        action="store_true",
+        help="With --backfill: leak-free blend via as-of-week EPA coefficients "
+        "(analytics.adjusted_epa_week_build entering each game's week, prior-"
+        "season full fit fallback, else Elo-only). elo_v1 rows are unchanged.",
+    )
     args = parser.parse_args()
+
+    if args.as_of_week and not args.backfill:
+        parser.error("--as-of-week requires --backfill")
 
     import psycopg2
 
@@ -627,7 +772,7 @@ def main() -> None:
             if start > end:
                 logger.error(f"--backfill start {start} is after end {end}")
                 sys.exit(1)
-            run_backfill(conn, start, end)
+            run_backfill(conn, start, end, as_of_week=args.as_of_week)
         else:
             run_upcoming(conn)
     except Exception:

@@ -1,0 +1,4 @@
+{
+  "action": "compute",
+  "compute": { "script": "compute_house_elo", "args": ["--full"] }
+}

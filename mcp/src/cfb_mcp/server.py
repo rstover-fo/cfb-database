@@ -139,8 +139,8 @@ async def query_team(
     {"_source": "<view>", "count": int, "rows": [...]}. If nothing at all is
     found, returns a plain "No team found..." string instead.
     """
-    client = PostgrestClient()
     try:
+        client = PostgrestClient()
         detail_rows = await client.select(
             "team_detail", {"school": eq(team)}, profile="api", limit=1
         )
@@ -253,8 +253,8 @@ async def query_games(
         params["excitement_index"] = gte(min_excitement)
     params["order"] = "start_date.desc"
 
-    client = PostgrestClient()
     try:
+        client = PostgrestClient()
         rows = await client.select("game_detail", params, profile="api", limit=limit)
     except PostgrestError as e:
         return e.message
@@ -304,8 +304,8 @@ async def query_matchup(
     # NOTE: Python code-point sort assumed to match the DB collation used by the
     # view's LEAST/GREATEST pair ordering; holds for current CFBD ASCII names.
     lo, hi = sorted((team_a, team_b))
-    client = PostgrestClient()
     try:
+        client = PostgrestClient()
         rows = await client.select(
             "matchup", {"team1": eq(lo), "team2": eq(hi)}, profile="api", limit=1
         )
@@ -387,8 +387,8 @@ async def get_rankings(
         params["poll"] = eq(poll)
     params["order"] = "week.asc,poll.asc,rank.asc"
 
-    client = PostgrestClient()
     try:
+        client = PostgrestClient()
         rows = await client.select("poll_rankings", params, profile="api", limit=limit)
     except PostgrestError as e:
         return e.message
@@ -449,8 +449,8 @@ async def get_leaderboard(
     best-to-worst for the chosen metric, or a plain "No leaderboard data
     found..." string if the season has no data.
     """
-    client = PostgrestClient()
     try:
+        client = PostgrestClient()
         if metric == LeaderboardMetric.WEPA:
             rows = await client.select(
                 "team_wepa_season",
@@ -524,8 +524,8 @@ async def situational_splits(
     has no matching plays.
     """
     fn = _SPLIT_RPCS[split_type]
-    client = PostgrestClient()
     try:
+        client = PostgrestClient()
         rows = await client.rpc(fn, {"p_team": team, "p_season": season}, profile="public")
     except PostgrestError as e:
         return e.message
@@ -599,7 +599,6 @@ async def search_players(
     "top_hit_detail_error" string instead of discarding the search results.
     Returns a plain "No players found..." string if the search itself is empty.
     """
-    client = PostgrestClient()
     args: dict[str, Any] = {"p_query": query, "p_limit": limit}
     if team is not None:
         args["p_team"] = team
@@ -607,6 +606,7 @@ async def search_players(
         args["p_season"] = season
 
     try:
+        client = PostgrestClient()
         results = await client.rpc("get_player_search", args, profile="public")
     except PostgrestError as e:
         return e.message
@@ -660,8 +660,8 @@ async def get_data_freshness() -> str:
     Returns: JSON {"_source": "public.get_data_freshness", "count": int,
     "rows": [...]}.
     """
-    client = PostgrestClient()
     try:
+        client = PostgrestClient()
         rows = await client.rpc("get_data_freshness", {}, profile="public")
     except PostgrestError as e:
         return e.message

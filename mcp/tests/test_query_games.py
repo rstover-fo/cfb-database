@@ -88,3 +88,16 @@ async def test_query_games_error_path():
     )
     result = await query_games(season=2024)
     assert result.startswith("Error:")
+
+
+@pytest.mark.asyncio
+async def test_missing_env_returns_error_string_not_exception(monkeypatch):
+    """Config errors must surface as the tool's friendly Error: string, not an
+    MCP exception — client construction happens inside each tool's try block."""
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_ANON_KEY", raising=False)
+
+    result = await query_games(season=2024)
+
+    assert isinstance(result, str)
+    assert result.startswith("Error: SUPABASE_URL is not set")

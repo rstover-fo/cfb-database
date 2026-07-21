@@ -13,7 +13,7 @@
 --
 -- Grain: (team, season, week_index). Row (team, season, week_index = WI)
 -- holds the ridge coefficients ENTERING week WI -- i.e. fit on that season's
--- plays with week_index < WI only (see migration 026's header for the full
+-- plays with week_index < WI only (see migration 027's header for the full
 -- walk-forward derivation). This is week_index, not raw CFBD week, because
 -- CFBD restarts week numbering at 1 for season_type = 'postseason' (bowls
 -- are week 1):
@@ -23,7 +23,7 @@
 -- lookups against "greatest week_index <= WI" see every regular-season
 -- play, including the final week's).
 --
--- SIGN CONVENTION (matches marts.team_adjusted_epa / migration 026): off_coef
+-- SIGN CONVENTION (matches marts.team_adjusted_epa / migration 027): off_coef
 -- HIGHER = better offense (more EPA/play above average); def_coef LOWER /
 -- more negative = better defense (EPA *allowed* above average -- a stingier
 -- defense pulls this further negative). lambda is the ridge penalty recorded

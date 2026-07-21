@@ -6,7 +6,7 @@
 -- Thin denormalization surface: SELECT * FROM features.team_week, the as-of
 -- feature vector entering each team's game (grain: one row per (season,
 -- season_type, week, team) -- a team plays <=1 game/week, both sides of every
--- core.games row get a row -- see migration 027 and
+-- core.games row get a row -- see migration 028 and
 -- docs/brainstorms/2026-07-21-team-week-feature-design.md section 1 for the
 -- full column contract). This mart exists so downstream reads go through
 -- `marts` per repo convention: `features.*` is contract-internal
@@ -15,13 +15,13 @@
 -- / api.team_week_features, never features.team_week directly.
 --
 -- AS-OF / LEAK-FREE (design doc section 0, shared with marts.adjusted_epa_week
--- / migration 026): a row keyed to week_index = WI uses only data with
+-- / migration 027): a row keyed to week_index = WI uses only data with
 -- week_index < WI within the same season, plus explicitly leak-free preseason
 -- constants and prior-season (S-1) fallbacks known before the season starts.
 --   week_index = week            when season_type = 'regular'
 --   week_index = 100 + week      when season_type = 'postseason'
 --
--- SIGN CONVENTION (adj_epa_* columns, carried over from migrations 026/027):
+-- SIGN CONVENTION (adj_epa_* columns, carried over from migrations 027/028):
 -- adj_epa_off HIGHER = better offense (more EPA/play above average);
 -- adj_epa_def LOWER / more negative = better defense (EPA *allowed* above
 -- average -- a stingier defense pulls this further negative). adj_epa_net =

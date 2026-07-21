@@ -3,7 +3,7 @@
 
 docs/plans/2026-07-21-tier3-analytics-plan.md, Pillar D, Phase 7. Reconstructs
 in-game states from metrics.win_probability (loaded by
-scripts/backfill_ingame_wp.py via
+the metrics_wp loader (load_season.py --sources metrics_wp) via
 src.pipelines.sources.metrics.win_probability_by_game_resource), joins each
 state to its game's final outcome (core.games) and pregame expected margin
 (analytics.house_elo_game, via scripts.compute_predictions.elo_margin --
@@ -308,7 +308,7 @@ def discover_wp_columns(conn) -> dict:
     if not available:
         raise RuntimeError(
             f"{WP_TABLE_SCHEMA}.{WP_TABLE_NAME} does not exist or has no columns -- run "
-            "scripts/backfill_ingame_wp.py (Tier 3 Pillar D Phase 7 backfill) before "
+            "the metrics_wp backfill (load_season.py --sources metrics_wp) before "
             "calibrating."
         )
 
@@ -431,7 +431,7 @@ def run(conn, sigma_grid: list[float], write: bool) -> int:
     if not rows:
         logger.error(
             "No metrics.win_probability rows joined to core.games + "
-            "analytics.house_elo_game -- has scripts/backfill_ingame_wp.py run yet?"
+            "analytics.house_elo_game -- has the metrics_wp backfill run yet?"
         )
         return 1
 

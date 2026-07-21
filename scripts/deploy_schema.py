@@ -72,7 +72,6 @@ COMPUTE_SCRIPTS = {
     "score_fitted",
     "tune_params",
     "calibrate_live_wp",
-    "backfill_ingame_wp",
     "poll_scoreboard",
 }
 

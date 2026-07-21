@@ -6,7 +6,7 @@ Phase 8 ("Live wiring"). Backs the Saturday in-game dashboard: one ONE call
 to /scoreboard per invocation (via .github/workflows/live-scoreboard.yml's
 5-minute cron), computing the house closed-form live win probability inline
 for every in-progress or completed-today game and appending a row to
-live.scoreboard_snapshots per game (src/schemas/migrations/028_live_schema.sql).
+live.scoreboard_snapshots per game (src/schemas/migrations/029_live_schema.sql).
 
 Architecture mirrors scripts/compute_predictions.py: the WP math
 (`house_live_home_wp`, `clamp`), clock parsing (`parse_clock`), and the
@@ -22,7 +22,7 @@ below `# --- I/O layer ---` is a thin wrapper: fetch /scoreboard, fetch
 house Elo + wp_params, drive the math, upsert-or-skip into
 live.scoreboard_snapshots.
 
-House live WP formula (from migration 028's header -- reproduced here only
+House live WP formula (from migration 029's header -- reproduced here only
 as a one-line pointer, not re-derived):
 
     f = clamp(seconds_remaining / 3600, eps, 1)
@@ -83,7 +83,7 @@ def house_live_home_wp(
     sigma: float,
     eps: float = 1.0 / 3600.0,
 ) -> float:
-    """House closed-form live home win probability (migration 028's header).
+    """House closed-form live home win probability (migration 029's header).
 
         f = clamp(seconds_remaining / 3600, eps, 1)
         projected = current_margin + pregame_expected_margin * f
@@ -151,7 +151,7 @@ def snapshot_hash(
     Used to dedup TV-timeout poll ticks: if a game's (period, clock,
     home_points, away_points, possession) are unchanged since its latest
     stored snapshot, the new tick is skipped rather than inserted --
-    live.scoreboard_snapshots is otherwise append-only (migration 028's
+    live.scoreboard_snapshots is otherwise append-only (migration 029's
     header). Any one of these fields changing (a play happened, the clock
     ticked, possession flipped) produces a different hash and a new row.
     """
@@ -304,7 +304,7 @@ def get_db_url() -> str:
 
 def fetch_wp_params(conn) -> tuple[float, float | None]:
     """(sigma, blend_weight) from live.wp_params id=1. Falls back to the
-    migration 028 seed (sigma=16.0) with a warning if the row is somehow
+    migration 029 seed (sigma=16.0) with a warning if the row is somehow
     missing (shouldn't happen -- the migration seeds it on ON CONFLICT DO
     NOTHING)."""
     with conn.cursor() as cur:

@@ -3,14 +3,14 @@
 
 Design doc: docs/brainstorms/2026-07-21-team-week-feature-design.md (section
 1 fixes every column/source/leak-rule; section 0 fixes the week_index/as-of
-convention). Target DDL: src/schemas/migrations/027_features_schema.sql.
+convention). Target DDL: src/schemas/migrations/028_features_schema.sql.
 
 Grain: one row per (season, season_type, week, team) -- a team plays <= 1
 game/week, so both the home and away side of every core.games row (completed
 or scheduled) get a row. week_index is the derived monotone ordering key
 (week_index = week for season_type='regular', 100 + week for 'postseason',
 since CFBD restarts week numbering at 1 for bowls -- see compute_week_index
-below and migration 026's identical convention). As-of rule: the row keyed to
+below and migration 027's identical convention). As-of rule: the row keyed to
 week_index = WI may only use data with week_index < WI within the same
 season, plus explicitly leak-free preseason constants and prior-season (S-1)
 fallbacks (design doc section 0).
@@ -74,7 +74,7 @@ logger = logging.getLogger(__name__)
 
 # Postseason week numbering restarts at 1 (bowls are week 1 of the
 # postseason), so raw `week` cannot order a season monotonically -- shared
-# convention with migration 026 / analytics.adjusted_epa_week_build (design
+# convention with migration 027 / analytics.adjusted_epa_week_build (design
 # doc section 0).
 POSTSEASON_WEEK_OFFSET = 100
 
@@ -468,7 +468,7 @@ _INSERT_COLUMNS = [
 ]
 
 # computed_at is deliberately excluded -- features.team_week.computed_at
-# DEFAULT now() (migration 027) fills it in, one value per row at insert time.
+# DEFAULT now() (migration 028) fills it in, one value per row at insert time.
 _INSERT_SQL = f"INSERT INTO features.team_week ({', '.join(_INSERT_COLUMNS)}) VALUES %s"
 
 

@@ -20,7 +20,7 @@ Walk-forward protocol (design section 3): expanding window, minimum 3 train
 seasons. For each score season ``S`` in ``--seasons START END`` (default
 2018..2025) we train on seasons ``2015..S-1`` and persist ONE frozen fit keyed
 ``(model_version='fitted_v1', train_through_season=S-1)`` into
-``features.model_coefficients`` + ``features.model_metadata`` (migration 027).
+``features.model_coefficients`` + ``features.model_metadata`` (migration 028).
 The imputation means (section 2b) and z-score stats (section 2c) are computed on
 the TRAIN window only and frozen in the metadata row -- scoring never recomputes
 them, which is what makes the NULL-imputation leak-free.

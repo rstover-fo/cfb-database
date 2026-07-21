@@ -9,7 +9,7 @@ walk-forward "as of entering week W" rating that never sees week W or any
 later week's results. That is what makes it safe to join onto week W's games
 without leaking the game's own outcome into its own pregame rating (see
 docs/plans/2026-07-21-tier3-analytics-plan.md, Pillar A, and
-src/schemas/migrations/026_adjusted_epa_week_staging.sql's header).
+src/schemas/migrations/027_adjusted_epa_week_staging.sql's header).
 
 The ridge math itself (RidgeAccumulator, the LAMBDA penalty, the team-list and
 play-query patterns) is imported unchanged from compute_adjusted_epa -- this
@@ -46,7 +46,7 @@ Each row also records that team's accumulated OFFENSIVE play count entering
 the boundary (a Counter-style tally, incremented as plays are folded), so
 downstream consumers can gauge how thin an early-season rating is.
 
-Writes to analytics.adjusted_epa_week_build (migration 026): per-season
+Writes to analytics.adjusted_epa_week_build (migration 027): per-season
 DELETE + batched INSERT, one transaction per season -- same idempotency
 pattern as compute_adjusted_epa.py's write to analytics.adjusted_epa_build.
 

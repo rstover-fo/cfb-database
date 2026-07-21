@@ -23,7 +23,7 @@
 --   GET /api/team_week_features?season=eq.2026&week=eq.5&season_type=eq.regular
 --
 -- Column contract: docs/brainstorms/2026-07-21-team-week-feature-design.md
--- section 1 / migration 027.
+-- section 1 / migration 028.
 
 CREATE OR REPLACE VIEW api.team_week_features AS
 SELECT

@@ -2,16 +2,16 @@
 
 Design doc for Tier 3 Pillars B (fitted/calibrated models) and C
 (`features.team_week`). This is the implementation contract for
-`build_features.py`, `train_model.py`, `score_fitted.py`, and migration 027.
+`build_features.py`, `train_model.py`, `score_fitted.py`, and migration 028.
 Every column, leak rule, imputation rule, and persistence shape below is fixed;
 implementers should not re-derive them.
 
 Upstream dependencies already fixed by the plan:
-- Migration **026** lands `analytics.adjusted_epa_week_build` (as-of ridge-EPA
+- Migration **027** lands `analytics.adjusted_epa_week_build` (as-of ridge-EPA
   coefficients *entering* week W; columns `team, season, week, off_coef,
   def_coef, hfa_coef, mu, plays, lambda, n_teams`; `plays` is the team's
   offensive play count, mirroring `analytics.adjusted_epa_build`).
-- Migration **027** lands the whole `features` schema: `features.team_week`,
+- Migration **028** lands the whole `features` schema: `features.team_week`,
   `features.model_coefficients`, `features.model_metadata` (this doc §1, §2).
 - `marts.play_epa` has **no** `week`/`season_type` — both come from
   `JOIN core.games g ON g.id = pe.game_id` (`g.week`, `g.season_type`).
@@ -65,7 +65,7 @@ season's played + upcoming weeks.
 
 ---
 
-## 1. `features.team_week` column spec (migration 027)
+## 1. `features.team_week` column spec (migration 028)
 
 Types follow the repo house style (`analytics.*` staging: `BIGINT` for
 season/week counts, `NUMERIC(p,s)` for rates/coefficients, `VARCHAR`/`TEXT` for
@@ -290,7 +290,7 @@ time. `intercept` and `neutral_site` are not standardized. Freeze
 train-window stats only, persisted with the model** — no test-season statistic
 ever touches the transform.
 
-### 2d. Persisted artifacts (migration 027 tables)
+### 2d. Persisted artifacts (migration 028 tables)
 
 **`features.model_coefficients`** — one row per feature per component per fit:
 
@@ -439,7 +439,7 @@ Per-family assertions the gate runs against the freshly-built `team_week`
   `model_metadata`; intercept + `neutral_site` left unscaled.
 - **Imputation:** league-mean per source column over **train games only**,
   frozen in `model_metadata.feature_means`, applied before differencing.
-- **Migration 027 = whole `features` schema:** `team_week` +
+- **Migration 028 = whole `features` schema:** `team_week` +
   `model_coefficients` + `model_metadata`, `predictions`-style grants.
 - **Feature vector size:** 15 features + unpenalized intercept; `market_*`
   excluded so `edge` stays meaningful.

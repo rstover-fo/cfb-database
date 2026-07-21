@@ -1,8 +1,8 @@
 """Unit tests for the house live win-probability model (no DB, no network).
 
 Covers scripts/poll_scoreboard.py's pure core -- house_live_home_wp (the
-closed-form formula from migration 028's header:
-src/schemas/migrations/028_live_schema.sql), clock parsing (including the
+closed-form formula from migration 029's header:
+src/schemas/migrations/029_live_schema.sql), clock parsing (including the
 documented overtime rule), and the snapshot dedup hash -- plus
 scripts/calibrate_live_wp.py's pure sigma grid search, recovered against
 synthetic data generated from a known ground-truth sigma, per

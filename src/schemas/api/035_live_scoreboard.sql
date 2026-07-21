@@ -15,7 +15,7 @@
 --
 -- LATEST-PER-GAME: live.scoreboard_snapshots is append-only, one row per
 -- game per poll tick with no unique constraint on (game_id, captured_at)
--- (see migration 028's header), so DISTINCT ON (game_id) ORDER BY game_id,
+-- (see migration 029's header), so DISTINCT ON (game_id) ORDER BY game_id,
 -- captured_at DESC picks the single most recent snapshot per game.
 --
 -- 24-HOUR WINDOW: restricted to snapshots captured within the last 24 hours
@@ -25,7 +25,7 @@
 -- live.scoreboard_snapshots.
 --
 -- house_live_home_wp is the closed-form house live win probability (formula
--- documented in migration 028's header: f = clamp(seconds_remaining/3600,
+-- documented in migration 029's header: f = clamp(seconds_remaining/3600,
 -- eps, 1); projected = current_margin + pregame_expected_margin * f;
 -- home_wp = Phi(projected / (sigma * sqrt(f)))); cfbd_home_wp is CFBD's own
 -- live WP where available, carried alongside purely for comparison.

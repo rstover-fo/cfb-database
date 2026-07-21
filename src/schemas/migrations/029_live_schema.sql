@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS live.scoreboard_snapshots (
     snapshot_hash TEXT
 );
 
--- Latest-per-game lookups (api/034_live_scoreboard.sql's DISTINCT ON) and
+-- Latest-per-game lookups (api/035_live_scoreboard.sql's DISTINCT ON) and
 -- game timelines.
 CREATE INDEX IF NOT EXISTS scoreboard_snapshots_game_captured_idx
     ON live.scoreboard_snapshots (game_id, captured_at DESC);

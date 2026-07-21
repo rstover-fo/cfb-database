@@ -9,7 +9,8 @@
 --      team_talent_composite, team_tempo_metrics, transfer_portal_impact
 --   4: team_season_trajectory, conference_era_summary, team_style_profile,
 --      coaching_tenure, recruiting_roi, conference_comparison
---   5: matchup_edges
+--   5: matchup_edges, data_freshness
+--   6: house_elo, house_elo_game, team_adjusted_epa, scored_matchup_edges, prediction_accuracy
 --
 -- Usage:
 --   SELECT * FROM marts.refresh_all();
@@ -173,9 +174,37 @@ BEGIN
             RETURN NEXT;
         END;
     END LOOP;
+
+    -- Layer 6: Tier 2 analytics (read from analytics.* staging + predictions)
+    v_views := ARRAY[
+        'house_elo',
+        'house_elo_game',
+        'team_adjusted_epa',
+        'scored_matchup_edges',
+        'prediction_accuracy'
+    ];
+    v_layer := 6;
+
+    FOREACH v_name IN ARRAY v_views LOOP
+        v_start := clock_timestamp();
+        BEGIN
+            EXECUTE format('REFRESH MATERIALIZED VIEW marts.%I', v_name);
+            v_elapsed := EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start)::bigint;
+            view_name := v_name;
+            duration_ms := v_elapsed;
+            status := format('OK (layer %s)', v_layer);
+            RETURN NEXT;
+        EXCEPTION WHEN OTHERS THEN
+            v_elapsed := EXTRACT(MILLISECONDS FROM clock_timestamp() - v_start)::bigint;
+            view_name := v_name;
+            duration_ms := v_elapsed;
+            status := format('ERROR (layer %s): %s', v_layer, SQLERRM);
+            RETURN NEXT;
+        END;
+    END LOOP;
 END;
 $$;
 
 COMMENT ON FUNCTION marts.refresh_all IS
-'Refreshes all 32 materialized views in the marts schema in dependency order (5 layers). '
+'Refreshes all 37 materialized views in the marts schema in dependency order (6 layers). '
 'Returns timing and status for each view. Errors are caught per-view so one failure does not abort the rest.';

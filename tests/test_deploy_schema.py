@@ -5,8 +5,10 @@ import json
 import pytest
 
 from scripts.deploy_schema import (
+    COMPUTE_SCRIPTS,
     VALID_ACTIONS,
     BackfillSpec,
+    ComputeSpec,
     Plan,
     load_manifest,
     plan_from_cli,
@@ -17,7 +19,17 @@ from scripts.deploy_schema import (
 
 class TestValidActions:
     def test_expected_actions(self):
-        assert VALID_ACTIONS == {"presence_check", "apply", "backfill"}
+        assert VALID_ACTIONS == {"presence_check", "apply", "backfill", "compute"}
+
+
+class TestComputeScripts:
+    def test_expected_allowlist(self):
+        assert COMPUTE_SCRIPTS == {
+            "check_backtest",
+            "compute_house_elo",
+            "compute_adjusted_epa",
+            "compute_predictions",
+        }
 
 
 class TestPlanFromManifestPresenceCheck:
@@ -27,6 +39,7 @@ class TestPlanFromManifestPresenceCheck:
         assert plan.strict is False
         assert plan.files == []
         assert plan.backfill is None
+        assert plan.compute is None
 
     def test_strict_flag_passthrough(self):
         plan = plan_from_manifest({"action": "presence_check", "strict": True})
@@ -93,6 +106,40 @@ class TestPlanFromManifestBackfill:
         assert plan.backfill.start == plan.backfill.end == 2020
 
 
+class TestPlanFromManifestCompute:
+    def test_compute_fields(self):
+        manifest = {
+            "action": "compute",
+            "compute": {"script": "compute_house_elo", "args": ["--full"]},
+        }
+        plan = plan_from_manifest(manifest)
+        assert plan.action == "compute"
+        assert plan.compute == ComputeSpec(script="compute_house_elo", args=["--full"])
+
+    def test_compute_args_optional(self):
+        manifest = {"action": "compute", "compute": {"script": "compute_adjusted_epa"}}
+        plan = plan_from_manifest(manifest)
+        assert plan.compute == ComputeSpec(script="compute_adjusted_epa", args=[])
+
+    def test_compute_refresh_passthrough(self):
+        manifest = {
+            "action": "compute",
+            "compute": {"script": "compute_predictions"},
+            "refresh": True,
+        }
+        plan = plan_from_manifest(manifest)
+        assert plan.refresh is True
+
+    def test_compute_missing_block_rejected(self):
+        with pytest.raises(ValueError, match="compute block"):
+            plan_from_manifest({"action": "compute"})
+
+    def test_compute_unknown_script_rejected(self):
+        manifest = {"action": "compute", "compute": {"script": "compute_something_else"}}
+        with pytest.raises(ValueError, match="compute_house_elo"):
+            plan_from_manifest(manifest)
+
+
 class TestBadAction:
     def test_unknown_action_rejected(self):
         with pytest.raises(ValueError, match="invalid action"):
@@ -107,12 +154,30 @@ class TestBadAction:
         with pytest.raises(ValueError, match="invalid action"):
             validate_plan(plan)
 
+    def test_compute_missing_block_rejected_directly(self):
+        plan = Plan(action="compute")
+        with pytest.raises(ValueError, match="compute block"):
+            validate_plan(plan)
+
+    def test_compute_unknown_script_rejected_directly(self):
+        plan = Plan(action="compute", compute=ComputeSpec(script="not_allowlisted"))
+        with pytest.raises(ValueError, match="invalid compute script") as exc_info:
+            validate_plan(plan)
+        # Message lists the allowlist so a bad script name is self-explanatory in CI logs.
+        for script in COMPUTE_SCRIPTS:
+            assert script in str(exc_info.value)
+
+    def test_compute_allowlisted_script_accepted_directly(self):
+        plan = Plan(action="compute", compute=ComputeSpec(script="compute_house_elo"))
+        validate_plan(plan)  # does not raise
+
 
 class TestPlanFromCli:
     def test_presence_check_minimal(self):
         plan = plan_from_cli(action="presence_check")
         assert plan.action == "presence_check"
         assert plan.strict is False
+        assert plan.compute is None
 
     def test_presence_check_strict(self):
         plan = plan_from_cli(action="presence_check", strict=True)
@@ -163,6 +228,40 @@ class TestPlanFromCli:
     def test_bad_action_rejected(self):
         with pytest.raises(ValueError, match="invalid action"):
             plan_from_cli(action="not_a_real_action")
+
+    def test_compute_flags_mapped(self):
+        plan = plan_from_cli(
+            action="compute",
+            compute_script="compute_house_elo",
+            compute_args="--full, --season 2024",
+        )
+        assert plan.action == "compute"
+        # Comma-separated CLI string is split and whitespace-stripped, like files/sources.
+        assert plan.compute == ComputeSpec(
+            script="compute_house_elo", args=["--full", "--season 2024"]
+        )
+
+    def test_compute_no_args_gives_empty_list(self):
+        plan = plan_from_cli(action="compute", compute_script="compute_predictions")
+        assert plan.compute == ComputeSpec(script="compute_predictions", args=[])
+
+    def test_compute_args_blank_entries_dropped(self):
+        plan = plan_from_cli(
+            action="compute", compute_script="compute_adjusted_epa", compute_args="a,,b,"
+        )
+        assert plan.compute.args == ["a", "b"]
+
+    def test_compute_unknown_script_rejected(self):
+        with pytest.raises(ValueError, match="invalid compute script"):
+            plan_from_cli(action="compute", compute_script="not_allowlisted")
+
+    def test_compute_missing_script_rejected(self):
+        with pytest.raises(ValueError, match="compute block"):
+            plan_from_cli(action="compute")
+
+    def test_compute_refresh_flag_mapped(self):
+        plan = plan_from_cli(action="compute", compute_script="compute_house_elo", refresh=True)
+        assert plan.refresh is True
 
 
 class TestLoadManifest:

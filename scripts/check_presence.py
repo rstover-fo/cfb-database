@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Presence/recon check for Tier 1 gate tables (Phase 0 of the analytics-unlock sprint).
+"""Presence/recon check for Tier 1 and Tier 2 gate tables (Phase 0 of the analytics-unlock sprint).
 
 Prints live row counts, column dumps, ref.play_stat_types contents, and an
 athlete_id/roster overlap sample for the tables that gate the WEPA, player-EPA,
 havoc, returning-production, player-usage, and ATS work
-(docs/plans/2026-07-19-tier1-analytics-unlock-plan.md, Phase 0). Output is
-grouped into clearly delimited sections so a GitHub Actions job log can be
-read directly without a live DB connection.
+(docs/plans/2026-07-19-tier1-analytics-unlock-plan.md, Phase 0). Also reports
+Tier 2 tables (house-Elo, EPA, predictions, line snapshots) and depth metrics
+for backtest benchmarks. Output is grouped into clearly delimited sections so a
+GitHub Actions job log can be read directly without a live DB connection.
 
 Usage:
     python scripts/check_presence.py             # recon mode: always exit 0
@@ -43,6 +44,16 @@ STRICT_GATE_TABLES: list[tuple[str, str]] = [
     ("stats", "player_usage"),
     ("stats", "player_returning"),
     ("betting", "team_ats"),
+]
+
+# Tier 2 tables (advanced analytics, predictions, lines) reported for context
+# but NOT enforced in --strict mode (legitimately absent before Phase 1/2).
+TIER_2_GATE_TABLES: list[tuple[str, str]] = [
+    ("analytics", "house_elo_current"),
+    ("analytics", "house_elo_game"),
+    ("analytics", "adjusted_epa_build"),
+    ("predictions", "game_predictions"),
+    ("betting", "line_snapshots"),
 ]
 
 # Play-by-play athlete_id linkage only goes back to ~2014; a single recent
@@ -148,6 +159,61 @@ def print_athlete_overlap(cur, counts: dict[tuple[str, str], int | None]) -> Non
     print(f"match rate: {pct:.1f}%")
 
 
+def print_tier_2_row_counts(cur) -> dict[tuple[str, str], int | None]:
+    """Print row counts for TIER_2_GATE_TABLES; return {(schema, table): count or None}.
+
+    Tier 2 tables are reported for context but are not enforced in strict mode.
+    """
+    section("ROW COUNTS - TIER 2 (advanced analytics / predictions)")
+    counts: dict[tuple[str, str], int | None] = {}
+    for schema, table in TIER_2_GATE_TABLES:
+        if not table_exists(cur, schema, table):
+            print(f"{schema}.{table}: MISSING")
+            counts[(schema, table)] = None
+            continue
+        count = row_count(cur, schema, table)
+        counts[(schema, table)] = count
+        print(f"{schema}.{table}: {count:,}")
+    return counts
+
+
+def print_depth_checks(cur) -> None:
+    """Print season depth and row counts for backtest benchmark tables."""
+    section("DEPTH CHECKS - BACKTEST BENCHMARKS")
+
+    # marts.play_epa depth
+    if table_exists(cur, "marts", "play_epa"):
+        cur.execute(
+            """
+            SELECT MIN(season), MAX(season), COUNT(*)
+            FROM marts.play_epa
+            """
+        )
+        min_season, max_season, total_rows = cur.fetchone()
+        print(
+            f"marts.play_epa depth: "
+            f"MIN(season)={min_season}, MAX(season)={max_season}, COUNT(*)={total_rows:,}"
+        )
+    else:
+        print("marts.play_epa: MISSING")
+
+    # metrics.pregame_win_probability depth
+    if table_exists(cur, "metrics", "pregame_win_probability"):
+        cur.execute(
+            """
+            SELECT MIN(season), MAX(season), COUNT(*)
+            FROM metrics.pregame_win_probability
+            """
+        )
+        min_season, max_season, total_rows = cur.fetchone()
+        print(
+            f"metrics.pregame_win_probability depth: "
+            f"MIN(season)={min_season}, MAX(season)={max_season}, COUNT(*)={total_rows:,}"
+        )
+    else:
+        print("metrics.pregame_win_probability: MISSING")
+
+
 def evaluate_strict(counts: dict[tuple[str, str], int | None]) -> bool:
     """Return True (pass) iff every strict gate table is present and non-empty."""
     return all(counts.get(t) for t in STRICT_GATE_TABLES)
@@ -165,6 +231,8 @@ def run(strict: bool) -> int:
             print_columns(cur, counts)
             print_play_stat_types(cur, counts)
             print_athlete_overlap(cur, counts)
+            print_tier_2_row_counts(cur)
+            print_depth_checks(cur)
     finally:
         conn.close()
 

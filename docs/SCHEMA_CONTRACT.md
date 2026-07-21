@@ -4,7 +4,7 @@
 > only depend on objects listed here as **public**. Everything else is internal and may change
 > without notice.
 
-Last updated: 2026-07-20
+Last updated: 2026-07-21
 
 > **Note on cfb-analytics:** the retired OU-only app (rstover-fo/cfb-analytics) was never a
 > warehouse consumer -- it ran its own DuckDB ingestion. Its unique features (rivals page,
@@ -14,6 +14,43 @@ Last updated: 2026-07-20
 ---
 
 ## Recent Contract Changes
+
+- **2026-07-21 — Tier 2 analytics: house Elo, ridge-adjusted EPA, scored edges, predictions.**
+  Five new `marts.*` materialized views and five new `api.*` views add a house-generated
+  opinion layer on top of the warehouse's authoritative CFBD data. All of it is
+  **transparent math -- no fitted ML model**: `elo_v1` is Elo-only, `elo_epa_blend_v1` blends
+  0.6*Elo + 0.4*ridge-adjusted EPA; both are closed-form and reproducible from the SQL/Python
+  alone (`scripts/compute_house_elo.py`, `scripts/compute_adjusted_epa.py`,
+  `scripts/compute_predictions.py`; see `docs/plans/2026-07-21-tier2-analytics-plan.md`).
+  - **House Elo:** `marts.house_elo` (season-end rating per team-season, ranked, with a
+    `low_confidence` flag for thin seasons) and `marts.house_elo_game` (game-grain pregame/
+    postgame Elo, win probability, expected-vs-actual margin) -- exposed as `api.team_elo` and
+    `api.game_elo_history`. Full history from 1869; CFBD's own Elo (coverage ~2015+) is carried
+    alongside purely for side-by-side comparison, not used in the computation.
+  - **Ridge-adjusted EPA:** `marts.team_adjusted_epa` -- opponent-adjusted offensive/defensive
+    EPA per team-season from a ridge regression (lambda=200) over `marts.play_epa`, 2004+, with
+    CFBD's WEPA (`marts.team_wepa_season`) joined in as a sanity check only. Not exposed as its
+    own API view; it feeds the predictions below.
+  - **Scored edges:** `marts.scored_matchup_edges` -- house expected margin/win probability vs.
+    the market line for **upcoming** games only, with the resulting `edge` and `edge_pick`.
+    Normally empty out of season -- that is expected behavior, not a data-quality failure.
+    Exposed as `api.scored_matchup_edges`.
+  - **Predictions:** new `predictions` schema (`predictions.game_predictions`) holds
+    append-only daily snapshots -- one immutable row per `(game_id, model_version,
+    prediction_date)`, written by `scripts/compute_predictions.py`. It is readable directly,
+    but downstream consumers should prefer `api.game_predictions` (latest snapshot per
+    game/model via `DISTINCT ON`) unless the full day-by-day history is needed.
+  - **Backtest surface:** `marts.prediction_accuracy` -- retroactive scoring (margin MAE/RMSE,
+    ATS record, Brier score vs. CFBD's own pregame win probability) by season, model, and
+    edge-threshold. Exposed as `api.prediction_accuracy`.
+  - **`marts.matchup_edges` (016) is now documented as style-only.** It predates house Elo/EPA
+    and is an unvalidated style-matchup scorer; prediction use should read
+    `marts.scored_matchup_edges` instead.
+  - `marts.refresh_all()` now refreshes 37 materialized views in 6 dependency layers (was 32
+    in 5 layers); the daily workflow runs the three compute scripts and an explicit
+    `refresh_marts.py --views` pass over the 5 new Tier 2 marts after the season load step.
+  - cfb-app should regenerate `supabase gen types` to pick up the new `predictions` schema and
+    the new/changed views.
 
 - **2026-07-20 — cfb-app fully contract-compliant.** As of cfb-app PRs #15-#17, the app has
   zero direct `core.*` access (a repo-side contract-guard test enforces this), consumes
@@ -128,6 +165,11 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.game_drives` | **Live** | 183,603 | Drive-by-drive summary for a game, one row per possession. Columns: game_id, season, drive_number, offense, defense, start_period, start_yards_to_goal, end_yards_to_goal, plays, yards, drive_result, scoring, start_offense_score, end_offense_score, start_defense_score, end_defense_score, start_time_minutes, start_time_seconds, elapsed_minutes, elapsed_seconds, is_home_offense |
 | `api.game_plays` | **Live** | 3,611,707 | Play-by-play for a game, one row per snap, unfiltered by play type (cfb-app filters client-side). Columns: game_id, season, drive_number, play_number, offense, defense, period, clock_minutes, clock_seconds, down, distance, yards_to_goal, yards_gained, play_type, play_text, ppa, scoring, offense_score, defense_score |
 | `api.poll_rankings` | **Live** | ~31,000 | Weekly poll rankings (AP Top 25, Coaches Poll, CFP, etc). Columns: season, season_type, week, poll, rank, school, conference, first_place_votes, points. Filter `season_type = 'regular'` for weekly polls; final poll is `season_type = 'postseason'` (week 1). Tied teams share a rank (next rank skipped) |
+| `api.team_elo` | **Live** | ~29,000 | Season-end house Elo rating per team-season, ranked within season. Columns: team, season, season_end_elo, elo_rank, games_played, low_confidence, cfbd_elo |
+| `api.game_elo_history` | **Live** | ~71,000 | Game-grain house Elo history: pregame/postgame Elo both sides, win probability, expected vs actual margin, CFBD Elo copies for validation. Columns: game_id, season, week, season_type, start_date, neutral_site, home_team, away_team, home_pregame_elo, away_pregame_elo, home_postgame_elo, away_postgame_elo, home_win_prob, expected_home_margin, actual_home_margin, mov_multiplier, cfbd_home_pregame_elo, cfbd_away_pregame_elo, margin_error, abs_margin_error |
+| `api.scored_matchup_edges` | **Live** | Varies (in-season) | House model expected margin/win probability vs. the market line for upcoming games, with the resulting edge. Empty out of season by design -- not a failure. Columns: game_id, season, week, season_type, start_date, home_team, away_team, neutral_site, model_version, prediction_date, home_elo_pregame, away_elo_pregame, elo_margin, epa_margin, expected_home_margin, home_win_prob, market_provider, market_spread, market_home_margin, market_captured_at, edge, edge_pick, abs_edge |
+| `api.prediction_accuracy` | **Live** | ~90 | Retroactive scoring of house predictions by season/model/edge-threshold: margin MAE/RMSE, ATS record, Brier score (house vs. CFBD). Columns: model_version, season, edge_threshold, n_games, n_with_market, margin_mae, margin_rmse, ats_wins, ats_losses, ats_pushes, ats_hit_rate, brier, cfbd_brier, n_scored_win_prob |
+| `api.game_predictions` | **Live** | ~20,000+ | Latest house prediction snapshot per (game, model), from the append-only `predictions.game_predictions` log. Columns: prediction_id, computed_at, prediction_date, model_version, game_id, season, week, season_type, home_team, away_team, neutral_site, home_elo_pregame, away_elo_pregame, elo_margin, epa_margin, expected_home_margin, home_win_prob, market_provider, market_home_margin, market_spread, market_captured_at, edge, edge_pick |
 
 ### Marts (schema: `marts`) -- Materialized Views
 
@@ -150,7 +192,7 @@ cfb-app for advanced features.
 | `marts.coach_record` | Deployed | Coach win/loss records by team and season |
 | `marts.recruiting_class` | Deployed | Recruiting class summaries per team/year |
 | `marts.conference_era_summary` | Deployed | Conference-level aggregates across eras |
-| `marts.matchup_edges` | Deployed | Matchup advantage/disadvantage analysis |
+| `marts.matchup_edges` | Deployed | Matchup advantage/disadvantage analysis from team style profiles. **Style-only** as of 2026-07-21 -- for prediction use read `marts.scored_matchup_edges` instead. |
 | `marts.play_epa` | Deployed | Per-play EPA values |
 | `marts.player_game_epa` | Deployed | Player EPA aggregated per game |
 | `marts.player_season_epa` | Deployed | Player EPA aggregated per season |
@@ -168,6 +210,11 @@ cfb-app for advanced features.
 | `marts.returning_production` | Deployed | Returning production by team-season (PPA and usage returning from prior season), passthrough of `stats.player_returning`. Grain: `(season, team)`. Unique key: `(team, season)`. |
 | `marts.player_usage` | Deployed | Player usage rates by season (overall/pass/rush/down-split shares), passthrough of `stats.player_usage`. Grain: `(season, athlete_id)`. Unique key: `(season, athlete_id)`. |
 | `marts.team_ats_records` | Deployed | Team against-the-spread records by season, passthrough of `betting.team_ats` plus computed `ats_win_pct`. Grain: `(season, team_id)`. Unique key: `(team_id, season)`. |
+| `marts.house_elo` | Deployed | Season-end house Elo rating per team-season (last game's postgame Elo), ranked within season, with CFBD Elo joined in for comparison. Grain: `(team, season)`. |
+| `marts.house_elo_game` | Deployed | Game-grain house Elo history: pregame/postgame Elo both sides, win probability, expected vs actual margin, plus derived `margin_error`. Grain: `(game_id)`. |
+| `marts.team_adjusted_epa` | Deployed | Ridge-regressed opponent-adjusted EPA (offense/defense/net, lambda=200) per team-season, 2004+, with CFBD's WEPA joined in as a sanity check. Grain: `(team, season)`. |
+| `marts.scored_matchup_edges` | Deployed | House expected margin/win probability vs. the market line for upcoming games only; legitimately empty out of season (no empty-guard by design). Grain: `(game_id, model_version)`. |
+| `marts.prediction_accuracy` | Deployed | Retroactive scoring of house predictions: margin MAE/RMSE, ATS record, Brier score (house vs. CFBD) by season/model/edge-threshold. Grain: `(model_version, season, edge_threshold)`. |
 
 ### Public Schema Views
 
@@ -227,7 +274,7 @@ These reference tables are stable enough for direct access.
 |----------|--------|-------------|
 | `ref.get_era` | `ref` | Returns era code/name for a given year |
 | `analytics.refresh_all_views` | `analytics` | Refreshes all analytics materialized views (admin use) |
-| `marts.refresh_all` | `marts` | Refreshes all 32 mart materialized views in dependency order (5 layers). Returns (view_name, duration_ms, status). |
+| `marts.refresh_all` | `marts` | Refreshes all 37 mart materialized views in dependency order (6 layers). Returns (view_name, duration_ms, status). |
 
 ---
 
@@ -311,6 +358,19 @@ columns. These are pipeline internals and must not be queried by downstream repo
 Tables: `drives`, `games`, `games__away_line_scores`, `games__home_line_scores`,
 `game_media`, `game_player_stats` (+ nested), `game_team_stats` (+ nested), `game_weather`,
 `plays`, `rankings`, `records`, `roster`, `roster__recruit_ids`, `_dlt_version`
+
+### predictions Schema
+
+Added 2026-07-21 (Tier 2 analytics). `predictions.game_predictions` is **readable**
+(`SELECT` granted to `anon`/`authenticated`; `INSERT`/`UPDATE`/`DELETE` are revoked) but it is
+pipeline output, not the contract surface -- it is an append-only log with one immutable row
+per `(game_id, model_version, prediction_date)`. Downstream consumers should prefer
+`api.game_predictions`, which resolves to the latest snapshot per game/model, unless the full
+day-by-day prediction history is actually needed.
+
+| Table | Description |
+|-------|-------------|
+| `predictions.game_predictions` | Append-only daily house prediction snapshots (house Elo + ridge-adjusted-EPA expected margin/win probability vs. the market line). Written by `scripts/compute_predictions.py`. Prefer `api.game_predictions` for the latest-snapshot contract view. |
 
 ### Analytics Materialized Views (Internal)
 

@@ -43,9 +43,10 @@ SELECT
     e.epa_per_play,
     e.success_rate,
     COALESCE(e.explosiveness, 0::NUMERIC) AS explosiveness,
-    t.classification,
     (RANK() OVER (PARTITION BY e.season, t.classification ORDER BY e.epa_per_play DESC))::INT AS off_epa_rank,
-    (RANK() OVER (PARTITION BY e.season, t.classification ORDER BY COALESCE(d.opp_epa_per_play, 999::NUMERIC)))::INT AS def_epa_rank
+    (RANK() OVER (PARTITION BY e.season, t.classification ORDER BY COALESCE(d.opp_epa_per_play, 999::NUMERIC)))::INT AS def_epa_rank,
+    -- appended LAST: CREATE OR REPLACE VIEW can only add columns at the end
+    t.classification
 FROM marts.team_epa_season e
 LEFT JOIN marts.defensive_havoc d
     ON e.team = d.team AND e.season = d.season

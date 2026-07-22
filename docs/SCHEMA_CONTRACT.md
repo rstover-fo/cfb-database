@@ -15,6 +15,48 @@ Last updated: 2026-07-22
 
 ## Recent Contract Changes
 
+- **2026-07-22 — `classification` on `public.team_epa_season` and
+  `api.leaderboard_teams` is now SEASON-ACCURATE (consumer-visible semantics
+  change; realignment fix).** Beta testers flagged North Dakota State's
+  dominant 2025 FCS season (12-1, 0.40 EPA/play) appearing inside the 2025
+  FBS partition on FBS leaderboards. Root cause: both views derived
+  `classification` from a deduped `ref.teams` join, and `ref.teams` mirrors
+  CFBD `/teams` -- **current** membership, not historical. NDSU moved up to
+  FBS (Mountain West) for 2026, so `ref.teams` now says `fbs` for NDSU, and
+  that reclassified *every* historical NDSU season, including the FCS one it
+  actually played in 2025. Any team that changes classification (realignment,
+  reclassification) has the same bug in its historical seasons. Fixed by
+  adding a `team_season_class` CTE to both views that derives classification
+  per `(team, season)` from `core.games.home_classification` /
+  `away_classification` (dlt snake_case of CFBD `homeClassification` /
+  `awayClassification` -- the classification each team actually carried in
+  its own games that season; same source used by `scripts/verify_load.py`
+  and `scripts/generate_recaps.py`), deduped with
+  `mode() WITHIN GROUP (ORDER BY classification)` per team-season (in case
+  of disagreement across a team's games in one season), LEFT JOINed on
+  `(team, season)`, and COALESCEd with the existing `ref.teams`-deduped CTE
+  as a fallback for team-seasons with no loaded games in `core.games`. Rank
+  windows (`off_epa_rank`/`def_epa_rank` on `public.team_epa_season`;
+  `wins_rank`/`ppg_rank`/`defense_ppg_rank`/`epa_rank` on
+  `api.leaderboard_teams`) still `PARTITION BY season, classification` --
+  now season-accurate, so NDSU's 2025 season partitions correctly under FCS
+  and its future 2026 season will partition under FBS. Column name and
+  position unchanged on both views (`public.team_epa_season` still appends
+  `classification` last per the `CREATE OR REPLACE VIEW` column-order
+  constraint; `api.leaderboard_teams` DROPs and recreates, so no ordering
+  constraint applies, and it wasn't reordered). `api.leaderboard_teams`
+  keeps its in-file `GRANT SELECT ... TO anon, authenticated;` (re-granted
+  on every apply since the DROP discards existing grants). Performance:
+  `team_season_class` scans `core.games` (~90K rows) grouped by
+  `(team, season)` in both views -- acceptable at this scale. Files:
+  `src/schemas/public/002_marts_views.sql`,
+  `src/schemas/api/005_leaderboard_teams.sql`. New regression test:
+  `tests/test_api_views.py::TestLeaderboardTeams::test_classification_is_season_accurate`
+  asserts `api.leaderboard_teams` classification for North Dakota State,
+  season 2025, is `'fcs'`. The existing `test_epa_rank_scoped_to_fbs` (max
+  `epa_rank` among FBS rows `<= 140`) still holds. Deploy manifest:
+  `deploys/season-classification-manifest.json`.
+
 - **2026-07-22 — `api.coach_records` added (view authored, pending deploy).**
   Beta testers (sports bettors) asked for "coaches' records straight-up AND
   against-the-spread, ranked by win percentage" -- nothing coach-related

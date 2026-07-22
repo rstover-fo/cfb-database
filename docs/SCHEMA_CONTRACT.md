@@ -15,6 +15,66 @@ Last updated: 2026-07-21
 
 ## Recent Contract Changes
 
+- **2026-07-22 — FBS rank scoping fix: `api.leaderboard_teams` and
+  `public.team_epa_season` rank columns are now computed WITHIN classification
+  (consumer-visible semantics change).** Beta testers found Oklahoma's EPA
+  rank showing "#176" (FBS has ~136 teams) and FCS teams (e.g. North Dakota
+  State) appearing on the EPA leaderboard. Root cause: every rank column on
+  these two views was a `RANK() OVER (PARTITION BY season ...)` computed
+  across **all** classifications (FBS + FCS + lower), because none of the
+  underlying marts carry a `classification` column -- only `ref.teams` does.
+  Fixed at the view layer only (no matview rebuilds):
+  - **`api.leaderboard_teams`** (`src/schemas/api/005_leaderboard_teams.sql`):
+    added a `classification` column (LEFT JOIN to a `ref.teams`-deduped CTE,
+    same dedup pattern as `api.team_playcalling_profile`); `wins_rank`,
+    `ppg_rank`, `defense_ppg_rank`, and `epa_rank` are now
+    `PARTITION BY tss.season, classification` instead of `PARTITION BY
+    tss.season`. **All rows are still returned** -- there is no `WHERE
+    classification = 'fbs'` filter on this view; consumers must filter
+    client-side same as before, but ranks are now scoped within whichever
+    classification each row belongs to (FBS ranked among ~136 FBS peers, FCS
+    among FCS peers, etc).
+  - **`public.team_epa_season`** (`src/schemas/public/002_marts_views.sql`):
+    added a `classification` column via the same dedup join; `off_epa_rank`
+    and `def_epa_rank` are now `PARTITION BY e.season, classification`
+    instead of `PARTITION BY e.season`. All pre-existing columns kept their
+    names and relative order -- `classification` and the two rank columns
+    are appended, so `SELECT *` consumers (cfb-app's team page) keep working
+    unchanged aside from gaining the new column.
+  - **Scope-checked but not changed:** `marts.team_wepa_season`
+    (`epa_rank`/`defense_rank`, exposed via `api.team_wepa_season`) sources
+    from `metrics.wepa_team_season`, itself a passthrough of CFBD's
+    `/wepa/team/season` endpoint. That table has no `classification` column
+    at all (dlt-created straight from the CFBD payload) and its row count
+    (1,587 rows across the `metrics` year range 2014-2026) averages ~130
+    teams/season -- consistent with FBS-only coverage (FBS has run
+    127-136 teams over that span), not the 250+ a combined FBS+FCS count
+    would produce. CFBD's WEPA endpoint appears to be FBS-only at the
+    source; left unchanged, and its ranks are not scoped by classification.
+  - **Scope-checked and confirmed affected, but not surfaced anywhere yet:**
+    `marts.team_adjusted_epa` (`off_rank`/`def_rank`/`net_rank`) is built
+    from `analytics.adjusted_epa_build`
+    (`scripts/compute_adjusted_epa.py`), whose team list comes from
+    `marts.play_epa` with no classification filter -- any FCS team that
+    plays an FBS opponent gets plays recorded and is included in the ridge
+    fit and its ranks, so this mart *is* affected by the same root cause.
+    However, `off_rank`/`def_rank`/`net_rank` are not currently exposed
+    through any `api.*` or `public.*` view -- there is no `api.team_adjusted_epa`
+    view, and the two views that reference this mart
+    (`marts.team_week_features` / `api.team_week_features`,
+    `marts.adjusted_epa_week` / `api.adjusted_epa_week`) pull `adj_epa_off`/
+    `adj_epa_def`/`adj_epa_net` coefficient values or a different,
+    already-unranked mart (`analytics.adjusted_epa_week_build`), not this
+    mart's rank columns. No view-layer change made; flagging here so a
+    future `api.team_adjusted_epa` view (if ever added) scopes ranks by
+    classification from day one.
+  - New tests: `tests/test_api_views.py::TestLeaderboardTeams::test_epa_rank_scoped_to_fbs`
+    (modeled on `TestTeamDetail::test_only_fbs_teams`) asserts
+    `MAX(epa_rank)` among `classification = 'fbs'` rows for the most recent
+    season stays `<= 140`. `public.team_epa_season` is not contract-tested
+    anywhere in `tests/` (only the underlying `marts.team_epa_season` is, in
+    `tests/test_marts.py`), so no public-view test was added for it.
+
 - **2026-07-21 — `api.game_recaps` added (Deployed).** P3.3 Lane D: nightly
   LLM-generated game recaps, one row per completed FBS game (season >= 2014), written by
   `scripts/generate_recaps.py` (model `claude-haiku-4-5`) from warehouse facts only --
@@ -233,7 +293,7 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.team_history` | **Deployed** | 3,667 | Multi-season team history with records, ratings, EPA trends. Columns: team, season, conference, games, wins, losses, conf_wins, conf_losses, ppg, opp_ppg, avg_margin, sp_rating, sp_rank, elo, fpi, epa_per_play, epa_tier, success_rate, explosiveness, total_plays, recruiting_rank, recruiting_points |
 | `api.game_detail` | **Deployed** | 45,897 | Single game: teams, scores, betting lines, EPA, venue. Columns: game_id, season, week, season_type, start_date, completed, home_team, away_team, home_points, away_points, winner, point_diff, home_spread, over_under, spread_result, ou_result, home_epa, away_epa, pregame_home_win_prob, venue, attendance, excitement_index |
 | `api.matchup` | **Deployed** | 11,975 | Head-to-head matchup history and current season comparison. Columns: team1, team2, total_games, team1_wins, team2_wins, ties, first_meeting, last_meeting, recent_results (JSONB array), team1/team2 current season stats |
-| `api.leaderboard_teams` | **Deployed** | 3,667 | Team leaderboard with rankings, ratings, EPA. Columns: team, conference, season, wins, losses, win_pct, ppg, opp_ppg, sp_rank, epa_per_play, epa_tier, wins_rank, ppg_rank, defense_ppg_rank, epa_rank |
+| `api.leaderboard_teams` | **Deployed** | 3,667 | Team leaderboard with rankings, ratings, EPA. Columns: team, conference, season, classification, wins, losses, win_pct, ppg, opp_ppg, sp_rank, epa_per_play, epa_tier, wins_rank, ppg_rank, defense_ppg_rank, epa_rank. Rank columns are scoped `PARTITION BY season, classification` (see 2026-07-22 changelog entry) -- all rows still returned, no `WHERE fbs` filter. |
 | `api.roster_lookup` | **Deployed** | 340,855 | Stable roster view for player matching |
 | `api.recruit_lookup` | **Deployed** | 67,179 | Stable recruiting view for recruit data |
 | `api.player_season_leaders` | **Deployed** | 152,966 | Season stat leaders by category (passing, rushing, receiving, defensive). Columns: season, category, player_id, player_name, team, yards, touchdowns, interceptions, pct, attempts, completions, carries, yards_per_carry, receptions, yards_per_reception, longest, total_tackles, solo_tackles, sacks, tackles_for_loss, passes_defended, yards_rank |
@@ -325,7 +385,7 @@ eventually migrate to `api.*`.
 | `public.teams_with_logos` | Deployed | Teams with logo URLs |
 | `public.games` | Deployed | Game schedule and results |
 | `public.roster` | Deployed | Player roster data |
-| `public.team_epa_season` | Deployed | Team EPA per season (duplicate of marts view) |
+| `public.team_epa_season` | Deployed | Team EPA per season (duplicate of marts view). Adds a `classification` column; `off_epa_rank`/`def_epa_rank` are scoped `PARTITION BY season, classification` (see 2026-07-22 changelog entry) |
 | `public.team_season_epa` | Deployed | Team season EPA (alternate shape) |
 | `public.defensive_havoc` | Deployed | Defensive havoc metrics |
 | `public.team_style_profile` | Deployed | Team style characterization |

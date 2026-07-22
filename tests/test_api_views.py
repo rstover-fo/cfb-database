@@ -148,6 +148,7 @@ LEADERBOARD_TEAMS_COLUMNS = {
     "team",
     "conference",
     "season",
+    "classification",
     "games",
     "wins",
     "losses",
@@ -865,6 +866,41 @@ class TestLeaderboardTeams:
         assert len(rows) >= 1, "No team with epa_rank = 1 for 2024"
         row = dict(zip(columns, rows[0]))
         assert row["epa_per_play"] is not None
+
+    def test_epa_rank_scoped_to_fbs(self, db_conn):
+        """epa_rank should be computed within classification, not across FBS+FCS+lower.
+
+        FBS has ~136 teams, so the max epa_rank among classification='fbs' rows
+        for the most recent season with data must stay well under the old
+        cross-classification bug (e.g. Oklahoma showing "#176"). Regression
+        test for the FBS rank-scoping fix.
+        """
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT MAX(season) FROM api.leaderboard_teams
+            WHERE classification = 'fbs' AND epa_rank IS NOT NULL
+            """,
+        )
+        season = rows[0][0]
+        assert season is not None, "No FBS rows with epa_rank found in api.leaderboard_teams"
+
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT MAX(epa_rank)
+            FROM api.leaderboard_teams
+            WHERE season = %s AND classification = 'fbs'
+            """,
+            (season,),
+        )
+        max_epa_rank = rows[0][0]
+        assert max_epa_rank is not None
+        assert max_epa_rank <= 140, (
+            f"Max epa_rank among FBS teams in season {season} is {max_epa_rank}, "
+            "expected <= 140 (FBS has ~136 teams; a higher max indicates ranks "
+            "are leaking in FCS/lower-classification teams)"
+        )
 
 
 # ---------------------------------------------------------------------------

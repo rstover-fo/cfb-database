@@ -23,6 +23,9 @@ async def test_get_leaderboard_epa_metric_uses_leaderboard_teams():
     request = route.calls.last.request
     assert request.url.params["season"] == "eq.2024"
     assert request.url.params["order"] == "epa_rank.asc"
+    # Ranks are within-classification (2026-07-22 contract change): without
+    # this filter, FCS/lower rank-1 teams would interleave with FBS leaders.
+    assert request.url.params["classification"] == "eq.fbs"
 
 
 @pytest.mark.asyncio

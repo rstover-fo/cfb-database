@@ -460,9 +460,17 @@ async def get_leaderboard(
             )
             source = "api.team_wepa_season"
         else:
+            # Rank columns are computed WITHIN classification (2026-07-22
+            # contract change), so an unfiltered order-by-rank would interleave
+            # FCS/lower rank-1 teams with FBS leaders. This is an FBS
+            # leaderboard: filter to fbs.
             rows = await client.select(
                 "leaderboard_teams",
-                {"season": eq(season), "order": _LEADERBOARD_ORDER[metric]},
+                {
+                    "season": eq(season),
+                    "classification": eq("fbs"),
+                    "order": _LEADERBOARD_ORDER[metric],
+                },
                 profile="api",
                 limit=limit,
             )

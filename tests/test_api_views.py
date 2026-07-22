@@ -929,6 +929,31 @@ class TestLeaderboardTeams:
             "are leaking in FCS/lower-classification teams)"
         )
 
+    def test_classification_is_season_accurate(self, db_conn):
+        """classification reflects the team's classification IN THAT SEASON, not current membership.
+
+        North Dakota State moved up to FBS (Mountain West) for 2026, but its
+        2025 season was played (and dominated, 12-1) at the FCS level. If
+        classification were sourced from ref.teams (current CFBD /teams
+        membership) instead of core.games (season-accurate), NDSU's 2025 row
+        would incorrectly show 'fbs' and leak onto FBS leaderboards/rank
+        partitions. Regression test for the season-classification fix.
+        """
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT classification
+            FROM api.leaderboard_teams
+            WHERE team = 'North Dakota State' AND season = 2025
+            """,
+        )
+        if not rows:
+            pytest.skip("North Dakota State 2025 row not present in api.leaderboard_teams")
+        assert rows[0][0] == "fcs", (
+            f"North Dakota State 2025 classification is {rows[0][0]!r}, expected 'fcs' "
+            "(season-accurate, not current 2026 FBS membership)"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Test: roster_lookup filters

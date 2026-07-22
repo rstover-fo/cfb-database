@@ -4,7 +4,7 @@
 > only depend on objects listed here as **public**. Everything else is internal and may change
 > without notice.
 
-Last updated: 2026-07-21
+Last updated: 2026-07-22
 
 > **Note on cfb-analytics:** the retired OU-only app (rstover-fo/cfb-analytics) was never a
 > warehouse consumer -- it ran its own DuckDB ingestion. Its unique features (rivals page,
@@ -14,6 +14,33 @@ Last updated: 2026-07-21
 ---
 
 ## Recent Contract Changes
+
+- **2026-07-22 — `api.coach_records` added (view authored, pending deploy).**
+  Beta testers (sports bettors) asked for "coaches' records straight-up AND
+  against-the-spread, ranked by win percentage" -- nothing coach-related
+  existed in the frontend even though the warehouse had the pieces at
+  mismatched grains (`ref.coaches`/`ref.coaches__seasons` at coach-season
+  grain, `marts.team_ats_records` at team-season grain). New view
+  `api.coach_records` (`src/schemas/api/038_coach_records.sql`) aggregates a
+  coach-season CTE (built directly from `ref.coaches`/`ref.coaches__seasons`,
+  the same join idiom as `marts.coach_record`/`marts.coaching_tenure`)
+  LEFT JOINed per-season to `marts.team_ats_records` on team name + year (no
+  shared surrogate id), then grouped up to **coach x team (career-at-school)
+  grain** -- distinct from `api.coaching_history`, which splits a coach's
+  non-contiguous stints at one school into separate tenure rows. Columns:
+  `coach_name`, `first_name`, `last_name`, `team`, `first_season`,
+  `last_season`, `seasons_count`, `games`, `wins`, `losses`, `ties`,
+  `win_pct`, `ats_games`, `ats_wins`, `ats_losses`, `ats_pushes`,
+  `ats_win_pct`, `seasons_with_ats_data`. **Caveats:** (1) coach attribution
+  is whole-season -- `ref.coaches__seasons` attributes an entire season to
+  one head coach per school, so mid-season coaching changes (e.g. an interim
+  coach finishing a season) are not splittable at this grain; treat records
+  as season-or-larger-grain only, never per-game. (2) ATS coverage is
+  partial -- `marts.team_ats_records` doesn't extend back through every
+  coach's full career (older seasons predate consistently tracked betting
+  lines), so `ats_*` columns can be NULL or based on fewer seasons than the
+  straight-up record; use `seasons_with_ats_data` to gauge coverage per row.
+  Deploy manifest: `deploys/coach-records-manifest.json`.
 
 - **2026-07-22 — FBS rank scoping fix: `api.leaderboard_teams` and
   `public.team_epa_season` rank columns are now computed WITHIN classification
@@ -304,6 +331,7 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.game_line_scores` | **Deployed** | 45,897 | Game line scores pivoted into Q1-Q4 columns with OT periods summed. Columns: game_id, season, home_q1, home_q2, home_q3, home_q4, home_ot, away_q1, away_q2, away_q3, away_q4, away_ot |
 | `api.team_playcalling_profile` | **Deployed** | 4,627 | Team playcalling identity with situational tendencies and percentile rankings. One row per team-season. Columns: team, season, conference, games_played, overall_run_rate, early_down_run_rate, third_down_pass_rate, red_zone_run_rate, overall_success_rate, overall_avg_epa, third_down_success_rate, red_zone_success_rate, leading_run_rate, trailing_run_rate, run_rate_delta, pace_plays_per_game, overall_run_rate_pctl, early_down_run_rate_pctl, third_down_pass_rate_pctl, overall_epa_pctl, third_down_success_pctl, red_zone_success_pctl, run_rate_delta_pctl, pace_pctl |
 | `api.coaching_history` | **Deployed** | 2,752 | Coaching tenure analytics: career spans, W-L records, talent metrics. One row per coach-team-tenure. Columns: first_name, last_name, team, tenure_start, tenure_end, seasons_count, total_wins, total_losses, win_pct, conf_wins, conf_losses, conf_win_pct, bowl_games, bowl_wins, inherited_talent_rank, year3_talent_rank, talent_improvement, is_active |
+| `api.coach_records` | **Pending deploy** | -- | Coach career record by school, straight-up and against-the-spread, for ranking coaches by win percentage. One row per coach-team (career-at-school grain, unlike `api.coaching_history`'s per-tenure grain). Columns: coach_name, first_name, last_name, team, first_season, last_season, seasons_count, games, wins, losses, ties, win_pct, ats_games, ats_wins, ats_losses, ats_pushes, ats_win_pct, seasons_with_ats_data. Coach attribution is whole-season (no mid-season splits); `ats_*` coverage is partial pre-lines-era -- see `seasons_with_ats_data` and the 2026-07-22 changelog entry. |
 | `api.recruiting_roi` | **Deployed** | 1,324 | Recruiting investment vs on-field outcomes. 4-year rolling BCR, wins over expected, draft production. One row per team-season. Columns: team, season, conference, blue_chip_ratio, avg_recruit_rating, total_wins, win_pct, epa_per_play, players_drafted, wins_over_expected, recruiting_efficiency, win_pct_pctl, epa_pctl, recruiting_efficiency_pctl |
 | `api.transfer_portal_impact` | **Deployed** | 1,374 | Transfer portal activity correlated with team performance changes. Portal era (2021+). One row per team-season. Columns: team, season, conference, transfers_in, transfers_out, net_transfers, avg_transfer_stars, portal_dependency, win_delta, net_transfers_pctl, win_delta_pctl, portal_dependency_pctl |
 | `api.conference_comparison` | **Deployed** | 347 | Conference-level season analytics with percentile rankings. One row per conference-season. Columns: conference, season, member_count, avg_wins, avg_sp_rating, avg_epa, avg_recruiting_rank, non_conf_win_pct, avg_sp_pctl, avg_epa_pctl, avg_recruiting_pctl, non_conf_win_pct_pctl |

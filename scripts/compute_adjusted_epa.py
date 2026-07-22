@@ -31,10 +31,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 # Ridge penalty applied to the offense/defense team columns only (mu, hfa are
-# unpenalized). ~200 "pseudo-plays" worth of shrinkage toward 0 per team
+# unpenalized). ~100 "pseudo-plays" worth of shrinkage toward 0 per team
 # coefficient. Recorded per row in analytics.adjusted_epa_build so historical
-# fits stay auditable even if this tunable changes later.
-LAMBDA = 200.0
+# fits stay auditable even if this tunable changes later. Retuned 200 -> 100
+# on 2026-07-22 per the tune_params walk-forward advisory (with Elo K=28,
+# DIVISOR=22: blend margin MAE 13.60 -> 13.20 over 2015-2025, ATS flat).
+LAMBDA = 100.0
 
 # Server-side cursor fetch batch size for the per-season play stream.
 CURSOR_ITERSIZE = 10_000

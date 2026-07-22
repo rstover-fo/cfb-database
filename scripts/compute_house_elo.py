@@ -8,8 +8,11 @@ below `# --- I/O layer ---` is a thin wrapper: fetch rows from core.games,
 feed them through the engine, write the results to
 analytics.house_elo_game / analytics.house_elo_current.
 
-Parameters (SEED, K, HFA, DIVISOR, CARRYOVER, POOL_THRESHOLD) are FINAL per
-the design doc -- do not retune here; see the plan's tunable ledger.
+Parameters (SEED, K, HFA, DIVISOR, CARRYOVER, POOL_THRESHOLD) change only by
+deliberate retune decision, never casually -- see the plan's tunable ledger.
+Retuned 2026-07-22 (user-approved tune_params walk-forward advisory): K
+20 -> 28, DIVISOR 25 -> 22, alongside compute_adjusted_epa.py's LAMBDA
+200 -> 100. Blend margin MAE 13.60 -> 13.20 over 2015-2025, ATS flat.
 
 Usage:
     python scripts/compute_house_elo.py --full
@@ -86,9 +89,9 @@ class EloEngine:
     """
 
     SEED = 1500.0
-    K = 20.0
+    K = 28.0
     HFA = 65.0
-    DIVISOR = 25.0
+    DIVISOR = 22.0
     CARRYOVER = 2.0 / 3.0
     POOL_THRESHOLD = 4
     POOLED = "__FCS__"

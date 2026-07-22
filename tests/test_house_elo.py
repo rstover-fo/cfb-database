@@ -99,7 +99,7 @@ class TestEngineSingleGame:
         elo_diff_home = 65.0  # 1500 - 1500 + HFA(65), non-neutral
         exp_home = expected_score(elo_diff_home)
         mult = math.log(8) * (2.2 / (0.001 * elo_diff_home + 2.2))
-        delta = 20 * mult * (1 - exp_home)
+        delta = EloEngine.K * mult * (1 - exp_home)
 
         assert row["home_postgame_elo"] == pytest.approx(1500 + delta, abs=1e-6)
         assert row["away_postgame_elo"] == pytest.approx(1500 - delta, abs=1e-6)

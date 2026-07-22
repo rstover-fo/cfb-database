@@ -32,15 +32,15 @@ from scripts.compute_predictions import (
 
 class TestEloMargin:
     def test_equal_ratings_non_neutral(self):
-        # (1500 - 1500) / 25 + 65 / 25 = 2.6
-        assert elo_margin(1500, 1500, neutral=False) == pytest.approx(2.6)
+        # (1500 - 1500 + 65) / DIVISOR(22)
+        assert elo_margin(1500, 1500, neutral=False) == pytest.approx(65 / 22)
 
     def test_equal_ratings_neutral(self):
         assert elo_margin(1500, 1500, neutral=True) == pytest.approx(0.0)
 
     def test_home_favorite_scales_with_diff(self):
-        # (1600 - 1500 + 65) / 25 = 6.6
-        assert elo_margin(1600, 1500, neutral=False) == pytest.approx(6.6)
+        # (1600 - 1500 + 65) / DIVISOR(22)
+        assert elo_margin(1600, 1500, neutral=False) == pytest.approx(165 / 22)
 
 
 class TestEpaMargin:

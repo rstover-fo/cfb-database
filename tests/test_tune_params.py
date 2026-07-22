@@ -113,10 +113,10 @@ class TestGridConstruction:
         assert BASELINE_LAMBDA in lambda_grid(quick=False)
         assert BASELINE_WEIGHT in weight_grid(quick=False)
         # And they match the live production defaults, not hardcoded copies.
-        assert BASELINE_K == EloEngine.K == 20.0
-        assert BASELINE_DIVISOR == EloEngine.DIVISOR == 25.0
+        assert BASELINE_K == EloEngine.K == 28.0
+        assert BASELINE_DIVISOR == EloEngine.DIVISOR == 22.0
         assert BASELINE_HFA == EloEngine.HFA == 65.0
-        assert BASELINE_LAMBDA == LAMBDA == 200.0
+        assert BASELINE_LAMBDA == LAMBDA == 100.0
         assert BASELINE_WEIGHT == BLEND_ELO == 0.6
 
 

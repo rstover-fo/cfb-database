@@ -1,0 +1,6 @@
+{
+  "action": "apply",
+  "files": [
+    "src/schemas/api/038_coach_records.sql"
+  ]
+}

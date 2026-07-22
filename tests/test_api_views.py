@@ -476,6 +476,27 @@ GAME_RECAPS_COLUMNS = {
     "generated_at",
 }
 
+COACH_RECORDS_COLUMNS = {
+    "coach_name",
+    "first_name",
+    "last_name",
+    "team",
+    "first_season",
+    "last_season",
+    "seasons_count",
+    "games",
+    "wins",
+    "losses",
+    "ties",
+    "win_pct",
+    "ats_games",
+    "ats_wins",
+    "ats_losses",
+    "ats_pushes",
+    "ats_win_pct",
+    "seasons_with_ats_data",
+}
+
 # ---------------------------------------------------------------------------
 # Test: views exist and return rows
 # ---------------------------------------------------------------------------
@@ -513,6 +534,9 @@ class TestViewsExistAndReturnRows:
             # Tier 3 analytics: feature vectors and adjusted EPA coefficients
             ("api.team_week_features", 15000),
             ("api.adjusted_epa_week", 50000),
+            # Coach x team career grain -- coaches x schools over the loaded
+            # coaching era (ref.coaches__seasons), conservative floor.
+            ("api.coach_records", 200),
         ],
         ids=[
             "team_detail",
@@ -531,6 +555,7 @@ class TestViewsExistAndReturnRows:
             "game_predictions",
             "team_week_features",
             "adjusted_epa_week",
+            "coach_records",
         ],
     )
     def test_view_returns_rows(self, db_conn, view_name, min_rows):
@@ -572,6 +597,7 @@ class TestViewColumns:
             ("api.team_week_features", TEAM_WEEK_FEATURES_COLUMNS),
             ("api.live_scoreboard", LIVE_SCOREBOARD_COLUMNS),
             ("api.adjusted_epa_week", ADJUSTED_EPA_WEEK_COLUMNS),
+            ("api.coach_records", COACH_RECORDS_COLUMNS),
         ],
         ids=[
             "team_detail",
@@ -594,6 +620,7 @@ class TestViewColumns:
             "team_week_features",
             "live_scoreboard",
             "adjusted_epa_week",
+            "coach_records",
         ],
     )
     def test_columns_present(self, db_conn, view_name, expected_columns):
@@ -1179,3 +1206,56 @@ class TestPollRankings:
         assert postseason == 25, (
             f"AP Top 25 postseason (final) poll for 2024 has {postseason} rows, expected 25"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test: coach_records filters and data quality
+# ---------------------------------------------------------------------------
+
+
+class TestCoachRecords:
+    """api.coach_records -- coach x team career record, straight-up and ATS."""
+
+    def test_saban_alabama_exists(self, db_conn):
+        """A well-known durable coach's career record at his school should exist."""
+        rows, columns = _fetch_all(
+            db_conn,
+            """
+            SELECT wins
+            FROM api.coach_records
+            WHERE coach_name ILIKE %s AND team = %s
+            """,
+            ("%Saban%", "Alabama"),
+        )
+        assert len(rows) == 1, f"Expected 1 Saban/Alabama row, got {len(rows)}"
+        row = dict(zip(columns, rows[0]))
+        assert row["wins"] > 100, f"Saban at Alabama should have 100+ wins, got {row['wins']}"
+
+    def test_win_pct_range(self, db_conn):
+        """Straight-up win_pct should be between 0 and 1 where populated."""
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT win_pct
+            FROM api.coach_records
+            WHERE win_pct IS NOT NULL
+            LIMIT 5000
+            """,
+        )
+        for (win_pct,) in rows:
+            assert 0 <= win_pct <= 1, f"win_pct {win_pct} out of [0, 1] range"
+
+    def test_ats_win_pct_null_or_in_range(self, db_conn):
+        """ats_win_pct should be NULL (no ATS coverage) or between 0 and 1."""
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT ats_win_pct
+            FROM api.coach_records
+            LIMIT 5000
+            """,
+        )
+        for (ats_win_pct,) in rows:
+            assert ats_win_pct is None or 0 <= ats_win_pct <= 1, (
+                f"ats_win_pct {ats_win_pct} is neither NULL nor in [0, 1] range"
+            )

@@ -71,3 +71,7 @@ LEFT JOIN teams_deduped t
     ON t.school = tss.team;
 
 COMMENT ON VIEW api.leaderboard_teams IS 'Team leaderboard with records, ratings, EPA, and computed rankings. Rank columns (wins_rank, ppg_rank, defense_ppg_rank, epa_rank) are computed within classification (PARTITION BY season, classification) -- FBS teams rank among ~136 FBS peers, not all classifications combined. All rows returned regardless of classification; filter client-side.';
+
+-- Re-grant on every apply: this file DROPs the view first, which discards
+-- existing grants (no ALTER DEFAULT PRIVILEGES in this database).
+GRANT SELECT ON api.leaderboard_teams TO anon, authenticated;

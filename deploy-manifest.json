@@ -1,0 +1,7 @@
+{
+  "action": "apply",
+  "files": [
+    "src/schemas/public/002_marts_views.sql",
+    "src/schemas/api/005_leaderboard_teams.sql"
+  ]
+}

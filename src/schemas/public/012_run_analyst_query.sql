@@ -56,7 +56,10 @@
 --     alias columns when joining.
 --
 -- Apply via: python scripts/run_migrations.py --file src/schemas/public/012_run_analyst_query.sql
--- (deploy manifest "apply"). Idempotent.
+-- (deploy manifest "apply"). Idempotent. DDL-ONLY by design: the behavioral
+-- test matrix lives in validation_run_analyst_query.sql, applied as a
+-- SEPARATE file (own transaction) so a validation surprise reports instead
+-- of rolling back the function.
 
 -- 1. Restricted role + memberships -------------------------------------------
 DO $$
@@ -118,79 +121,5 @@ REVOKE ALL ON FUNCTION public.run_analyst_query(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.run_analyst_query(text)
     TO anon, authenticated, service_role, analyst_ro;
 
--- PostgREST schema reload. Issued BEFORE the self-validation: the first
--- successful RPC call below flips this transaction read-only for its
--- remainder, and NOTIFY is illegal in a read-only transaction.
+-- PostgREST schema reload.
 NOTIFY pgrst, 'reload schema';
-
--- 3. Self-validation ---------------------------------------------------------
-DO $$
-DECLARE
-    r jsonb;
-BEGIN
-    -- Textual rejections fire before the role drop.
-    BEGIN
-        PERFORM public.run_analyst_query('DELETE FROM api.team_elo');
-        RAISE EXCEPTION 'DELETE was not rejected';
-    EXCEPTION WHEN raise_exception THEN
-        IF SQLERRM NOT LIKE '%only SELECT/WITH%' THEN RAISE; END IF;
-    END;
-
-    BEGIN
-        PERFORM public.run_analyst_query('SELECT 1; SELECT 2');
-        RAISE EXCEPTION 'multi-statement was not rejected';
-    EXCEPTION WHEN raise_exception THEN
-        IF SQLERRM NOT LIKE '%multiple statements%' THEN RAISE; END IF;
-    END;
-
-    -- The drop happens: inside the query, current_user must be analyst_ro
-    -- (this migration role reaches it transitively via the API roles).
-    r := public.run_analyst_query('SELECT current_user AS u');
-    IF r <> '[{"u": "analyst_ro"}]'::jsonb THEN
-        RAISE EXCEPTION 'query did not run as analyst_ro: %', r;
-    END IF;
-
-    -- api-view read works under the role; row cap and inner LIMIT parse.
-    r := public.run_analyst_query('SELECT team FROM api.team_elo;');
-    IF jsonb_array_length(r) < 1 OR jsonb_array_length(r) > 200 THEN
-        RAISE EXCEPTION 'api.team_elo read returned % rows', jsonb_array_length(r);
-    END IF;
-    r := public.run_analyst_query('SELECT team FROM api.team_elo LIMIT 3');
-    IF jsonb_array_length(r) <> 3 THEN
-        RAISE EXCEPTION 'inner LIMIT handling returned % rows', jsonb_array_length(r);
-    END IF;
-
-    -- Outside the api schema: blocked by the role, not by text checks.
-    BEGIN
-        PERFORM public.run_analyst_query('SELECT id FROM core.games LIMIT 1');
-        RAISE EXCEPTION 'core.games read was not blocked';
-    EXCEPTION WHEN insufficient_privilege THEN
-        NULL;
-    END;
-
-    -- Data-modifying CTE: passes the prefix check, dies at the
-    -- permission/read-only layer.
-    BEGIN
-        PERFORM public.run_analyst_query(
-            'WITH w AS (DELETE FROM api.team_elo RETURNING *) SELECT * FROM w');
-        RAISE EXCEPTION 'write CTE was not blocked';
-    EXCEPTION WHEN insufficient_privilege OR read_only_sql_transaction THEN
-        NULL;
-    END;
-
-    -- Grants, catalog-side.
-    IF NOT pg_has_role('anon', 'analyst_ro', 'MEMBER')
-       OR NOT pg_has_role('authenticated', 'analyst_ro', 'MEMBER') THEN
-        RAISE EXCEPTION 'PostgREST roles are not analyst_ro members';
-    END IF;
-    IF NOT has_schema_privilege('analyst_ro', 'api', 'USAGE')
-       OR NOT has_table_privilege('analyst_ro', 'api.team_elo', 'SELECT') THEN
-        RAISE EXCEPTION 'analyst_ro is missing api read grants';
-    END IF;
-    IF has_table_privilege('analyst_ro', 'core.games', 'SELECT')
-       OR has_schema_privilege('analyst_ro', 'marts', 'USAGE') THEN
-        RAISE EXCEPTION 'analyst_ro can reach beyond the api schema';
-    END IF;
-
-    RAISE NOTICE 'run_analyst_query self-validation passed';
-END $$;

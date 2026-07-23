@@ -19,9 +19,13 @@
 --     it too (proven below by asserting current_user inside the query).
 --   * SET LOCAL transaction_read_only = on closes the "write via a
 --     SECURITY DEFINER helper reachable from SELECT" path (e.g.
---     public.refresh_all_marts). The SET clause below gives the call a GUC
---     nest level, so role + read-only revert at function exit and never
---     leak into the caller's transaction.
+--     public.refresh_all_marts). NOTE (proven live): SET LOCAL role and
+--     read-only do NOT revert at function exit -- they persist to the END
+--     of the calling transaction. Under PostgREST every request is its own
+--     transaction, so callers never observe it; a client batching several
+--     RPC calls in one transaction simply STAYS dropped to analyst_ro
+--     (conservative direction), which is why analyst_ro itself needs
+--     EXECUTE on this function -- see the grant below.
 --   * textual checks (SELECT/WITH prefix, single statement) exist only to
 --     fail fast with clear messages. A data-modifying CTE slips past the
 --     prefix check by design and dies at the permission layer instead.
@@ -108,7 +112,16 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION public.run_analyst_query(text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.run_analyst_query(text) TO anon, authenticated, service_role;
+-- analyst_ro needs EXECUTE for re-entry: after one call, the transaction's
+-- role IS analyst_ro (see stickiness note above), and the next call in the
+-- same transaction would otherwise be denied.
+GRANT EXECUTE ON FUNCTION public.run_analyst_query(text)
+    TO anon, authenticated, service_role, analyst_ro;
+
+-- PostgREST schema reload. Issued BEFORE the self-validation: the first
+-- successful RPC call below flips this transaction read-only for its
+-- remainder, and NOTIFY is illegal in a read-only transaction.
+NOTIFY pgrst, 'reload schema';
 
 -- 3. Self-validation ---------------------------------------------------------
 DO $$
@@ -181,5 +194,3 @@ BEGIN
 
     RAISE NOTICE 'run_analyst_query self-validation passed';
 END $$;
-
-NOTIFY pgrst, 'reload schema';

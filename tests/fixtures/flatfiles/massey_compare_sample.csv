@@ -1,0 +1,28 @@
+College Football Ranking Comparison
+Thru games of Monday, January 9, 2023
+compiled by: Kenneth Massey (http://www.masseyratings.com) Sat May  6 05:05:42 2023
+
+
+AND, Anderson                 , http://www.andersonsports.com/football/ACF_frnk.html,  985,  917,  224,  327
+ AP, Associated Press         , http://www.ncaa.com/rankings/football/fbs,  887,  887,  255,  255
+ARG, ARGH                     , http://www.arghratings.com/,  989,  963,  227,  286
+BAS, Bassett                  , http://BassettFootball.net/,  967,  919,  246,  275
+BBT, Baker Bradley-Terry      , http://dbaker.50webs.com/,  974,  945,  233,  327
+BEG, Begley                   , https://begleyrankings.blogspot.com/,  986,  931,  227,  314
+BIH, Bihl                     , http://jeffbihl.com/win.html,  985,  945,  220,  345
+BIL, Billingsley              , http://www.cfrc.com/,  963,  922,  218,  229
+BMC, BM Craig                 , http://tinyurl.com/bmcrankings,  964,  866,  245,  296
+BRN, Born                     , http://www.bornpowerindex.com,  954,  827,  246,  321
+
+Team, Conf, WL, Rank, Mean, Trimmed, Median, StDev, AND, AP, ARG, BAS, BBT, BEG, BIH, BIL, BMC, BRN,
+
+Georgia          ,SEC,  15-0,   1,   1.00,   1.00,   1.0,   0.00,   1,   1,   1,   1,   1,   1,   1,   1,   1,   1,
+Michigan         ,B10,  13-1,   2,   3.03,   3.01,   3.0,   1.16,   2,   3,   2,   4,   2,   3,   2,   2,   4,   2,
+Ohio St          ,B10,  11-2,   3,   3.96,   3.93,   4.0,   1.40,   6,   4,   4,   2,   3,   2,   5,   4,   3,   5,
+Alabama          ,SEC,  11-2,   4,   4.24,   4.19,   4.0,   1.74,   5,   5,   3,   3,   4,   7,   6,   6,   5,   9,
+Tennessee        ,SEC,  11-2,   5,   4.52,   4.48,   5.0,   1.50,   3,   6,   5,   5,   5,   6,   4,   5,   2,   3,
+Louisville       ,ACC,   8-5,  22,  26.39,  25.77,  25.0,   6.12,  27,    ,  23,  22,  22,  18,  27,  31,  24,  26,
+Oklahoma St      ,B12,   7-6,  51,  50.65,  50.28,  53.0,   9.64,  56,    ,  53,  37,  54,  43,  46,  53,  54,  53,
+Utah St          ,MWC,   6-7, 101,  98.36,  98.52, 100.0,  10.17,  92,    , 110, 105, 111, 114,  85,  81, 106, 106,
+Akron            ,MAC,  2-10, 127, 125.11, 125.63, 126.0,   3.49, 129,    , 125, 126, 121, 124, 128, 121, 119, 118,
+Massachusetts    ,FBSI,  1-11, 131, 130.29, 130.83, 131.0,   0.56, 131,    , 131, 131, 131, 131, 131, 131, 130, 130,

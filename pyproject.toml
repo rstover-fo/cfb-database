@@ -20,6 +20,10 @@ compute = [
 recaps = [
     "anthropic>=0.40.0",
 ]
+flatfiles = [
+    "pyarrow>=15",
+    "openpyxl>=3.1",
+]
 
 [project.scripts]
 cfb-pipeline = "src.pipelines.run:main"

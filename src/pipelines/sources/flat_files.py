@@ -28,9 +28,11 @@ are dropped from the load but counted; if the unmapped fraction exceeds
 new name variants surface in CI instead of silently dropping rows.
 """
 
+import importlib
 from dataclasses import dataclass
 from datetime import date
 
+import dlt
 from dlt.sources import DltSource
 
 # Reserved row key a parser may set to direct a row to an alternate table.
@@ -247,7 +249,81 @@ def build_flat_file_source(
         resolver: XwalkResolver bound to ``spec.name`` (required when
             ``spec.uses_xwalk``).
     """
-    raise NotImplementedError("T3 implements build_flat_file_source")
+    parser = resolve_parser(spec.parser)
+    rows = list(parser(raw, ctx))
+
+    if spec.uses_xwalk:
+        if resolver is None:
+            raise ValueError(f"{spec.name}: uses_xwalk=True requires a resolver")
+
+        total_rows = len(rows)
+        unmapped_rows = 0
+        kept_rows = []
+        for row in rows:
+            row_unmapped = False
+            resolved_fields: dict[str, tuple[object, str]] = {}
+            for field in spec.xwalk_fields:
+                original = row[field]
+                resolved = resolver.resolve(original)
+                if resolved is None:
+                    row_unmapped = True
+                else:
+                    resolved_fields[field] = (original, resolved)
+
+            if row_unmapped:
+                unmapped_rows += 1
+                continue
+
+            for field, (original, resolved) in resolved_fields.items():
+                if spec.keep_source_names:
+                    row[f"{field}_source"] = original
+                row[field] = resolved
+            kept_rows.append(row)
+
+        rows = kept_rows
+
+        if unmapped_gate(total_rows, unmapped_rows, spec.unmapped_fail_rate):
+            raise UnmappedNamesError(spec.name, resolver.misses, total_rows)
+
+    main_rows: list[dict] = []
+    child_rows: list[dict] = []
+    for row in rows:
+        table = row.pop(TABLE_KEY, None)
+        if table is None or table == spec.table:
+            main_rows.append(row)
+        elif table == spec.child_table:
+            child_rows.append(row)
+        else:
+            raise ParserStructureError(
+                f"{spec.name}: row names unknown table {table!r} "
+                f"(expected {spec.table!r} or {spec.child_table!r})"
+            )
+
+    resources = []
+    if main_rows:
+        resources.append(
+            dlt.resource(
+                main_rows,
+                name=spec.table,
+                write_disposition=spec.write_disposition,
+                primary_key=list(spec.primary_key),
+            )
+        )
+    if child_rows:
+        resources.append(
+            dlt.resource(
+                child_rows,
+                name=spec.child_table,
+                write_disposition=spec.write_disposition,
+                primary_key=list(spec.child_primary_key),
+            )
+        )
+
+    def _resources() -> list:
+        return resources
+
+    source_factory = dlt.source(_resources, name=f"flatfile_{spec.name}")
+    return source_factory()
 
 
 def resolve_parser(parser_ref: str):
@@ -255,7 +331,19 @@ def resolve_parser(parser_ref: str):
 
     Implemented in T3.
     """
-    raise NotImplementedError("T3 implements resolve_parser")
+    if "." not in parser_ref:
+        raise ValueError(f"Invalid parser ref (expected '<module>.<function>'): {parser_ref!r}")
+
+    module_name, func_name = parser_ref.rsplit(".", 1)
+    try:
+        module = importlib.import_module(f"src.pipelines.sources.flatfile_parsers.{module_name}")
+    except ImportError as e:
+        raise ValueError(f"Invalid parser ref (module not found): {parser_ref!r}") from e
+
+    try:
+        return getattr(module, func_name)
+    except AttributeError as e:
+        raise ValueError(f"Invalid parser ref (function not found): {parser_ref!r}") from e
 
 
 __all__ = [

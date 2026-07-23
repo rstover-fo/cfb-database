@@ -59,6 +59,8 @@ The database uses multiple Postgres schemas organized by data domain:
 | `api` | API view layer (35) | Contract surface for cfb-app/cfb-scout |
 | `predictions` | Prediction snapshots | game_predictions (append-only daily) |
 | `public` | Convenience views/RPCs (12) | Downstream consumer interface |
+| `meta` | Flat-file load ledger | flat_file_loads |
+| `raw` | Raw archived source files | availability_reports |
 
 ### Marts System
 
@@ -75,9 +77,12 @@ current season (`scripts/load_season.py --weekly`, mart refresh included), refit
 Elo/adjusted EPA (including the as-of weekly EPA build) and the fitted_v1 model's upcoming
 scores, then runs post-load checks (`scripts/verify_load.py`). Failures open/update a
 rolling GitHub issue. Requires repo secrets `CFBD_API_KEY` and `SUPABASE_DB_URL` (session
-pooler). `.github/workflows/live-scoreboard.yml` separately polls CFBD's `/scoreboard` every
-5 minutes on Saturdays (games-today guard) to feed `live.scoreboard_snapshots` and the house
-live win-probability model.
+pooler). `.github/workflows/flat-files.yml` runs daily at 11:00 UTC to load flat-file
+sources (massey ratings, nflverse draft/combine, SBR lines, availability reports) using a
+hash-skip ledger in `meta.flat_file_loads` to avoid re-processing unchanged files. Requires
+repo secret `SUPABASE_DB_URL` only. `.github/workflows/live-scoreboard.yml` separately polls
+CFBD's `/scoreboard` every 5 minutes on Saturdays (games-today guard) to feed
+`live.scoreboard_snapshots` and the house live win-probability model.
 
 ### dlt Table Conventions
 
@@ -103,7 +108,9 @@ cfb-database/
 │   │   ├── config/               # RESTAPIConfig definitions
 │   │   │   ├── endpoints.py
 │   │   │   └── years.py
-│   │   ├── sources/              # 14 endpoint-specific source modules
+│   │   ├── sources/              # 14 endpoint-specific source modules + flat-file sources
+│   │   │   ├── flat_files.py      # Flat-file source registry and orchestration
+│   │   │   └── flatfile_parsers/  # Parsers for CSV, parquet, PDF flat-file formats
 │   │   ├── utils/
 │   │   │   ├── api_client.py     # Custom CFBD HTTP client (httpx)
 │   │   │   └── rate_limiter.py   # Monthly budget tracking
@@ -130,7 +137,9 @@ cfb-database/
 │   ├── tune_params.py            # Hyperparameter search for fitted_v1
 │   ├── score_fitted.py           # Score games with fitted_v1 (--upcoming default)
 │   ├── calibrate_live_wp.py      # Fit live.wp_params sigma against historical win prob
-│   └── poll_scoreboard.py        # Poll CFBD /scoreboard, write live.scoreboard_snapshots
+│   ├── poll_scoreboard.py        # Poll CFBD /scoreboard, write live.scoreboard_snapshots
+│   ├── load_flat_files.py        # Load flat-file sources (massey, nflverse, SBR, availability)
+│   └── seed_team_xwalk.py        # Generate team name crosswalk reference data
 ├── tests/                        # Test files + test_sources/
 │   └── conftest.py               # DB connection + mock fixtures
 ├── .dlt/
@@ -241,6 +250,10 @@ python scripts/refresh_marts.py     # Refresh all materialized views
 # Migrations
 python scripts/run_migrations.py    # Apply pending migrations
 python scripts/run_migrations.py --file <path>  # Apply one-off public/api/functions SQL
+
+# Flat-file sources
+python scripts/load_flat_files.py --due              # Load all due sources (cadence-based)
+python scripts/load_flat_files.py --source massey    # Load specific source
 
 # Testing & linting
 .venv/bin/ruff check .              # Lint

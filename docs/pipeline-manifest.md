@@ -324,3 +324,15 @@ For Sprint 4, investigate:
 
 **Resolution (2026-07-19):**
 The table was successfully loaded via `game_stats_source`'s week-by-week loading path. The batching strategy (~35K rows per merge batch) effectively avoids Supabase statement timeouts. `core.game_player_stats` now holds ~6.4M rows across its athlete-level child tables and is actively consumed by `api.game_player_leaders` (src/schemas/api/010) and `api.game_box_score` (src/schemas/api/011). Status promoted to WORKING.
+
+---
+
+## Non-CFBD Sources (Flat-File)
+
+| Source | Target Tables | Source Format | Cadence | Status |
+|---|---|---|---|---|
+| massey | ratings.massey_composite, ratings.massey_system_ratings | CSV (massey.org) | Weekly | Built (awaiting first load) |
+| nflverse_combine | draft.combine | Parquet (nflverse) | Annual | Built (awaiting first load) |
+| nflverse_draft | draft.nflverse_draft_picks | Parquet (nflverse) | Annual | Built (awaiting first load) |
+| sbr | betting.sbr_historical | Excel (manual backfill) | Manual | Built (awaiting first load) |
+| availability | raw.availability_reports | PDF archive (conf reports) | Weekly | Built (awaiting first load) |

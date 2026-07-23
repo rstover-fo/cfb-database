@@ -20,6 +20,24 @@ DO $$
 DECLARE
     r jsonb;
 BEGIN
+    -- Catalog assertions FIRST: after the first RPC call the transaction
+    -- stays dropped to analyst_ro (role stickiness), which cannot even
+    -- resolve names like core.games for has_table_privilege (no USAGE on
+    -- the schema) -- proven live; these checks need the migration role.
+    -- Grants, catalog-side.
+    IF NOT pg_has_role('anon', 'analyst_ro', 'MEMBER')
+       OR NOT pg_has_role('authenticated', 'analyst_ro', 'MEMBER') THEN
+        RAISE EXCEPTION 'PostgREST roles are not analyst_ro members';
+    END IF;
+    IF NOT has_schema_privilege('analyst_ro', 'api', 'USAGE')
+       OR NOT has_table_privilege('analyst_ro', 'api.team_elo', 'SELECT') THEN
+        RAISE EXCEPTION 'analyst_ro is missing api read grants';
+    END IF;
+    IF has_table_privilege('analyst_ro', 'core.games', 'SELECT')
+       OR has_schema_privilege('analyst_ro', 'marts', 'USAGE') THEN
+        RAISE EXCEPTION 'analyst_ro can reach beyond the api schema';
+    END IF;
+
     -- Textual rejections (fire before the role drop).
     BEGIN
         PERFORM public.run_analyst_query('DELETE FROM api.team_elo');
@@ -77,20 +95,6 @@ BEGIN
               OR read_only_sql_transaction THEN
         NULL;
     END;
-
-    -- Grants, catalog-side.
-    IF NOT pg_has_role('anon', 'analyst_ro', 'MEMBER')
-       OR NOT pg_has_role('authenticated', 'analyst_ro', 'MEMBER') THEN
-        RAISE EXCEPTION 'PostgREST roles are not analyst_ro members';
-    END IF;
-    IF NOT has_schema_privilege('analyst_ro', 'api', 'USAGE')
-       OR NOT has_table_privilege('analyst_ro', 'api.team_elo', 'SELECT') THEN
-        RAISE EXCEPTION 'analyst_ro is missing api read grants';
-    END IF;
-    IF has_table_privilege('analyst_ro', 'core.games', 'SELECT')
-       OR has_schema_privilege('analyst_ro', 'marts', 'USAGE') THEN
-        RAISE EXCEPTION 'analyst_ro can reach beyond the api schema';
-    END IF;
 
     RAISE NOTICE 'run_analyst_query validation matrix passed';
 END $$;

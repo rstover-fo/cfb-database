@@ -9,14 +9,17 @@
 --     src/schemas/api/*), so analyst_ro needs no grants on marts/core for
 --     them to work, and direct reads of any other schema fail with
 --     insufficient_privilege. No DML grants anywhere.
---   * the function is SECURITY DEFINER but drops to analyst_ro via
---     SET LOCAL ROLE before EXECUTEing the caller's SQL, and marks the
---     transaction read-only so even SECURITY DEFINER functions reachable
---     via SELECT (e.g. public.refresh_all_marts) cannot write through it.
---     Because the function carries a SET clause + SECURITY DEFINER,
---     Postgres establishes a GUC nest level for the call: the role and
---     read-only settings are rolled back automatically at function exit
---     and never leak into the caller's transaction.
+--   * the function is SECURITY DEFINER and OWNED BY analyst_ro, so the
+--     caller's SQL executes with analyst_ro's privileges directly. (The
+--     handoff draft used SET LOCAL ROLE inside the function instead;
+--     Postgres forbids that -- "cannot set parameter \"role\" within
+--     security-definer function", caught by this file's self-validation
+--     on first deploy. Owner-as-boundary needs no role switch at all.)
+--     The transaction is marked read-only so even SECURITY DEFINER
+--     functions reachable via SELECT (e.g. public.refresh_all_marts)
+--     cannot write through it; the GUC is rolled back at function exit
+--     (SET clause + SECURITY DEFINER establish a GUC nest level) and
+--     never leaks into the caller's transaction.
 --   * textual checks (SELECT/WITH prefix, single statement) exist only to
 --     fail fast with clear messages. A data-modifying CTE slips past the
 --     prefix check by design and dies at the permission layer instead.
@@ -78,7 +81,6 @@ BEGIN
         RAISE EXCEPTION 'multiple statements are not allowed';
     END IF;
 
-    SET LOCAL ROLE analyst_ro;
     SET LOCAL transaction_read_only = on;
 
     -- Hard row cap on an outer wrapper, so an inner LIMIT/OFFSET still
@@ -93,7 +95,17 @@ BEGIN
 END;
 $$;
 
--- 3. Expose via PostgREST ----------------------------------------------------
+-- 3. Ownership (the security boundary) + PostgREST exposure ------------------
+-- SECURITY DEFINER runs with the OWNER's privileges: analyst_ro. Supabase's
+-- postgres role is not a true superuser, so assigning ownership requires
+-- membership in the target role and the target role needs CREATE on the
+-- schema for the duration of the ALTER (revoked immediately after --
+-- ownership survives the revoke).
+GRANT analyst_ro TO CURRENT_USER;
+GRANT CREATE ON SCHEMA public TO analyst_ro;
+ALTER FUNCTION public.run_analyst_query(text) OWNER TO analyst_ro;
+REVOKE CREATE ON SCHEMA public FROM analyst_ro;
+
 REVOKE ALL ON FUNCTION public.run_analyst_query(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.run_analyst_query(text) TO anon, authenticated, service_role;
 

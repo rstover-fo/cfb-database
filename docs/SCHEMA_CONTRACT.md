@@ -486,6 +486,7 @@ Server-side functions callable via `supabase.rpc()`.
 | `is_garbage_time` | `public` | `(period, score_diff)` | Returns true if play is in garbage time |
 | `get_conference_head_to_head` | `public` | `(p_conf1, p_conf2, p_season_start?, p_season_end?)` | Conference vs conference head-to-head records by season. Flips results to match caller's conference order. |
 | `get_data_freshness` | `public` | `()` | Returns data freshness status for all tracked tables. Useful for cfb-app "data last updated" indicators. |
+| `run_analyst_query` | `public` | `(query_sql text)` | Guarded free-form read-only SQL for the cfb-app MCP `run_sql` tool (added 2026-07-22). Single SELECT/WITH statement only; executes as the `analyst_ro` role (SELECT on `api` schema only, read-only transaction); rows hard-capped at 200; returns a `jsonb` array. Timeout is enforced by the calling role's Supabase statement_timeout, not in-function. Defined in `src/schemas/public/012_run_analyst_query.sql`. |
 
 ### Reference Tables (Direct Access Allowed)
 

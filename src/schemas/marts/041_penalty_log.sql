@@ -70,7 +70,7 @@ team_idents AS (
         abbreviation,
         mascot
     FROM ref.teams
-    ORDER BY school, id
+    ORDER BY school, classification NULLS LAST
 ),
 penalty_plays AS (
     SELECT

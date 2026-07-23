@@ -300,6 +300,18 @@ Last updated: 2026-07-22
   latest season present in `public.team_season_trajectory`. Callers omitting the argument
   will start receiving 2026 rows as they materialize; explicit arguments behave unchanged.
 
+- **2026-07-23 — `get_red_zone_splits` correctness fix (behavioral change, no signature change).**
+  The trips CTE filtered `core.drives` on the absolute `start_yardline` column (`>= 80`), a
+  direction-dependent junk predicate: trip counts matched no real red-zone definition and
+  defensive red-zone TDs allowed collapsed to ~0. A red-zone trip is now play-derived (any
+  snap at `yards_to_goal <= 20`), with outcomes taken from the drive row joined on
+  `(game_id, drive_number)` and casing-tolerant `drive_result` matching; the EPA sub-CTE's
+  identical absolute-yardline bug is fixed the same way. All consumers (cfb-app team pages,
+  MCP `situational_splits`, Discord bot) receive corrected numbers automatically — expect
+  large jumps (e.g. Oklahoma 2025 offense 12 → 38 trips). The four sibling split RPCs were
+  audited and do not share the defect. Guarded by `tests/test_split_rpcs.py` and the
+  re-runnable `src/schemas/public/validation_situational_splits.sql`.
+
 - **2026-07-19 — Tier 1 analytics unlock.**
   - **Garbage-time exclusion (behavioral change, no signature change):** the five split RPCs
     (`get_home_away_splits`, `get_conference_splits`, `get_red_zone_splits`,

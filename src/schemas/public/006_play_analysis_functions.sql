@@ -164,23 +164,47 @@ SET search_path = ''
 AS $function$
 BEGIN
     RETURN QUERY
-    WITH red_zone_drives AS (
-        -- Garbage-time exclusion is intentionally NOT applied here: core.drives
-        -- has no play-level period/score_diff joined in (only its own
-        -- start_period/start_offense_score/start_defense_score, which do not
-        -- match is_garbage_time's per-play grain), so drive-level trips/scores
-        -- stay unfiltered per the Phase 1 garbage-time centralization plan.
+    -- Fixed 2026-07-23: the previous version filtered core.drives on
+    -- start_yardline >= 80 -- the ABSOLUTE yardline column (direction-
+    -- dependent, the only start_yardline reference in the repo) and a
+    -- drive-START condition, when a red-zone trip is a drive that REACHES
+    -- yards_to_goal <= 20. It undercounted both sides and reported ~0
+    -- defensive TDs allowed. Trips are now play-derived (any snap at
+    -- yards_to_goal <= 20), with outcomes taken from the drive row joined
+    -- on (game_id, drive_number) -- verified against api.game_plays ground
+    -- truth (Oklahoma 2025: offense 38 trips/26 TD, defense 32/13). The
+    -- EPA sub-CTE had the same absolute-yardline bug (yardline >= 80) and
+    -- now uses yards_to_goal <= 20. drive_result matching mirrors
+    -- marts/006_scoring_opportunities.sql's casing-tolerant sets.
+    WITH red_zone_trips AS (
+        -- Garbage-time exclusion is intentionally NOT applied here:
+        -- trips/scores are drive-level facts and stay unfiltered per the
+        -- Phase 1 garbage-time centralization plan.
+        SELECT DISTINCT
+            CASE WHEN p.offense = p_team THEN 'offense' ELSE 'defense' END AS side,
+            p.game_id,
+            p.drive_number
+        FROM core.plays p
+        JOIN core.games g ON p.game_id = g.id
+        -- p.season predicate enables partition pruning on core.plays
+        -- (season-partitioned); g.season alone cannot prune.
+        WHERE p.season = p_season
+          AND g.season = p_season
+          AND (p.offense = p_team OR p.defense = p_team)
+          AND p.yards_to_goal <= 20
+          AND p.drive_number IS NOT NULL
+    ),
+    red_zone_drives AS (
         SELECT
-            CASE WHEN d.offense = p_team THEN 'offense' ELSE 'defense' END AS side,
-            d.id AS drive_id,
-            d.scoring,
-            d.drive_result,
-            d.start_yardline
-        FROM core.drives d
-        JOIN core.games g ON d.game_id = g.id
-        WHERE g.season = p_season
-          AND (d.offense = p_team OR d.defense = p_team)
-          AND d.start_yardline >= 80
+            t.side,
+            t.game_id,
+            t.drive_number,
+            d.drive_result
+        FROM red_zone_trips t
+        -- LEFT JOIN: a trip observed in plays still counts even if its
+        -- drive row is absent (it then contributes no outcome).
+        LEFT JOIN core.drives d
+          ON d.game_id = t.game_id AND d.drive_number = t.drive_number
     ),
     red_zone_plays AS (
         SELECT
@@ -188,21 +212,22 @@ BEGIN
             p.ppa
         FROM core.plays p
         JOIN core.games g ON p.game_id = g.id
-        WHERE g.season = p_season
+        WHERE p.season = p_season
+          AND g.season = p_season
           AND (p.offense = p_team OR p.defense = p_team)
-          AND p.yardline >= 80
+          AND p.yards_to_goal <= 20
           AND NOT public.is_garbage_time(p.period::integer, p.score_diff::integer)
     )
     SELECT
         rzd.side::TEXT,
-        COUNT(DISTINCT rzd.drive_id)::BIGINT AS trips,
-        COUNT(DISTINCT CASE WHEN rzd.drive_result = 'TD' THEN rzd.drive_id END)::BIGINT AS touchdowns,
-        COUNT(DISTINCT CASE WHEN rzd.drive_result = 'FG' THEN rzd.drive_id END)::BIGINT AS field_goals,
-        COUNT(DISTINCT CASE WHEN rzd.drive_result IN ('INT', 'FUMBLE', 'INT TD', 'FUMBLE RETURN TD') THEN rzd.drive_id END)::BIGINT AS turnovers,
-        ROUND(COUNT(DISTINCT CASE WHEN rzd.drive_result = 'TD' THEN rzd.drive_id END)::NUMERIC / NULLIF(COUNT(DISTINCT rzd.drive_id), 0), 3) AS td_rate,
-        ROUND(COUNT(DISTINCT CASE WHEN rzd.drive_result = 'FG' THEN rzd.drive_id END)::NUMERIC / NULLIF(COUNT(DISTINCT rzd.drive_id), 0), 3) AS fg_rate,
-        ROUND(COUNT(DISTINCT CASE WHEN rzd.drive_result IN ('TD', 'FG') THEN rzd.drive_id END)::NUMERIC / NULLIF(COUNT(DISTINCT rzd.drive_id), 0), 3) AS scoring_rate,
-        ROUND((COUNT(DISTINCT CASE WHEN rzd.drive_result = 'TD' THEN rzd.drive_id END) * 7 + COUNT(DISTINCT CASE WHEN rzd.drive_result = 'FG' THEN rzd.drive_id END) * 3)::NUMERIC / NULLIF(COUNT(DISTINCT rzd.drive_id), 0), 2) AS points_per_trip,
+        COUNT(*)::BIGINT AS trips,
+        COUNT(*) FILTER (WHERE rzd.drive_result IN ('TD', 'Touchdown'))::BIGINT AS touchdowns,
+        COUNT(*) FILTER (WHERE rzd.drive_result IN ('FG', 'Field Goal'))::BIGINT AS field_goals,
+        COUNT(*) FILTER (WHERE rzd.drive_result IN ('INT', 'FUMBLE', 'INT TD', 'FUMBLE RETURN TD', 'Interception', 'Fumble', 'Fumble Lost', 'Interception Return'))::BIGINT AS turnovers,
+        ROUND(COUNT(*) FILTER (WHERE rzd.drive_result IN ('TD', 'Touchdown'))::NUMERIC / NULLIF(COUNT(*), 0), 3) AS td_rate,
+        ROUND(COUNT(*) FILTER (WHERE rzd.drive_result IN ('FG', 'Field Goal'))::NUMERIC / NULLIF(COUNT(*), 0), 3) AS fg_rate,
+        ROUND(COUNT(*) FILTER (WHERE rzd.drive_result IN ('TD', 'FG', 'Touchdown', 'Field Goal'))::NUMERIC / NULLIF(COUNT(*), 0), 3) AS scoring_rate,
+        ROUND((COUNT(*) FILTER (WHERE rzd.drive_result IN ('TD', 'Touchdown')) * 7 + COUNT(*) FILTER (WHERE rzd.drive_result IN ('FG', 'Field Goal')) * 3)::NUMERIC / NULLIF(COUNT(*), 0), 2) AS points_per_trip,
         ROUND((SELECT AVG(rzp.ppa) FROM red_zone_plays rzp WHERE rzp.side = rzd.side)::NUMERIC, 3) AS epa_per_play
     FROM red_zone_drives rzd
     GROUP BY rzd.side;

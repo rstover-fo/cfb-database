@@ -96,26 +96,79 @@ def expand_abbrevs(name: str) -> str:
     expanded = re.sub(r" univ([^a-z])", r" university\1", expanded)
 
     # Handle parenthetical state qualifiers: miami oh/miami-ohio → miami (oh)
-    # Check for state abbreviations like " oh", " fl", " ca" at word boundaries
-    # and convert them to parenthetical form
-    state_abbrevs = [
-        "oh", "fl", "ca", "tx", "ga", "nc", "sc", "la", "pa", "ny", "ma", "az",
-        "nv", "co", "mi", "mn", "ut", "nm", "ok", "ia", "il", "mo",
-    ]
+    # State qualifier mappings: full name → 2-letter abbreviation
+    state_qualifiers = {
+        "alabama": "al",
+        "alaska": "ak",
+        "arizona": "az",
+        "arkansas": "ar",
+        "california": "ca",
+        "colorado": "co",
+        "connecticut": "ct",
+        "delaware": "de",
+        "florida": "fl",
+        "georgia": "ga",
+        "hawaii": "hi",
+        "idaho": "id",
+        "illinois": "il",
+        "indiana": "in",
+        "iowa": "ia",
+        "kansas": "ks",
+        "kentucky": "ky",
+        "louisiana": "la",
+        "maine": "me",
+        "maryland": "md",
+        "massachusetts": "ma",
+        "michigan": "mi",
+        "minnesota": "mn",
+        "mississippi": "ms",
+        "missouri": "mo",
+        "montana": "mt",
+        "nebraska": "ne",
+        "nevada": "nv",
+        "new hampshire": "nh",
+        "new jersey": "nj",
+        "new mexico": "nm",
+        "new york": "ny",
+        "north carolina": "nc",
+        "north dakota": "nd",
+        "ohio": "oh",
+        "oklahoma": "ok",
+        "oregon": "or",
+        "pennsylvania": "pa",
+        "rhode island": "ri",
+        "south carolina": "sc",
+        "south dakota": "sd",
+        "tennessee": "tn",
+        "texas": "tx",
+        "utah": "ut",
+        "vermont": "vt",
+        "virginia": "va",
+        "washington": "wa",
+        "west virginia": "wv",
+        "wisconsin": "wi",
+        "wyoming": "wy",
+    }
 
-    for state_abbr in state_abbrevs:
-        # Match patterns like " oh" or "-oh" followed by end of string
+    # Also check for 2-letter abbreviations
+    state_abbrev_map = {v: v for v in state_qualifiers.values()}
+
+    # Combine both forms for checking
+    all_forms = {**{k: v for k, v in state_qualifiers.items()}, **state_abbrev_map}
+
+    for form, abbrev in sorted(all_forms.items(), key=lambda x: -len(x[0])):
+        # Match patterns like " ohio" or "-ohio" followed by end of string
         # Convert to " (oh)"
         # Try space separator first
-        pattern_space = r" " + re.escape(state_abbr) + r"$"
+        pattern_space = r" " + re.escape(form) + r"$"
         if re.search(pattern_space, expanded):
-            expanded = re.sub(pattern_space, f" ({state_abbr})", expanded)
+            expanded = re.sub(pattern_space, f" ({abbrev})", expanded)
             continue
 
         # Try dash separator
-        pattern_dash = r"-" + re.escape(state_abbr) + r"$"
+        pattern_dash = r"-" + re.escape(form) + r"$"
         if re.search(pattern_dash, expanded):
-            expanded = re.sub(pattern_dash, f" ({state_abbr})", expanded)
+            expanded = re.sub(pattern_dash, f" ({abbrev})", expanded)
 
     return expanded
 

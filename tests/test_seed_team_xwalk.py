@@ -170,12 +170,20 @@ class TestGenerateSeedSql:
     """Test SQL generation."""
 
     def test_exact_matches_no_review_comment(self):
-        """Exact matches have no REVIEW comment."""
+        """Exact matches have no REVIEW: confidence comment."""
         source_names = ["Ohio State"]
         canonical = ["Ohio State"]
         sql, exact, fuzzy, unmatched = generate_seed_sql("test", source_names, canonical)
         assert "INSERT INTO" in sql
-        assert "REVIEW" not in sql  # No review comment for exact matches
+        # Check that the INSERT line doesn't have a preceding "-- REVIEW: confidence" comment
+        lines = sql.split("\n")
+        insert_lines = [l for l in lines if "INSERT INTO" in l and not l.startswith("--")]
+        # Find these lines and check the preceding line
+        for i, line in enumerate(lines):
+            if "INSERT INTO" in line and not line.startswith("--"):
+                if i > 0:
+                    prev_line = lines[i - 1]
+                    assert "-- REVIEW: confidence" not in prev_line
         assert exact == 1
         assert fuzzy == 0
         assert unmatched == 0

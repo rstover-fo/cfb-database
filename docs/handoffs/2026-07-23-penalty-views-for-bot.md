@@ -40,19 +40,33 @@ code change required for raw SQL access):
   opponents vs their season average"):
 
 ```sql
-WITH ou_games AS (
-    SELECT season, game_id, penalized_team
+WITH holding_vs_ou AS (
+    SELECT penalized_team, COUNT(*) AS holding_calls
     FROM penalty_log
     WHERE season = 2025 AND infraction = 'Holding'
       AND (offense = 'Oklahoma' OR defense = 'Oklahoma')
       AND penalized_team IS NOT NULL AND penalized_team <> 'Oklahoma'
+    GROUP BY penalized_team
+),
+season_holding AS (
+    SELECT penalized_team AS team, COUNT(*)::numeric AS holdings
+    FROM penalty_log
+    WHERE season = 2025 AND infraction = 'Holding' AND penalized_team IS NOT NULL
+    GROUP BY penalized_team
+),
+-- Denominator = ALL games the team played (from the box view), not just
+-- games where a holding call happened -- a filtered denominator would
+-- inflate the average for clean-game teams.
+team_games AS (
+    SELECT team, COUNT(DISTINCT game_id) AS games
+    FROM team_penalties
+    WHERE season = 2025
+    GROUP BY team
 )
-SELECT penalized_team,
-       COUNT(*) AS holding_vs_ou,
-       (SELECT ROUND(COUNT(*)::numeric / COUNT(DISTINCT game_id), 2)
-        FROM penalty_log p2
-        WHERE p2.season = 2025 AND p2.infraction = 'Holding'
-          AND p2.penalized_team = ou_games.penalized_team) AS their_per_game_avg
-FROM ou_games
-GROUP BY penalized_team;
+SELECT h.penalized_team,
+       h.holding_calls AS holding_vs_ou,
+       ROUND(COALESCE(s.holdings, 0) / g.games, 2) AS their_per_game_avg
+FROM holding_vs_ou h
+JOIN team_games g ON g.team = h.penalized_team
+LEFT JOIN season_holding s ON s.team = h.penalized_team;
 ```

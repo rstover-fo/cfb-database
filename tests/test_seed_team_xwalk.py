@@ -227,7 +227,10 @@ class TestGenerateSeedSql:
         canonical = ["Alabama", "Michigan", "Zephyr"]
         sql1, _, _, _ = generate_seed_sql("test", source_names, canonical)
         sql2, _, _, _ = generate_seed_sql("test", source_names, canonical)
-        assert sql1 == sql2  # Same SQL both times
+        # Remove the timestamp line (first non-comment line) for comparison
+        sql1_lines = [l for l in sql1.split("\n") if not l.startswith("-- Generated")]
+        sql2_lines = [l for l in sql2.split("\n") if not l.startswith("-- Generated")]
+        assert sql1_lines == sql2_lines  # Same SQL both times (except timestamp)
 
         # Check that lines appear in order (Alabama before Michigan before Zephyr)
         lines = sql1.split("\n")

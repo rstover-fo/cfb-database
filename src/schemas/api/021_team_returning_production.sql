@@ -10,3 +10,8 @@ SELECT *
 FROM marts.returning_production;
 
 COMMENT ON VIEW api.team_returning_production IS 'Returning production by team-season: total and percent of last season''s PPA (overall/passing/receiving/rushing) and usage returning, with returning_rank within season. Backed by marts.returning_production.';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.team_returning_production TO anon, authenticated;

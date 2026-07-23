@@ -10,3 +10,8 @@ SELECT *
 FROM marts.player_usage;
 
 COMMENT ON VIEW api.player_usage_leaders IS 'Player usage rates by season: share of team plays (overall, pass, rush, and down-split: first/second/third down, standard/passing downs) per athlete. Backed by marts.player_usage.';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.player_usage_leaders TO anon, authenticated;

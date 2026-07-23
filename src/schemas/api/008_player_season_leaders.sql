@@ -251,3 +251,8 @@ SELECT
 FROM defensive;
 
 COMMENT ON VIEW api.player_season_leaders IS 'Player season leaderboards by category (passing, rushing, receiving, defense) with yards_rank';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.player_season_leaders TO anon, authenticated;

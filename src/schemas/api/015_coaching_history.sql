@@ -40,3 +40,8 @@ COMMENT ON VIEW api.coaching_history IS
 'Coaching history with tenure performance summaries. One row per coach-team-tenure. '
 'Filter by team, coach_name, last_name, is_active. '
 'talent_improvement = inherited_rank - year3_rank (positive = improved recruiting).';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.coaching_history TO anon, authenticated;

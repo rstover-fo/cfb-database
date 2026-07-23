@@ -25,3 +25,8 @@ JOIN core.game_player_stats__teams__categories__types types ON types._dlt_parent
 JOIN core.game_player_stats__teams__categories__types__athletes athletes ON athletes._dlt_parent_id = types._dlt_id;
 
 COMMENT ON VIEW api.game_player_leaders IS 'Per-game player stats flattened from dlt hierarchy. Replaces core_staging dependency for cfb-app.';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.game_player_leaders TO anon, authenticated;

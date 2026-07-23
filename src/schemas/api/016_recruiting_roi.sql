@@ -34,3 +34,8 @@ COMMENT ON VIEW api.recruiting_roi IS
 'One row per team-season. blue_chip_ratio = 4+5 star ratio. '
 'recruiting_efficiency = wins / avg_class_rank. '
 'wins_over_expected = actual wins - median wins for teams with similar recruiting rank.';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.recruiting_roi TO anon, authenticated;

@@ -23,3 +23,8 @@ SELECT
 FROM marts.player_comparison;
 
 COMMENT ON VIEW api.player_comparison IS 'Player stats with positional percentiles for comparison. Backed by materialized view for fast lookups. Filter by player_id, name, team, season, or position_group.';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.player_comparison TO anon, authenticated;

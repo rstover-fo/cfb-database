@@ -51,3 +51,8 @@ LEFT JOIN LATERAL (
 ) away_ot ON true;
 
 COMMENT ON VIEW api.game_line_scores IS 'Game line scores pivoted into Q1-Q4 columns with OT periods summed.';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.game_line_scores TO anon, authenticated;

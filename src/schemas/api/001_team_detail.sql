@@ -65,3 +65,8 @@ LEFT JOIN LATERAL (
 WHERE t.classification = 'fbs';  -- Only FBS teams by default
 
 COMMENT ON VIEW api.team_detail IS 'Team page data with current season stats, ratings, and EPA metrics';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.team_detail TO anon, authenticated;

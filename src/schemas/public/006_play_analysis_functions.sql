@@ -186,7 +186,10 @@ BEGIN
             p.drive_number
         FROM core.plays p
         JOIN core.games g ON p.game_id = g.id
-        WHERE g.season = p_season
+        -- p.season predicate enables partition pruning on core.plays
+        -- (season-partitioned); g.season alone cannot prune.
+        WHERE p.season = p_season
+          AND g.season = p_season
           AND (p.offense = p_team OR p.defense = p_team)
           AND p.yards_to_goal <= 20
           AND p.drive_number IS NOT NULL
@@ -209,7 +212,8 @@ BEGIN
             p.ppa
         FROM core.plays p
         JOIN core.games g ON p.game_id = g.id
-        WHERE g.season = p_season
+        WHERE p.season = p_season
+          AND g.season = p_season
           AND (p.offense = p_team OR p.defense = p_team)
           AND p.yards_to_goal <= 20
           AND NOT public.is_garbage_time(p.period::integer, p.score_diff::integer)

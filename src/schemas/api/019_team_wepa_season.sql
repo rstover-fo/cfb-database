@@ -10,3 +10,8 @@ SELECT *
 FROM marts.team_wepa_season;
 
 COMMENT ON VIEW api.team_wepa_season IS 'Opponent-adjusted EPA (WEPA) by team-season: EPA/success-rate/explosiveness for and against, rushing yardage splits, and epa_rank/defense_rank. Backed by marts.team_wepa_season.';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.team_wepa_season TO anon, authenticated;

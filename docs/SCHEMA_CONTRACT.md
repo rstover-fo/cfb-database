@@ -4,7 +4,7 @@
 > only depend on objects listed here as **public**. Everything else is internal and may change
 > without notice.
 
-Last updated: 2026-07-22
+Last updated: 2026-07-23
 
 > **Note on cfb-analytics:** the retired OU-only app (rstover-fo/cfb-analytics) was never a
 > warehouse consumer -- it ran its own DuckDB ingestion. Its unique features (rivals page,
@@ -14,6 +14,25 @@ Last updated: 2026-07-22
 ---
 
 ## Recent Contract Changes
+
+- **2026-07-23 — `api.team_history` gains `sp_offense`/`sp_defense` (additive,
+  no consumer action needed); api-wide grant hardening.** A Discord user asked
+  the bot for the defensive SP+ arc since 2022 and the bot concluded the
+  warehouse only stores the offense/defense split for the current season --
+  false (it's in `ratings.sp_ratings` and `marts.team_season_summary` for
+  every loaded season, 2004+), but `api.team_history`, the natural view for
+  multi-season questions, omitted the two columns its backing mart already
+  carries. They are now exposed after `sp_rank` (view is DROP/CREATEd, so no
+  column-order constraint). While shipping this, 23 of 38 api view definition
+  files were found to carry no `GRANT` -- and 11 of those DROP/recreate their
+  view, so any re-apply would strip `anon`/`authenticated` read access (the
+  incident previously hit `api.leaderboard_teams`; there are no default
+  privileges for the PostgREST roles in this database). Every api definition
+  file now ends with `GRANT SELECT ON api.<view> TO anon, authenticated;`,
+  pinned by the new static test `tests/test_api_grants.py`; prod behavior is
+  guarded by the re-runnable `src/schemas/api/validation_team_history.sql`
+  (SP+ split populated for Oklahoma/Clemson 2022-2024 + grant tripwire for
+  `anon`/`authenticated`/`analyst_ro`).
 
 - **2026-07-22 — `classification` on `public.team_epa_season` and
   `api.leaderboard_teams` is now SEASON-ACCURATE (consumer-visible semantics
@@ -371,7 +390,7 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | View | Status | Rows | Description |
 |------|--------|------|-------------|
 | `api.team_detail` | **Deployed** | 136 | Single team page: current season stats, ratings, EPA. Columns: school, mascot, abbreviation, color, alternate_color, logo_url, conference, classification, current_season, games, wins, losses, conf_wins, conf_losses, ppg, opp_ppg, avg_margin, sp_rating, sp_rank, sp_offense, sp_defense, elo, fpi, epa_per_play, epa_tier, success_rate, explosiveness, recruiting_rank, recruiting_points |
-| `api.team_history` | **Deployed** | 3,667 | Multi-season team history with records, ratings, EPA trends. Columns: team, season, conference, games, wins, losses, conf_wins, conf_losses, ppg, opp_ppg, avg_margin, sp_rating, sp_rank, elo, fpi, epa_per_play, epa_tier, success_rate, explosiveness, total_plays, recruiting_rank, recruiting_points |
+| `api.team_history` | **Deployed** | 3,667 | Multi-season team history with records, ratings, EPA trends. Columns: team, season, conference, games, wins, losses, conf_wins, conf_losses, ppg, opp_ppg, avg_margin, sp_rating, sp_rank, sp_offense, sp_defense, elo, fpi, epa_per_play, epa_tier, success_rate, explosiveness, total_plays, recruiting_rank, recruiting_points (sp_offense/sp_defense added 2026-07-23) |
 | `api.game_detail` | **Deployed** | 45,897 | Single game: teams, scores, betting lines, EPA, venue. Columns: game_id, season, week, season_type, start_date, completed, home_team, away_team, home_points, away_points, winner, point_diff, home_spread, over_under, spread_result, ou_result, home_epa, away_epa, pregame_home_win_prob, venue, attendance, excitement_index |
 | `api.matchup` | **Deployed** | 11,975 | Head-to-head matchup history and current season comparison. Columns: team1, team2, total_games, team1_wins, team2_wins, ties, first_meeting, last_meeting, recent_results (JSONB array), team1/team2 current season stats |
 | `api.leaderboard_teams` | **Deployed** | 3,667 | Team leaderboard with rankings, ratings, EPA. Columns: team, conference, season, classification, wins, losses, win_pct, ppg, opp_ppg, sp_rank, epa_per_play, epa_tier, wins_rank, ppg_rank, defense_ppg_rank, epa_rank. Rank columns are scoped `PARTITION BY season, classification` (see 2026-07-22 changelog entry) -- all rows still returned, no `WHERE fbs` filter. |

@@ -131,3 +131,8 @@ COMMENT ON VIEW api.team_playcalling_profile IS
 'One row per team-season. Filter by team, season, conference. '
 'Percentiles are per-season. NULL rates indicate insufficient plays in that situation. '
 'Backed by materialized views (tendencies + success).';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.team_playcalling_profile TO anon, authenticated;

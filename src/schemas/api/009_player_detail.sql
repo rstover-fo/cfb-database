@@ -167,3 +167,8 @@ LEFT JOIN player_defense pd ON pd.player_id::text = r.id::text AND pd.season = r
 LEFT JOIN metrics.ppa_players_season ppa ON ppa.id::text = r.id::text AND ppa.season = r.year;
 
 COMMENT ON VIEW api.player_detail IS 'Comprehensive player profile with roster info, recruiting data, season stats, and PPA metrics';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.player_detail TO anon, authenticated;

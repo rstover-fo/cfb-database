@@ -25,6 +25,8 @@ SELECT
     -- Ratings
     tss.sp_rating,
     tss.sp_rank,
+    tss.sp_offense,
+    tss.sp_defense,
     tss.elo,
     tss.fpi,
 
@@ -44,4 +46,9 @@ LEFT JOIN marts.team_epa_season epa
     ON epa.team = tss.team AND epa.season = tss.season
 ORDER BY tss.team, tss.season DESC;
 
-COMMENT ON VIEW api.team_history IS 'Multi-season team history with records, ratings, and EPA trends';
+COMMENT ON VIEW api.team_history IS 'Multi-season team history with records, ratings (incl. SP+ offense/defense split), and EPA trends';
+
+-- Re-grant on every apply: this file DROPs the view first, which discards
+-- existing grants (no ALTER DEFAULT PRIVILEGES for the PostgREST roles in
+-- this database).
+GRANT SELECT ON api.team_history TO anon, authenticated;

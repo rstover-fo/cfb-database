@@ -22,3 +22,8 @@ FROM core.roster
 WHERE team IS NOT NULL;
 
 COMMENT ON VIEW api.roster_lookup IS 'Stable roster view for cfb-scout player matching';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.roster_lookup TO anon, authenticated;

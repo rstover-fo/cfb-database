@@ -10,3 +10,8 @@ SELECT *
 FROM marts.team_ats_records;
 
 COMMENT ON VIEW api.team_ats IS 'Team against-the-spread records by season: games, ats_wins/ats_losses/ats_pushes, avg_cover_margin, and computed ats_win_pct. Backed by marts.team_ats_records.';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.team_ats TO anon, authenticated;

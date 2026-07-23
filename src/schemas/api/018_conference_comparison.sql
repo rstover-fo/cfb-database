@@ -34,3 +34,8 @@ COMMENT ON VIEW api.conference_comparison IS
 'One row per conference-season. Enables SEC vs Big Ten comparisons. '
 'non_conf_win_pct = record against other conferences. '
 'std_dev_sp measures parity (lower = more competitive balance).';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.conference_comparison TO anon, authenticated;

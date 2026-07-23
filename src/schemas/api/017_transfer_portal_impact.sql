@@ -32,3 +32,8 @@ COMMENT ON VIEW api.transfer_portal_impact IS
 'One row per team-season (portal era ~2021+). '
 'portal_dependency = transfers_in / roster_size. '
 'win_delta = current_wins - prior_season_wins.';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.transfer_portal_impact TO anon, authenticated;

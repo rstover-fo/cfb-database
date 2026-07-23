@@ -10,3 +10,8 @@ SELECT *
 FROM marts.player_wepa_season;
 
 COMMENT ON VIEW api.player_wepa_leaders IS 'Player WEPA leaders: passing/rushing WEPA and kicker PAAR, tall grain (season, athlete_id, category), ranked within season+category via season_rank. Backed by marts.player_wepa_season.';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.player_wepa_leaders TO anon, authenticated;

@@ -111,3 +111,8 @@ LEFT JOIN LATERAL (
 ) e2 ON true;
 
 COMMENT ON VIEW api.matchup IS 'Head-to-head matchup history and current season comparison';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.matchup TO anon, authenticated;

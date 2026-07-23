@@ -97,3 +97,8 @@ LEFT JOIN marts._game_epa_calc away_epa
     ON away_epa.game_id = g.id AND away_epa.team = g.away_team;
 
 COMMENT ON VIEW api.game_detail IS 'Single game detail with teams, betting lines, EPA, and results';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.game_detail TO anon, authenticated;

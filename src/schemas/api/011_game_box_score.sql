@@ -18,3 +18,8 @@ JOIN core.game_team_stats__teams teams ON teams._dlt_parent_id = gts._dlt_id
 JOIN core.game_team_stats__teams__stats stats ON stats._dlt_parent_id = teams._dlt_id;
 
 COMMENT ON VIEW api.game_box_score IS 'Per-game team stats in EAV format. One row per stat per team per game.';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.game_box_score TO anon, authenticated;

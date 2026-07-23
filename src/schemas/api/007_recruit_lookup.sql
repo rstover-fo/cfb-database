@@ -25,3 +25,8 @@ SELECT
 FROM recruiting.recruits;
 
 COMMENT ON VIEW api.recruit_lookup IS 'Stable recruiting view for cfb-scout recruiting data';
+
+-- Grants are part of the definition: an apply that DROPs/recreates the
+-- view would otherwise leave the PostgREST roles without read access
+-- (no ALTER DEFAULT PRIVILEGES for them in this database).
+GRANT SELECT ON api.recruit_lookup TO anon, authenticated;

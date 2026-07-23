@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS draft.combine (
     draft_round bigint,
     draft_ovr bigint,
     draft_team text,
-    ht text,
+    ht double precision,
     wt double precision,
     forty double precision,
     bench double precision,

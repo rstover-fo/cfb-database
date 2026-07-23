@@ -24,6 +24,14 @@ from ..flat_files import ParseContext, ParserStructureError
 logger = logging.getLogger(__name__)
 
 
+def _height_inches(value) -> float:
+    """Height as float inches; tolerates legacy PFR "6-2" feet-inches strings."""
+    if isinstance(value, str) and "-" in value:
+        feet, _, inches = value.partition("-")
+        return float(feet) * 12 + float(inches)
+    return float(value)
+
+
 def parse_combine(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
     """Parse combine.parquet into draft.combine rows.
 
@@ -66,8 +74,11 @@ def parse_combine(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
         if row.get("wt") is not None:
             row["wt"] = int(row["wt"])
 
-        # Coerce measurables to float
-        for measurable in ["ht", "forty", "vertical", "cone", "shuttle"]:
+        # Coerce measurables to float. ht is numeric inches in current nflverse
+        # releases, but older vintages shipped PFR-style "6-2" strings.
+        if row.get("ht") is not None:
+            row["ht"] = _height_inches(row["ht"])
+        for measurable in ["forty", "vertical", "cone", "shuttle"]:
             if row.get(measurable) is not None:
                 row[measurable] = float(row[measurable])
 
@@ -115,6 +126,13 @@ def parse_draft_picks(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
         row["round"] = int(row["round"])
         row["pick"] = int(row["pick"])
 
+        # "to" (final NFL season) is a SQL reserved word; the migration names
+        # the column to_year -- rename so dlt merges into it instead of
+        # evolving a quoted "to" column.
+        if "to" in row:
+            to_value = row.pop("to")
+            row["to_year"] = int(to_value) if to_value is not None else None
+
         # Coerce age to int if present
         if row.get("age") is not None:
             row["age"] = int(row["age"])
@@ -126,7 +144,6 @@ def parse_draft_picks(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
         # Coerce stat/numeric columns to float (most are already float in parquet)
         # but we ensure consistency for defensive munging
         for stat_col in [
-            "to",
             "allpro",
             "probowls",
             "seasons_started",

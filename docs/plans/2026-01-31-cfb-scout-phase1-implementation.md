@@ -496,6 +496,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CrawlResult:
     """Result of a crawl operation."""
+
     source_name: str
     records_crawled: int
     records_new: int
@@ -639,20 +640,75 @@ TEAM_ALIASES = {
 
 # Canonical team names to look for
 FBS_TEAMS = [
-    "Alabama", "Arizona", "Arizona State", "Arkansas", "Auburn",
-    "Baylor", "BYU", "California", "Cincinnati", "Clemson",
-    "Colorado", "Duke", "Florida", "Florida State", "Georgia",
-    "Georgia Tech", "Houston", "Illinois", "Indiana", "Iowa",
-    "Iowa State", "Kansas", "Kansas State", "Kentucky", "Louisville",
-    "LSU", "Maryland", "Memphis", "Miami", "Michigan",
-    "Michigan State", "Minnesota", "Mississippi State", "Missouri", "Nebraska",
-    "North Carolina", "NC State", "Notre Dame", "Ohio State", "Oklahoma",
-    "Oklahoma State", "Ole Miss", "Oregon", "Oregon State", "Penn State",
-    "Pittsburgh", "Purdue", "Rutgers", "SMU", "South Carolina",
-    "Stanford", "Syracuse", "TCU", "Tennessee", "Texas",
-    "Texas A&M", "Texas Tech", "UCF", "UCLA", "USC",
-    "Utah", "Vanderbilt", "Virginia", "Virginia Tech", "Wake Forest",
-    "Washington", "Washington State", "West Virginia", "Wisconsin",
+    "Alabama",
+    "Arizona",
+    "Arizona State",
+    "Arkansas",
+    "Auburn",
+    "Baylor",
+    "BYU",
+    "California",
+    "Cincinnati",
+    "Clemson",
+    "Colorado",
+    "Duke",
+    "Florida",
+    "Florida State",
+    "Georgia",
+    "Georgia Tech",
+    "Houston",
+    "Illinois",
+    "Indiana",
+    "Iowa",
+    "Iowa State",
+    "Kansas",
+    "Kansas State",
+    "Kentucky",
+    "Louisville",
+    "LSU",
+    "Maryland",
+    "Memphis",
+    "Miami",
+    "Michigan",
+    "Michigan State",
+    "Minnesota",
+    "Mississippi State",
+    "Missouri",
+    "Nebraska",
+    "North Carolina",
+    "NC State",
+    "Notre Dame",
+    "Ohio State",
+    "Oklahoma",
+    "Oklahoma State",
+    "Ole Miss",
+    "Oregon",
+    "Oregon State",
+    "Penn State",
+    "Pittsburgh",
+    "Purdue",
+    "Rutgers",
+    "SMU",
+    "South Carolina",
+    "Stanford",
+    "Syracuse",
+    "TCU",
+    "Tennessee",
+    "Texas",
+    "Texas A&M",
+    "Texas Tech",
+    "UCF",
+    "UCLA",
+    "USC",
+    "Utah",
+    "Vanderbilt",
+    "Virginia",
+    "Virginia Tech",
+    "Wake Forest",
+    "Washington",
+    "Washington State",
+    "West Virginia",
+    "Wisconsin",
 ]
 
 
@@ -666,12 +722,12 @@ def extract_team_mentions(text: str) -> list[str]:
 
     # Check aliases first
     for alias, canonical in TEAM_ALIASES.items():
-        if re.search(rf'\b{re.escape(alias)}\b', text_lower):
+        if re.search(rf"\b{re.escape(alias)}\b", text_lower):
             teams_found.add(canonical)
 
     # Check canonical names
     for team in FBS_TEAMS:
-        if re.search(rf'\b{re.escape(team.lower())}\b', text_lower):
+        if re.search(rf"\b{re.escape(team.lower())}\b", text_lower):
             teams_found.add(team)
 
     return list(teams_found)
@@ -717,9 +773,7 @@ class RedditCrawler(BaseCrawler):
         team_ids = extract_team_mentions(raw_text)
 
         # Convert timestamp
-        published_at = datetime.fromtimestamp(
-            submission.created_utc, tz=timezone.utc
-        ).isoformat()
+        published_at = datetime.fromtimestamp(submission.created_utc, tz=timezone.utc).isoformat()
 
         return {
             "source_url": f"https://reddit.com{submission.permalink}",
@@ -859,6 +913,7 @@ logger = logging.getLogger(__name__)
 
 class SummaryResult(TypedDict):
     """Result of summarization."""
+
     summary: str
     sentiment_score: float
     player_mentions: list[str]
@@ -889,7 +944,7 @@ Return ONLY a number between -1.0 (very negative) and 1.0 (very positive).
 
 Text: {text[:1000]}
 
-Sentiment score:"""
+Sentiment score:""",
             }
         ],
     )
@@ -936,7 +991,7 @@ Respond with JSON only:
     "player_mentions": ["list", "of", "player", "names"],
     "team_mentions": ["list", "of", "team", "names"],
     "key_topics": ["recruiting", "transfer_portal", "injury", "performance", etc.]
-}}"""
+}}""",
             }
         ],
     )

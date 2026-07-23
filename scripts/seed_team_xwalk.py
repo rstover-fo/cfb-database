@@ -27,11 +27,9 @@ Usage:
 """
 
 import argparse
-import csv
 import difflib
 import logging
 import re
-import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -208,7 +206,8 @@ def match_team(
     best_match = None
     best_ratio = 0.0
     for cfbd_name in canonical_names:
-        ratio = difflib.SequenceMatcher(None, expanded_source, expand_abbrevs(normalize_name(cfbd_name))).ratio()
+        expanded_cfbd = expand_abbrevs(normalize_name(cfbd_name))
+        ratio = difflib.SequenceMatcher(None, expanded_source, expanded_cfbd).ratio()
         if ratio > best_ratio:
             best_ratio = ratio
             best_match = cfbd_name
@@ -344,7 +343,9 @@ def generate_seed_sql(
     lines.append(f"-- Source: {source}")
     lines.append(f"-- Total source names: {len(set(source_names))}")
     lines.append(f"-- Min confidence threshold: {min_confidence}")
-    lines.append("-- REVIEW: inspect confidence scores and unmatched entries below before applying.")
+    lines.append(
+        "-- REVIEW: inspect confidence scores and unmatched entries below before applying."
+    )
     lines.append("")
 
     # Collect results by match type
@@ -353,9 +354,7 @@ def generate_seed_sql(
     unmatched = []
 
     for source_name in sorted(set(source_names)):
-        cfbd_name, confidence, match_type = match_team(
-            source_name, canonical_names, min_confidence
-        )
+        cfbd_name, confidence, match_type = match_team(source_name, canonical_names, min_confidence)
 
         if match_type == "exact":
             exact.append((source_name, cfbd_name, confidence))
@@ -368,9 +367,13 @@ def generate_seed_sql(
     for source_name, cfbd_name, confidence in sorted(exact):
         source_escaped = escape_sql(source_name)
         cfbd_escaped = escape_sql(cfbd_name)
-        lines.append(
-            f"INSERT INTO ref.team_name_xwalk (source, source_name, cfbd_name) VALUES ('{source}', '{source_escaped}', '{cfbd_escaped}') ON CONFLICT (source, source_name) DO NOTHING;"
+        sql_line = (
+            f"INSERT INTO ref.team_name_xwalk "
+            f"(source, source_name, cfbd_name) "
+            f"VALUES ('{source}', '{source_escaped}', '{cfbd_escaped}') "
+            f"ON CONFLICT (source, source_name) DO NOTHING;"
         )
+        lines.append(sql_line)
 
     # Output fuzzy matches with confidence comments
     for source_name, cfbd_name, confidence in sorted(fuzzy):
@@ -379,9 +382,13 @@ def generate_seed_sql(
         conf_str = f"{confidence:.2f}"
         match_type_str = "abbrev" if confidence == 0.95 else "fuzzy"
         lines.append(f"-- REVIEW: confidence {conf_str} ({match_type_str})")
-        lines.append(
-            f"INSERT INTO ref.team_name_xwalk (source, source_name, cfbd_name) VALUES ('{source}', '{source_escaped}', '{cfbd_escaped}') ON CONFLICT (source, source_name) DO NOTHING;"
+        sql_line = (
+            f"INSERT INTO ref.team_name_xwalk "
+            f"(source, source_name, cfbd_name) "
+            f"VALUES ('{source}', '{source_escaped}', '{cfbd_escaped}') "
+            f"ON CONFLICT (source, source_name) DO NOTHING;"
         )
+        lines.append(sql_line)
 
     # Output unmatched as commented-out INSERTs
     for source_name, cfbd_name, confidence in sorted(unmatched):
@@ -389,9 +396,13 @@ def generate_seed_sql(
         cfbd_escaped = escape_sql(cfbd_name) if cfbd_name else "??UNKNOWN??"
         conf_str = f"{confidence:.2f}" if cfbd_name else "no candidate"
         lines.append(f"-- UNMATCHED (best: {cfbd_name} @ {conf_str})")
-        lines.append(
-            f"-- INSERT INTO ref.team_name_xwalk (source, source_name, cfbd_name) VALUES ('{source}', '{source_escaped}', '{cfbd_escaped}') ON CONFLICT (source, source_name) DO NOTHING;"
+        sql_line = (
+            f"-- INSERT INTO ref.team_name_xwalk "
+            f"(source, source_name, cfbd_name) "
+            f"VALUES ('{source}', '{source_escaped}', '{cfbd_escaped}') "
+            f"ON CONFLICT (source, source_name) DO NOTHING;"
         )
+        lines.append(sql_line)
 
     sql = "\n".join(lines)
     return sql, len(exact), len(fuzzy), len(unmatched)
@@ -426,7 +437,10 @@ def main():
     parser.add_argument(
         "--out",
         type=str,
-        help="Output SQL file path (default: src/schemas/migrations/seed/team_name_xwalk_seed_<source>.sql)",
+        help=(
+            "Output SQL file path "
+            "(default: src/schemas/migrations/seed/team_name_xwalk_seed_<source>.sql)"
+        ),
     )
     parser.add_argument(
         "--min-confidence",
@@ -463,9 +477,7 @@ def main():
         try:
             canonical_names = load_canonical_names_from_db()
         except Exception as e:
-            parser.error(
-                f"Cannot load canonical names from DB and --teams-file not provided: {e}"
-            )
+            parser.error(f"Cannot load canonical names from DB and --teams-file not provided: {e}")
 
     logger.info(f"Loaded {len(canonical_names)} canonical team names")
 
@@ -493,9 +505,12 @@ def main():
     logger.info(f"Wrote seed SQL to {out_path}")
 
     # Print summary line
-    print(
-        f"XWALK_SEED source={args.source} names={len(set(source_names))} exact={exact_count} fuzzy={fuzzy_count} unmatched={unmatched_count} out={out_path}"
+    summary = (
+        f"XWALK_SEED source={args.source} names={len(set(source_names))} "
+        f"exact={exact_count} fuzzy={fuzzy_count} unmatched={unmatched_count} "
+        f"out={out_path}"
     )
+    print(summary)
 
 
 if __name__ == "__main__":

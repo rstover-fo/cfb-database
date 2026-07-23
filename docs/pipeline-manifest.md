@@ -336,3 +336,24 @@ The table was successfully loaded via `game_stats_source`'s week-by-week loading
 | nflverse_draft | draft.nflverse_draft_picks | Parquet (nflverse) | Annual | Built (awaiting first load) |
 | sbr | betting.sbr_historical | Excel (manual backfill) | Manual | Built (awaiting first load) |
 | availability | raw.availability_reports | PDF archive (conf reports) | Weekly | Built (awaiting first load) |
+
+First deploy (one-time, requires DB credentials):
+
+1. `python scripts/run_migrations.py --file src/schemas/migrations/041_flat_files.sql`
+   (idempotent -- safe to re-run).
+2. `python scripts/seed_team_xwalk.py --source massey --from-fixture` then review the
+   emitted seed SQL (`-- REVIEW` / `-- UNMATCHED` lines) and apply it with
+   `run_migrations.py --file`. Repeat with `--names-file` over the full Massey CSV team
+   list once in season, and for `sbr` before any backfill. Unmapped names fail the load
+   loudly by design -- extend the crosswalk when that happens.
+3. Trigger `.github/workflows/flat-files.yml` via workflow_dispatch (source input
+   `nflverse_combine nflverse_draft`) for the first nflverse load; Massey/availability
+   load automatically in season via the daily 11:00 UTC run.
+4. SBR backfill per season file: `python scripts/load_flat_files.py --source sbr --file
+   <downloaded .xlsx>` (sportsbookreviewsonline now serves HTML tables; export/convert
+   to .xlsx with the documented column layout, or load archived copies).
+
+Notes: Massey no-ops (`status=no_op_offseason`) until its CSV rolls to the current
+season (typically preseason); SEC/Big 12/CFP availability reports are served through a
+JS-only widget and are recorded as gaps -- Big Ten archives now, the rest need a
+headless-browser follow-up.

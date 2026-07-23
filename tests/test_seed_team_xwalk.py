@@ -7,9 +7,6 @@ CLI runs.
 import re
 import subprocess
 from pathlib import Path
-from tempfile import NamedTemporaryFile
-
-import pytest
 
 from scripts.seed_team_xwalk import (
     escape_sql,
@@ -175,10 +172,9 @@ class TestGenerateSeedSql:
         canonical = ["Ohio State"]
         sql, exact, fuzzy, unmatched = generate_seed_sql("test", source_names, canonical)
         assert "INSERT INTO" in sql
-        # Check that the INSERT line doesn't have a preceding "-- REVIEW: confidence" comment
+        # Check that INSERT lines don't have preceding "-- REVIEW: confidence"
         lines = sql.split("\n")
-        insert_lines = [l for l in lines if "INSERT INTO" in l and not l.startswith("--")]
-        # Find these lines and check the preceding line
+        # Find INSERT lines and check the preceding line
         for i, line in enumerate(lines):
             if "INSERT INTO" in line and not line.startswith("--"):
                 if i > 0:
@@ -228,13 +224,13 @@ class TestGenerateSeedSql:
         sql1, _, _, _ = generate_seed_sql("test", source_names, canonical)
         sql2, _, _, _ = generate_seed_sql("test", source_names, canonical)
         # Remove the timestamp line (first non-comment line) for comparison
-        sql1_lines = [l for l in sql1.split("\n") if not l.startswith("-- Generated")]
-        sql2_lines = [l for l in sql2.split("\n") if not l.startswith("-- Generated")]
+        sql1_lines = [line for line in sql1.split("\n") if not line.startswith("-- Generated")]
+        sql2_lines = [line for line in sql2.split("\n") if not line.startswith("-- Generated")]
         assert sql1_lines == sql2_lines  # Same SQL both times (except timestamp)
 
         # Check that lines appear in order (Alabama before Michigan before Zephyr)
         lines = sql1.split("\n")
-        inserts = [l for l in lines if "INSERT INTO" in l and not l.startswith("--")]
+        inserts = [line for line in lines if "INSERT INTO" in line and not line.startswith("--")]
         # Should have inserts in alphabetical order by team name
         # (though we can't guarantee exact line positions due to comments)
         assert len(inserts) == 3
@@ -450,7 +446,7 @@ class TestEndToEndCli:
                 "python",
                 "scripts/seed_team_xwalk.py",
                 "--source",
-                "test",
+                "massey",
                 "--names-file",
                 str(names_file),
                 "--teams-file",
@@ -469,7 +465,9 @@ class TestEndToEndCli:
         # Should have proper quoting
         assert "VALUES ('" in sql
         # Should not have unescaped quotes inside values (except escaped ones)
-        lines = [l for l in sql.split("\n") if "INSERT INTO" in l and not l.startswith("--")]
+        lines = [
+            line for line in sql.split("\n") if "INSERT INTO" in line and not line.startswith("--")
+        ]
         for line in lines:
             # Each line should be properly formed
             assert line.count("VALUES (") == 1
@@ -491,7 +489,7 @@ class TestEndToEndCli:
                 "python",
                 "scripts/seed_team_xwalk.py",
                 "--source",
-                "test",
+                "massey",
                 "--names-file",
                 str(names_file),
                 "--teams-file",

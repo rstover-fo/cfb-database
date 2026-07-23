@@ -471,3 +471,31 @@ class TestParseDraftPicks:
         rows = list(nflverse.parse_draft_picks(raw, ctx))
         assert len(rows) == 1
         assert rows[0]["extra_col"] == "extra_value"
+
+
+class TestDdlAlignment:
+    """Regressions for parser-output vs migration-041 column alignment."""
+
+    def test_to_renamed_to_year(self):
+        """The reserved-word 'to' column merges into to_year, never 'to'."""
+        with open("tests/fixtures/flatfiles/draft_picks_sample.parquet", "rb") as f:
+            raw = f.read()
+        ctx = ParseContext(source="nflverse_draft", snapshot_date=date(2026, 7, 23))
+        rows = list(nflverse.parse_draft_picks(raw, ctx))
+        assert all("to" not in row for row in rows)
+        non_null = [row["to_year"] for row in rows if row.get("to_year") is not None]
+        assert non_null and all(isinstance(v, int) for v in non_null)
+
+    def test_height_inches_numeric_and_legacy(self):
+        """ht handles numeric-inches (current releases) and PFR '6-2' strings."""
+        assert nflverse._height_inches(74.0) == 74.0
+        assert nflverse._height_inches("6-2") == 74.0
+        assert nflverse._height_inches("5-11") == 71.0
+
+    def test_combine_ht_is_float_inches(self):
+        with open("tests/fixtures/flatfiles/combine_sample.parquet", "rb") as f:
+            raw = f.read()
+        ctx = ParseContext(source="nflverse_combine", snapshot_date=date(2026, 7, 23))
+        rows = list(nflverse.parse_combine(raw, ctx))
+        heights = [row["ht"] for row in rows if row.get("ht") is not None]
+        assert heights and all(isinstance(h, float) and 60 <= h <= 84 for h in heights)

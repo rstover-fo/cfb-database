@@ -157,6 +157,7 @@ from gql.transport.aiohttp import AIOHTTPTransport
 
 API_KEY = "..."  # same key as REST
 
+
 async def introspect():
     transport = AIOHTTPTransport(
         url="https://graphql.collegefootballdata.com/v1/graphql",
@@ -165,10 +166,16 @@ async def introspect():
     async with Client(transport=transport, fetch_schema_from_transport=True) as session:
         schema = session.client.schema
         query_fields = sorted(schema.query_type.fields.keys())
-        sub_fields = sorted(schema.subscription_type.fields.keys()) if schema.subscription_type else []
+        sub_fields = (
+            sorted(schema.subscription_type.fields.keys()) if schema.subscription_type else []
+        )
         print("Query fields:", query_fields)
         print("Subscription fields:", sub_fields)
-        print("Has play/drive live field:", any("play" in f.lower() or "drive" in f.lower() for f in query_fields))
+        print(
+            "Has play/drive live field:",
+            any("play" in f.lower() or "drive" in f.lower() for f in query_fields),
+        )
+
 
 asyncio.run(introspect())
 ```
@@ -182,6 +189,7 @@ from gql import Client, gql
 from gql.transport.websockets import WebsocketsTransport
 
 API_KEY = "..."
+
 
 async def subscribe():
     transport = WebsocketsTransport(
@@ -201,6 +209,7 @@ async def subscribe():
     async with Client(transport=transport) as session:
         async for result in session.subscribe(query):
             print(result)
+
 
 asyncio.run(subscribe())
 ```

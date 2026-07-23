@@ -39,9 +39,7 @@ def parse_combine(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
     schema_names = set(table.column_names)
     missing = pk_columns - schema_names
     if missing:
-        raise ParserStructureError(
-            f"nflverse_combine: missing PK column(s): {sorted(missing)}"
-        )
+        raise ParserStructureError(f"nflverse_combine: missing PK column(s): {sorted(missing)}")
 
     rows = table.to_pylist()
     dropped_count = 0
@@ -82,9 +80,7 @@ def parse_combine(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
         yield row
 
     if dropped_count > 0:
-        logger.info(
-            f"nflverse_combine: dropped {dropped_count} row(s) with null PK column(s)"
-        )
+        logger.info(f"nflverse_combine: dropped {dropped_count} row(s) with null PK column(s)")
 
 
 def parse_draft_picks(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
@@ -103,9 +99,7 @@ def parse_draft_picks(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
     schema_names = set(table.column_names)
     missing = pk_columns - schema_names
     if missing:
-        raise ParserStructureError(
-            f"nflverse_draft_picks: missing PK column(s): {sorted(missing)}"
-        )
+        raise ParserStructureError(f"nflverse_draft_picks: missing PK column(s): {sorted(missing)}")
 
     rows = table.to_pylist()
     dropped_count = 0
@@ -132,10 +126,28 @@ def parse_draft_picks(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
         # Coerce stat/numeric columns to float (most are already float in parquet)
         # but we ensure consistency for defensive munging
         for stat_col in [
-            "to", "allpro", "probowls", "seasons_started", "w_av", "car_av", "dr_av",
-            "games", "pass_completions", "pass_attempts", "pass_yards", "pass_tds",
-            "pass_ints", "rush_atts", "rush_yards", "rush_tds", "receptions",
-            "rec_yards", "rec_tds", "def_solo_tackles", "def_ints", "def_sacks"
+            "to",
+            "allpro",
+            "probowls",
+            "seasons_started",
+            "w_av",
+            "car_av",
+            "dr_av",
+            "games",
+            "pass_completions",
+            "pass_attempts",
+            "pass_yards",
+            "pass_tds",
+            "pass_ints",
+            "rush_atts",
+            "rush_yards",
+            "rush_tds",
+            "receptions",
+            "rec_yards",
+            "rec_tds",
+            "def_solo_tackles",
+            "def_ints",
+            "def_sacks",
         ]:
             if row.get(stat_col) is not None:
                 row[stat_col] = float(row[stat_col])
@@ -143,6 +155,4 @@ def parse_draft_picks(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
         yield row
 
     if dropped_count > 0:
-        logger.info(
-            f"nflverse_draft_picks: dropped {dropped_count} row(s) with null PK column(s)"
-        )
+        logger.info(f"nflverse_draft_picks: dropped {dropped_count} row(s) with null PK column(s)")

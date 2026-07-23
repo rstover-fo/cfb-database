@@ -35,6 +35,10 @@ pythonpath = ["."]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# ruff 0.16 started formatting Python code blocks inside Markdown, which
+# flunks historical docs/plans snippets in CI (unpinned `pip install ruff`).
+# Scope ruff to actual Python sources explicitly.
+include = ["*.py", "*.pyi", "**/pyproject.toml"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

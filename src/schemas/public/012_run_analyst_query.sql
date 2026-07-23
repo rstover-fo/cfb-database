@@ -14,8 +14,9 @@
 --     SET LOCAL ROLE analyst_ro is legal for them and the caller's SQL
 --     executes with analyst_ro's privileges. Membership is a pure
 --     privilege REDUCTION path: analyst_ro can do strictly less than anon
---     already can. Non-member callers (e.g. postgres) fail at SET ROLE --
---     the drop is mandatory, never best-effort.
+--     already can. Supabase's postgres role is itself a member of the API
+--     roles, so it reaches analyst_ro transitively and the drop applies to
+--     it too (proven below by asserting current_user inside the query).
 --   * SET LOCAL transaction_read_only = on closes the "write via a
 --     SECURITY DEFINER helper reachable from SELECT" path (e.g.
 --     public.refresh_all_marts). The SET clause below gives the call a GUC
@@ -49,10 +50,6 @@
 --     single-statement check (false positive; rewrite the query).
 --   * duplicate output column names collapse in jsonb (last one wins) --
 --     alias columns when joining.
---   * migration-time validation cannot exercise the happy path (postgres
---     is deliberately not an analyst_ro member), so it asserts the grants
---     catalog-side and proves the mandatory drop; the end-to-end positive
---     test is any authenticated PostgREST call (the cfb-app tool).
 --
 -- Apply via: python scripts/run_migrations.py --file src/schemas/public/012_run_analyst_query.sql
 -- (deploy manifest "apply"). Idempotent.
@@ -70,10 +67,10 @@ GRANT SELECT ON ALL TABLES IN SCHEMA api TO analyst_ro;
 ALTER DEFAULT PRIVILEGES IN SCHEMA api GRANT SELECT ON TABLES TO analyst_ro;
 
 -- PostgREST roles become members so the function's SET LOCAL ROLE is legal
--- for them. Do NOT grant analyst_ro to postgres: Supabase kills the
--- connection on membership changes to its managed postgres role, and the
--- migration role staying a non-member is what makes the drop provably
--- mandatory (see self-validation).
+-- for them. Never GRANT analyst_ro TO postgres directly -- Supabase kills
+-- the connection on membership changes to its managed postgres role. It is
+-- also unnecessary: postgres is a member of the API roles and reaches
+-- analyst_ro through them.
 GRANT analyst_ro TO anon, authenticated, service_role;
 
 -- 2. Guarded executor (SECURITY INVOKER) -------------------------------------
@@ -118,8 +115,7 @@ DO $$
 DECLARE
     r jsonb;
 BEGIN
-    -- Textual rejections fire before the role drop, so they are testable
-    -- here regardless of membership.
+    -- Textual rejections fire before the role drop.
     BEGIN
         PERFORM public.run_analyst_query('DELETE FROM api.team_elo');
         RAISE EXCEPTION 'DELETE was not rejected';
@@ -134,12 +130,38 @@ BEGIN
         IF SQLERRM NOT LIKE '%multiple statements%' THEN RAISE; END IF;
     END;
 
-    -- The privilege drop is mandatory: a valid query from a NON-member
-    -- (this migration role) must die at SET ROLE, not run unscoped.
+    -- The drop happens: inside the query, current_user must be analyst_ro
+    -- (this migration role reaches it transitively via the API roles).
+    r := public.run_analyst_query('SELECT current_user AS u');
+    IF r <> '[{"u": "analyst_ro"}]'::jsonb THEN
+        RAISE EXCEPTION 'query did not run as analyst_ro: %', r;
+    END IF;
+
+    -- api-view read works under the role; row cap and inner LIMIT parse.
+    r := public.run_analyst_query('SELECT team FROM api.team_elo;');
+    IF jsonb_array_length(r) < 1 OR jsonb_array_length(r) > 200 THEN
+        RAISE EXCEPTION 'api.team_elo read returned % rows', jsonb_array_length(r);
+    END IF;
+    r := public.run_analyst_query('SELECT team FROM api.team_elo LIMIT 3');
+    IF jsonb_array_length(r) <> 3 THEN
+        RAISE EXCEPTION 'inner LIMIT handling returned % rows', jsonb_array_length(r);
+    END IF;
+
+    -- Outside the api schema: blocked by the role, not by text checks.
     BEGIN
-        r := public.run_analyst_query('SELECT 1 AS x');
-        RAISE EXCEPTION 'non-member call ran unscoped (returned %)', r;
+        PERFORM public.run_analyst_query('SELECT id FROM core.games LIMIT 1');
+        RAISE EXCEPTION 'core.games read was not blocked';
     EXCEPTION WHEN insufficient_privilege THEN
+        NULL;
+    END;
+
+    -- Data-modifying CTE: passes the prefix check, dies at the
+    -- permission/read-only layer.
+    BEGIN
+        PERFORM public.run_analyst_query(
+            'WITH w AS (DELETE FROM api.team_elo RETURNING *) SELECT * FROM w');
+        RAISE EXCEPTION 'write CTE was not blocked';
+    EXCEPTION WHEN insufficient_privilege OR read_only_sql_transaction THEN
         NULL;
     END;
 

@@ -2,6 +2,7 @@
 and monkeypatched run_source paths -- no live DB, no network.
 """
 
+import re
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -317,3 +318,37 @@ class TestGateLineFormat:
         captured = capsys.readouterr()
         assert "FLATFILE_LOAD source=sbr status=failed" in captured.out
         assert "sha=-" in captured.out
+
+
+class TestArchiverLedgerMarker:
+    """Same-day archiver reruns must not collide on the ledger's unique
+    (source, file_sha256) WHERE status='loaded' index -- markers are
+    timestamped per run, not per day."""
+
+    def _run_archiver(self, monkeypatch, record_calls):
+        def fake_archiver(db_url, *, season):
+            return {"fetched": 1, "new": 0, "gaps": ["SEC", "B12", "CFP"]}
+
+        monkeypatch.setattr(load_flat_files, "resolve_parser", lambda ref: fake_archiver)
+        monkeypatch.setattr(
+            load_flat_files, "record_load", lambda *a, **k: record_calls.append((a, k))
+        )
+        spec = REGISTRY["availability"]
+        return load_flat_files.run_source(spec, season=2025, today=date(2025, 9, 1))
+
+    def test_marker_is_iso_timestamp_not_date_only(self, monkeypatch):
+        record_calls = []
+        result = self._run_archiver(monkeypatch, record_calls)
+        assert result["status"] == "gap"
+        (args, kwargs) = record_calls[0]
+        sha = args[1]
+        # Full ISO timestamp with time component, not the bare run date.
+        assert re.match(r"^archiver-\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", sha)
+        assert sha != "archiver-2025-09-01"
+
+    def test_two_runs_record_distinct_markers(self, monkeypatch):
+        record_calls = []
+        self._run_archiver(monkeypatch, record_calls)
+        self._run_archiver(monkeypatch, record_calls)
+        shas = [args[1] for args, _ in record_calls]
+        assert len(shas) == 2 and shas[0] != shas[1]

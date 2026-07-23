@@ -8,6 +8,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from scripts.seed_team_xwalk import (
     escape_sql,
     expand_abbrevs,
@@ -269,6 +271,7 @@ class TestSbrFixtureExtraction:
 
     def test_loads_fixture_names(self):
         """SBR fixture is loaded and returns expected teams."""
+        pytest.importorskip("openpyxl", reason="flatfiles extra not installed")
         names = load_names_from_sbr_fixture()
         # The fixture has 10 rows (5 games × 2 teams per game)
         assert len(names) == 10
@@ -280,6 +283,7 @@ class TestSbrFixtureExtraction:
 
     def test_fixture_names_are_strings(self):
         """All extracted names are non-empty strings."""
+        pytest.importorskip("openpyxl", reason="flatfiles extra not installed")
         names = load_names_from_sbr_fixture()
         assert all(isinstance(n, str) and len(n) > 0 for n in names)
 
@@ -345,6 +349,7 @@ class TestEndToEndCli:
 
     def test_sbr_fixture_run(self, tmp_path):
         """Run --source sbr --from-fixture with a temp teams file."""
+        pytest.importorskip("openpyxl", reason="flatfiles extra not installed")
         # Create a teams file with canonical names covering the fixture
         teams_file = tmp_path / "teams.txt"
         teams_file.write_text(

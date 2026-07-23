@@ -37,7 +37,7 @@ import logging
 import os
 import sys
 import time
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 import dlt
 
@@ -176,7 +176,10 @@ def run_source(
             gaps = list(archive_result.get("gaps") or [])
             # Archiver runs aren't file-hash keyed (per-PDF dedupe happens
             # inside the archiver itself); the ledger row is a run marker.
-            sha = f"archiver-{today.isoformat()}"
+            # Timestamped per run: a date-only marker would trip the ledger's
+            # unique (source, file_sha256) WHERE status='loaded' index on a
+            # same-day rerun, failing an otherwise harmless re-invocation.
+            sha = f"archiver-{datetime.now(UTC).isoformat()}"
             record_load(spec.name, sha, status="loaded", row_count=rows)
             result.update(
                 status="gap" if gaps else "loaded",

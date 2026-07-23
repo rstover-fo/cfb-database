@@ -234,7 +234,7 @@ Reference this skill when writing `RESTAPIConfig` dicts, debugging pagination, c
 ```bash
 # Setup
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,compute,flatfiles]"
 
 # Run pipelines
 python -m src.pipelines.run --source reference           # Load reference data

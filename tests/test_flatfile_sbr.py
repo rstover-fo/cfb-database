@@ -11,6 +11,9 @@ import io
 from datetime import date
 
 import pytest
+
+pytest.importorskip("openpyxl", reason="flatfiles extra not installed")
+
 from openpyxl import Workbook
 
 from src.pipelines.sources.flat_files import ParseContext, ParserStructureError

@@ -8,9 +8,12 @@ import io
 import logging
 from datetime import date
 
+import pytest
+
+pytest.importorskip("pyarrow", reason="flatfiles extra not installed")
+
 import pyarrow as pa
 import pyarrow.parquet
-import pytest
 
 from src.pipelines.sources.flat_files import ParseContext, ParserStructureError
 from src.pipelines.sources.flatfile_parsers import nflverse

@@ -14,6 +14,7 @@ for one-off changes to public/, api/, and functions/ definitions.
 import argparse
 import logging
 import sys
+from collections import deque
 from pathlib import Path
 
 import dlt
@@ -86,13 +87,20 @@ def run_migration(sql_file: Path, conn, dry_run: bool = False) -> None:
         print(sql)
         return
 
+    # Surface server-side RAISE NOTICE output (validation files and probes
+    # report through it); psycopg2's default notices list caps at 50.
+    conn.notices = deque(maxlen=500)
     cursor = conn.cursor()
     try:
         cursor.execute(sql)
         conn.commit()
+        for notice in conn.notices:
+            logger.info(f"  {notice.strip()}")
         logger.info(f"  {sql_file.name} completed successfully")
     except Exception as e:
         conn.rollback()
+        for notice in conn.notices:
+            logger.info(f"  {notice.strip()}")
         logger.error(f"  {sql_file.name} FAILED: {e}")
         raise
     finally:

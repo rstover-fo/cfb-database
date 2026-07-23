@@ -73,6 +73,8 @@ TEAM_HISTORY_COLUMNS = {
     "avg_margin",
     "sp_rating",
     "sp_rank",
+    "sp_offense",
+    "sp_defense",
     "elo",
     "fpi",
     "epa_per_play",
@@ -497,6 +499,47 @@ COACH_RECORDS_COLUMNS = {
     "seasons_with_ats_data",
 }
 
+PENALTY_LOG_COLUMNS = {
+    "play_id",
+    "game_id",
+    "season",
+    "week",
+    "season_type",
+    "period",
+    "down",
+    "distance",
+    "offense",
+    "defense",
+    "play_type",
+    "is_penalty_play_type",
+    "penalized_team",
+    "benefiting_team",
+    "infraction",
+    "penalty_yards",
+    "declined",
+    "offsetting",
+    "no_play",
+    "multi_penalty",
+    "yards_gained",
+    "ppa",
+    "play_text",
+    "parse_ok",
+}
+
+TEAM_PENALTIES_COLUMNS = {
+    "game_id",
+    "season",
+    "week",
+    "season_type",
+    "team",
+    "opponent",
+    "home_away",
+    "penalties",
+    "penalty_yards",
+    "opponent_penalties",
+    "opponent_penalty_yards",
+}
+
 # ---------------------------------------------------------------------------
 # Test: views exist and return rows
 # ---------------------------------------------------------------------------
@@ -537,6 +580,10 @@ class TestViewsExistAndReturnRows:
             # Coach x team career grain -- coaches x schools over the loaded
             # coaching era (ref.coaches__seasons), conservative floor.
             ("api.coach_records", 200),
+            # Penalty layer: ~5-15K penalty-type plays per season 2004+, plus
+            # embedded mentions; box rows = 2 per game with team stats loaded.
+            ("api.penalty_log", 100000),
+            ("api.team_penalties", 30000),
         ],
         ids=[
             "team_detail",
@@ -556,6 +603,8 @@ class TestViewsExistAndReturnRows:
             "team_week_features",
             "adjusted_epa_week",
             "coach_records",
+            "penalty_log",
+            "team_penalties",
         ],
     )
     def test_view_returns_rows(self, db_conn, view_name, min_rows):
@@ -598,6 +647,8 @@ class TestViewColumns:
             ("api.live_scoreboard", LIVE_SCOREBOARD_COLUMNS),
             ("api.adjusted_epa_week", ADJUSTED_EPA_WEEK_COLUMNS),
             ("api.coach_records", COACH_RECORDS_COLUMNS),
+            ("api.penalty_log", PENALTY_LOG_COLUMNS),
+            ("api.team_penalties", TEAM_PENALTIES_COLUMNS),
         ],
         ids=[
             "team_detail",
@@ -621,6 +672,8 @@ class TestViewColumns:
             "live_scoreboard",
             "adjusted_epa_week",
             "coach_records",
+            "penalty_log",
+            "team_penalties",
         ],
     )
     def test_columns_present(self, db_conn, view_name, expected_columns):

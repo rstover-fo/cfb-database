@@ -32,7 +32,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-      - run: pip install -e ".[dev,compute]"
+      - run: pip install -e ".[dev,compute,flatfiles]"
       - run: pytest -q --tb=short
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}

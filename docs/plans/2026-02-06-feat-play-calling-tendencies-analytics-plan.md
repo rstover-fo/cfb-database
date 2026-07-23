@@ -402,46 +402,64 @@ Update `scripts/refresh_marts.py` MARTS_VIEWS list to include 2 new matviews + `
 class TestTeamPlaycallingTendencies:
     def test_score_diff_buckets_valid(self, db_conn):
         """All score_diff_bucket values in expected set."""
+
     def test_run_rate_shift(self, db_conn):
         """Avg run_rate for big_lead > avg run_rate for big_deficit (league-wide)."""
+
     def test_no_garbage_time_plays(self, db_conn):
         """Spot-check: compare row count vs play_epa filtered count."""
+
     def test_all_fbs_teams_present(self, db_conn):
         """At least 100 distinct teams per recent season."""
+
 
 class TestTeamSituationalSuccess:
     def test_success_rate_range(self, db_conn):
         """All non-NULL success_rate between 0 and 1."""
+
     def test_min_play_threshold(self, db_conn):
         """Rows with total_plays < 10 have NULL success_rate."""
+
     def test_yardage_success_only_on_third_fourth(self, db_conn):
         """yardage_success_rate NULL when down NOT IN (3, 4)."""
+
     def test_epa_range(self, db_conn):
         """avg_epa between -2.0 and 2.0 for all rows."""
+
 
 class TestTeamPlaycallingProfile:
     def test_one_row_per_team_season(self, db_conn):
         """No duplicates on (team, season)."""
+
     def test_percentiles_range(self, db_conn):
         """All non-NULL percentiles between 0 and 1."""
+
     def test_percentile_span(self, db_conn):
         """At least one team at 0.0 and one at ~1.0 for each metric."""
+
     def test_run_rate_delta_calculation(self, db_conn):
         """run_rate_delta = leading_run_rate - trailing_run_rate."""
+
     def test_pace_range(self, db_conn):
         """pace_plays_per_game between 40 and 120."""
+
     def test_conference_populated(self, db_conn):
         """Conference not NULL for FBS teams."""
+
     def test_profile_query_performance(self, db_conn):
         """Single-team query completes in < 200ms."""
+
 
 class TestApiViewExists:
     def test_profile_view_exists(self, db_conn):
         """api.team_playcalling_profile exists in pg_views."""
+
     def test_profile_returns_rows(self, db_conn):
         """api.team_playcalling_profile returns > 0 rows."""
+
     def test_profile_columns(self, db_conn):
         """Expected column set matches."""
+
     def test_filter_pushdown(self, db_conn):
         """WHERE team = 'Ohio State' returns exactly one row per season."""
 ```

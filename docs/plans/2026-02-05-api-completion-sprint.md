@@ -103,10 +103,12 @@ def test_play_stats_pk(self):
     config = STATS_ENDPOINTS["play_stats"]
     assert config.primary_key == ["game_id", "play_id", "athlete_id", "stat_type"]
 
+
 def test_game_havoc_pk(self):
     """game_havoc needs game_id + team composite PK."""
     config = STATS_ENDPOINTS["game_havoc"]
     assert config.primary_key == ["game_id", "team"]
+
 
 def test_team_ats_pk(self):
     """team_ats needs year + team_id composite PK."""

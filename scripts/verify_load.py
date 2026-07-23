@@ -20,6 +20,10 @@ Checks:
     5. marts.data_freshness is_stale flags -- heuristic only: the matview infers
        freshness from pg_stat vacuum/analyze timestamps, so staleness WARNs
        off-season and FAILs in-season (or with --strict)
+    6. ratings.massey_composite has a recent, full-coverage snapshot for the
+       season (in-season only; WARNs if migration 041 isn't applied yet)
+    7. meta.flat_file_loads has a recent successful 'availability' load
+       (in-season only; never FAILs -- external conference sites are flaky)
 
 Pre-season semantics: with no completed games, checks 3-4 pass vacuously and
 check 2 is the meaningful one (schedules publish in July, so core.games must
@@ -156,6 +160,129 @@ def check_completed_have_plays(cur, season: int, report: Report) -> None:
     )
 
 
+def _current_in_season() -> bool:
+    """Wrapper around is_in_season(now); a thin seam tests can monkeypatch."""
+    from datetime import datetime
+
+    return is_in_season(datetime.now().month)
+
+
+def evaluate_snapshot_freshness(
+    days_old: int | None, in_season: bool, warn_days: int, fail_days: int
+) -> str:
+    """Grade the age of the latest snapshot in a weekly-refreshed table.
+
+    Off-season, staleness is expected and never graded. In-season, no
+    snapshots at all (days_old is None) only WARNs -- the subsystem may be
+    newly deployed and shouldn't fail an otherwise-healthy load.
+    """
+    if not in_season:
+        return PASS
+    if days_old is None:
+        return WARN
+    if days_old <= warn_days:
+        return PASS
+    if days_old <= fail_days:
+        return WARN
+    return FAIL
+
+
+def evaluate_snapshot_team_count(count: int | None, in_season: bool) -> str:
+    """Grade team coverage of the latest snapshot.
+
+    A partial snapshot is worse than none -- it signals a parser/crosswalk
+    problem rather than a simply-missing load -- so this is stricter than
+    evaluate_snapshot_freshness about low (but present) counts.
+    """
+    if not in_season or count is None:
+        return PASS
+    if count >= 120:
+        return PASS
+    if count >= 100:
+        return WARN
+    return FAIL
+
+
+def check_massey_composite(cur, season: int, report: Report) -> None:
+    # Migration 041 may not be applied yet; to_regclass returns NULL for a
+    # missing relation instead of raising, so no transaction-poisoning risk.
+    cur.execute("SELECT to_regclass('ratings.massey_composite')")
+    if cur.fetchone()[0] is None:
+        report.record(WARN, "massey_composite", "table absent (migration 041 not applied)")
+        return
+
+    in_season = _current_in_season()
+
+    cur.execute(
+        "SELECT MAX(snapshot_date) FROM ratings.massey_composite WHERE season = %s", (season,)
+    )
+    latest = cur.fetchone()[0]
+
+    days_old = None
+    team_count = None
+    if latest is not None:
+        from datetime import date
+
+        days_old = (date.today() - latest).days
+        cur.execute(
+            """
+            SELECT COUNT(*) FROM ratings.massey_composite
+            WHERE season = %s AND snapshot_date = %s
+            """,
+            (season, latest),
+        )
+        team_count = cur.fetchone()[0]
+
+    report.record(
+        evaluate_snapshot_freshness(days_old, in_season, warn_days=8, fail_days=14),
+        "massey_freshness",
+        f"latest snapshot {latest} ({days_old if days_old is not None else 'n/a'} days old)",
+    )
+    report.record(
+        evaluate_snapshot_team_count(team_count, in_season),
+        "massey_team_count",
+        f"{team_count if team_count is not None else 'n/a'} team(s) in latest snapshot",
+    )
+
+
+def check_availability_archive(cur, season: int, report: Report) -> None:
+    # Same missing-migration guard as check_massey_composite.
+    cur.execute("SELECT to_regclass('meta.flat_file_loads')")
+    if cur.fetchone()[0] is None:
+        report.record(WARN, "availability_archive", "table absent (migration 041 not applied)")
+        return
+
+    in_season = _current_in_season()
+
+    cur.execute(
+        """
+        SELECT MAX(loaded_at) FROM meta.flat_file_loads
+        WHERE source = 'availability' AND status = 'loaded'
+        """
+    )
+    latest = cur.fetchone()[0]
+
+    if not in_season:
+        report.record(PASS, "availability_archive", f"off-season, latest load {latest}")
+        return
+
+    if latest is None:
+        report.record(WARN, "availability_archive", "no successful availability load recorded")
+        return
+
+    from datetime import UTC, datetime
+
+    days_old = (datetime.now(UTC) - latest).days
+    # Never FAIL: external conference/archive sites are flaky and staleness
+    # here must not fail the whole daily load.
+    status = PASS if days_old <= 8 else WARN
+    report.record(
+        status,
+        "availability_archive",
+        f"latest load {days_old} day(s) old (source=availability)",
+    )
+
+
 def check_freshness(cur, in_season: bool, strict: bool, report: Report) -> None:
     cur.execute(
         """
@@ -197,6 +324,8 @@ def verify(season: int, strict: bool) -> int:
             check_completed_have_team_stats(cur, season, report)
             check_completed_have_plays(cur, season, report)
             check_freshness(cur, in_season, strict, report)
+            check_massey_composite(cur, season, report)
+            check_availability_archive(cur, season, report)
     finally:
         conn.close()
 

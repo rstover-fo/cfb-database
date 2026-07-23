@@ -29,7 +29,6 @@ config: RESTAPIConfig = {
         # Simple endpoint (name = path)
         "conferences",
         "venues",
-
         # Configured endpoint
         {
             "name": "games",
@@ -97,7 +96,7 @@ pipeline = dlt.pipeline(
     destination=dlt.destinations.postgres(
         "postgresql://postgres.xxxxx:<password>@db.xxxxx.supabase.co:5432/postgres"
     ),
-    dataset_name="cfbd"
+    dataset_name="cfbd",
 )
 ```
 

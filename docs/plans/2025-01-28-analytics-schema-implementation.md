@@ -69,6 +69,7 @@ Create `tests/test_sources/test_rosters.py`:
 import pytest
 from unittest.mock import patch, MagicMock
 
+
 def test_rosters_resource_yields_players():
     """Roster endpoint should yield player records with team/year context."""
     from src.pipelines.sources.rosters import rosters_resource
@@ -113,6 +114,7 @@ Create `src/pipelines/sources/rosters.py`:
 
 ```python
 """Roster data source - team rosters by season."""
+
 import dlt
 from typing import Iterator, List
 
@@ -182,6 +184,7 @@ def rosters_source(
     if teams is None:
         # Load FBS teams from database or config
         from src.pipelines.config.teams import get_fbs_teams
+
         teams = get_fbs_teams()
 
     return rosters_resource(teams=teams, years=years, rate_limiter=rate_limiter)
@@ -230,6 +233,7 @@ Create `tests/test_sources/test_rankings.py`:
 import pytest
 from unittest.mock import patch
 
+
 def test_rankings_resource_yields_poll_data():
     """Rankings endpoint should yield poll rankings by week."""
     from src.pipelines.sources.rankings import rankings_resource
@@ -243,11 +247,23 @@ def test_rankings_resource_yields_poll_data():
                 {
                     "poll": "AP Top 25",
                     "ranks": [
-                        {"rank": 1, "school": "Georgia", "conference": "SEC", "firstPlaceVotes": 55, "points": 1550},
-                        {"rank": 2, "school": "Ohio State", "conference": "Big Ten", "firstPlaceVotes": 8, "points": 1492},
-                    ]
+                        {
+                            "rank": 1,
+                            "school": "Georgia",
+                            "conference": "SEC",
+                            "firstPlaceVotes": 55,
+                            "points": 1550,
+                        },
+                        {
+                            "rank": 2,
+                            "school": "Ohio State",
+                            "conference": "Big Ten",
+                            "firstPlaceVotes": 8,
+                            "points": 1492,
+                        },
+                    ],
                 }
-            ]
+            ],
         }
     ]
 
@@ -276,6 +292,7 @@ Create `src/pipelines/sources/rankings.py`:
 
 ```python
 """Rankings data source - AP/Coaches poll rankings by week."""
+
 import dlt
 from typing import Iterator, List
 
@@ -410,7 +427,12 @@ def test_wepa_team_season_resource():
     from src.pipelines.sources.wepa import wepa_team_season_resource
 
     mock_response = [
-        {"team": "Alabama", "year": 2024, "offense": {"overall": 0.25}, "defense": {"overall": -0.15}},
+        {
+            "team": "Alabama",
+            "year": 2024,
+            "offense": {"overall": 0.25},
+            "defense": {"overall": -0.15},
+        },
     ]
 
     with patch("src.pipelines.sources.wepa.get_api_client") as mock_client:
@@ -922,6 +944,7 @@ For each API view from the design:
 ```python
 #!/usr/bin/env python3
 """Refresh all materialized views in dependency order."""
+
 import os
 import psycopg2
 from datetime import datetime
@@ -943,6 +966,7 @@ MARTS = [
     "marts.conference_standings",
 ]
 
+
 def refresh_marts(concurrently: bool = True):
     """Refresh all materialized views."""
     conn = psycopg2.connect(DATABASE_URL)
@@ -963,8 +987,10 @@ def refresh_marts(concurrently: bool = True):
     cur.close()
     conn.close()
 
+
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-concurrent", action="store_true", help="Don't use CONCURRENTLY")
     args = parser.parse_args()

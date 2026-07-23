@@ -1,0 +1,9 @@
+{
+  "action": "apply",
+  "marts_from": "041",
+  "files": [
+    "src/schemas/api/039_penalty_log.sql",
+    "src/schemas/api/040_team_penalties.sql",
+    "src/schemas/api/validation_penalties.sql"
+  ]
+}

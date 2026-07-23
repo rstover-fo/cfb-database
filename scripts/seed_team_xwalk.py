@@ -30,6 +30,7 @@ import argparse
 import csv
 import difflib
 import logging
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -49,16 +50,14 @@ def normalize_name(name: str) -> str:
     return " ".join(name.strip().split()).casefold()
 
 
-ABBREV_RULES = {
-    # Trailing/embedded " st" → " state"
-    " st": " state",
-    " st.": " state",
-    # "univ" → "university" (rare but helps "miami univ" cases)
-    " univ": " university",
-    " univ.": " university",
-    # Ampersand HTML entity (from some sources)
-    "&amp;": "&",
-}
+ABBREV_RULES = [
+    # Order matters: check dotted version first, then undotted
+    (" st.", " state"),
+    (" st", " state"),
+    (" univ.", " university"),
+    (" univ", " university"),
+    ("&amp;", "&"),
+]
 
 
 def expand_abbrevs(name: str) -> str:
@@ -73,49 +72,50 @@ def expand_abbrevs(name: str) -> str:
     Pure function; operates on already-normalized names.
     """
     expanded = name
-    # Apply simple abbreviation rules
-    for abbrev, expansion in ABBREV_RULES.items():
-        expanded = expanded.replace(abbrev, expansion)
+    # Apply simple abbreviation rules.
+    # Strategy: replace abbreviations in a careful order to avoid double-replacement.
+    # For abbreviations ending in punctuation (like " st."), replace first.
+    # For abbreviations without punctuation, use negative lookahead to avoid
+    # matching partial words.
+
+    # Handle "&amp;" specially (not a word-boundary issue)
+    expanded = expanded.replace("&amp;", "&")
+
+    # Handle " st." before " st" to avoid double-replacement
+    expanded = re.sub(r" st\.$", " state", expanded)  # at end of string
+    expanded = re.sub(r" st\. ", " state ", expanded)  # in middle
+
+    # Handle " st" (not preceded by a letter to avoid matching " state")
+    expanded = re.sub(r" st$", " state", expanded)  # at end of string
+    expanded = re.sub(r" st([^a-z])", r" state\1", expanded)  # followed by non-letter
+
+    # Handle " univ." and " univ" similarly
+    expanded = re.sub(r" univ\.$", " university", expanded)
+    expanded = re.sub(r" univ\. ", " university ", expanded)
+    expanded = re.sub(r" univ$", " university", expanded)
+    expanded = re.sub(r" univ([^a-z])", r" university\1", expanded)
 
     # Handle parenthetical state qualifiers: miami oh/miami-ohio → miami (oh)
     # Check for state abbreviations like " oh", " fl", " ca" at word boundaries
     # and convert them to parenthetical form
-    state_abbrevs = {
-        "oh": "oh",
-        "fl": "fl",
-        "ca": "ca",
-        "tx": "tx",
-        "ga": "ga",
-        "nc": "nc",
-        "sc": "sc",
-        "la": "la",
-        "pa": "pa",
-        "ny": "ny",
-        "ma": "ma",
-        "az": "az",
-        "nv": "nv",
-        "co": "co",
-        "mi": "mi",
-        "mn": "mn",
-        "ut": "ut",
-        "nm": "nm",
-        "ok": "ok",
-        "ia": "ia",
-        "il": "il",
-        "mo": "mo",
-    }
+    state_abbrevs = [
+        "oh", "fl", "ca", "tx", "ga", "nc", "sc", "la", "pa", "ny", "ma", "az",
+        "nv", "co", "mi", "mn", "ut", "nm", "ok", "ia", "il", "mo",
+    ]
 
-    for state_abbr in state_abbrevs.keys():
-        # Match patterns like "miami oh" or "miami-ohio" or "miami ohio"
-        # Convert to "miami (oh)"
-        for sep in [" ", "-"]:
-            pattern = f"{sep}{state_abbr}"
-            if pattern in expanded:
-                # Replace the last occurrence (to handle "ohio state ohio" correctly)
-                parts = expanded.rsplit(pattern, 1)
-                if len(parts) == 2:
-                    expanded = parts[0] + f" ({state_abbr})" + parts[1]
-                break
+    for state_abbr in state_abbrevs:
+        # Match patterns like " oh" or "-oh" followed by end of string
+        # Convert to " (oh)"
+        # Try space separator first
+        pattern_space = r" " + re.escape(state_abbr) + r"$"
+        if re.search(pattern_space, expanded):
+            expanded = re.sub(pattern_space, f" ({state_abbr})", expanded)
+            continue
+
+        # Try dash separator
+        pattern_dash = r"-" + re.escape(state_abbr) + r"$"
+        if re.search(pattern_dash, expanded):
+            expanded = re.sub(pattern_dash, f" ({state_abbr})", expanded)
 
     return expanded
 

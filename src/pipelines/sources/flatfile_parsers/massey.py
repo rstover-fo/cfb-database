@@ -76,9 +76,7 @@ def _parse_thru_date(lines: list[str]) -> date:
     try:
         return datetime.strptime(f"{month_name} {day} {year}", "%B %d %Y").date()
     except ValueError as e:
-        raise ParserStructureError(
-            f"massey line 2: unparseable thru-date {thru_line!r}"
-        ) from e
+        raise ParserStructureError(f"massey line 2: unparseable thru-date {thru_line!r}") from e
 
 
 def _skip_blank(lines: list[str], idx: int) -> int:

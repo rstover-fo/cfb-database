@@ -9,11 +9,12 @@
 --   * SET LOCAL ROLE + read-only persist to end-of-transaction after the
 --     first call (harmless: later calls run as analyst_ro, which holds
 --     EXECUTE for exactly this reason);
---   * a write CTE against an api view dies as "cannot delete from view"
---     (55000 object_not_in_prerequisite_state -- api views wrap matviews
---     and are not auto-updatable), which blocks writes even before the
---     role/read-only layers get their turn; against a real table it dies
---     at the permission layer. All three error classes are accepted.
+--   * write CTEs cannot even PARSE through the RPC: the row-cap wrapper
+--     nests the query in a subquery, and Postgres requires data-modifying
+--     CTEs to be at top level (0A000 feature_not_supported) -- rejection
+--     happens before updatability, permissions, or read-only get a turn.
+--     Those deeper layers still back it up, so all four error classes are
+--     accepted below.
 
 DO $$
 DECLARE
@@ -58,21 +59,22 @@ BEGIN
         NULL;
     END;
 
-    -- Write CTEs: blocked by non-updatable views (55000) against api,
-    -- and by permissions/read-only against anything else.
+    -- Write CTEs: structurally unparseable through the wrapper (0A000),
+    -- with view-updatability, permissions, and read-only behind it.
     BEGIN
         PERFORM public.run_analyst_query(
             'WITH w AS (DELETE FROM api.team_elo RETURNING *) SELECT * FROM w');
         RAISE EXCEPTION 'write CTE (api view) was not blocked';
-    EXCEPTION WHEN insufficient_privilege OR read_only_sql_transaction
-              OR object_not_in_prerequisite_state THEN
+    EXCEPTION WHEN feature_not_supported OR insufficient_privilege
+              OR read_only_sql_transaction OR object_not_in_prerequisite_state THEN
         NULL;
     END;
     BEGIN
         PERFORM public.run_analyst_query(
             'WITH w AS (DELETE FROM core.games RETURNING id) SELECT * FROM w');
         RAISE EXCEPTION 'write CTE (core table) was not blocked';
-    EXCEPTION WHEN insufficient_privilege OR read_only_sql_transaction THEN
+    EXCEPTION WHEN feature_not_supported OR insufficient_privilege
+              OR read_only_sql_transaction THEN
         NULL;
     END;
 

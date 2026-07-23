@@ -417,7 +417,7 @@ class TestEndToEndCli:
                 "python",
                 "scripts/seed_team_xwalk.py",
                 "--source",
-                "test_source",
+                "massey",
                 "--names-file",
                 str(names_file),
                 "--teams-file",
@@ -432,7 +432,7 @@ class TestEndToEndCli:
 
         assert result.returncode == 0, f"stderr: {result.stderr}"
         sql = out_file.read_text()
-        assert "'test_source'" in sql
+        assert "'massey'" in sql
         assert "INSERT INTO" in sql
 
     def test_sql_output_parses_as_valid_syntax(self, tmp_path):

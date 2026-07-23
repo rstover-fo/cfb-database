@@ -15,6 +15,26 @@ Last updated: 2026-07-23
 
 ## Recent Contract Changes
 
+- **2026-07-23 — Penalty analytics layer: `api.penalty_log` + `api.team_penalties`
+  added.** Discord users asked the bot for holding-call counts; nothing
+  penalty-related existed in any exposed surface even though the warehouse
+  held the raw material. Two new marts + views: `marts.team_penalty_box` /
+  `api.team_penalties` pivot the official box-score `totalPenaltiesYards`
+  EAV rows into per-(game, team) `penalties`/`penalty_yards` (+ opponent
+  columns); `marts.penalty_log` / `api.penalty_log` derive a play-level
+  penalty event log from `core.plays` (2004+) with BEST-EFFORT parsed
+  `infraction`, `penalized_team`/`benefiting_team`, `penalty_yards`,
+  `declined`/`offsetting`/`no_play` flags out of free-text `play_text`
+  (four provider formats verified by live probe; unmatched rows classify as
+  `'Unknown'`/NULL — unclassified, not absent; filter `parse_ok` for
+  fully-attributed rows and treat counts as floors). Coverage floors
+  (≥90% infraction, ≥50% attribution for seasons ≥2022) plus a
+  box-vs-`stats.team_season_stats` cross-check are enforced by the
+  re-runnable `src/schemas/api/validation_penalties.sql`. Consumers: reach
+  via PostgREST or `run_analyst_query`; see
+  `docs/handoffs/2026-07-23-penalty-views-for-bot.md` for bot wiring and a
+  worked holding-calls query.
+
 - **2026-07-23 — `api.team_history` gains `sp_offense`/`sp_defense` (additive,
   no consumer action needed); api-wide grant hardening.** A Discord user asked
   the bot for the defensive SP+ arc since 2022 and the bot concluded the
@@ -395,6 +415,8 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.matchup` | **Deployed** | 11,975 | Head-to-head matchup history and current season comparison. Columns: team1, team2, total_games, team1_wins, team2_wins, ties, first_meeting, last_meeting, recent_results (JSONB array), team1/team2 current season stats |
 | `api.leaderboard_teams` | **Deployed** | 3,667 | Team leaderboard with rankings, ratings, EPA. Columns: team, conference, season, classification, wins, losses, win_pct, ppg, opp_ppg, sp_rank, epa_per_play, epa_tier, wins_rank, ppg_rank, defense_ppg_rank, epa_rank. Rank columns are scoped `PARTITION BY season, classification` (see 2026-07-22 changelog entry) -- all rows still returned, no `WHERE fbs` filter. |
 | `api.roster_lookup` | **Deployed** | 340,855 | Stable roster view for player matching |
+| `api.penalty_log` | **Deployed** | ~250K | Play-derived penalty events (2004+), best-effort parsed from play_text. Columns: play_id, game_id, season, week, season_type, period, down, distance, offense, defense, play_type, is_penalty_play_type, penalized_team, benefiting_team, infraction, penalty_yards, declined, offsetting, no_play, multi_penalty, yards_gained, ppa, play_text, parse_ok. 'Unknown'/NULL = unclassified, not absent (see 2026-07-23 changelog). |
+| `api.team_penalties` | **Deployed** | ~42K | Official box-score penalty counts per (game, team) from totalPenaltiesYards. Columns: game_id, season, week, season_type, team, opponent, home_away, penalties, penalty_yards, opponent_penalties, opponent_penalty_yards. |
 | `api.recruit_lookup` | **Deployed** | 67,179 | Stable recruiting view for recruit data |
 | `api.player_season_leaders` | **Deployed** | 152,966 | Season stat leaders by category (passing, rushing, receiving, defensive). Columns: season, category, player_id, player_name, team, yards, touchdowns, interceptions, pct, attempts, completions, carries, yards_per_carry, receptions, yards_per_reception, longest, total_tackles, solo_tackles, sacks, tackles_for_loss, passes_defended, yards_rank |
 | `api.player_detail` | **Deployed** | 340,878 | Single player page: bio, recruiting, season stats, PPA. Columns: player_id, name, team, position, season, height, weight, jersey, home_city, home_state, stars, recruit_rating, national_ranking, recruit_class, pass_att, pass_cmp, pass_yds, pass_td, pass_int, pass_pct, rush_car, rush_yds, rush_td, rush_ypc, rec, rec_yds, rec_td, rec_ypr, tackles, sacks, tfl, pass_def, ppa_avg, ppa_total |

@@ -364,6 +364,41 @@ CASE expressions, following the `seed_team_xwalk.py` precedent. Note
 the crosswalk must handle unmapped values explicitly, not silently drop them
 (dropping them would inflate continuity denominators).
 
+### 2.4b Draft production — program-level, available in July
+
+"Draft picks produced" is available today: `draft.draft_picks` carries
+`college_team`, `year`, `round`, `overall`, and `position`, and the 2026 draft
+(257 picks) is already loaded.
+
+Two distinct signals live here and **must not be collapsed into one column** —
+they have opposite signs:
+
+| Column | Meaning | Expected sign |
+|---|---|---|
+| `draft_picks_3yr` / `draft_picks_5yr` | picks produced in S−1…S−3 (excludes S) | **+** program talent/development index |
+| `draft_capital_3yr` | round-weighted equivalent | **+** |
+| `draft_departures` (already planned) | picks lost in year S | **−** talent that just left |
+
+A team that produced nine picks over three years is a program that recruits and
+develops NFL players. A team that lost six picks *this* April just lost its
+best players. The same underlying table, opposite implications for season S.
+Conflating them would net the effects to roughly zero — which may well be part
+of why raw draft counts look unpredictive in naive tests.
+
+**The development synthesis.** This connects directly to `dev_index` (§2.3):
+draft picks produced *relative to recruiting rank* is a cleaner development
+measure than either alone. A program signing 30th-ranked classes and producing
+top-10 draft output is developing; the reverse is squandering. Ship this as
+`draft_yield` — picks produced over 3 years residualized against 3-year
+recruiting points — and prefer it over the raw count if the §2.5 screen shows
+the raw count is just re-expressing recruiting talent.
+
+**Honest caveat:** raw draft production is heavily confounded with
+`talent_composite` and prior SP+, and may add little beyond them. It goes
+through the same §2.5 partial-correlation screen as everything else, and
+`draft_yield` is the variant most likely to survive it precisely because
+residualizing removes the confound.
+
 ### 2.5 Validation gate — prove incremental value before building
 
 **This gate exists because the naive version of the thesis already failed a
@@ -651,6 +686,91 @@ week kicks off."
 
 ---
 
+## Phase 6 — Draft prospect capital on current rosters
+
+Goal: answer "how much NFL talent is on this roster **right now**" — a
+forward-looking prospectus, as distinct from §2.4b's backward-looking record of
+picks already produced.
+
+### 6.1 There is no source for this — it has to be derived
+
+Verified: every draft-related source in or scouted for this warehouse is
+**retrospective**.
+
+- `draft.draft_picks` — players already drafted
+- `draft.combine` / `draft.nflverse_draft_picks` (flat-file, already loaded) —
+  post-season measurables, 1980+/2000+
+- `docs/brainstorms/2026-07-23-warehouse-extension-data-sources.md` §4 scouted
+  the talent pipeline in depth and surfaced **no forward-looking prospect
+  board**
+
+The one pre-draft evaluation present is `draft.draft_picks.pre_draft_ranking`,
+`pre_draft_position_ranking`, and `pre_draft_grade` — but those exist only for
+players who *were* drafted, only in their draft year. Using them as a roster
+feature would be textbook survivorship bias: the players who busted have no row.
+
+External consensus boards (NFL Mock Draft Database, PFF, Kiper, Brugler) are
+paywalled, ToS-risky, or both — the same category the source-scouting doc
+flagged as "high value, high risk" for On3. Not a dependency worth taking for a
+signal we can derive internally.
+
+### 6.2 Derive it — `predictions.draft_probability`
+
+This is a clean supervised-learning problem with a real, already-loaded label.
+`draft.draft_picks.college_athlete_id` is the outcome key, and it joins to
+`core.roster.id` and `recruiting.recruits.athlete_id`.
+
+**Label:** for each (player, season) on a roster, did that player get drafted
+within the following 3 NFL drafts?
+
+**Features** (all knowable before season S):
+- recruiting: `stars`, `rating`, `ranking` from `recruiting.recruits`
+- position group (`ref.position_groups`, §2.4)
+- class standing / years on roster (derived from `core.roster` history)
+- production: `stats.player_usage`, `marts.player_season_epa`,
+  `stats.player_season_stats` through S−1
+- physical: height/weight from `core.roster`
+- program: `draft_picks_3yr` (§2.4b) — programs do place players
+
+**Model:** logistic regression, reusing the IRLS + Platt core already in
+`train_model.py` rather than adding a dependency. Walk-forward by season, same
+protocol as §3 of the design doc. Coefficients land in
+`features.model_coefficients` under `model_version = 'draft_prob_v1'` — no new
+DDL for the fit itself.
+
+**Team feature:** `Σ P(drafted)` over the season-S roster, plus a
+blue-chip-weighted variant and a trenches-only variant
+(`ol_draft_capital`, `dl_draft_capital`) — which is precisely the "NFL talent
+in the trenches" measure the thesis wants and that nothing else in the plan
+delivers.
+
+### 6.3 The roster dependency is real
+
+This requires the season-S roster, so like §2.2's continuity features it
+**cannot run for 2026 until CFBD publishes 2026 rosters** (~August). The July
+fallback is the recruiting-based approximation already in Phase 2
+(`talent_composite`, `recruiting_points_3yr`, `draft_picks_3yr`), all of which
+are program-level rather than roster-level.
+
+This is why Phase 6 is last: it is the highest-effort, highest-latency, and
+most speculative item in the plan. It should not block the outlook shipping.
+
+### 6.4 Phase 6 gates
+
+- Backtest: AUC and calibration of `draft_prob_v1` on held-out seasons,
+  walk-forward. A model that cannot separate drafted from undrafted players
+  better than recruiting stars alone is not worth its complexity — that is the
+  stopping rule.
+- Join-rate audit: what fraction of roster rows resolve to a recruit record and
+  to a draft outcome. `core.roster` carries ~1,189 NULL positions per season and
+  the recruit join is via `athlete_id`; both need measuring before trusting any
+  team-level sum. **Unverified in this session** (SQL access was approval-gated
+  before it could be checked) — this is the first task of Phase 6.
+- §2.5 partial-correlation screen on the resulting team-level columns, same as
+  every other candidate feature.
+
+---
+
 ## File inventory
 
 **New**
@@ -665,6 +785,9 @@ src/schemas/migrations/044_position_groups.sql   # ref.position_groups crosswalk
 scripts/simulate_season.py
 scripts/probe_offseason_availability.py
 scripts/screen_preseason_features.py             # §2.5 partial-correlation gate
+scripts/train_draft_probability.py               # Phase 6 player-level model
+src/schemas/migrations/045_draft_probability.sql # predictions.draft_probability
+tests/test_draft_probability.py
 tests/test_simulate_season.py
 tests/test_preseason_model.py
 tests/test_position_groups.py
@@ -704,13 +827,24 @@ Phase 1  (independent)          -> 2026 fitted_v1 numbers exist
         +-- Phase 5             -> api + MCP surface
 ```
 
+Phase 6 (draft prospect capital) hangs off Phase 2's crosswalk and feeds team-
+level columns back into it, but gates on August roster publication and is
+deliberately last.
+
 Phase 4 deliberately depends only on Phase 1. If Phases 2–3 stall on CFBD data
 availability, the simulator still ships on `fitted_v1` and the outlook product
 still lands.
 
-**Recommended sequencing:** Phase 1 → Phase 4 → Phase 5 → Phase 2 → Phase 3.
-This puts a working 2026 outlook in front of users before the model-quality
-work, and Phases 2–3 then improve a surface that already exists.
+**Recommended sequencing:** Phase 1 → Phase 4 → Phase 5 → Phase 2 → Phase 3 →
+Phase 6. This puts a working 2026 outlook in front of users before the
+model-quality work, and Phases 2–3 then improve a surface that already exists.
+
+**July/August split across the whole plan.** Everything shippable before rosters
+publish: Phases 1, 4, 5, and the churn/line-play/draft-production half of Phase
+2. Everything gated on August rosters: Phase 2's continuity and
+`returning_qb_usage` columns, and all of Phase 6. Sequencing the roster-
+dependent work last is not a preference — it is the only order the calendar
+allows.
 
 ---
 
@@ -728,6 +862,10 @@ work, and Phases 2–3 then improve a surface that already exists.
 | 2026 rosters unpublished until August | July outlook runs on churn features; continuity columns carry `trench_source`/`qb_source` provenance and a pre-roster fallback |
 | `transfer_portal.season` semantics ambiguous | Confirm direction (arriving-for-S vs departed-after-S) before any portal feature ships — a sign error here silently inverts the entire trench signal |
 | Position vocabularies differ across four sources | `ref.position_groups` crosswalk with explicit unmapped handling; NULL/`'?'` positions must not deflate continuity denominators |
+| No forward-looking draft prospect source exists | Derive `draft_prob_v1` internally (§6.2); external boards are paywalled/ToS-risky and not worth the dependency |
+| `pre_draft_grade` looks like a prospect feature but is survivorship-biased | Only drafted players have rows; explicitly excluded as a roster feature (§6.1) |
+| Draft production confounded with recruiting talent | Split into produced-vs-departed with opposite signs (§2.4b); prefer `draft_yield` (residualized) over raw counts |
+| Roster→recruit→draft join rates unmeasured | Hard gate before any team-level draft-capital sum is trusted (§6.4) |
 | Design-doc drift | Migration 028's header forbids column changes without a doc update; §2.4 is a hard prerequisite |
 
 **Open question for review:** should `playoff_prob` ship as NULL in v1 (my

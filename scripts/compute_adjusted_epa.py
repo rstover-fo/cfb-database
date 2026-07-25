@@ -366,10 +366,30 @@ def main() -> None:
         type=int,
         help="Fit a single season",
     )
+    group.add_argument(
+        "--incremental",
+        action="store_true",
+        help="Fit every projection season -- the most recent season with completed "
+        "games plus every later season with a published schedule "
+        "(src.pipelines.config.years.get_projection_seasons()). What the daily "
+        "workflow runs.",
+    )
     args = parser.parse_args()
 
     if args.season is not None:
         seasons = [args.season]
+    elif args.incremental:
+        # Resolved from core.games, not the calendar -- get_current_season()
+        # returns year-1 until August (see get_projection_seasons' docstring).
+        import psycopg2
+
+        from src.pipelines.config.years import get_projection_seasons
+
+        conn = psycopg2.connect(get_db_url())
+        try:
+            seasons = get_projection_seasons(conn)
+        finally:
+            conn.close()
     else:
         import psycopg2
 

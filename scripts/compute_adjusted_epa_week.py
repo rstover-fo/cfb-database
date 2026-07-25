@@ -346,16 +346,27 @@ def main() -> None:
     group.add_argument(
         "--incremental",
         action="store_true",
-        help="Fit only the current season (src.pipelines.config.years.get_current_season())",
+        help="Fit every projection season -- the most recent season with completed "
+        "games plus every later season with a published schedule "
+        "(src.pipelines.config.years.get_projection_seasons()).",
     )
     args = parser.parse_args()
 
     if args.season is not None:
         seasons = [args.season]
     elif args.incremental:
-        from src.pipelines.config.years import get_current_season
+        # Resolved from core.games, not the calendar -- get_current_season()
+        # returns year-1 until August, so a calendar-keyed --incremental never
+        # fits the upcoming season (see get_projection_seasons' docstring).
+        import psycopg2
 
-        seasons = [get_current_season()]
+        from src.pipelines.config.years import get_projection_seasons
+
+        conn = psycopg2.connect(get_db_url())
+        try:
+            seasons = get_projection_seasons(conn)
+        finally:
+            conn.close()
     else:
         import psycopg2
 

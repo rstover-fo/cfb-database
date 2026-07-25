@@ -246,6 +246,21 @@ def get_db_url() -> str:
     return url
 
 
+def _resolve_projection_seasons() -> list[int]:
+    """Open a short-lived connection to resolve `--incremental`'s target
+    seasons via src.pipelines.config.years.get_projection_seasons (which takes
+    a connection so the config module stays DB-free)."""
+    import psycopg2
+
+    from src.pipelines.config.years import get_projection_seasons
+
+    conn = psycopg2.connect(get_db_url())
+    try:
+        return get_projection_seasons(conn)
+    finally:
+        conn.close()
+
+
 # One big per-season SELECT: spine (both sides of every core.games row for
 # the season) plus every SQL-computable feature family (design doc sections
 # 1a, 1b-completed-games-only, 1d, 1e, 1f). Adjusted-EPA (1c) and the
@@ -687,7 +702,10 @@ def main() -> None:
     group.add_argument(
         "--incremental",
         action="store_true",
-        help="Build only the current season (src.pipelines.config.years.get_current_season())",
+        help="Build every projection season -- the most recent season with completed "
+        "games plus every later season with a published schedule "
+        "(src.pipelines.config.years.get_projection_seasons()). What the daily "
+        "workflow runs.",
     )
     args = parser.parse_args()
 
@@ -696,7 +714,11 @@ def main() -> None:
     if args.season is not None:
         seasons = [args.season]
     elif args.incremental:
-        seasons = [get_current_season()]
+        # Resolved from core.games, not the calendar: get_current_season()
+        # returns year-1 until August, which left features.team_week with zero
+        # rows for the upcoming season all offseason (see
+        # get_projection_seasons' docstring).
+        seasons = _resolve_projection_seasons()
     else:
         current_season = get_current_season()
         if args.from_season > current_season:

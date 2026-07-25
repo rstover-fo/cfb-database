@@ -692,6 +692,105 @@ Goal: answer "how much NFL talent is on this roster **right now**" — a
 forward-looking prospectus, as distinct from §2.4b's backward-looking record of
 picks already produced.
 
+Three tiers, each strictly more informative and strictly harder/later. **Tier A
+needs no roster and no subscription, so it ships in Phase 2's July window.**
+
+### 6.0 Tier A — hybrid pipeline × conversion index (July, backtests fully)
+
+A roster at time T is the accumulation of the last four-to-five recruiting
+classes plus portal, minus what has left. So model the *stock* without
+observing it:
+
+```
+talent_stock(S)   = decayed sum of recruiting class quality, S-1..S-4
+                    + portal_in(S) rating-weighted
+                    - draft_departures(S)
+                    - portal_out(S)
+conversion(S)     = draft picks produced S-1..S-3, residualized on the
+                    same window's recruiting inputs        [= draft_yield]
+pipeline_index(S) = talent_stock(S) × conversion(S)
+```
+
+The two terms answer different questions and neither is sufficient alone.
+`talent_stock` asks *how much raw material is on hand*; `conversion` asks
+*whether this staff turns raw material into NFL players* — the development
+thesis expressed as a rate rather than a count. A program with top-15 classes
+and bottom-half draft output is not the same team as the reverse, and
+`talent_composite` alone cannot tell them apart.
+
+Columns: `pipeline_index`, `talent_stock`, `draft_yield` (§2.4b),
+`blue_chip_pipeline` (4–5★ share of the four-year window).
+
+| | Tier A hybrid | Tier B `draft_prob_v1` | Tier C external board |
+|---|---|---|---|
+| Available for 2026 | **July, today** | August (roster) | July, unvalidated |
+| Backtests | **2015–2025 now** | 2015–2025 | not until ~2028 |
+| Cost / ToS exposure | **none** | none | $120/yr + gray area |
+| Grain | program | player | player |
+
+**Prior art:** a formalization of the blue-chip-ratio idea familiar from public
+CFB analysis, with a development term added. We are not inventing a new claim,
+only measuring one properly.
+
+**Honest risk:** program-level and slow-moving, so heavily collinear with
+`talent_composite` and prior SP+ — it may add nothing beyond them. That is what
+§2.5's screen decides. `draft_yield` and `conversion` are the terms most likely
+to survive, because residualizing against recruiting inputs removes the
+collinearity.
+
+### 6.0b Regime awareness — the naive trailing window is wrong
+
+A flat decayed sum over S-1..S-4 blends two different programs whenever a
+coaching change falls inside the window, and `conversion` over S-1..S-3
+attributes development to a staff that may not have done it. Riley-era and
+Venables-era Oklahoma are not the same program; averaging them describes
+neither.
+
+**The key asymmetry — stock transfers, conversion does not.**
+
+| Term | On a coaching change | Why |
+|---|---|---|
+| `talent_stock` | **carries over** (net of portal exodus) | The players are still on campus. Recruiting inputs are physical. |
+| `conversion` | **does not carry over** | Development is staff-dependent. This is the whole claim. |
+
+So on a regime change: keep `talent_stock`, and regress `conversion` toward the
+**new head coach's career prior** — his `draft_yield` at previous stops —
+rather than inheriting the predecessor's. A first-year HC with a strong
+development record elsewhere and an inherited top-10 roster is a genuinely
+different projection from the same roster under an unproven staff, and a flat
+window cannot express that at all.
+
+Reuse rather than rebuild: `ref.coaches__seasons`, `marts.coaching_tenure`
+(023), `marts.coach_record` (009), `api.coaching_history` (015) /
+`api.coach_records` (038) already carry tenure boundaries and career records.
+`hc_tenure_years` / `hc_first_year` (§2.3) become **interaction** terms with the
+pipeline columns rather than independent ones.
+
+Ship two variants of each trailing term and let the screen choose: `*_raw`
+(flat window) and `*_regime` (window truncated at the current HC's tenure
+start, backfilled with his career prior). If `*_regime` does not beat `*_raw`,
+that is itself a finding worth recording.
+
+**The era break is the harder half.** The portal/NIL era is a structural change,
+not a drift: one-time transfer plus NIL from 2021, rev-share and GM front
+offices after. Roster construction gained an acquisition channel that did not
+exist, so pre-2021 conversion rates may not describe post-2021 programs.
+
+The tension is real: restricting training to 2021+ leaves ~5 seasons of a
+slow-moving, highly autocorrelated program-level feature — a very thin
+effective sample, and era-specific coefficients on it would likely overfit.
+**Preferred approach:** keep the full window, add a `portal_era` indicator and
+era × pipeline interaction terms, and let §2.5 decide whether the interaction
+earns its degrees of freedom. Fall back to an era-restricted fit only if the
+interaction is strong and stable. `ref.eras` already exists for the indicator.
+
+**Front-office structure (GMs) is not automatable.** CFBD has no GM or
+personnel-staff field, and no scouted source carries one. If it matters enough
+to model, it would be a small hand-maintained reference table following the
+`recruiting.nil_market_benchmarks` precedent in the source-scouting doc
+(refreshed ~2×/yr). Out of scope for v1; noted so the omission is deliberate
+rather than an oversight.
+
 ### 6.1 There is no source for this — it has to be derived
 
 Verified: every draft-related source in or scouted for this warehouse is
@@ -768,6 +867,48 @@ most speculative item in the plan. It should not block the outlook shipping.
   before it could be checked) — this is the first task of Phase 6.
 - §2.5 partial-correlation screen on the resulting team-level columns, same as
   every other candidate feature.
+
+### 6.5 Tier C — external prospect sources (investigated July 2026)
+
+| Source | Access | History | Verdict |
+|---|---|---|---|
+| **NFLMDD commercial API** — consensus of 200 big boards, 1,500 expert mocks, 850+ sources | Licensed API key, **~$5k/yr** | 8 years | **Out on cost** |
+| **NFLMDD Mock+ Gold** — same consensus board | **$9.99/mo**, includes **"10 Consensus Big Board CSV downloads/mo"** | Current class only | **Recommended path** |
+| **Grinding the Mocks** — Bayesian Expected Draft Position; EDP explains ~85% of draft-outcome variance | Shiny dashboard, JS-rendered; needs Playwright or an ask | Multi-year research published | Ask first; keep as upgrade |
+| `array-carpenter/nfl-draft-data` | Free GitHub | 2007–2026 combine + pro day + NFL.com grades | Draft-year, not preseason |
+| `JackLich10/nfl-draft-data`, `phcs971/nfl-draft-dataset`, `nflverse/nfldata` | Free GitHub | 1967+/1987+/2000+ | **Retrospective only** — good for *labels* |
+
+**The $9.99 tier removes the scraping question.** A sanctioned CSV export, ten
+per month, exceeds what a weekly snapshot needs (4–5/mo) at ~$120/yr against
+the API's ~$5k. No Cloudflare fight, no watermark exposure, no ToS argument —
+it is the vendor's own export button. Scraping NFLMDD is explicitly **not**
+recommended: ToS prohibits redistribution, responses carry a `_meta.client_id`
+watermark, and the site 403s plain HTTP.
+
+**Fits existing infrastructure.** A periodically-dropped CSV parsed into staging
+is the flat-file pattern in `src/pipelines/sources/flat_files.py` —
+`FlatFileSpec` registry, `scripts/load_flat_files.py --due` cadence, and the
+`meta.flat_file_loads` hash-skip ledger. Add a `prospect_board` spec plus a
+parser under `src/pipelines/sources/flatfile_parsers/`, landing in
+`raw.prospect_boards`. Same shape as the PFF "weekly CSV drop → staging loader"
+roadmap item and the `raw.availability_reports` archiver.
+
+**Decide knowingly.** Mock+ Gold is a consumer tier; the ~$5k API is what the
+vendor sells for programmatic/commercial use. Feeding an internal warehouse from
+consumer exports is a gray area — low exposure if cfb-app/cfb-scout stay
+internal and nothing is redistributed, materially higher if anything becomes
+public-facing. Mitigations: keep `raw.prospect_boards` internal, never expose
+board rankings through `api.*` or MCP, surface only derived team aggregates.
+
+**The blocker is the backtest, not the signal.** A July-2026 snapshot of the
+**2027** board is leak-free for the 2026 season — note the class-year offset:
+players on 2026 rosters are drafted in April 2027, so the already-loaded 2026
+draft is the wrong class entirely. But boards are overwritten daily and nobody
+archives preseason snapshots, so we can obtain a 2026 signal today and cannot
+validate it historically. Therefore: **start snapshotting now** (history accrues
+only forward — the Massey precedent), keep Tier A/B as primary, and treat any
+board as an unvalidated overlay excluded from the fitted vector until it clears
+§2.5.
 
 ---
 
@@ -847,6 +988,45 @@ dependent work last is not a preference — it is the only order the calendar
 allows.
 
 ---
+
+## Delegation map
+
+Matches the Tier 1–3 ladder, with **opus 5 as main loop** (fable usage
+exhausted).
+
+| Model | Work |
+|---|---|
+| **haiku** | `ref.position_groups` crosswalk seed rows, registry/inventory adds, `refresh_marts.py --views` entries, `FEATURES_GATE` line additions, mart/view count bumps in `CLAUDE.md`, `docs/pipeline-manifest.md` rows, index SQL |
+| **sonnet** | All script scaffolds at the IO/CLI/idempotency layer (`simulate_season.py`, `probe_offseason_availability.py`, `screen_preseason_features.py`, `train_draft_probability.py`); migrations 042–045 DDL; thin marts + api views 041–043; `get_projection_seasons()`; `--incremental` rewiring; workflow edits; all tests; handoff doc + `SCHEMA_CONTRACT.md` |
+| **opus 5** | §1.2 coverage-gate semantics; §2.5 screen methodology (residualization, threshold pre-registration, multiple comparisons — the §6.0b regime variants roughly double the candidate count); leak rules for every new column + `transfer_portal.season` direction; `dev_index`/`draft_yield`/`conversion` residualization; §6.0b regime-scoping and era-interaction design; `preseason_v1` contract + walk-forward + CARRYOVER sweep + crossover rule; Monte Carlo math (sigma, draw structure, percentiles, tiebreak, calibration); §5.3 driver contribution math; Phase 6 label + censoring; design-doc §1f/§1i/§2a amendments |
+| **opus 5 (main loop)** | Orchestration, delegation, deploy branches, commits, log reading, gate go/no-go, ledger decisions, PR |
+
+**Consequence of losing fable:** opus 5 now both orchestrates and owns
+correctness design, so disciplined delegation to haiku/sonnet matters more for
+cost. It also means the review gates below are **self-review by the
+orchestrating model**, which is weaker than independent review. Mitigation: run
+each review as a separate focused pass with fresh context against the diff —
+not inline while orchestrating.
+
+## Opus review gates
+
+Required before landing, independent of who authored:
+
+| Artifact | Why |
+|---|---|
+| Any `features.team_week` column contract change | Migration 028's header forbids it without a design-doc update; the doc is authoritative |
+| Any as-of / leak predicate | A leak is invisible in output and inflates every downstream metric |
+| §2.5 screen results | Decides which of ~25 candidate columns ship; the naive thesis already failed once |
+| Walk-forward / frozen-fit selection | `score_fitted.py` hard-errors on a *missing* fit but silently accepts a wrong-vintage one |
+| Simulation sigma + draw structure | Wrong sigma yields confident, well-formatted, wrong win totals |
+| §6.0b regime + era design | Silently blending coaching regimes or eras produces a feature that describes no real program |
+| Phase 6 label + join-rate audit | Censoring and join failures both produce plausible sums from broken data |
+| Deploy sequencing before each PR to main | Tier 1–3 precedent |
+
+Review is **advisory on ship/no-ship gates** — §2.5 column selection, §3.4
+`preseason_v1` ship decision, §4.5 calibration acceptance. Opus produces the
+analysis and recommendation; **the user rules.** Matches Tier 3's "tuning grid:
+advisory table; user decides ledger changes."
 
 ## Risks and open questions
 

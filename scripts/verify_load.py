@@ -283,6 +283,51 @@ def check_availability_archive(cur, season: int, report: Report) -> None:
     )
 
 
+def check_fitted_coverage(cur, report: Report) -> None:
+    """fitted_v1 must have a prediction for (nearly) every pending game.
+
+    Independent of score_fitted.py's own gate on purpose: that gate only fires
+    when the scoring step actually runs, and the failure this guards against --
+    features.team_week never built for the upcoming season -- produced a clean
+    exit-0 there for six months. Checking it from the post-load verifier means
+    the shortfall surfaces even if the scoring step is skipped, reordered, or
+    silently no-ops again.
+
+    Season-independent (the pending window spans whatever seasons have
+    schedules), so it takes no season argument.
+    """
+    from scripts.score_fitted import MIN_UPCOMING_COVERAGE, coverage_verdict
+
+    cur.execute(
+        """
+        WITH pending AS (
+            SELECT g.id
+            FROM core.games g
+            WHERE NOT COALESCE(g.completed, false)
+              AND g.season >= (
+                  SELECT COALESCE(MAX(season), 0) FROM core.games WHERE completed
+              )
+        )
+        SELECT
+            (SELECT COUNT(*) FROM pending),
+            (SELECT COUNT(*) FROM pending p
+             WHERE EXISTS (
+                 SELECT 1 FROM predictions.game_predictions gp
+                 WHERE gp.game_id = p.id AND gp.model_version = 'fitted_v1'
+             ))
+        """
+    )
+    n_pending, n_scored = cur.fetchone()
+    n_pending, n_scored = int(n_pending), int(n_scored)
+    ok, coverage = coverage_verdict(n_pending, n_scored)
+    report.record(
+        PASS if ok else FAIL,
+        "fitted_coverage",
+        f"fitted_v1 covers {n_scored}/{n_pending} pending game(s) "
+        f"({coverage:.1%}, threshold {MIN_UPCOMING_COVERAGE:.0%})",
+    )
+
+
 def check_freshness(cur, in_season: bool, strict: bool, report: Report) -> None:
     cur.execute(
         """
@@ -323,6 +368,7 @@ def verify(season: int, strict: bool) -> int:
             check_game_counts(cur, season, report)
             check_completed_have_team_stats(cur, season, report)
             check_completed_have_plays(cur, season, report)
+            check_fitted_coverage(cur, report)
             check_freshness(cur, in_season, strict, report)
             check_massey_composite(cur, season, report)
             check_availability_archive(cur, season, report)

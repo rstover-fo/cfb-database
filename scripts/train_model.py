@@ -618,6 +618,53 @@ def train_walk_forward(conn, score_start: int, score_end: int) -> None:
         fit_one(conn, train_through, train_seasons)
 
 
+def stale_score_seasons(
+    latest_completed_season: int,
+    existing_train_through: list[int],
+    default_start: int = DEFAULT_SCORE_START,
+) -> list[int]:
+    """Score seasons still needed so a fit exists at
+    ``train_through_season = latest_completed_season``.
+
+    Walk-forward keying (design section 2d): score season ``S`` produces the fit
+    ``train_through_season = S-1``. So covering train-through values up through
+    ``latest_completed_season`` means running score seasons up through
+    ``latest_completed_season + 1``.
+
+    Returns ``[]`` when the newest fit is already current -- the no-op the daily
+    workflow hits on 364 days a year. Pure, so the staleness rule is testable
+    without a DB.
+
+    Exists because the annual refit was a manual chore and was missed: the 2025
+    season ended in January 2026 and the newest fit was still
+    ``train_through_season=2024`` in July, so 2026 scoring would have silently
+    used a two-season-stale fit.
+    """
+    target = latest_completed_season
+    if not existing_train_through:
+        return list(range(default_start, target + 2))
+    max_existing = max(existing_train_through)
+    if max_existing >= target:
+        return []
+    return list(range(max_existing + 2, target + 2))
+
+
+def fetch_refit_state(conn) -> tuple[int | None, list[int]]:
+    """``(latest completed season, existing fitted_v1 train_through values)``."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT MAX(season) FROM core.games WHERE COALESCE(completed, false)")
+        row = cur.fetchone()[0]
+        latest_completed = int(row) if row is not None else None
+
+        cur.execute(
+            "SELECT DISTINCT train_through_season FROM features.model_metadata "
+            "WHERE model_version = %s",
+            (MODEL_VERSION,),
+        )
+        existing = [int(r[0]) for r in cur.fetchall()]
+    return latest_completed, existing
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Train fitted_v1 walk-forward ridge-margin + IRLS/Platt win-prob "
@@ -633,6 +680,13 @@ def main() -> None:
         f"through S-1 on {TRAIN_START_SEASON}..S-1. Default: "
         f"{DEFAULT_SCORE_START} {DEFAULT_SCORE_END}.",
     )
+    parser.add_argument(
+        "--refit-if-stale",
+        action="store_true",
+        help="Train only the fits missing relative to the latest completed season, "
+        "then exit. A clean no-op when the newest fit is already current -- safe "
+        "to run daily. What the daily workflow runs.",
+    )
     args = parser.parse_args()
     start, end = args.seasons
     if start > end:
@@ -643,6 +697,30 @@ def main() -> None:
 
     conn = psycopg2.connect(get_db_url())
     try:
+        if args.refit_if_stale:
+            latest_completed, existing = fetch_refit_state(conn)
+            if latest_completed is None:
+                logger.info("No completed seasons in core.games; nothing to refit")
+                return
+            needed = stale_score_seasons(latest_completed, existing)
+            if not needed:
+                logger.info(
+                    "fitted_v1 is current: newest fit train_through=%d covers the "
+                    "latest completed season (%d); nothing to refit",
+                    max(existing),
+                    latest_completed,
+                )
+                return
+            logger.info(
+                "fitted_v1 is stale: newest fit train_through=%s vs latest completed "
+                "season %d; training score season(s) %s",
+                max(existing) if existing else "none",
+                latest_completed,
+                needed,
+            )
+            train_walk_forward(conn, needed[0], needed[-1])
+            return
+
         train_walk_forward(conn, start, end)
     except Exception:
         conn.rollback()

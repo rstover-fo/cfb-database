@@ -72,7 +72,7 @@ jobs:
           if [ -n "${{ inputs.season }}" ]; then
             python scripts/compute_adjusted_epa.py --season "${{ inputs.season }}"
           else
-            python scripts/compute_adjusted_epa.py --season "$(python -c "from src.pipelines.config.years import get_current_season; print(get_current_season())")"
+            python scripts/compute_adjusted_epa.py --incremental
           fi
       - name: Update as-of weekly EPA
         run: python scripts/compute_adjusted_epa_week.py --incremental
@@ -80,6 +80,8 @@ jobs:
         run: python scripts/compute_predictions.py
       - name: Rebuild feature substrate
         run: python scripts/build_features.py --incremental
+      - name: Refit fitted_v1 if stale
+        run: python scripts/train_model.py --refit-if-stale
       - name: Score fitted model (upcoming)
         run: python scripts/score_fitted.py --upcoming
       - name: Refresh Tier 2 + Tier 3 marts

@@ -194,6 +194,7 @@ Extend the loaders behind `stats.player_returning`, `ratings.sp_ratings`,
 
 ### 1.5 Phase 1 gates
 
+- **BLOCKING — adversarial pass run against the diff, findings fixed, pass re-run against the fixes, BEFORE the PR opens** (see "Opus review gates")
 - `features.team_week` has ≥ 3,200 rows for 2026 (2 sides × 1,638 games)
 - `predictions.game_predictions` has `fitted_v1` rows for ≥ 90% of pending 2026 games
 - `features.model_metadata` contains `train_through_season = 2025`
@@ -470,6 +471,7 @@ If not, the proxy stands and stays documented.
 
 ### 2.8 Phase 2 gates
 
+- **BLOCKING — adversarial pass run against the diff, findings fixed, pass re-run against the fixes, BEFORE the PR opens** (see "Opus review gates")
 - §2.5 partial-correlation screen passed, per column, with results recorded
 - Backfill 2015–2026; per-season NULL rates logged per new column
 - Leak audit: every new column verifiably knowable before week 1 of S — with
@@ -528,6 +530,7 @@ whether the blend beats it.
 
 ### 3.4 Phase 3 gates
 
+- **BLOCKING — adversarial pass run against the diff, findings fixed, pass re-run against the fixes, BEFORE the PR opens** (see "Opus review gates")
 - Backtest on week-1/2 games 2018–2025: `preseason_v1` MAE and Brier vs
   `fitted_v1` on the identical game set
 - Calibration curve for win prob in 10 buckets
@@ -614,6 +617,7 @@ shipping a number nobody can defend.
 
 ### 4.5 Phase 4 gates
 
+- **BLOCKING — adversarial pass run against the diff, findings fixed, pass re-run against the fixes, BEFORE the PR opens** (see "Opus review gates")
 - **Backfill validation:** simulate 2018–2025 preseason, compare projected
   wins to actual. Report MAE in wins and the calibration of `p_bowl_eligible`
   and `p_ten_plus`. A preseason win-total model landing within ~1.5 wins MAE
@@ -863,6 +867,7 @@ most speculative item in the plan. It should not block the outlook shipping.
 
 ### 6.4 Phase 6 gates
 
+- **BLOCKING — adversarial pass run against the diff, findings fixed, pass re-run against the fixes, BEFORE the PR opens** (see "Opus review gates")
 - Backtest: AUC and calibration of `draft_prob_v1` on held-out seasons,
   walk-forward. A model that cannot separate drafted from undrafted players
   better than recruiting stars alone is not worth its complexity — that is the
@@ -1011,11 +1016,69 @@ exhausted).
 **Consequence of losing fable:** opus 5 now both orchestrates and owns
 correctness design, so disciplined delegation to haiku/sonnet matters more for
 cost. It also means the review gates below are **self-review by the
-orchestrating model**, which is weaker than independent review. Mitigation: run
-each review as a separate focused pass with fresh context against the diff —
-not inline while orchestrating.
+orchestrating model**, which is measurably weaker than independent review.
+
+**The main loop's definition of done for any phase is: pass green, adversarial
+pass run, findings fixed, pass re-run against the fixes, PR opened.** Opening a
+PR before that sequence completes is a process failure regardless of how the
+diff looks — see the blocking gate under "Opus review gates". The pass must be
+a separate invocation with fresh context against the diff, never inline while
+orchestrating, because the author's context is exactly what hides the defect.
 
 ## Opus review gates
+
+### BLOCKING: the adversarial pass runs BEFORE the PR is opened
+
+**No PR to `main` may be opened until an adversarial review pass has run
+against the full diff.** This is a hard prerequisite, not a recommendation, and
+it is stated this way because the softer version already failed.
+
+The rule, concretely:
+
+1. Finish the work and get `ruff` + `pytest` green.
+2. **Stop.** Run the adversarial pass as a *separate* invocation with fresh
+   context, reading the diff as an adversary trying to find a number that is
+   wrong but plausible — not as the author confirming intent.
+3. Fix what it finds.
+4. **Re-run the pass against the fixes**, which are themselves unreviewed code
+   in correctness-critical paths.
+5. Only then open the PR.
+
+Step 4 is not padding. When this was run for the first time on PR #48 — late,
+after the PR was already open — the pass against the *fix commit* found two
+further defects that the fixes had introduced.
+
+**What "adversarial" means here.** Not "does this match what I intended" but:
+*where does this produce a confident, well-formatted, wrong answer?* Every
+defect this project has hit shares that shape — the silent zero-row score, the
+in-sample refit, sigma double-counting, unscored games as certain losses,
+teams with no scorable games projected at 0.0 wins. None of them raised;
+all of them looked fine.
+
+**Evidence this gate is load-bearing** (PR #48, 2026-07-26):
+
+| Pass | Findings |
+|---|---|
+| Author self-check while building | 0 |
+| External review (Codex) of the original diff | **6**, all valid, 2 of them P1 |
+| Adversarial pass against the fix commit | **2** more, introduced by the fixes |
+
+Two of Codex's six were named *in advance* by the table below — "wrong sigma
+yields confident, well-formatted, wrong win totals" and "a leak is invisible in
+output" — and shipped anyway. Writing the gate down is not running it.
+
+**External review does not substitute for this pass, and this pass does not
+substitute for external review.** They caught disjoint sets. Where an
+independent reviewer is available (Codex, a human), use both: the pre-PR pass
+first, the external one on the opened PR.
+
+**Self-review caveat, restated.** With opus 5 as both orchestrator and
+correctness owner, this pass is self-review and is measurably weaker than the
+external one — 6 findings vs 2 on the same body of work. Run it anyway; it is
+cheap and it is not zero. But do not treat a clean self-pass as evidence the
+diff is clean.
+
+### Artifact gates
 
 Required before landing, independent of who authored:
 
@@ -1030,10 +1093,18 @@ Required before landing, independent of who authored:
 | Phase 6 label + join-rate audit | Censoring and join failures both produce plausible sums from broken data |
 | Deploy sequencing before each PR to main | Tier 1–3 precedent |
 
-Review is **advisory on ship/no-ship gates** — §2.5 column selection, §3.4
-`preseason_v1` ship decision, §4.5 calibration acceptance. Opus produces the
-analysis and recommendation; **the user rules.** Matches Tier 3's "tuning grid:
-advisory table; user decides ledger changes."
+Two different things are called "review" here, and conflating them is what let
+the pass get skipped. Keep them distinct:
+
+- **The adversarial pass is BLOCKING.** It gates whether a PR opens at all.
+  Not a judgment call, not the user's to waive by default.
+- **Ship/no-ship decisions are ADVISORY** — §2.5 column selection, §3.4
+  `preseason_v1` ship decision, §4.5 calibration acceptance. Opus produces the
+  analysis and recommendation; **the user rules.** Matches Tier 3's "tuning
+  grid: advisory table; user decides ledger changes."
+
+The first is about whether the code is correct. The second is about whether a
+correct result is worth shipping. Only the second is a matter of taste.
 
 ## Risks and open questions
 
@@ -1153,6 +1224,34 @@ beats plain recruiting by +0.002.
 `draft_departures`. Rejected candidates stay in
 `screen_preseason_features.py`'s `CANDIDATE_COLUMNS` so the nulls remain
 reproducible; `SHIPPED_COLUMNS` is what migration 042 consumes.
+
+**A5. Review-gate evidence (PR #48, 2026-07-26).** The blocking pre-PR
+adversarial pass exists because of this sequence, recorded so the rule is not
+re-litigated as overhead:
+
+| Pass | Findings |
+|---|---|
+| Author self-check while building | 0 |
+| External review (Codex) of the original diff | **6** — 2×P1, 4×P2, all valid |
+| Adversarial pass against the fix commit | **2** more, introduced by the fixes |
+
+The six: refit trained on a partial season then scored it in-sample; conference
+title odds computed from overall record; unscored games counted as certain
+losses; postseason games inflating a regular-season outlook; residual sigma
+double-counting append-only snapshots; the screen not reproducing its own
+verdicts.
+
+The two: teams with no scorable game written as 0.0-win projections; a
+non-positive sigma passing the guard and making every game deterministic.
+
+**Two of the six were named in advance** by the review-gate table — "wrong
+sigma yields confident, well-formatted, wrong win totals" and "a leak is
+invisible in output" — and shipped regardless. The gate was written and not
+run. That is the specific failure the BLOCKING language now addresses.
+
+**Every one of the eight shares a shape:** a confident, well-formatted, wrong
+number rather than an error. That is what the adversarial pass is looking for,
+and it is why "the tests pass" is not evidence of correctness here.
 
 **Unaffected by any of this:** §2.0's finding that `returning_ppa_pct` cannot
 see the lines is structural — it follows from PPA's definition, not from these

@@ -1,0 +1,4 @@
+{
+  "action": "apply",
+  "files": ["src/schemas/api/041_season_outlook.sql"]
+}

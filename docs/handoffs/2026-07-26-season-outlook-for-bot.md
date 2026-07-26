@@ -70,8 +70,9 @@ survive this change. It now has real numbers, but a clean standings table
 hides uncertainty that is large relative to the differences between teams.
 
 - **Preseason accuracy is ~1.74 wins MAE.** Backtested on 2019–2025 week-1
-  vectors with frozen prior-season fits (n=921): win MAE 1.743, RMSE 2.168,
-  bias −0.126. Both baselines are worse (prior-season record 2.128, flat .500
+  vectors with frozen prior-season fits (n=921): win MAE 1.739, RMSE 2.162,
+  bias −0.127. Feature work since has moved this by hundredths,
+  well inside noise — do not quote small changes as improvements. Both baselines are worse (prior-season record 2.128, flat .500
   2.140), so the model beats the naive answers — but it is not precise.
 - **Use the empirical interval, not ±MAE.** The residual quantiles are
   asymmetric: an 80% interval is **`[projected − 2.68, projected + 3.02]`**.
@@ -91,11 +92,15 @@ hides uncertainty that is large relative to the differences between teams.
 - **Check `schedule_complete`.** 2026 schedules are still filling in — 68 of
   337 teams had fewer than 8 games listed as of late July. Projections are
   over *listed* games and never extrapolate to a hypothetical 12-game slate.
-- **Coaching-change signal is absent for 2026 right now.** `hc_first_year`
-  is one of the model's strongest preseason features (partial −0.1548), but
+- **Coaching-change signal is absent for 2026 right now.** `hc_first_year_unproven`
+  is one of the model's strongest preseason features (partial −0.1844), but
   CFBD publishes no 2026 coaching records yet, so it is 100% NULL for 2026
   and contributes nothing until roughly August. Teams with new head coaches
-  are currently projected as though nothing changed.
+  are currently projected as though nothing changed. When it does light up, note
+  what it does and does not say: the penalty falls on hires **without a
+  record**. A first-year coach whose previous teams averaged at or above an
+  average FBS team screens as a null (+0.0096, p=0.73). "New coach, therefore
+  worse" is not what the model believes.
 - **FCS/D2:** CFBD labels non-FBS playoff bracket games `season_type =
   'regular'`, so `games_scheduled` for an FCS team can include a playoff run
   (completed seasons only). Do not rank FCS against FBS on `projected_wins`.
@@ -120,4 +125,6 @@ refusal was avoiding, just better dressed.
 - Writer: `scripts/simulate_season.py` (correlated draws, `strength_share`
   0.15 calibrated against backtest coverage)
 - Backtest: `scripts/backtest_preseason.py`
-- Model: `fitted_v1`, 20-feature vector as of migration 042
+- Model: `fitted_v1`, 22-feature vector as of migration 047 (042 added five
+  screened preseason columns, 046 swapped the coaching term, 047 added the
+  draft pair)

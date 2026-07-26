@@ -60,6 +60,79 @@ ESTIMATED_CALLS = {
 }
 
 
+# Sources whose data for a FINISHED season cannot change, so re-fetching them
+# daily buys nothing and costs the whole budget.
+#
+# WHY THIS EXISTS. The daily workflow calls load_season.py --weekly with no
+# --season, so get_current_season() resolves to `year - 1` until August: every
+# off-season run re-ingested the entire, complete, immutable previous season.
+# plays fans out to one /plays/stats call PER GAME (~1,600 for a full season)
+# and rosters to one call per team, against a 75,000/month budget -- roughly
+# 2,000 calls a day for data that cannot have changed. That is what exhausted
+# the quota and produced the 2026-07-25 run that spent three hours being
+# rate-limited (see api_client.RateLimitExhausted).
+#
+# NOT on this list, deliberately:
+#   reference   -- no year filter and ~10 calls; always cheap, always current.
+#   metrics_wp  -- already self-limiting; it only fetches games still missing
+#                  win probability, so a fully-backfilled season costs nothing.
+IMMUTABLE_ONCE_FINAL = frozenset(
+    {
+        "games",
+        "game_stats",
+        "plays",
+        "stats",
+        "ratings",
+        "rankings",
+        "recruiting",
+        "betting",
+        "draft",
+        "metrics",
+        "rosters",
+    }
+)
+
+# A season counts as finished on the same terms train_model.py uses for its
+# refit guard -- one definition of "finished" in the codebase, not two. A
+# permanently un-completed row (a cancellation) must not freeze a season as
+# unfinished forever, hence a tolerance rather than requiring literal 100%.
+SEASON_COMPLETE_THRESHOLD = 0.99
+MIN_GAMES_FOR_FINISHED_SEASON = 100
+
+
+def season_is_final(conn, season: int) -> bool:
+    """True when `season` has essentially every scheduled game completed."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*) AS n,
+                   AVG(CASE WHEN COALESCE(completed, false) THEN 1.0 ELSE 0.0 END) AS pct
+            FROM core.games
+            WHERE season = %s
+            """,
+            (season,),
+        )
+        n, pct = cur.fetchone()
+    if not n or n < MIN_GAMES_FOR_FINISHED_SEASON:
+        return False
+    return float(pct or 0.0) >= SEASON_COMPLETE_THRESHOLD
+
+
+def sources_to_skip(active_sources, season_final: bool, allow_skip: bool):
+    """Immutable sources to skip for a finished season.
+
+    ``allow_skip`` is False whenever the caller named a season or specific
+    sources explicitly. A backfill (``--season 2019 --sources plays``) targets
+    a finished season BY DEFINITION, so skipping there would silently turn
+    every backfill into a no-op -- the failure mode this guard must not
+    introduce. Only the unattended daily path, which passes neither, is
+    eligible.
+    """
+    if not (allow_skip and season_final):
+        return []
+    return [s for s in active_sources if s in IMMUTABLE_ONCE_FINAL]
+
+
 def upcoming_schedule_season(season: int, month: int) -> int | None:
     """Return the next season to schedule-refresh during the off-season.
 
@@ -78,6 +151,7 @@ def load_season(
     skip_refresh: bool = False,
     weekly: bool = False,
     upcoming_schedule: int | None = None,
+    allow_skip_final: bool = False,
 ) -> dict:
     """Load or refresh all data for a given season.
 
@@ -119,6 +193,37 @@ def load_season(
     if invalid:
         logger.error(f"Unknown sources: {invalid}. Valid: {sorted(valid)}")
         return {"error": f"Unknown sources: {invalid}"}
+
+    # Drop immutable sources for a finished season before estimating, so the
+    # dry-run figure and the budget check reflect what will actually be
+    # fetched rather than what would have been.
+    skipped_final = []
+    if allow_skip_final:
+        import psycopg2
+
+        from scripts.compute_predictions import get_db_url
+
+        conn_check = psycopg2.connect(get_db_url())
+        try:
+            final = season_is_final(conn_check, season)
+        finally:
+            conn_check.close()
+        skipped_final = sources_to_skip(active_sources, final, allow_skip_final)
+        if skipped_final:
+            saved = sum(ESTIMATED_CALLS.get(s, 50) for s in skipped_final)
+            logger.info(
+                "Season %d is finished; skipping %d immutable source(s) -- %s "
+                "(~%d API calls saved). Data for a completed season cannot "
+                "change; pass --season %d or --no-skip-final to force a reload.",
+                season,
+                len(skipped_final),
+                ", ".join(skipped_final),
+                saved,
+                season,
+            )
+            active_sources = [s for s in active_sources if s not in skipped_final]
+        elif final:
+            logger.info("Season %d is finished but no immutable source was selected", season)
 
     # Estimate API calls
     total_est = sum(ESTIMATED_CALLS.get(s, 50) for s in active_sources)
@@ -256,6 +361,7 @@ def load_season(
 
     return {
         "season": season,
+        "skipped_final": skipped_final,
         "total_duration_s": round(total_elapsed, 1),
         "successes": successes,
         "errors": errors,
@@ -282,6 +388,13 @@ def main() -> None:
         "--skip-refresh", action="store_true", help="Skip mart refresh after loading"
     )
     parser.add_argument(
+        "--no-skip-final",
+        action="store_true",
+        help="Load immutable sources even for a finished season. Only relevant "
+        "on the unattended path (no --season, no --sources), where they are "
+        "skipped by default because their data cannot change.",
+    )
+    parser.add_argument(
         "--weekly",
         action="store_true",
         help="Load game_stats week-by-week (~35K rows per merge) to avoid timeouts",
@@ -303,6 +416,11 @@ def main() -> None:
 
     sources = args.sources.split(",") if args.sources else None
 
+    # The daily workflow runs with neither --season nor --sources. Anything
+    # more specific is a deliberate operator request -- most often a backfill,
+    # which targets a finished season by definition -- so the skip is off.
+    allow_skip_final = args.season is None and not args.sources and not args.no_skip_final
+
     summary = load_season(
         season=season,
         sources=sources,
@@ -310,6 +428,7 @@ def main() -> None:
         skip_refresh=args.skip_refresh,
         weekly=args.weekly,
         upcoming_schedule=upcoming,
+        allow_skip_final=allow_skip_final,
     )
 
     if summary.get("errors", 0) > 0:

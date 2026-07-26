@@ -1,6 +1,16 @@
 """Unit tests for load_season's season-selection helpers (no DB, no API)."""
 
-from scripts.load_season import ESTIMATED_CALLS, SOURCE_ORDER, load_season, upcoming_schedule_season
+from scripts.load_season import (
+    ESTIMATED_CALLS,
+    IMMUTABLE_ONCE_FINAL,
+    MIN_GAMES_FOR_FINISHED_SEASON,
+    SEASON_COMPLETE_THRESHOLD,
+    SOURCE_ORDER,
+    load_season,
+    season_is_final,
+    sources_to_skip,
+    upcoming_schedule_season,
+)
 
 
 class TestUpcomingScheduleSeason:
@@ -47,3 +57,110 @@ class TestMetricsWpWiring:
 
         captured = capsys.readouterr()
         assert "metrics_wp" in captured.out
+
+
+class FakeCursor:
+    def __init__(self, row):
+        self._row = row
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, *a, **k):
+        pass
+
+    def fetchone(self):
+        return self._row
+
+
+class FakeConn:
+    def __init__(self, row):
+        self._row = row
+
+    def cursor(self):
+        return FakeCursor(self._row)
+
+
+class TestSeasonIsFinal:
+    """The daily workflow runs with no --season, so get_current_season()
+    resolves to `year - 1` until August: every off-season run re-ingested the
+    entire, complete, immutable previous season. plays fans out to one
+    /plays/stats call PER GAME and rosters to one per team -- roughly 2,000
+    calls a day against a 75,000/month budget, for data that cannot change.
+    That is what exhausted the quota behind the 2026-07-25 three-hour run."""
+
+    def test_a_completed_season_is_final(self):
+        assert season_is_final(FakeConn((900, 1.0)), 2025) is True
+
+    def test_tolerance_allows_a_stray_uncompleted_game(self):
+        """A cancellation that never completes must not freeze a season as
+        unfinished forever -- that would permanently disable the skip."""
+        assert season_is_final(FakeConn((900, 0.995)), 2025) is True
+
+    def test_a_season_in_progress_is_not_final(self):
+        assert season_is_final(FakeConn((900, 0.60)), 2026) is False
+
+    def test_just_below_threshold_is_not_final(self):
+        assert season_is_final(FakeConn((900, SEASON_COMPLETE_THRESHOLD - 0.01)), 2026) is False
+
+    def test_too_few_games_is_not_final(self):
+        """Week 1 of a new season is 100% complete over three games. Without a
+        floor that would read as finished and skip the entire ingest."""
+        assert season_is_final(FakeConn((3, 1.0)), 2026) is False
+        assert season_is_final(FakeConn((MIN_GAMES_FOR_FINISHED_SEASON - 1, 1.0)), 2026) is False
+
+    def test_an_unloaded_season_is_not_final(self):
+        assert season_is_final(FakeConn((0, None)), 2027) is False
+
+    def test_null_percentage_does_not_crash(self):
+        assert season_is_final(FakeConn((500, None)), 2027) is False
+
+
+class TestSourcesToSkip:
+    def test_immutable_sources_are_skipped_for_a_finished_season(self):
+        skipped = sources_to_skip(list(SOURCE_ORDER), season_final=True, allow_skip=True)
+        assert "plays" in skipped
+        assert "rosters" in skipped
+
+    def test_nothing_is_skipped_mid_season(self):
+        assert sources_to_skip(list(SOURCE_ORDER), season_final=False, allow_skip=True) == []
+
+    def test_explicit_request_never_skips(self):
+        """The hazard this guard must not introduce: `--season 2019 --sources
+        plays` targets a finished season BY DEFINITION, so skipping there
+        would turn every backfill into a silent no-op."""
+        assert sources_to_skip(["plays"], season_final=True, allow_skip=False) == []
+
+    def test_reference_is_never_skipped(self):
+        """No year filter and ~10 calls -- always cheap, and it is how new
+        teams and venues arrive."""
+        skipped = sources_to_skip(list(SOURCE_ORDER), season_final=True, allow_skip=True)
+        assert "reference" not in skipped
+
+    def test_metrics_wp_is_never_skipped(self):
+        """Already self-limiting: it fetches only games still missing win
+        probability, so a fully-backfilled season costs nothing anyway."""
+        skipped = sources_to_skip(list(SOURCE_ORDER), season_final=True, allow_skip=True)
+        assert "metrics_wp" not in skipped
+
+    def test_every_immutable_source_is_a_real_source(self):
+        """A typo here would silently skip nothing at all."""
+        assert IMMUTABLE_ONCE_FINAL <= set(SOURCE_ORDER)
+
+    def test_the_expensive_sources_are_covered(self):
+        """The point of the change. plays fans out per game and rosters per
+        team; if either escaped the list the daily burn would be unchanged."""
+        for src in ("plays", "rosters", "game_stats"):
+            assert src in IMMUTABLE_ONCE_FINAL
+
+    def test_skipping_removes_the_bulk_of_the_daily_budget(self):
+        """Quantifies the fix: the default daily source set drops to a small
+        fraction of its estimated calls once the season is finished."""
+        default = [s for s in SOURCE_ORDER if s != "rosters"]
+        before = sum(ESTIMATED_CALLS.get(s, 50) for s in default)
+        skipped = sources_to_skip(default, season_final=True, allow_skip=True)
+        after = sum(ESTIMATED_CALLS.get(s, 50) for s in default if s not in skipped)
+        assert after < before * 0.15, f"expected a large reduction, got {before} -> {after}"

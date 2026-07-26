@@ -1,5 +1,6 @@
 """Tests for CFBD API client."""
 
+import math
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 from unittest.mock import MagicMock, patch
@@ -118,6 +119,15 @@ class TestCFBDClient:
         client.close()
 
 
+# dlt extract worker pool size (.dlt/config.toml: workers = 5). The shared
+# breaker sees all of them, so the circuit threshold has to clear this.
+DLT_EXTRACT_WORKERS = 5
+
+# Fully-rate-limited requests needed to cross the circuit threshold. Derived so
+# the tests stay meaningful if the threshold or the retry budget changes.
+REQUESTS_TO_TRIP = math.ceil(CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD / (CFBDClient.MAX_RETRIES + 1))
+
+
 def _rate_limited_response(retry_after="1"):
     r = MagicMock()
     r.status_code = 429
@@ -212,7 +222,7 @@ class TestRateLimitCircuitBreaker:
 
     def test_circuit_opens_after_threshold(self):
         client = CFBDClient(api_key="test-key")
-        self._exhaust(client, 2)
+        self._exhaust(client, REQUESTS_TO_TRIP)
         # The next call must fail immediately, without sleeping at all.
         with patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep:
             with pytest.raises(RateLimitCircuitOpen, match="quota is spent"):
@@ -258,15 +268,42 @@ class TestRateLimitCircuitBreaker:
         abandoned rather than served.
         """
         client = CFBDClient(api_key="test-key")
-        # One request short of the threshold (4 of 5).
-        self._exhaust(client, 1)
+        # Stop one request short of tripping, so the threshold is crossed
+        # partway through the NEXT request rather than between requests.
+        self._exhaust(client, REQUESTS_TO_TRIP - 1)
         with patch.object(client._client, "get", side_effect=_rate_limit_error()):
             with patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep:
                 with pytest.raises(RateLimitCircuitOpen):
                     client.get("/teams")
-                # The 5th 429 opens the breaker, so this request must not sleep
-                # through the three retries it would otherwise be entitled to.
-                mock_sleep.assert_not_called()
+                # It may sleep once or twice before crossing, but it must NOT
+                # serve the full retry budget: abandoning the remaining sleeps
+                # is the whole behaviour under test.
+                assert mock_sleep.call_count < CFBDClient.MAX_RETRIES
+        client.close()
+
+    def test_one_transient_429_per_worker_does_not_trip_the_breaker(self):
+        """The regression introduced BY the per-response counting change.
+
+        The breaker is shared across the run and dlt extracts on a worker pool
+        (.dlt/config.toml: workers = 5). Counting every 429 means N concurrent
+        workers each taking a single transient 429 contribute N at once, so a
+        threshold at or below the pool size could be reached by one simultaneous
+        blip that every worker would have recovered from -- turning five
+        successful retries into an aborted run.
+        """
+        assert CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD > DLT_EXTRACT_WORKERS
+
+        client = CFBDClient(api_key="test-key")
+        ok = MagicMock()
+        ok.json.return_value = []
+        ok.raise_for_status = MagicMock()
+        # One 429 then a success, once per worker, with no reset in between
+        # until each recovers -- the shape of a momentary blip across the pool.
+        with patch("src.pipelines.utils.api_client.time.sleep"):
+            for _ in range(DLT_EXTRACT_WORKERS):
+                with patch.object(client._client, "get", side_effect=[_rate_limit_error(), ok]):
+                    assert client.get("/teams") == []
+        assert not client._breaker.is_open()
         client.close()
 
     def test_offseason_run_shape_trips_the_breaker(self):
@@ -397,7 +434,7 @@ class TestBreakerIsSharedAcrossClients:
     # Each fully-rate-limited request now records MAX_RETRIES + 1 responses, so
     # two sources are enough to cross a threshold of 5 (see
     # RateLimitBreaker.record_rate_limited).
-    SOURCES_TO_TRIP = 2
+    SOURCES_TO_TRIP = REQUESTS_TO_TRIP
 
     def _exhaust_on_a_fresh_client(self, n):
         """Mimic the real call graph: one new client per rate-limited source."""

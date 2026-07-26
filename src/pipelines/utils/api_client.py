@@ -12,13 +12,35 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# Consecutive fully-rate-limited requests before the circuit opens.
+# Consecutive HTTP 429 responses before the run is abandoned.
+#
 # Burst throttling clears in ~10 minutes and affects a handful of calls; an
-# exhausted monthly quota 429s everything until the quota resets. After this
-# many requests have each burned their full retry budget without one success,
-# the second explanation is the only one left, and every further minute of
-# waiting is wasted CI time.
-RATE_LIMIT_CIRCUIT_THRESHOLD = 5
+# exhausted monthly quota 429s everything until the quota resets. Once this many
+# responses in a row have been refused without one success, the second
+# explanation is the only one left and every further minute is wasted CI time.
+#
+# Must stay comfortably ABOVE the dlt extract worker pool (.dlt/config.toml sets
+# workers = 5). The counter is shared across the run, so N workers each taking a
+# single transient 429 at the same instant contribute N at once: a threshold of
+# 5 against a 5-worker pool could be reached by one simultaneous blip that every
+# worker would have recovered from on retry, aborting a healthy run. 10 is
+# double the pool, so it needs sustained refusal rather than one bad moment.
+#
+# Read the other way: a fully rate-limited request contributes MAX_RETRIES + 1
+# = 4, so 10 is ~2.5 exhausted requests. Against a spent quota the daily load
+# aborts around six minutes in rather than grinding through every source.
+#
+# Deliberately NOT a multiple of MAX_RETRIES + 1. At an exact multiple the
+# threshold is only ever crossed on a request's FINAL attempt, where the
+# out-of-retries branch raises first, so the mid-request abort below could never
+# fire and a doomed request would always sleep out its whole budget.
+#
+# The trade-off is deliberate and worth stating: CFBD burst-blocks for ~10
+# minutes at a time, and a burst long enough to cross this threshold with no
+# successes in between WILL fail the run. That is the cheaper error for an
+# idempotent job that retries tomorrow and opens an issue when it fails -- the
+# alternative, historically, was a three-hour run that exhausted the quota.
+RATE_LIMIT_CIRCUIT_THRESHOLD = 10
 
 
 class RateLimitExhausted(Exception):

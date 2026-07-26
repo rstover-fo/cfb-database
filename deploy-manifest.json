@@ -1,7 +1,7 @@
 {
   "action": "compute",
   "compute": {
-    "script": "train_model",
-    "args": ["--refit-if-stale"]
+    "script": "score_fitted",
+    "args": ["--upcoming"]
   }
 }

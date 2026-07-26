@@ -403,7 +403,7 @@ SCREEN_FRAME_QUERY = f"""
 WITH coach_year AS (
     -- One head coach per (school, year). A school-year can list several
     -- coaches (interim, co-HC), so take the one who actually coached the most
-    -- games. Covers 99.1% of the sp_ratings spine.
+    -- games. Covers 99.1%% of the sp_ratings spine.
     SELECT DISTINCT ON (c.school, c.year)
            c.school, c.year, c._dlt_parent_id AS coach_id
     FROM ref.coaches__seasons c
@@ -469,7 +469,7 @@ draft_out AS (
 spine AS (
     -- One row per (season, team) with the outcome, its control, and the
     -- current staff's tenure start (for the section 6.0b regime variant).
-    -- LEFT JOIN on tenure so the ~1% of team-seasons with no coach record
+    -- LEFT JOIN on tenure so the ~1%% of team-seasons with no coach record
     -- still screen; tenure_start falls back to the window start, making the
     -- regime variant equal the flat window for those rows.
     SELECT sp.year AS season, sp.team,

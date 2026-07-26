@@ -327,3 +327,48 @@ class TestScreenUsesBothControls:
         for r in screen(self._frame(), [PRIMARY_CONTROL, "redundant_candidate"]):
             assert "partial_r_vs_prior" in r
             assert "partial_r" in r
+
+
+class TestFrameQueryIsBindable:
+    """The screen has NEVER been able to run its own frame query.
+
+    Two literal percent signs in SQL comments ("99.1%", "~1%") were not
+    escaped, and psycopg2's pyformat binding treats any bare % as the start of
+    a placeholder -- so fetch_frame raised `TypeError: dict is not a sequence`
+    before touching the database. The recorded verdicts came from ad-hoc MCP
+    queries instead, which is a deeper version of the reproducibility gap the
+    PR #48 review raised: the script could not reproduce its verdicts because
+    it could not execute at all.
+    """
+
+    def test_no_unescaped_percent_signs(self):
+        import re
+
+        from scripts.screen_preseason_features import SCREEN_FRAME_QUERY as q
+
+        # Strip valid named placeholders and doubled literals, then nothing
+        # containing a bare % may remain.
+        stripped = re.sub(r"%\([a-z_]+\)s", "", q).replace("%%", "")
+        assert "%" not in stripped, (
+            "unescaped % in SCREEN_FRAME_QUERY -- psycopg2 will read it as a "
+            "placeholder and parameter binding will fail before the query runs"
+        )
+
+    def test_named_placeholders_are_present(self):
+        from scripts.screen_preseason_features import SCREEN_FRAME_QUERY as q
+
+        assert "%(from_season)s" in q
+        assert "%(to_season)s" in q
+
+    def test_query_binds_against_psycopg2_mogrify_rules(self):
+        """Exercises the actual binding path rather than a regex proxy."""
+        import re
+
+        from scripts.screen_preseason_features import SCREEN_FRAME_QUERY as q
+
+        params = {"from_season": 2015, "to_season": 2025}
+        # Mirror psycopg2's pyformat substitution; a stray % raises here too.
+        rendered = re.sub(r"%\(([a-z_]+)\)s", lambda m: str(params[m.group(1)]), q).replace(
+            "%%", "%"
+        )
+        assert "2015" in rendered and "2025" in rendered

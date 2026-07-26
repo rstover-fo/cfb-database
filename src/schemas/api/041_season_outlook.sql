@@ -34,6 +34,23 @@
 -- (it shows how the model's read on a season moved as games resolved), and
 -- this view deliberately does not expose it.
 --
+-- KNOWN LIMITATION -- FCS/D2 playoff games count toward the slate. Phase 4
+-- excludes the postseason by filtering season_type = 'regular', which is
+-- correct for FBS (bowls and CFP games are 'postseason', while conference
+-- championship games are 'regular' and correctly remain). CFBD does NOT
+-- apply that convention below FBS: FCS and D2 **playoff bracket** games are
+-- labelled 'regular', so a deep playoff run inflates games_scheduled --
+-- verified 2026-07-26, 14 teams in completed 2025 at 14-15 games
+-- (Illinois State 15, Ferris State 14-0, Montana, Villanova, ...), all
+-- MVFC/Big Sky/CAA/GLIAC/PSAC/UAC/Southland.
+--
+-- Bounded, not corrupting: every affected row is a COMPLETED season where
+-- projected_wins equals actual_wins exactly, so nothing is being projected.
+-- No forward-looking row is affected -- 2026 tops out at 13 games with zero
+-- teams above it. The consequence for consumers is comparability: an FCS
+-- team's projected_wins may span a playoff run while an FBS team's never
+-- does, so do not rank the two against each other on wins alone.
+--
 -- NO MART. The plan sketched a marts.season_outlook alongside this; a
 -- materialized view is not warranted. The grain is ~350 teams per season per
 -- model, DISTINCT ON rides season_projections_daily_key, and a mart would add
@@ -127,4 +144,4 @@ BEGIN
 END
 $$;
 
-COMMENT ON VIEW api.season_outlook IS 'Latest Monte Carlo season projection per (season, team, model_version), from the append-only predictions.season_projections log. Columns: projection_id, computed_at, projection_date, model_version, season, team, conference, games_scheduled, games_simulated, games_unscored, games_completed, actual_wins, schedule_complete, projected_wins, projected_losses, median_wins, wins_p10/p25/p75/p90, p_win_dist, p_bowl_eligible, p_ten_plus, sos_rating, sos_rank, conf_title_prob, playoff_prob, n_sims, residual_sigma. DISTINCT ON (season, team, model_version) ORDER BY projection_date DESC selects the most recent snapshot; query predictions.season_projections directly for day-by-day history. v1 draws games INDEPENDENTLY, so p10/p90 and p_ten_plus understate both tails. Projections cover only games actually on the schedule -- check schedule_complete and games_unscored before comparing projected_wins to a full slate.';
+COMMENT ON VIEW api.season_outlook IS 'Latest Monte Carlo season projection per (season, team, model_version), from the append-only predictions.season_projections log. Columns: projection_id, computed_at, projection_date, model_version, season, team, conference, games_scheduled, games_simulated, games_unscored, games_completed, actual_wins, schedule_complete, projected_wins, projected_losses, median_wins, wins_p10/p25/p75/p90, p_win_dist, p_bowl_eligible, p_ten_plus, sos_rating, sos_rank, conf_title_prob, playoff_prob, n_sims, residual_sigma. DISTINCT ON (season, team, model_version) ORDER BY projection_date DESC selects the most recent snapshot; query predictions.season_projections directly for day-by-day history. v1 draws games INDEPENDENTLY, so p10/p90 and p_ten_plus understate both tails. Projections cover only games actually on the schedule -- check schedule_complete and games_unscored before comparing projected_wins to a full slate. KNOWN LIMITATION: CFBD labels FCS/D2 playoff bracket games season_type=''regular'', so games_scheduled for a non-FBS team can include a playoff run (completed seasons only; no forward-looking row is affected). Do not rank FCS and FBS teams against each other on projected_wins alone.';

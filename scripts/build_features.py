@@ -45,10 +45,12 @@ pattern as scripts/compute_house_elo.py / scripts/compute_adjusted_epa.py).
 
 Usage:
     python scripts/build_features.py --from 2015
-        Backfill every season from YYYY through the current season
-        (src.pipelines.config.years.get_current_season()) -- the design
-        doc's 2015+ backfill scope. A season with no core.games rows is a
-        clean no-op (not a failure).
+        Backfill every season from YYYY through the latest season with a
+        published schedule (get_projection_seasons, NOT the calendar-based
+        get_current_season -- which returns year-1 until August and would
+        silently stop a July backfill one season short of the one being asked
+        about). The design doc's 2015+ backfill scope. A season with no
+        core.games rows is a clean no-op (not a failure).
 
     python scripts/build_features.py --season 2024
         Build a single season.
@@ -799,13 +801,23 @@ def main() -> None:
         # get_projection_seasons' docstring).
         seasons = _resolve_projection_seasons()
     else:
-        current_season = get_current_season()
-        if args.from_season > current_season:
-            logger.error(
-                f"--from {args.from_season} is after the current season ({current_season})"
-            )
+        # Upper bound from core.games, NOT get_current_season(). The calendar
+        # rule returns year-1 until August, so a July `--from 2015` silently
+        # stopped at 2025 and left the upcoming season untouched -- exactly the
+        # defect Phase 1 fixed for --incremental and missed here.
+        #
+        # It is the worse half of that bug, because a backfill that skips the
+        # only season anyone is asking about still exits 0 and still prints a
+        # gate line per season it DID build. The 2026-07-26 migration-042
+        # rebuild hit this: eleven seasons got the new preseason columns, 2026
+        # kept NULLs, and 2026 predictions would have been unchanged while
+        # every surface reported success.
+        projection_seasons = _resolve_projection_seasons()
+        last_season = max([*projection_seasons, get_current_season()])
+        if args.from_season > last_season:
+            logger.error(f"--from {args.from_season} is after the last season ({last_season})")
             sys.exit(1)
-        seasons = list(range(args.from_season, current_season + 1))
+        seasons = list(range(args.from_season, last_season + 1))
 
     logger.info(f"Building features.team_week for {len(seasons)} season(s): {seasons}")
     failures = compute_seasons(seasons)

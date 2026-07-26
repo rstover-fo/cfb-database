@@ -299,3 +299,38 @@ class TestFittedVectorContract:
 
         assert len(FEATURE_NAMES) == len(set(FEATURE_NAMES))
         assert len(FEATURE_NAMES) == len(DIFF_FEATURE_COLUMNS) + 2
+
+
+class TestBackfillCoversTheUpcomingSeason:
+    """--from must not stop one season short of the one being asked about.
+
+    get_current_season() is a CALENDAR rule returning year-1 until August, and
+    it is correct only for ingest year-windows. Phase 1 rewired --incremental
+    onto get_projection_seasons for exactly this reason and left --from behind.
+    On 2026-07-26 the migration-042 rebuild ran `--from 2015`, built 2015-2025,
+    skipped 2026 entirely, and exited 0 -- so the five new preseason columns
+    were NULL for the only season anyone wanted them for, while every gate line
+    reported success.
+    """
+
+    def test_from_branch_does_not_use_the_calendar_rule_alone(self):
+        import inspect
+
+        from scripts import build_features
+
+        src = inspect.getsource(build_features.main)
+        from_branch = src[src.index("else:") :]
+        assert "_resolve_projection_seasons()" in from_branch, (
+            "--from must bound on core.games (get_projection_seasons), not the "
+            "calendar's get_current_season"
+        )
+
+    def test_upper_bound_is_the_max_of_both_sources(self):
+        """Belt and braces: whichever is later wins, so the range can never be
+        shorter than either rule alone would give."""
+        import inspect
+
+        from scripts import build_features
+
+        src = inspect.getsource(build_features.main)
+        assert "max([*projection_seasons, get_current_season()])" in src

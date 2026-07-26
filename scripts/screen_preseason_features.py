@@ -67,7 +67,10 @@ each is screened on its own complete cases (see `complete_cases`).
 
     candidate                       n    cov   vs prior   +recr   verdict
     recruiting_points_3yr        1439  1.000    +0.2642  (ctrl)   SHIP
+    hc_first_year_unproven       1322  0.919    -0.1800  -0.1844  ship (held)
     hc_first_year                1324  0.920    -0.1231  -0.1548  SHIP
+    hc_first_year_prior_below    1322  0.919    -0.1195  -0.1345  ship (pooled)
+    hc_first_year_rookie         1324  0.920    -0.1365  -0.1340  ship (pooled)
     prior_def_line_yards         1423  0.989    -0.0463  -0.0997  SHIP
     prior_def_stuff_rate         1423  0.989    +0.0536  +0.0816  SHIP (marginal)
     blue_chip_pipeline           1439  1.000    +0.2532  +0.0782  reject (see below)
@@ -81,8 +84,16 @@ each is screened on its own complete cases (see `complete_cases`).
     pipeline_index               1439  1.000    +0.0952  +0.0072  reject
     draft_picks_3yr              1439  1.000    +0.0949  +0.0068  reject
     conversion / draft_yield     1439  1.000    +0.0760  -0.0007  reject
+    hc_first_year_proven         1322  0.919    +0.0557  +0.0096  reject (null)
+    hc_career_prior               113  0.079        --       --   untestable
     prior_havoc_allowed_front_7   251  0.174        --       --   untestable
     prior_front_seven_havoc       251  0.174        --       --   untestable
+
+The five `hc_*` rows other than the flat binary come from deploy run 138, which
+screened them on the same frame; every other figure is run 124's. Run 138
+reproduced run 124 to four decimals on all eighteen candidates they share, so
+the two sets are comparable. `ship (pooled)` and `ship (held)` are screen verdicts the
+owner has not acted on -- see SUPERSEDED_COLUMNS and finding 8.
 
 What the run established:
 
@@ -105,33 +116,125 @@ What the run established:
    apart, the recruiting half falls to -0.0597 and FAILS while the coaching
    half ships at -0.1548. A column had shipped on a number that measured
    something other than what the column claimed to measure.
-5. **Draft production is redundant, not absent.** It predicts (+0.0949) until
-   recruiting is controlled, then collapses to +0.0068. Draft output identifies
-   programs that *recruit* well, not ones that *develop*.
-6. **`draft_departures` is this gate's own justification:** raw correlation
-   +0.3474, partial -0.0728 -- and it flips sign. Losing draft picks correlates
-   with having been good and says nothing about next season.
+5. **WITHDRAWN** (was: draft production is redundant, not absent, +0.0949 ->
+   +0.0068). The column is a fabricated zero on 54.2% of rows -- see DEFECT
+   FOUND BY THE SPLIT below. Unadjudicated, not rejected.
+6. **WITHDRAWN** (was: `draft_departures` raw +0.3474, partial -0.0728, sign
+   flipped). Same defect, 45.1% fabricated zeros. The gate's own justification
+   has to come from a column that was actually measured.
 7. **Two candidates are untestable, not null.** The havoc front-seven splits
    exist for only 17.4% of team-seasons, below MIN_SCREEN_N. That is a
    data-coverage finding; the thesis they would test is unadjudicated.
+8. **The first-year penalty is not a penalty for changing coaches** (run 138).
+   Split by the incoming coach's career record, all of it lives on one side:
+
+       subgroup            positives   partial   implied gap (SD)
+       unproven hire             184   -0.1844               0.53
+         of which rookie         151   -0.1340               0.42
+         of which prior-below     33   -0.1345               0.86
+       proven hire                80   +0.0096               0.04
+       flat binary               266   -0.1548               0.39
+
+   A hire whose previous teams averaged at or above an average FBS team costs
+   essentially nothing (+0.0096, p=0.73, SE ~0.028 -- powered enough to exclude
+   the unproven effect). Pooling the two halves is what produced the flat
+   binary's -0.1548: averaging a real penalty with a null understates the
+   penalty by about 0.03 of partial correlation.
+
+   The "implied gap" column is |r| / sqrt(p(1-p)), the standardized mean
+   difference a point-biserial of that size implies at that prevalence. It is
+   the reason `hc_first_year_prior_below` is pooled rather than shipped: a
+   0.86-SD effect on 33 team-seasons is the largest per-hire number in the set
+   and the one most likely to be a handful of rows.
+
+   The cut was chosen after looking at subgroup means, so the AMENDMENT's
+   split-window check was run immediately (runs 139 and 140):
+
+       candidate                  2015-2025   2015-2020   2021-2025
+       hc_first_year_unproven       -0.1844     -0.1417     -0.2257
+       hc_first_year (flat)         -0.1548     -0.1332     -0.1738
+       hc_first_year_prior_below    -0.1345     -0.1196     -0.1489
+       hc_first_year_rookie         -0.1340     -0.0968     -0.1688
+       hc_first_year_proven         +0.0096     -0.0155     +0.0368
+       n (coach columns)               1322         730         592
+
+   `unproven` beats the flat binary in every window, and `proven` is null in
+   every window (all |r| < 0.04, all p > 0.37). Neither window is strictly
+   held out -- the cut was chosen on data that includes both -- but the effect
+   is LARGER in the portal era, not smaller, which is the opposite of what
+   selection bias alone would produce.
+
+   The coaching penalty is also growing: flat -0.1332 -> -0.1738 across the
+   era break, unproven -0.1417 -> -0.2257. A plausible mechanism is that a new
+   staff now loses the inherited roster through the portal rather than merely
+   inheriting less recruiting momentum, but this screen does not test that.
 
 Both composites in the original design failed: `pipeline_index`
 (talent_stock x conversion) scores +0.0952 against its own input's +0.2664 --
 the multiplication destroys signal -- and `talent_stock` (+0.0744) does not
 clear the floor either.
 
-UNRESOLVED. The ad-hoc figures for `blue_chip_pipeline` (+0.0931 vs +0.0782),
-`talent_stock` (~+0.002 vs +0.0744) and `draft_departures` (+0.0088 vs -0.0728,
-sign flip) are not explained by imputation -- the audit found those columns
-1.5% and 0.8% zero-filled, and the zero-fill inflates, so the honest
-blue_chip_pipeline value is at most +0.0782. The ad-hoc SQL is gone and the
-discrepancy is recorded rather than reconciled.
+RESOLVED (runs 139/140). The ad-hoc `blue_chip_pipeline` figure of +0.0931 was
+a 2021-2025 number recorded in a 2015-2025 table. Run 140 reproduces it to four
+decimals on the 2021-2025 window (+0.0931, n=663), and reproduces the plan's
+recorded portal-era `portal_net_rating` pair (+0.0274 / +0.0731, n=663)
+exactly. The full-window value really is +0.0782; the two numbers were never in
+conflict, they were measuring different windows. `talent_stock`'s ad-hoc ~+0.002
+still does not reconcile with any window (+0.0744 full, +0.1081 early, +0.0884
+portal-era) and stays unexplained.
 
-AMENDMENT -- the regime-scoped coaching variants (PENDING, not yet run)
+DEFECT FOUND BY THE SPLIT (runs 139/140) -- every draft verdict is void
 -----------------------------------------------------------------------
-Five candidates were added AFTER run 124 and have NO recorded verdict; they are
-listed in PENDING_COLUMNS below and will move to SHIPPED/REJECTED/UNTESTABLE
-only from a run of this script. They decompose the shipped flat binary
+Run 139 returned partial_r EXACTLY +0.0000 with p=1.00000 for
+`draft_picks_3yr`, `conversion`, `draft_yield` and `pipeline_index`. Four
+columns cannot land on exactly zero; they were CONSTANT.
+
+`draft.draft_picks` holds 2020-2026 only -- 1,806 rows, seven drafts -- though
+`years.py` configures the source for 2000-2026. It is a load gap, not a source
+limit. `draft_out` is not year-filtered, so nothing errored: the S-1..S-3
+lookback simply found no rows and `COALESCE(..., 0)` turned "this draft was
+never ingested" into "this program produced zero NFL picks".
+
+Measured against the 2015-2025 spine:
+
+    column               fabricated zeros        total    share
+    draft_picks_3yr      780 (all of 2015-2020)   1439    54.2%
+    draft_departures     649 (all of 2015-2019)   1439    45.1%
+
+So the recorded rejections of `draft_picks_3yr` (+0.0068), `conversion` /
+`draft_yield` (-0.0007), `pipeline_index` (+0.0072), `draft_departures`
+(-0.0728) and `talent_stock` (+0.0744) are NOT measurements of those
+constructs. They are measurements of a column that is a fabricated zero on
+roughly half its rows, which biases every one of them toward zero. Findings 5
+and 6 above are withdrawn: draft production is UNTESTED here, not redundant,
+and `conversion` -- the development term, and the half of the stated thesis
+this gate was built to adjudicate -- was never actually put to the test.
+
+This is the `recruiting_points_regime` failure again (finding 4) at twice the
+scale, and --audit-imputation missed it because the audit has counters for
+recruiting and blue-chip zero-fill but none for draft.
+
+What it does NOT touch: the coaching columns (no draft input), the `prior_*`
+line-play columns (advanced_team_stats, 98.9% coverage), and
+`recruiting_points_3yr` (0.8% imputed). Every SHIPPED column is unaffected.
+
+Re-test conditions, in order:
+1. Backfill `draft.draft_picks` for 2000-2019 -- the source is configured for
+   it and the flat-file nflverse mirror (1967+) is a second path. Note
+   `meta.flat_file_loads` does not exist in prod, so the flat-file loader has
+   never completed a run there either.
+2. Add draft coverage counters to AUDIT_QUERY so a future gap fails loudly.
+3. Re-run the screen. Only then do the draft verdicts mean anything.
+
+Consequence for the section 6 oracle pre-test: it needs drafts S+1..S+3, so
+against 2020-2026 data it can only run for S in 2019-2023 -- five seasons, not
+the 2015-2022 the plan assumes. Backfill first or the pre-test inherits this
+same defect.
+
+AMENDMENT -- the regime-scoped coaching variants (screened, run 138)
+--------------------------------------------------------------------
+Five candidates were added AFTER run 124 and are now adjudicated by run 138;
+see finding 8 and SUPERSEDED_COLUMNS. They decompose the shipped flat binary
 `hc_first_year` by the incoming coach's career record (see the SQL).
 
 Adding candidates after seeing results is a real cost and is stated here rather
@@ -531,19 +634,45 @@ SHIPPED_BY_DECISION = {
         "+0.0782 vs a 0.08 floor -- short by 0.07 standard errors at n=1,439, "
         "which the data cannot distinguish, and q=0.0095 says the effect is real. "
         "The floor separates 'matters' from 'negligible against an 18.5-point "
-        "residual SD'; it was never meant to arbitrate the third decimal."
+        "residual SD'; it was never meant to arbitrate the third decimal. "
+        "STRENGTHENED by run 140: on 2021-2025 it clears the floor outright at "
+        "+0.0931 (q=0.045, n=663), so the full-window shortfall is an average "
+        "over an era where it was weaker, not a null. The override stands, and "
+        "the reason it needed to be an override has narrowed."
     ),
 }
 
 # Rejected, with the reason, so a future reader does not re-propose them
 # without new evidence. Re-test conditions noted where they exist.
 REJECTED_COLUMNS = {
-    "talent_stock": "+0.0744 -- under the floor, and no better than plain recruiting",
-    "pipeline_index": "+0.0072 vs its own input's +0.2664 -- the product destroys signal",
-    "draft_picks_3yr": "+0.0068 once recruiting is controlled -- a recruiting proxy",
-    "conversion": "-0.0007 once recruiting is controlled",
-    "draft_yield": "-0.0007 -- identical to conversion by construction",
-    "draft_departures": "-0.0728 partial against +0.3474 raw, sign flipped -- pure confound",
+    "talent_stock": (
+        "+0.0744 -- under the floor. VOID pending a draft backfill: it nets "
+        "draft_departures, which is a fabricated zero on 45.1% of rows."
+    ),
+    "pipeline_index": (
+        "+0.0072 vs its own input's +0.2664. VOID pending a draft backfill -- "
+        "it multiplies by conversion, which is void. The separate claim that a "
+        "product of two standardized terms destroys signal still stands."
+    ),
+    "draft_picks_3yr": (
+        "VOID -- the recorded +0.0068 was measured on a column that is a "
+        "fabricated zero on 54.2% of rows (draft.draft_picks holds 2020-2026 "
+        "only). Re-test after backfilling 2000-2019. This is UNADJUDICATED, "
+        "and it is filed here rather than in UNTESTABLE because the reason is "
+        "a fixable load gap, not a missing source."
+    ),
+    "conversion": (
+        "VOID -- the recorded -0.0007 is draft_picks_3yr residualized on "
+        "recruiting, so it inherits the 54.2% fabricated zeros. This is the "
+        "development term and the half of the stated thesis this gate exists "
+        "to adjudicate; it has NOT been tested. Re-test after the backfill."
+    ),
+    "draft_yield": "VOID -- identical to conversion by construction, same defect",
+    "draft_departures": (
+        "VOID -- the recorded -0.0728 partial against +0.3474 raw was measured "
+        "on a column that is a fabricated zero on 45.1% of rows (all of "
+        "2015-2019). Re-test after the backfill."
+    ),
     "recruiting_points_regime": (
         "-0.0597 on its 1,057 complete cases. Its earlier +0.0955 was an artifact of "
         "zero-filling 291 first-year-coach rows; that signal was the coaching change, "
@@ -558,6 +687,17 @@ REJECTED_COLUMNS = {
         "did not exist', not 'net zero movement', so the measurement is contaminated "
         "the same way the trench columns were. Re-test on 2021+ complete cases."
     ),
+    "hc_first_year_proven": (
+        "+0.0096, p=0.73 (n=1,322, 80 positives) -- and this null is the point "
+        "of the decomposition, not a leftover from it. A first-year hire whose "
+        "previous teams averaged at or above an average FBS team costs his new "
+        "team essentially nothing in year one, once prior SP+ and recruiting "
+        "are controlled. At n=1,322 the standard error is about 0.028, so the "
+        "interval excludes anything near the -0.1844 measured on unproven "
+        "hires: this is a powered null, not an underpowered shrug. The "
+        "first-year penalty is not a penalty for changing coaches -- it is a "
+        "penalty for hiring someone without a record."
+    ),
 }
 
 # Screened but not scored: too few complete cases to test at all. Recorded
@@ -566,6 +706,49 @@ REJECTED_COLUMNS = {
 UNTESTABLE_COLUMNS = {
     "prior_havoc_allowed_front_seven": "n=251 (17.4% coverage) -- below MIN_SCREEN_N",
     "prior_front_seven_havoc": "n=251 (17.4% coverage) -- below MIN_SCREEN_N",
+    "hc_career_prior": (
+        "n=113 (7.9% coverage) -- below MIN_SCREEN_N, as the column's own "
+        "rationale predicted. It is defined only on first-year hires with a "
+        "ratable head-coaching record, which is 113 of 1,439 team-seasons. "
+        "This is the reproducible answer to 'why not just use the continuous "
+        "career prior instead of indicators': there is not enough of it."
+    ),
+}
+
+# Cleared the screen and deliberately NOT shipped, because a column that IS
+# shipped is a linear combination of it. Not a rejection: each of these beat
+# the floor with q < 1e-5, and calling that "rejected" would make the record
+# say the evidence went the other way.
+#
+# The mirror image of SHIPPED_BY_DECISION. There the screen said reject and a
+# human shipped; here the screen said ship and a human held it back. Both are
+# judgments layered on top of a measurement, and both are only honest if the
+# measurement is recorded next to the judgment rather than replaced by it.
+SUPERSEDED_COLUMNS = {
+    "hc_first_year_rookie": (
+        "-0.1340 (n=1,324, 151 positives) -- real, but an exact component of "
+        "hc_first_year_unproven, which scores better. Shipping both would put "
+        "rookie + prior_below = unproven into the vector as an exact linear "
+        "dependence."
+    ),
+    "hc_first_year_prior_below": (
+        "-0.1345 (n=1,322, 33 positives) -- the largest per-hire effect in the "
+        "set and the least trustworthy number in it. At 2.5% prevalence a "
+        "-0.1345 point-biserial implies a standardized gap near 0.86, roughly "
+        "twice the rookie effect, resting on 33 team-seasons. Pooled into "
+        "hc_first_year_unproven rather than shipped alone, because a "
+        "coefficient fit on 33 rows would be applied with false confidence."
+    ),
+    "hc_first_year_unproven": (
+        "-0.1844 (n=1,322, 184 positives) -- the strongest coaching term "
+        "measured and better than the shipped flat binary's -0.1548. The "
+        "split-window check the AMENDMENT prescribes has now been run and it "
+        "held: unproven beats the flat binary in BOTH halves (-0.1417 vs "
+        "-0.1332 on 2015-2020, -0.2257 vs -0.1738 on 2021-2025), and proven "
+        "is null in both. HELD only because swapping the shipped column is an "
+        "owner decision, not a screen verdict -- the evidence is in, and it "
+        "costs a migration, a feature rebuild, a retrain and a re-backtest."
+    ),
 }
 
 # Added to the candidate set but NOT YET SCREENED. A pending entry states what
@@ -578,40 +761,11 @@ UNTESTABLE_COLUMNS = {
 # second hides that the family being FDR-corrected has grown. An explicit
 # "screened, unadjudicated" state says the true thing.
 #
-# On a run, each of these moves to SHIPPED_COLUMNS, REJECTED_COLUMNS or
-# UNTESTABLE_COLUMNS with the number the screen produced, and is deleted here.
-PENDING_COLUMNS = {
-    "hc_first_year_rookie": (
-        "First-year head coach with no prior head-coaching season anywhere. The "
-        "only regime column that needs no rating at all, so it is the one "
-        "unaffected by how far back SP+ coverage reaches."
-    ),
-    "hc_first_year_prior_below": (
-        "First-year hire whose previous teams averaged below an average FBS "
-        "team. The smallest subgroup in the set and the one whose raw "
-        "subgroup mean is most eye-catching; screened so the effect floor "
-        "adjudicates it rather than the reader."
-    ),
-    "hc_first_year_unproven": (
-        "rookie OR prior_below, pooled -- the single shippable column if the "
-        "penalty really is concentrated in unproven hires. Correlates about "
-        "0.80 with the flat hc_first_year at the observed subgroup sizes: "
-        "overlapping, not the same column."
-    ),
-    "hc_first_year_proven": (
-        "First-year hire whose previous teams averaged at or above average. "
-        "The substantive claim of the decomposition is that THIS one is null; "
-        "a null here is the finding, and it is only on the record if the "
-        "column is screened."
-    ),
-    "hc_career_prior": (
-        "The continuous career prior itself, defined only where one exists -- "
-        "no value invented for a first-time head coach. Only first-year "
-        "coaches with prior head-coaching seasons have it, so it is expected "
-        "to fall below MIN_SCREEN_N and be reported untestable. That is the "
-        "answer to 'why not just use the continuous term', made reproducible."
-    ),
-}
+# On a run, each of these moves to SHIPPED_COLUMNS, REJECTED_COLUMNS,
+# UNTESTABLE_COLUMNS or SUPERSEDED_COLUMNS with the number the screen produced,
+# and is deleted here. Emptied by deploy run 138; kept as the mechanism for the
+# next candidate added between runs.
+PENDING_COLUMNS: dict[str, str] = {}
 
 # Recruiting-class decay across the four-year eligibility window: the class
 # entering season S-1 is weighted 1.0, S-2 0.8, and so on. A flat sum would

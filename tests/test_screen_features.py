@@ -470,6 +470,7 @@ class TestRecordedVerdictsAreInternallyConsistent:
             REJECTED_COLUMNS,
             SHIPPED_BY_DECISION,
             SHIPPED_COLUMNS,
+            SUPERSEDED_COLUMNS,
             UNTESTABLE_COLUMNS,
         )
 
@@ -478,6 +479,7 @@ class TestRecordedVerdictsAreInternallyConsistent:
             + list(SHIPPED_BY_DECISION)
             + list(REJECTED_COLUMNS)
             + list(UNTESTABLE_COLUMNS)
+            + list(SUPERSEDED_COLUMNS)
             + list(PENDING_COLUMNS)
         )
         assert len(recorded) == len(set(recorded)), "a candidate has two verdicts"
@@ -498,6 +500,7 @@ class TestRecordedVerdictsAreInternallyConsistent:
             REJECTED_COLUMNS,
             SHIPPED_BY_DECISION,
             SHIPPED_COLUMNS,
+            SUPERSEDED_COLUMNS,
             UNTESTABLE_COLUMNS,
         )
 
@@ -506,6 +509,7 @@ class TestRecordedVerdictsAreInternallyConsistent:
             | set(SHIPPED_BY_DECISION)
             | set(REJECTED_COLUMNS)
             | set(UNTESTABLE_COLUMNS)
+            | set(SUPERSEDED_COLUMNS)
         )
         assert not adjudicated & set(PENDING_COLUMNS), (
             "a pending candidate has been given a verdict the screen did not produce"
@@ -530,6 +534,28 @@ class TestRecordedVerdictsAreInternallyConsistent:
 
         for column, rationale in SHIPPED_BY_DECISION.items():
             assert len(rationale) > 40, f"{column} overrides the gate without an argument"
+
+    def test_a_held_back_ship_is_not_filed_as_a_rejection(self):
+        """SUPERSEDED is the other direction of override and needs the same
+        protection.
+
+        A column that cleared the floor and was held back for a structural
+        reason -- collinearity with a shipped column, or an owner decision
+        pending out-of-sample evidence -- must not be filed among the
+        rejections, where the record would read as "we measured it and it was
+        nothing". That is the same laundering
+        test_overrides_are_not_laundered_into_the_shipped_set prevents, run the
+        other way."""
+        from scripts.screen_preseason_features import (
+            REJECTED_COLUMNS,
+            SHIPPED_COLUMNS,
+            SUPERSEDED_COLUMNS,
+        )
+
+        assert not set(SUPERSEDED_COLUMNS) & set(REJECTED_COLUMNS)
+        assert not set(SUPERSEDED_COLUMNS) & set(SHIPPED_COLUMNS)
+        for column, rationale in SUPERSEDED_COLUMNS.items():
+            assert len(rationale) > 40, f"{column} is held back without a stated reason"
 
 
 class TestRegimeColumnsSeparateRecruitingFromCoachingChange:

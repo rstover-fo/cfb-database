@@ -1260,3 +1260,92 @@ columns (`prior_line_yards`, `prior_stuff_rate_allowed`,
 `prior_def_line_yards`, `prior_front_seven_havoc`) are also low-risk
 independent of the screen: they are measured performance rather than inferred
 continuity, cost no new ingest, and have no roster dependency.
+
+---
+
+### A6 — Preseason backtest results (re-run 2026-07-26 after Codex PR #51 fixes)
+
+The section 4.5 gate. `scripts/backtest_preseason.py`, walk-forward: season S
+scored from each team's **week-1** `features.team_week` vector with the frozen
+S-1 fit, sigma from preseason residuals of seasons **before** S, all games
+simulated as pending. FBS only, 10,000 sims, **n = 921 team-seasons**.
+
+`maxGP = 0` every season — the selected vectors carried zero games played, so
+they are genuinely as-of-season-start. 2018 is scored as a sigma seed and not
+reported.
+
+**Outcome-dependent games are excluded** (`drop_outcome_dependent`). CFBD files
+conference championship games as `season_type='regular'`, and below FBS the
+whole FCS/D2 playoff bracket too. Nobody could know in August that Georgia
+would play Texas for the SEC, so each team's slate is capped at its first 12
+chronological games; the `drop` column is what that removed.
+
+| season | fit | teams | games | drop | sigma | mgn MAE | **win MAE** | RMSE | bias | p10-p90 | prior-yr | flat |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2019 | 2018 | 130 | 1544 | 33 | 19.69 | 15.07 | 1.76 | 2.15 | -0.24 | 76.9% | 2.03 | 2.24 |
+| 2020 | 2019 | 127 | 563 | 0 | 19.37 | 15.17 | 1.43 | 1.84 | -0.06 | 74.8% | 1.72 | 1.77 |
+| 2021 | 2020 | 130 | 2376 | 32 | 19.32 | 17.59 | 1.79 | 2.26 | -0.22 | 73.1% | 2.47 | 2.25 |
+| 2022 | 2021 | 131 | 3614 | 43 | 20.60 | 18.22 | 1.80 | 2.24 | -0.25 | 73.3% | 2.14 | 2.03 |
+| 2023 | 2022 | 133 | 3573 | 12 | 21.64 | 16.05 | 1.77 | 2.16 | -0.26 | 71.4% | 1.98 | 2.18 |
+| 2024 | 2023 | 134 | 3695 | 50 | 21.32 | 15.81 | 1.95 | 2.41 | -0.27 | 68.7% | 2.27 | 2.16 |
+| 2025 | 2024 | 136 | 3704 | 39 | 21.01 | 15.95 | 1.96 | 2.44 | -0.27 | 64.0% | 2.26 | 2.33 |
+
+**Overall: win MAE 1.784, RMSE 2.225, bias -0.226, p10-p90 coverage 71.7%.**
+Baselines: prior-season win rate 2.128, flat .500 2.140. **The model beats both.**
+
+**Empirical residual quantiles of (actual - projected), n=921 — use these for an
+interval, NOT +/- MAE:**
+
+| p05 | p10 | p25 | p50 | p75 | p90 | p95 |
+|---|---|---|---|---|---|---|
+| -3.38 | **-2.61** | -1.21 | +0.11 | +1.81 | **+3.19** | +4.02 |
+
+An 80% empirical interval around a projection is **[proj -2.61, proj +3.19]**.
+
+**Findings:**
+
+1. **The model is real but modest.** 1.784 vs 2.128 for "last year's record" is
+   a 0.34-win edge (~16%). Worth having; not large. It misses the plan's ~1.5
+   aspiration (`verdict=above_1.5`), recorded as measured.
+
+2. **Removing the outcome-dependent games barely moved the headline** (MAE
+   1.791 -> 1.784, coverage 72.5% -> 71.7%). The leak was real and had to go,
+   but it was not what made the model look good — worth recording so the fix is
+   not credited with more than it did.
+
+3. **The distribution is too narrow**, and both calibration tables show it from
+   opposite ends: `p_bowl_eligible` 0.8-0.9 predicted 0.848, observed **0.720**;
+   `p_ten_plus` 0.2-0.3 predicted 0.246, observed **0.426**. Too little mass in
+   *both* tails is one phenomenon — the v1 independent-draw limitation, now
+   measured. **This is the case for promoting the correlated-draw variant
+   (section 4.2's v1.1) to next.**
+
+4. **Coverage decays 76.9% (2019) -> 64.0% (2025)** while sigma rose only
+   19.7 -> 21.0. Real season variance is outgrowing the model's spread,
+   plausibly the portal/NIL structural break section 6.0b flags. Recent
+   projections are more overconfident than the pooled 71.7% suggests.
+
+5. **A stable -0.23 win bias** in every season but 2020 — small, consistent, and
+   a candidate for a calibration term rather than a modelling change.
+
+6. **The error distribution is right-skewed** (p10 -2.61 vs p90 +3.19, median
+   +0.11). Teams overperform a projection by more than they underperform it,
+   which is what a win-total floor at zero and a breakout ceiling well above the
+   projection would produce.
+
+**Consequence for the 2026 numbers already published.** Oklahoma's 7.08 carries
+an 80% empirical interval of **[4.5, 10.3]** — not the "5.3-8.9" an earlier
+draft of this appendix derived by treating MAE as a half-width. That was wrong:
+MAE is an average loss, and for a roughly normal error with MAE 1.78 the SD is
+about 2.23, so +/- MAE spans only ~58%. Oklahoma's stated `p_bowl_eligible` of
+84.1% sits in a bucket that historically delivered **72.0%**; its `p_ten_plus`
+of 5.9% sits in one that delivered **7.3%**.
+
+**Against a market number of 7.5:** the 0.42-win gap is a small fraction of an
+80% interval spanning ~5.8 wins, so this backtest gives no basis for preferring
+the model's number to the market's. That is a statement about resolution, not a
+significance test — the earlier claim that the two are "statistically
+indistinguishable" asserted more than was tested. Any 2026 claim needs to be
+worth more than this interval before it means anything, which is also the bar
+Phase 2 has to clear: new features must **reduce** this error, not merely move
+the number.

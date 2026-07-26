@@ -1520,16 +1520,20 @@ class TestSeasonOutlook:
         rows, _ = _fetch_all(
             db_conn,
             """
-            WITH actual AS (
-                SELECT season, team, COUNT(*) AS n
-                FROM (
-                    SELECT season, home_team AS team FROM core.games
-                    WHERE season_type = 'regular'
-                    UNION ALL
-                    SELECT season, away_team FROM core.games
-                    WHERE season_type = 'regular'
-                ) g
-                GROUP BY season, team
+            -- Scoped to the seasons the view actually holds. Aggregating all
+            -- of core.games (1869+) to check two seasons scans hundreds of
+            -- thousands of rows for nothing; LATERAL also avoids the second
+            -- pass a home/away UNION ALL would cost.
+            WITH seasons AS (
+                SELECT DISTINCT season FROM api.season_outlook
+            ),
+            actual AS (
+                SELECT g.season, t.team, COUNT(*) AS n
+                FROM core.games g
+                JOIN seasons s ON s.season = g.season
+                CROSS JOIN LATERAL (VALUES (g.home_team), (g.away_team)) AS t(team)
+                WHERE g.season_type = 'regular'
+                GROUP BY g.season, t.team
             )
             SELECT o.season, o.team, o.games_scheduled, a.n AS regular_season_games
             FROM api.season_outlook o

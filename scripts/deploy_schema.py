@@ -84,6 +84,9 @@ COMPUTE_SCRIPTS = {
     # of ingest -- a rate-limited season load should not be able to block
     # season projections, which touch no API at all.
     "simulate_season",
+    # Section 4.3 preseason backtest. Read-only -- re-scores history from
+    # week-1 feature vectors and reports to stdout; writes no rows.
+    "backtest_preseason",
 }
 
 # Marts refreshed after a compute run when plan.refresh is set. One home for

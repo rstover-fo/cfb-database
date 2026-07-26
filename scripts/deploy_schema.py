@@ -79,6 +79,11 @@ COMPUTE_SCRIPTS = {
     "tune_params",
     "calibrate_live_wp",
     "poll_scoreboard",
+    # Phase 4 of the preseason-outlook plan. Needed here, not just in
+    # daily-load.yml, because the compute chain must be runnable independently
+    # of ingest -- a rate-limited season load should not be able to block
+    # season projections, which touch no API at all.
+    "simulate_season",
 }
 
 # Marts refreshed after a compute run when plan.refresh is set. One home for

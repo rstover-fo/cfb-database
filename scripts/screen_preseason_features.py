@@ -615,6 +615,29 @@ def check_schema(conn) -> list[str]:
     return problems
 
 
+def probe_columns(conn, schema: str, table: str, like: str | None = None) -> list[str]:
+    """Column names for a table, optionally filtered by substring.
+
+    Exists because the screening frame has to name dlt-flattened columns
+    exactly (``offense__line_yards`` and friends), and the compute role is the
+    only one that can see the source schemas -- api-only roles get nothing back
+    from information_schema for `stats`. Guessing a name and iterating through
+    deploy runs is slower and less reliable than asking once.
+    """
+    sql = """
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = %s AND table_name = %s
+    """
+    params: list = [schema, table]
+    if like:
+        sql += " AND column_name ILIKE %s"
+        params.append(f"%{like}%")
+    sql += " ORDER BY column_name"
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        return [r[0] for r in cur.fetchall()]
+
+
 def fetch_frame(conn, from_season: int, to_season: int) -> list[dict]:
     """Screening frame: one dict per (season, team) with outcome, control and
     every candidate, composites already derived."""
@@ -729,6 +752,13 @@ def main() -> None:
         help=f"Last season to screen (default {DEFAULT_TO_SEASON})",
     )
     parser.add_argument(
+        "--probe",
+        metavar="SCHEMA.TABLE[:LIKE]",
+        help="Print matching column names for a source table and exit "
+        "(e.g. stats.advanced_team_stats:line). Discovery aid for building "
+        "new candidates against dlt-flattened names.",
+    )
+    parser.add_argument(
         "--check-schema",
         action="store_true",
         help="Verify every source column exists, then exit without screening",
@@ -743,6 +773,19 @@ def main() -> None:
 
     conn = psycopg2.connect(get_db_url())
     try:
+        if args.probe:
+            spec, _, like = args.probe.partition(":")
+            schema, _, table = spec.partition(".")
+            if not schema or not table:
+                logger.error("--probe expects SCHEMA.TABLE[:LIKE], got %r", args.probe)
+                sys.exit(1)
+            cols = probe_columns(conn, schema, table, like or None)
+            print(f"\n{schema}.{table}" + (f"  (matching '{like}')" if like else ""))
+            for c in cols:
+                print(f"  {c}")
+            print(f"\nPROBE_GATE table={schema}.{table} matched={len(cols)}\n")
+            return
+
         problems = check_schema(conn)
         if problems:
             for p in problems:

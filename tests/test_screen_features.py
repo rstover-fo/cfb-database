@@ -20,11 +20,14 @@ import pytest
 from scripts.screen_preseason_features import (
     FDR_ALPHA,
     MIN_PARTIAL_R,
+    PRIMARY_CONTROL,
     benjamini_hochberg,
     derive_composites,
     partial_corr_pvalue,
     partial_correlation,
+    screen,
     screen_verdict,
+    second_order_partial_correlation,
 )
 
 
@@ -237,3 +240,90 @@ def _residualize(v, control):
     dc = [c - mc for c in control]
     slope = sum(c * (x - mv) for c, x in zip(dc, v, strict=True)) / sum(c * c for c in dc)
     return [x - (mv + slope * c) for x, c in zip(v, dc, strict=True)]
+
+
+class TestSecondOrderPartialCorrelation:
+    """P2-F regression. The recorded verdicts control for prior-season rating
+    AND recruiting; screening on prior rating alone would ship a candidate that
+    merely restates recruiting."""
+
+    def _frame(self, n=1200, seed=13):
+        """`w` (recruiting) genuinely predicts `y` beyond `z`. `redundant` is a
+        noisy copy of `w` carrying NO information `w` lacks -- the shape of
+        `draft_picks_3yr`."""
+        rng = random.Random(seed)
+        z, y, w, redundant, extra = [], [], [], [], []
+        for _ in range(n):
+            z_i = rng.gauss(0.0, 1.0)
+            w_i = rng.gauss(0.0, 1.0)
+            extra_i = rng.gauss(0.0, 1.0)
+            y_i = 0.6 * z_i + 0.45 * w_i + 0.35 * extra_i + rng.gauss(0.0, 0.3)
+            z.append(z_i)
+            y.append(y_i)
+            w.append(w_i)
+            redundant.append(w_i + rng.gauss(0.0, 0.2))
+            extra.append(extra_i)
+        return {"z": z, "y": y, "w": w, "redundant": redundant, "extra": extra}
+
+    def test_redundant_candidate_survives_one_control_but_not_two(self):
+        f = self._frame()
+        first = partial_correlation(f["redundant"], f["y"], f["z"])
+        second = second_order_partial_correlation(f["redundant"], f["y"], f["z"], f["w"])
+        assert abs(first) > MIN_PARTIAL_R, "fixture should clear the floor on one control"
+        assert abs(second) < MIN_PARTIAL_R, (
+            f"redundant candidate must fail the second control (got {second:.4f})"
+        )
+
+    def test_genuinely_incremental_candidate_survives_both_controls(self):
+        f = self._frame()
+        second = second_order_partial_correlation(f["extra"], f["y"], f["z"], f["w"])
+        assert second > MIN_PARTIAL_R
+
+    def test_reduces_to_first_order_when_second_control_is_noise(self):
+        f = self._frame(n=600, seed=21)
+        rng = random.Random(99)
+        noise = [rng.gauss(0.0, 1.0) for _ in f["y"]]
+        first = partial_correlation(f["extra"], f["y"], f["z"])
+        second = second_order_partial_correlation(f["extra"], f["y"], f["z"], noise)
+        assert second == pytest.approx(first, abs=0.05)
+
+
+class TestScreenUsesBothControls:
+    """The executable gate must reproduce the recorded decisions."""
+
+    def _frame(self, n=1000, seed=17):
+        rng = random.Random(seed)
+        rows = []
+        for _ in range(n):
+            z = rng.gauss(0.0, 1.0)
+            w = rng.gauss(0.0, 1.0)
+            y = 0.6 * z + 0.45 * w + rng.gauss(0.0, 0.3)
+            rows.append(
+                {
+                    "sp_rating": y,
+                    "prior_sp_rating": z,
+                    PRIMARY_CONTROL: w,
+                    # A noisy restatement of the control: no independent signal.
+                    "redundant_candidate": w + rng.gauss(0.0, 0.2),
+                }
+            )
+        return rows
+
+    def test_redundant_candidate_is_rejected_by_the_screen(self):
+        results = screen(self._frame(), [PRIMARY_CONTROL, "redundant_candidate"])
+        by_name = {r["feature"]: r for r in results}
+        red = by_name["redundant_candidate"]
+        assert abs(red["partial_r_vs_prior"]) > MIN_PARTIAL_R, "would ship on one control"
+        assert red["verdict"] == "reject", "must reject once recruiting is controlled"
+
+    def test_primary_control_is_judged_on_the_first_order_partial(self):
+        results = screen(self._frame(), [PRIMARY_CONTROL, "redundant_candidate"])
+        control = next(r for r in results if r["feature"] == PRIMARY_CONTROL)
+        # It cannot be screened against itself, so both figures agree.
+        assert control["partial_r"] == pytest.approx(control["partial_r_vs_prior"])
+        assert control["verdict"] == "ship"
+
+    def test_both_columns_are_reported(self):
+        for r in screen(self._frame(), [PRIMARY_CONTROL, "redundant_candidate"]):
+            assert "partial_r_vs_prior" in r
+            assert "partial_r" in r

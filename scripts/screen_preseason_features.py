@@ -141,6 +141,13 @@ DEFAULT_TO_SEASON = 2025
 # (see partial_corr_pvalue) stops being safe and the p-value is not reported.
 MIN_DF_FOR_NORMAL_APPROX = 200
 
+# The second control every other candidate is screened against, alongside
+# prior-season rating. It is the strongest single candidate, so "adds signal
+# beyond prior rating" is too weak a bar -- a candidate must add signal beyond
+# the best thing already available. Screening against prior rating alone would
+# ship `draft_picks_3yr` at +0.0949 when its value after recruiting is +0.0068.
+PRIMARY_CONTROL = "recruiting_points_3yr"
+
 
 # =============================================================================
 # Pure math -- no I/O, no DB, unit-tested directly (tests/test_screen_features.py).
@@ -196,6 +203,38 @@ def _pearson(a: list[float], b: list[float]) -> float:
     if den == 0.0:
         return 0.0
     return num / den
+
+
+def second_order_partial_correlation(
+    x: list[float], y: list[float], z: list[float], w: list[float]
+) -> float:
+    """Partial correlation of `x` and `y` controlling for BOTH `z` and `w`.
+
+    Applies the recursive formula to the three first-order partials (each
+    already controlling for `z`):
+
+        r_xy.zw = (r_xy.z - r_xw.z * r_yw.z)
+                  / sqrt((1 - r_xw.z^2) * (1 - r_yw.z^2))
+
+    In this screen `z` is prior-season rating and `w` is
+    `recruiting_points_3yr` -- the strongest single candidate, and therefore
+    the bar every other candidate has to clear. Controlling for prior rating
+    alone is not enough: `draft_picks_3yr` scores +0.0949 against prior rating
+    and would ship, but only +0.0068 once recruiting is also held constant,
+    because it is largely a restatement of how well a program recruits.
+
+    Returns 0.0 where the recursion is degenerate, matching
+    `partial_correlation`'s convention that an undefined partial reads as
+    "no incremental signal".
+    """
+    r_xy_z = partial_correlation(x, y, z)
+    r_xw_z = partial_correlation(x, w, z)
+    r_yw_z = partial_correlation(y, w, z)
+
+    denom = math.sqrt(max(0.0, (1.0 - r_xw_z**2) * (1.0 - r_yw_z**2)))
+    if denom == 0.0:
+        return 0.0
+    return (r_xy_z - r_xw_z * r_yw_z) / denom
 
 
 def partial_corr_pvalue(r: float, n: int, n_controls: int = 1) -> float | None:
@@ -605,14 +644,32 @@ def screen(frame: list[dict], candidates: list[str]) -> list[dict]:
     ordered by descending |partial_r| so the strongest signals read first."""
     y = [r["sp_rating"] for r in frame]
     z = [r["prior_sp_rating"] for r in frame]
+    w = [r[PRIMARY_CONTROL] for r in frame]
     n = len(frame)
 
     raw: list[dict] = []
     for name in candidates:
         x = [r[name] for r in frame]
-        r_partial = partial_correlation(x, y, z)
-        p = partial_corr_pvalue(r_partial, n)
-        raw.append({"feature": name, "n": n, "partial_r": r_partial, "p": p})
+        r_first = partial_correlation(x, y, z)
+
+        if name == PRIMARY_CONTROL:
+            # The control cannot be screened against itself; it is judged on
+            # the first-order partial alone.
+            r_decisive, n_controls = r_first, 1
+        else:
+            r_decisive = second_order_partial_correlation(x, y, z, w)
+            n_controls = 2
+
+        p = partial_corr_pvalue(r_decisive, n, n_controls=n_controls)
+        raw.append(
+            {
+                "feature": name,
+                "n": n,
+                "partial_r_vs_prior": r_first,
+                "partial_r": r_decisive,
+                "p": p,
+            }
+        )
 
     # FDR across the whole set. Untestable candidates (p is None) are held out
     # of the correction -- they cannot be false discoveries because they will
@@ -637,6 +694,7 @@ def report(results: list[dict], from_season: int, to_season: int) -> int:
         q_str = f"{c['q']:.5f}" if c["q"] is not None else "na"
         print(
             f"SCREEN_RESULT feature={c['feature']} n={c['n']} "
+            f"partial_r_vs_prior={c['partial_r_vs_prior']:+.4f} "
             f"partial_r={c['partial_r']:+.4f} p={p_str} q={q_str} "
             f"verdict={c['verdict']}"
         )

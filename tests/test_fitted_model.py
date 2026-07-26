@@ -383,3 +383,23 @@ class TestStaleScoreSeasons:
     def test_multi_season_gap(self):
         # train_through 2023 present, 2025 complete -> need 2024 and 2025.
         assert stale_score_seasons(2025, [2023]) == [2025, 2026]
+
+
+class TestRefitLeakRegression:
+    """PR #48 P1-A. `stale_score_seasons` must be fed the last FULLY FINISHED
+    season. Feeding it a season that has merely started trains a fit on partial
+    data, which `score_fitted --upcoming` then adopts as MAX(train_through) and
+    uses to score the remainder of that same season -- in-sample, and never
+    refreshed again because the key now exists."""
+
+    def test_in_progress_season_would_produce_an_in_sample_fit(self):
+        # 2025 finished; 2026 has kicked off. Passing 2026 (the WRONG input)
+        # asks for a fit trained through 2026 while 2026 is still being played.
+        wrong = stale_score_seasons(2026, [2024, 2025])
+        assert wrong == [2027], "documents the bad behavior the fix avoids"
+        # Passing the last FINISHED season is a correct no-op.
+        assert stale_score_seasons(2025, [2024, 2025]) == []
+
+    def test_finished_season_still_triggers_the_annual_refit(self):
+        # The real July-2026 state: 2025 finished, newest fit train_through=2024.
+        assert stale_score_seasons(2025, [2024]) == [2026]

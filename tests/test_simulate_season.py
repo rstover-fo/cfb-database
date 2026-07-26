@@ -35,7 +35,9 @@ from scripts.simulate_season import (  # noqa: E402
 )
 
 
-def _game(home, away, completed=False, home_win=None, margin=None, season=2026):
+def _game(
+    home, away, completed=False, home_win=None, margin=None, season=2026, conference_game=True
+):
     return {
         "season": season,
         "home_team": home,
@@ -45,21 +47,28 @@ def _game(home, away, completed=False, home_win=None, margin=None, season=2026):
         "expected_home_margin": margin,
         "home_conference": "TestConf",
         "away_conference": "TestConf",
+        "conference_game": conference_game,
     }
+
+
+def _wins(games, n_sims, sigma, seed=None):
+    """simulate_wins()['wins'] -- most tests only care about the overall tally."""
+    kwargs = {"seed": seed} if seed is not None else {}
+    return simulate_wins(games, n_sims, sigma, **kwargs)["wins"]
 
 
 class TestSimulateWins:
     def test_deterministic_under_fixed_seed(self):
         games = [_game("A", "B", margin=3.0), _game("C", "A", margin=-7.0)]
-        a = simulate_wins(games, 500, 18.5, seed=42)
-        b = simulate_wins(games, 500, 18.5, seed=42)
+        a = _wins(games, 500, 18.5, seed=42)
+        b = _wins(games, 500, 18.5, seed=42)
         for team in a:
             np.testing.assert_array_equal(a[team], b[team])
 
     def test_different_seeds_differ(self):
         games = [_game("A", "B", margin=0.0)]
-        a = simulate_wins(games, 500, 18.5, seed=1)
-        b = simulate_wins(games, 500, 18.5, seed=2)
+        a = _wins(games, 500, 18.5, seed=1)
+        b = _wins(games, 500, 18.5, seed=2)
         assert not np.array_equal(a["A"], b["A"])
 
     def test_completed_games_are_not_re_rolled(self):
@@ -69,7 +78,7 @@ class TestSimulateWins:
             _game("A", "C", completed=True, home_win=True),
             _game("D", "A", completed=True, home_win=False),
         ]
-        wins = simulate_wins(games, 200, 18.5)
+        wins = _wins(games, 200, 18.5)
         assert np.all(wins["A"] == 3)
         assert np.all(wins["B"] == 0)
 
@@ -80,31 +89,31 @@ class TestSimulateWins:
             _game("A", "B", completed=True, home_win=True),
             _game("A", "C", margin=None),
         ]
-        wins = simulate_wins(games, 500, 18.5)
+        wins = _wins(games, 500, 18.5)
         assert np.all(wins["A"] == 1)
         assert np.all(wins["C"] == 0)
 
     def test_huge_favorite_wins_nearly_always(self):
         games = [_game("A", "B", margin=100.0)]
-        wins = simulate_wins(games, 2000, 18.5)
+        wins = _wins(games, 2000, 18.5)
         assert wins["A"].mean() > 0.99
         assert wins["B"].mean() < 0.01
 
     def test_pickem_is_about_even(self):
         games = [_game("A", "B", margin=0.0)]
-        wins = simulate_wins(games, 20000, 18.5)
+        wins = _wins(games, 20000, 18.5)
         assert wins["A"].mean() == pytest.approx(0.5, abs=0.02)
 
     def test_every_game_produces_exactly_one_winner(self):
         games = [_game("A", "B", margin=5.0), _game("B", "C", margin=-2.0)]
-        wins = simulate_wins(games, 300, 18.5)
+        wins = _wins(games, 300, 18.5)
         total = wins["A"] + wins["B"] + wins["C"]
         assert np.all(total == len(games))
 
     def test_larger_sigma_widens_the_outcome_spread(self):
         games = [_game("A", "B", margin=14.0)]
-        tight = simulate_wins(games, 5000, 5.0, seed=3)["A"].mean()
-        loose = simulate_wins(games, 5000, 30.0, seed=3)["A"].mean()
+        tight = _wins(games, 5000, 5.0, seed=3)["A"].mean()
+        loose = _wins(games, 5000, 30.0, seed=3)["A"].mean()
         # A 14-point favorite is less certain under a wider error distribution.
         assert tight > loose
 
@@ -236,9 +245,18 @@ class TestBuildProjectionRow:
             _game("C", "A", completed=True, home_win=False),
             _game("A", "D", margin=7.0),
         ]
-        wins = simulate_wins(games, 500, 18.5)
+        sim = simulate_wins(games, 500, 18.5)
         return build_projection_row(
-            "A", wins["A"], games, {"B": 1500.0}, "TestConf", "fitted_v1", 500, 18.5, 0.25
+            "A",
+            sim["wins"]["A"],
+            games,
+            {"B": 1500.0},
+            "TestConf",
+            "fitted_v1",
+            500,
+            18.5,
+            0.25,
+            sim["games_simulated"]["A"],
         )
 
     def test_counts_actual_wins_from_both_sides(self):
@@ -265,3 +283,95 @@ class TestBuildProjectionRow:
         assert row["n_sims"] == 500
         assert row["residual_sigma"] == 18.5
         assert row["model_version"] == "fitted_v1"
+
+
+class TestCodexRegressions:
+    """One test per PR #48 review finding, each failing before its fix."""
+
+    def test_unscored_game_is_not_counted_as_a_loss(self):
+        """P2-C. `simulate_wins` skips a game with no prediction, so the
+        projection denominator must skip it too. Counting it in
+        `games_scheduled` while it can never produce a win turns a missing
+        prediction into a certain defeat -- a stronger claim than the coin flip
+        skipping was meant to avoid."""
+        games = [
+            _game("A", "B", margin=100.0),  # A wins ~always
+            _game("A", "C", margin=None),  # unscored
+        ]
+        sim = simulate_wins(games, 1000, 18.5)
+        row = build_projection_row(
+            "A",
+            sim["wins"]["A"],
+            games,
+            {},
+            "TestConf",
+            "fitted_v1",
+            1000,
+            18.5,
+            None,
+            sim["games_simulated"]["A"],
+        )
+        assert row["games_scheduled"] == 2
+        assert row["games_simulated"] == 1
+        # Over the one simulated game A wins ~1.0 and loses ~0.0. If the
+        # unscored game were folded in, losses would be ~1.0.
+        assert row["projected_losses"] < 0.1
+        assert row["projected_wins"] + row["projected_losses"] == pytest.approx(1.0)
+
+    def test_win_distribution_spans_simulated_not_scheduled_games(self):
+        """P2-C. Probability mass must not be reserved for win totals the
+        simulation cannot produce."""
+        games = [_game("A", "B", margin=10.0), _game("A", "C", margin=None)]
+        sim = simulate_wins(games, 500, 18.5)
+        row = build_projection_row(
+            "A",
+            sim["wins"]["A"],
+            games,
+            {},
+            "TestConf",
+            "fitted_v1",
+            500,
+            18.5,
+            None,
+            sim["games_simulated"]["A"],
+        )
+        assert set(row["p_win_dist"]) == {"0", "1"}
+        assert sum(row["p_win_dist"].values()) == pytest.approx(1.0)
+
+    def test_non_conference_wins_do_not_buy_title_odds(self):
+        """P1-B. A team that sweeps weak non-conference opponents but loses in
+        the league must not out-rank a better conference record."""
+        games = [
+            # A: 1-1 in conference, plus two non-conference wins.
+            _game("A", "B", completed=True, home_win=True, conference_game=True),
+            _game("C", "A", completed=True, home_win=True, conference_game=True),
+            _game("A", "Cupcake1", completed=True, home_win=True, conference_game=False),
+            _game("A", "Cupcake2", completed=True, home_win=True, conference_game=False),
+            # C: 2-0 in conference.
+            _game("C", "B", completed=True, home_win=True, conference_game=True),
+        ]
+        sim = simulate_wins(games, 200, 18.5)
+        conf = {"A": "C1", "B": "C1", "C": "C1", "Cupcake1": None, "Cupcake2": None}
+        probs = conference_title_probs(sim["conf_wins"], conf, sim["conf_games"])
+
+        # Overall records: A is 3-1, C is 2-0. Conference records: A 1-1, C 2-0.
+        assert sim["wins"]["A"][0] > sim["wins"]["C"][0]  # A leads overall
+        assert probs["C"] == pytest.approx(1.0)  # C still wins the league
+        assert probs["A"] == pytest.approx(0.0)
+
+    def test_conference_wins_come_from_the_same_draws_as_overall(self):
+        """P1-B. Conference tallies must be a filtered view of the same
+        simulated season, not an independent re-simulation -- otherwise a game
+        could be a win overall and a loss in the league within one 'season'."""
+        games = [_game("A", "B", margin=3.0, conference_game=True)]
+        sim = simulate_wins(games, 1000, 18.5)
+        np.testing.assert_array_equal(sim["wins"]["A"], sim["conf_wins"]["A"])
+
+    def test_non_conference_games_excluded_from_conference_counts(self):
+        games = [
+            _game("A", "B", margin=3.0, conference_game=True),
+            _game("A", "Cupcake", margin=40.0, conference_game=False),
+        ]
+        sim = simulate_wins(games, 100, 18.5)
+        assert sim["games_simulated"]["A"] == 2
+        assert sim["conf_games"]["A"] == 1

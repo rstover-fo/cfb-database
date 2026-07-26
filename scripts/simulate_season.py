@@ -84,6 +84,18 @@ COMPLETE_SCHEDULE_GAMES = 11
 BOWL_ELIGIBLE_WINS = 6
 TEN_PLUS_WINS = 10
 
+# Refuse to simulate on a residual SD estimated from fewer than this many
+# completed games -- sigma drives every probability the script writes, so a
+# noisy estimate is worse than an explicit failure.
+MIN_SIGMA_GAMES = 100
+
+# Projections describe the REGULAR season. CFBD marks conference championship
+# games as season_type='regular' (they are the final regular week), so this
+# filter keeps CCGs while excluding bowls and playoff games -- which would
+# otherwise inflate games_scheduled, make p_bowl_eligible circular, and cause
+# projections to jump as the postseason bracket is published.
+PROJECTION_SEASON_TYPE = "regular"
+
 
 # =============================================================================
 # Pure functions -- no I/O, no DB, unit-tested directly
@@ -92,38 +104,68 @@ TEN_PLUS_WINS = 10
 
 
 def simulate_wins(games, n_sims, sigma, seed=DEFAULT_SEED):
-    """Simulate `n_sims` seasons; return ``{team: ndarray[n_sims] of win counts}``.
+    """Simulate `n_sims` seasons over `games`.
+
+    Returns a dict of per-team results:
+
+    ``wins``            {team: ndarray[n_sims]} -- wins over all counted games
+    ``conf_wins``       {team: ndarray[n_sims]} -- wins in conference games only
+    ``games_simulated`` {team: int}             -- games that actually counted
+    ``conf_games``      {team: int}             -- conference games that counted
 
     ``games`` is a list of dicts with ``home_team``, ``away_team``,
-    ``completed``, ``home_win`` (bool, only read when completed) and
-    ``expected_home_margin`` (only read when not completed).
+    ``completed``, ``home_win`` (read only when completed),
+    ``expected_home_margin`` (read only when pending) and ``conference_game``.
 
     Completed games add a deterministic win to the actual winner in every
-    simulation -- results already in the book are not re-rolled. Remaining
-    games draw a margin per simulation.
+    simulation -- results already in the book are not re-rolled. Remaining games
+    draw a margin per simulation.
 
-    Vectorized: one ``(n_pending, n_sims)`` normal draw, then column sums per
-    team. At ~1,600 games x 10,000 sims this is ~16M doubles (~128MB) and runs
-    in about a second, where a per-simulation Python loop would take minutes.
+    Vectorized: one ``(n_pending, n_sims)`` normal draw, then per-team
+    accumulation. At ~1,600 games x 10,000 sims this is ~16M doubles (~128MB)
+    and runs in about a second, where a per-simulation Python loop would take
+    minutes.
 
-    A game whose ``expected_home_margin`` is None is SKIPPED (it contributes to
-    neither side) rather than treated as a coin flip -- silently inventing a
-    50/50 game would bias every projection toward .500 in proportion to how
-    much of the schedule is unscored.
+    **Conference wins are accumulated from the SAME draws**, not a second
+    simulation. Re-simulating would let a game be a win in the overall tally and
+    a loss in the conference tally within one "season", making title odds
+    inconsistent with the win totals shown beside them.
+
+    A game whose ``expected_home_margin`` is None is SKIPPED entirely -- it
+    counts toward neither wins nor ``games_simulated``. Inventing a 50/50 game
+    would bias projections toward .500, and counting it in the denominator
+    without letting it produce a win would make it a guaranteed loss. Callers
+    must use ``games_simulated``, not the raw schedule length, as the
+    denominator.
     """
     import numpy as np
 
     teams = sorted({g["home_team"] for g in games} | {g["away_team"] for g in games})
     index = {t: i for i, t in enumerate(teams)}
-    wins = np.zeros((len(teams), n_sims), dtype=np.int32)
+    n_teams = len(teams)
+    wins = np.zeros((n_teams, n_sims), dtype=np.int32)
+    conf_wins = np.zeros((n_teams, n_sims), dtype=np.int32)
+    games_simulated = dict.fromkeys(teams, 0)
+    conf_games = dict.fromkeys(teams, 0)
+
+    def _count(g):
+        games_simulated[g["home_team"]] += 1
+        games_simulated[g["away_team"]] += 1
+        if g.get("conference_game"):
+            conf_games[g["home_team"]] += 1
+            conf_games[g["away_team"]] += 1
 
     pending = []
     for g in games:
         if g["completed"]:
             winner = g["home_team"] if g["home_win"] else g["away_team"]
             wins[index[winner], :] += 1
+            if g.get("conference_game"):
+                conf_wins[index[winner], :] += 1
+            _count(g)
         elif g.get("expected_home_margin") is not None:
             pending.append(g)
+            _count(g)
 
     if pending:
         rng = np.random.default_rng(seed)
@@ -134,12 +176,24 @@ def simulate_wins(games, n_sims, sigma, seed=DEFAULT_SEED):
             h, a = index[g["home_team"]], index[g["away_team"]]
             wins[h, :] += home_won[row]
             wins[a, :] += ~home_won[row]
+            if g.get("conference_game"):
+                conf_wins[h, :] += home_won[row]
+                conf_wins[a, :] += ~home_won[row]
 
-    return {t: wins[index[t], :] for t in teams}
+    return {
+        "wins": {t: wins[index[t], :] for t in teams},
+        "conf_wins": {t: conf_wins[index[t], :] for t in teams},
+        "games_simulated": games_simulated,
+        "conf_games": conf_games,
+    }
 
 
-def win_distribution(team_wins, games_scheduled):
-    """``{win_count: probability}`` over 0..games_scheduled, summing to 1.
+def win_distribution(team_wins, games_simulated):
+    """``{win_count: probability}`` over 0..games_simulated, summing to 1.
+
+    The range is the number of games actually SIMULATED, not the number
+    scheduled. Spanning the full schedule when some games were skipped would
+    reserve probability mass for win totals the simulation can never produce.
 
     Keys are ints covering the full range (zeros included) so consumers can
     index without checking membership; the DDL stores it as JSONB with string
@@ -148,12 +202,18 @@ def win_distribution(team_wins, games_scheduled):
     import numpy as np
 
     n_sims = len(team_wins)
-    counts = np.bincount(team_wins, minlength=games_scheduled + 1)
-    return {w: float(counts[w]) / n_sims for w in range(games_scheduled + 1)}
+    counts = np.bincount(team_wins, minlength=games_simulated + 1)
+    return {w: float(counts[w]) / n_sims for w in range(games_simulated + 1)}
 
 
-def summarize(team_wins, games_scheduled):
+def summarize(team_wins, games_simulated):
     """Central tendency, percentiles and threshold probabilities for one team.
+
+    ``games_simulated`` -- NOT the scheduled count -- is the denominator for
+    ``projected_losses``. Using the schedule length would turn every game the
+    simulation skipped (no prediction available) into a guaranteed loss, which
+    is a stronger and more wrong claim than the coin flip skipping was meant to
+    avoid.
 
     Percentiles use the ``lower`` interpolation method: win totals are integers,
     and reporting a p10 of 7.4 wins would imply a precision the quantity does
@@ -163,7 +223,7 @@ def summarize(team_wins, games_scheduled):
 
     return {
         "projected_wins": float(np.mean(team_wins)),
-        "projected_losses": float(games_scheduled - np.mean(team_wins)),
+        "projected_losses": float(games_simulated - np.mean(team_wins)),
         "median_wins": float(np.percentile(team_wins, 50, method="lower")),
         "wins_p10": float(np.percentile(team_wins, 10, method="lower")),
         "wins_p25": float(np.percentile(team_wins, 25, method="lower")),
@@ -197,28 +257,35 @@ def schedule_strength(team, games, ratings):
     return sum(opp_ratings) / len(opp_ratings)
 
 
-def conference_title_probs(wins_by_team, conf_by_team, games_played):
-    """P(highest conference win pct) per team, ties split evenly.
+def conference_title_probs(conf_wins_by_team, conf_by_team, conf_games_played):
+    """P(best CONFERENCE record) per team, ties split evenly.
 
-    **v1 crude, deliberately.** Real conference championships turn on
-    tiebreakers, division/pod structure and a title game; none of that is
-    modeled. A team's odds here are simply the share of simulations in which
-    it holds (or shares) the best win percentage in its conference. Win
-    *percentage* rather than raw wins, because conference members can have
-    different numbers of scheduled games.
+    Takes **conference-only** wins and game counts. Using overall record here
+    would let a team buy title odds with non-conference wins -- beating three
+    weak out-of-conference opponents would outrank a better league record,
+    which is not how any conference decides a champion.
+
+    Win *percentage* rather than raw wins, because conference members can play
+    different numbers of league games (uneven schedules are routine in
+    16-team leagues).
+
+    **v1 crude, deliberately.** Real championships turn on head-to-head and
+    divisional tiebreakers and a title game; none of that is modeled. A team's
+    odds here are the share of simulations in which it holds (or shares) the
+    best conference win percentage.
     """
     import numpy as np
 
     by_conf = {}
     for team, conf in conf_by_team.items():
-        if conf and team in wins_by_team and games_played.get(team, 0) > 0:
+        if conf and team in conf_wins_by_team and conf_games_played.get(team, 0) > 0:
             by_conf.setdefault(conf, []).append(team)
 
     probs = {}
     for _conf, members in by_conf.items():
         if len(members) < 2:
             continue
-        pct = np.vstack([wins_by_team[t] / games_played[t] for t in members])
+        pct = np.vstack([conf_wins_by_team[t] / conf_games_played[t] for t in members])
         best = pct.max(axis=0)
         is_best = pct >= best  # ties included
         share = is_best / is_best.sum(axis=0)  # split evenly among tied teams
@@ -228,9 +295,25 @@ def conference_title_probs(wins_by_team, conf_by_team, games_played):
 
 
 def build_projection_row(
-    team, team_wins, games, ratings, conf, model_version, n_sims, sigma, conf_title_prob
+    team,
+    team_wins,
+    games,
+    ratings,
+    conf,
+    model_version,
+    n_sims,
+    sigma,
+    conf_title_prob,
+    games_simulated,
 ):
-    """One predictions.season_projections row dict for `team`."""
+    """One predictions.season_projections row dict for `team`.
+
+    ``games_scheduled`` is reported for transparency, but every projected
+    quantity is computed over ``games_simulated`` -- the games that actually
+    contributed an outcome. When a pending game has no prediction the two
+    differ, and folding that gap into ``projected_losses`` would present a
+    missing game as a certain defeat.
+    """
     team_games = [g for g in games if team in (g["home_team"], g["away_team"])]
     completed = [g for g in team_games if g["completed"]]
     actual_wins = sum(
@@ -247,10 +330,11 @@ def build_projection_row(
         "team": team,
         "conference": conf,
         "games_scheduled": games_scheduled,
+        "games_simulated": games_simulated,
         "games_completed": len(completed),
         "actual_wins": actual_wins,
         "schedule_complete": games_scheduled >= COMPLETE_SCHEDULE_GAMES,
-        "p_win_dist": {str(k): v for k, v in win_distribution(team_wins, games_scheduled).items()},
+        "p_win_dist": {str(k): v for k, v in win_distribution(team_wins, games_simulated).items()},
         "sos_rating": schedule_strength(team, team_games, ratings),
         "sos_rank": None,  # filled after all teams are summarized
         "conf_title_prob": conf_title_prob,
@@ -258,7 +342,7 @@ def build_projection_row(
         "n_sims": n_sims,
         "residual_sigma": sigma,
     }
-    row.update(summarize(team_wins, games_scheduled))
+    row.update(summarize(team_wins, games_simulated))
     return row
 
 
@@ -311,6 +395,7 @@ SEASON_GAMES_QUERY = """
            COALESCE(g.completed, false) AS completed,
            g.home_points, g.away_points,
            g.home_conference, g.away_conference,
+           COALESCE(g.conference_game, false) AS conference_game,
            p.expected_home_margin
     FROM core.games g
     LEFT JOIN LATERAL (
@@ -321,6 +406,7 @@ SEASON_GAMES_QUERY = """
         LIMIT 1
     ) p ON true
     WHERE g.season = %(season)s
+      AND g.season_type = %(season_type)s
     ORDER BY g.id
 """
 
@@ -330,39 +416,64 @@ TEAM_RATINGS_QUERY = """
     SELECT team, rating FROM analytics.house_elo_current
 """
 
+# ONE snapshot per game before the aggregate. predictions.game_predictions is
+# append-only daily, so a naive join contributes a game once per day it was
+# predicted: games that sat on the board for weeks would dominate the estimate,
+# and their early, worse predictions would mix with the final pregame one. That
+# is not a per-game residual SD, and since sigma drives every simulated
+# probability, the error would propagate into every number this script writes.
+# DISTINCT ON takes the last snapshot at or before kickoff -- the pregame read
+# the simulation is actually modelling.
 RESIDUAL_SIGMA_QUERY = """
-    SELECT stddev_pop(
-        (g.home_points - g.away_points)::double precision - p.expected_home_margin
+    WITH latest AS (
+        SELECT DISTINCT ON (p.game_id)
+               p.game_id,
+               p.expected_home_margin,
+               g.home_points - g.away_points AS actual_margin
+        FROM predictions.game_predictions p
+        JOIN core.games g ON g.id = p.game_id
+        WHERE p.model_version = %(model)s
+          AND COALESCE(g.completed, false)
+          AND g.home_points IS NOT NULL AND g.away_points IS NOT NULL
+          AND p.expected_home_margin IS NOT NULL
+          AND (g.start_date IS NULL OR p.prediction_date <= g.start_date::date)
+        ORDER BY p.game_id, p.prediction_date DESC, p.computed_at DESC
     )
-    FROM predictions.game_predictions p
-    JOIN core.games g ON g.id = p.game_id
-    WHERE p.model_version = %(model)s
-      AND COALESCE(g.completed, false)
-      AND g.home_points IS NOT NULL AND g.away_points IS NOT NULL
-      AND p.expected_home_margin IS NOT NULL
+    SELECT stddev_pop(actual_margin::double precision - expected_home_margin),
+           COUNT(*)
+    FROM latest
 """
 
 
 def fetch_sigma(conn, model: str) -> float:
-    """Measured residual SD for `model`. Hard error rather than a default:
-    a wrong sigma produces confident, well-formatted, wrong win totals, and a
-    silent fallback is exactly how that ships unnoticed."""
+    """Measured residual SD for `model`, one pregame snapshot per game.
+
+    Hard error rather than a default: a wrong sigma produces confident,
+    well-formatted, wrong win totals, and a silent fallback is exactly how that
+    ships unnoticed. A tiny sample is refused for the same reason -- an SD
+    estimated from a handful of games is not a usable uncertainty parameter.
+    """
     with conn.cursor() as cur:
         cur.execute(RESIDUAL_SIGMA_QUERY, {"model": model})
-        row = cur.fetchone()[0]
-    if row is None:
+        sigma, n_games = cur.fetchone()
+    if sigma is None or n_games < MIN_SIGMA_GAMES:
         raise RuntimeError(
-            f"No completed games with {model} predictions; cannot measure residual sigma. "
+            f"Only {n_games or 0} completed game(s) with a pregame {model} prediction "
+            f"(need >= {MIN_SIGMA_GAMES}); cannot measure a trustworthy residual sigma. "
             "Backfill predictions before simulating."
         )
-    return float(row)
+    logger.info("Measured residual sigma for %s: %.2f over %d game(s)", model, sigma, n_games)
+    return float(sigma)
 
 
 def fetch_season_games(conn, season: int, model: str) -> list[dict]:
     import psycopg2.extras
 
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(SEASON_GAMES_QUERY, {"season": season, "model": model})
+        cur.execute(
+            SEASON_GAMES_QUERY,
+            {"season": season, "model": model, "season_type": PROJECTION_SEASON_TYPE},
+        )
         rows = [dict(r) for r in cur.fetchall()]
 
     games = []
@@ -383,6 +494,7 @@ def fetch_season_games(conn, season: int, model: str) -> list[dict]:
                 "home_win": home_win,
                 "home_conference": r["home_conference"],
                 "away_conference": r["away_conference"],
+                "conference_game": bool(r["conference_game"]),
                 "expected_home_margin": (
                     float(r["expected_home_margin"])
                     if r["expected_home_margin"] is not None
@@ -405,6 +517,7 @@ _ROW_COLUMNS = [
     "team",
     "conference",
     "games_scheduled",
+    "games_simulated",
     "games_completed",
     "actual_wins",
     "schedule_complete",
@@ -478,16 +591,16 @@ def simulate_one_season(conn, season: int, model: str, n_sims: int, seed: int) -
 
     sigma = fetch_sigma(conn, model)
     ratings = fetch_team_ratings(conn)
-    wins_by_team = simulate_wins(games, n_sims, sigma, seed=seed)
+    sim = simulate_wins(games, n_sims, sigma, seed=seed)
+    wins_by_team = sim["wins"]
 
     conf_by_team = {}
-    games_played = {}
     for g in games:
         for side, conf in (("home_team", "home_conference"), ("away_team", "away_conference")):
             conf_by_team.setdefault(g[side], g[conf])
-            games_played[g[side]] = games_played.get(g[side], 0) + 1
 
-    title_probs = conference_title_probs(wins_by_team, conf_by_team, games_played)
+    # Conference-only records, from the same draws as the overall tally.
+    title_probs = conference_title_probs(sim["conf_wins"], conf_by_team, sim["conf_games"])
 
     rows = [
         build_projection_row(
@@ -500,6 +613,7 @@ def simulate_one_season(conn, season: int, model: str, n_sims: int, seed: int) -
             n_sims,
             sigma,
             title_probs.get(team),
+            sim["games_simulated"][team],
         )
         for team, team_wins in wins_by_team.items()
     ]
@@ -507,9 +621,18 @@ def simulate_one_season(conn, season: int, model: str, n_sims: int, seed: int) -
     write_projections(conn, rows)
 
     complete = sum(1 for r in rows if r["schedule_complete"])
+    unscored = sum(r["games_scheduled"] - r["games_simulated"] for r in rows)
+    if unscored:
+        logger.warning(
+            "season=%d: %d team-game(s) had no %s prediction and were excluded from "
+            "projections (games_simulated < games_scheduled on those rows)",
+            season,
+            unscored,
+            model,
+        )
     print(
         f"SIM_GATE season={season} model={model} teams={len(rows)} sims={n_sims} "
-        f"sigma={sigma:.2f} complete={complete}"
+        f"sigma={sigma:.2f} complete={complete} unscored_team_games={unscored}"
     )
     logger.info(
         "season=%d: wrote %d team projection(s), sigma=%.2f, %d with a complete schedule",

@@ -47,6 +47,11 @@ CREATE TABLE IF NOT EXISTS predictions.season_projections (
     -- slate is whole enough for the win total to mean what a reader assumes
     -- (>= 11 regular-season games).
     games_scheduled BIGINT NOT NULL,
+    -- Games that actually contributed a simulated or actual outcome. Differs
+    -- from games_scheduled when a pending game has no prediction; every
+    -- projected quantity below is computed over THIS count, so a game the
+    -- simulation could not score is never presented as a certain loss.
+    games_simulated BIGINT NOT NULL,
     games_completed BIGINT NOT NULL,
     actual_wins BIGINT,
     schedule_complete BOOLEAN NOT NULL,
@@ -112,7 +117,10 @@ COMMENT ON COLUMN predictions.season_projections.p_win_dist IS
     'Full win-total distribution as {"0": p, "1": p, ...} over 0..games_scheduled; sums to 1.';
 
 COMMENT ON COLUMN predictions.season_projections.games_scheduled IS
-    'Games actually on the schedule. Projections are never extrapolated to a hypothetical full slate -- see schedule_complete.';
+    'Regular-season games on the schedule (season_type = ''regular'', which includes conference championship games; bowls and playoff games are excluded). Projections are never extrapolated to a hypothetical full slate -- see schedule_complete.';
+
+COMMENT ON COLUMN predictions.season_projections.games_simulated IS
+    'Games that contributed an outcome. Lower than games_scheduled when a pending game has no prediction for this model_version; projected_wins/losses, the percentiles and p_win_dist are all computed over this count so an unscored game is never counted as a loss.';
 
 COMMENT ON COLUMN predictions.season_projections.n_sims IS
     'Simulation count. v1 draws each game INDEPENDENTLY, which understates both tails: real season outcomes are correlated (a team better than its rating beats everyone more often), so extreme records are underpredicted. Treat p10/p90 and p_ten_plus as conservative at the edges.';

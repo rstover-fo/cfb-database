@@ -1,7 +1,7 @@
 {
   "action": "compute",
   "compute": {
-    "script": "score_fitted",
-    "args": ["--upcoming"]
+    "script": "simulate_season",
+    "args": []
   }
 }

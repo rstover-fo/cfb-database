@@ -1260,3 +1260,65 @@ columns (`prior_line_yards`, `prior_stuff_rate_allowed`,
 `prior_def_line_yards`, `prior_front_seven_havoc`) are also low-risk
 independent of the screen: they are measured performance rather than inferred
 continuity, cost no new ingest, and have no roster dependency.
+
+---
+
+### A6 — Preseason backtest results (run 2026-07-26 against prod)
+
+The section 4.5 gate, finally run. `scripts/backtest_preseason.py`, walk-forward:
+season S scored from each team's **week-1** `features.team_week` vector with the
+frozen S-1 fit, sigma from preseason residuals of seasons **before** S, all games
+simulated as pending. FBS teams only, 10,000 sims, **n = 921 team-seasons**.
+
+`maxGP = 0` for every season — the selected vectors carried zero games played, so
+they are genuinely as-of-season-start. 2016-2017 excluded (no frozen S-1 fit);
+2018 scored but not simulated (it seeds sigma for 2019).
+
+| season | fit | teams | sigma | margin MAE | **win MAE** | RMSE | bias | p10-p90 | prior-yr base | flat base |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 2019 | 2018 | 130 | 19.62 | 15.08 | 1.78 | 2.20 | -0.24 | 78.5% | 2.06 | 2.25 |
+| 2020 | 2019 | 127 | 19.34 | 15.17 | 1.43 | 1.84 | -0.06 | 74.8% | 1.71 | 1.77 |
+| 2021 | 2020 | 130 | 19.29 | 17.58 | 1.80 | 2.29 | -0.22 | 75.4% | 2.46 | 2.24 |
+| 2022 | 2021 | 131 | 20.58 | 18.17 | 1.80 | 2.25 | -0.25 | 71.8% | 2.11 | 2.05 |
+| 2023 | 2022 | 133 | 21.60 | 16.04 | 1.76 | 2.17 | -0.26 | 72.9% | 1.95 | 2.18 |
+| 2024 | 2023 | 134 | 21.29 | 15.79 | 1.96 | 2.42 | -0.27 | 70.1% | 2.25 | 2.17 |
+| 2025 | 2024 | 136 | 20.99 | 15.95 | 1.98 | 2.47 | -0.26 | 64.7% | 2.23 | 2.33 |
+
+**Overall: win MAE 1.791, RMSE 2.248, bias -0.226, p10-p90 coverage 72.5%.**
+Baselines: prior-season win rate 2.114, flat .500 2.144. **The model beats both.**
+
+**Findings:**
+
+1. **The model is real but modest.** 1.791 vs 2.114 for "last year's record" is a
+   0.32-win edge (~15%). Worth having; not a large edge. It misses the plan's
+   ~1.5 aspiration (`verdict=above_1.5`) — recorded as measured, not adjusted.
+
+2. **The distribution is too narrow, exactly as the v1 independent-draw
+   limitation predicts.** Coverage is 72.5% against a nominal 80%, and both
+   calibration tables show the same signature from opposite ends: strong teams'
+   downside is underweighted (`p_bowl_eligible` 0.8-0.9 bucket predicted 0.850,
+   observed **0.724**; 0.9-1.0 predicted 0.958, observed **0.896**) while the
+   upper tail is underweighted too (`p_ten_plus` 0.4-0.5 predicted 0.440,
+   observed **0.706**). Too little mass in *both* tails is one phenomenon, not
+   two. **This is the strongest evidence yet for promoting the correlated-draw
+   variant (section 4.2's v1.1) from nice-to-have to next.**
+
+3. **Coverage decays over time: 78.5% (2019) -> 64.7% (2025).** Sigma rose only
+   19.6 -> 21.0 over the same span. Real season-outcome variance appears to be
+   growing faster than the model's spread — plausibly the portal/NIL era, which
+   is precisely the structural break section 6.0b flags. Worth a dedicated look;
+   it means recent projections are more overconfident than the pooled 72.5%
+   suggests.
+
+4. **A consistent -0.23 win bias.** Every season but 2020 under-projects FBS win
+   totals by about a quarter of a win. Small, stable, and correctable — a
+   candidate for a calibration term rather than a modelling change.
+
+**Consequence for the 2026 numbers already published.** Oklahoma's 7.08 carries
++/-1.79 MAE, so the honest range is roughly 5.3-8.9. Its stated `p_bowl_eligible`
+of 84.1% sits in a bucket that historically delivered **72.4%**; its
+`p_ten_plus` of 5.9% sits in one that delivered **6.9%**. Applying the -0.23 bias
+gives ~7.3 wins. **Against a market number of 7.5, the model and the market are
+statistically indistinguishable** — the disagreement is far inside the model's
+own error. Any claim that the market misprices Oklahoma is not supported by this
+model at this accuracy.

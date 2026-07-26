@@ -1,0 +1,7 @@
+{
+  "action": "compute",
+  "compute": {
+    "script": "simulate_season",
+    "args": []
+  }
+}

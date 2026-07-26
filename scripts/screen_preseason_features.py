@@ -622,6 +622,28 @@ SHIPPED_COLUMNS = [
     "prior_def_stuff_rate",
 ]
 
+# Cleared the screen, awaiting the owner's ship call. Distinct from SUPERSEDED
+# (held back for a structural reason I can decide myself) and from PENDING
+# (not yet measured): these carry real numbers and nothing about the data
+# argues against them. What they need is a migration, a rebuild, a retrain and
+# a re-backtest, and section 2.5 selection is advisory -- the screen produces
+# the number, the owner rules.
+AWAITING_SHIP_DECISION = {
+    "draft_picks_3yr": (
+        "+0.2342 vs prior SP+, +0.0834 also controlling recruiting (was a VOID "
+        "+0.0068 on 54.2% fabricated zeros). Picks PRODUCED over S-1..S-3. The "
+        "recorded finding that draft output is a mere recruiting proxy is "
+        "REVERSED: it survives the recruiting control."
+    ),
+    "draft_departures": (
+        "-0.0925 (was a VOID -0.0728 on 45.1% fabricated zeros). Picks LOST in "
+        "year S, and the sign is now interpretable rather than a confound: "
+        "losing draftable players predicts a worse season once prior quality "
+        "and recruiting are held fixed. Opposite in sign to draft_picks_3yr, "
+        "which is what the plan predicted before the data existed."
+    ),
+}
+
 # Shipped by human decision DESPITE a reject verdict, with the argument on the
 # record. Migration 042 adds SHIPPED_COLUMNS + these.
 #
@@ -645,34 +667,18 @@ SHIPPED_BY_DECISION = {
 # Rejected, with the reason, so a future reader does not re-propose them
 # without new evidence. Re-test conditions noted where they exist.
 REJECTED_COLUMNS = {
-    "talent_stock": (
-        "+0.0744 -- under the floor. VOID pending a draft backfill: it nets "
-        "draft_departures, which is a fabricated zero on 45.1% of rows."
-    ),
-    "pipeline_index": (
-        "+0.0072 vs its own input's +0.2664. VOID pending a draft backfill -- "
-        "it multiplies by conversion, which is void. The separate claim that a "
-        "product of two standardized terms destroys signal still stands."
-    ),
-    "draft_picks_3yr": (
-        "VOID -- the recorded +0.0068 was measured on a column that is a "
-        "fabricated zero on 54.2% of rows (draft.draft_picks holds 2020-2026 "
-        "only). Re-test after backfilling 2000-2019. This is UNADJUDICATED, "
-        "and it is filed here rather than in UNTESTABLE because the reason is "
-        "a fixable load gap, not a missing source."
-    ),
     "conversion": (
-        "VOID -- the recorded -0.0007 is draft_picks_3yr residualized on "
-        "recruiting, so it inherits the 54.2% fabricated zeros. This is the "
-        "development term and the half of the stated thesis this gate exists "
-        "to adjudicate; it has NOT been tested. Re-test after the backfill."
+        "+0.0709 on real data (was a VOID -0.0007 on 54% fabricated zeros). "
+        "This is the DEVELOPMENT term -- draft picks produced over S-1..S-3, "
+        "residualized on the same window's recruiting -- and the honest "
+        "reading is that it is real but under the floor. q=0.0101 says the "
+        "effect exists; 0.0709 is 0.0091 short of the 0.08 bar, about a third "
+        "of a standard error at n=1,439, which the data cannot resolve. "
+        "Rejected on the pre-registered rule rather than on the evidence. "
+        "Note it is also largely what the second-order partial already does to "
+        "draft_picks_3yr (+0.0834), so shipping both would mostly duplicate."
     ),
-    "draft_yield": "VOID -- identical to conversion by construction, same defect",
-    "draft_departures": (
-        "VOID -- the recorded -0.0728 partial against +0.3474 raw was measured "
-        "on a column that is a fabricated zero on 45.1% of rows (all of "
-        "2015-2019). Re-test after the backfill."
-    ),
+    "draft_yield": "+0.0709 -- identical to conversion by construction",
     "recruiting_points_regime": (
         "-0.0597 on its 1,057 complete cases. Its earlier +0.0955 was an artifact of "
         "zero-filling 291 first-year-coach rows; that signal was the coaching change, "
@@ -725,6 +731,22 @@ UNTESTABLE_COLUMNS = {
 # judgments layered on top of a measurement, and both are only honest if the
 # measurement is recorded next to the judgment rather than replaced by it.
 SUPERSEDED_COLUMNS = {
+    "talent_stock": (
+        "+0.0811 -- cleared the floor once the draft backfill landed, and is "
+        "NOT shipped. It is recruiting + portal_in - draft_departures - "
+        "portal_out, so every term in it is either the control or a column "
+        "that ships on its own. It adds an arithmetic combination, not a "
+        "construct, and its +0.0811 sits between its own components."
+    ),
+    "pipeline_index": (
+        "+0.0846 -- cleared the floor after the backfill, reversing the "
+        "recorded finding that the product destroys signal (that was measured "
+        "on a conversion term made of fabricated zeros). Still NOT shipped: it "
+        "is talent_stock x conversion, so it is a product of one superseded "
+        "column and one rejected one, and it cannot be interpreted separately "
+        "from draft_picks_3yr, which ships at a statistically indistinguishable "
+        "+0.0834."
+    ),
     "hc_first_year_rookie": (
         "-0.1340 (n=1,324, 151 positives) -- real, but an exact component of "
         "hc_first_year_unproven, which scores better. Shipping both would put "

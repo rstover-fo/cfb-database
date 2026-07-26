@@ -465,6 +465,7 @@ class TestRecordedVerdictsAreInternallyConsistent:
 
     def test_every_candidate_has_exactly_one_recorded_verdict(self):
         from scripts.screen_preseason_features import (
+            AWAITING_SHIP_DECISION,
             CANDIDATE_COLUMNS,
             PENDING_COLUMNS,
             REJECTED_COLUMNS,
@@ -475,7 +476,8 @@ class TestRecordedVerdictsAreInternallyConsistent:
         )
 
         recorded = (
-            list(SHIPPED_COLUMNS)
+            list(AWAITING_SHIP_DECISION)
+            + list(SHIPPED_COLUMNS)
             + list(SHIPPED_BY_DECISION)
             + list(REJECTED_COLUMNS)
             + list(UNTESTABLE_COLUMNS)
@@ -496,6 +498,7 @@ class TestRecordedVerdictsAreInternallyConsistent:
         which is how the pre-executable table came to disagree with the screen
         in the first place."""
         from scripts.screen_preseason_features import (
+            AWAITING_SHIP_DECISION,
             PENDING_COLUMNS,
             REJECTED_COLUMNS,
             SHIPPED_BY_DECISION,
@@ -505,7 +508,8 @@ class TestRecordedVerdictsAreInternallyConsistent:
         )
 
         adjudicated = (
-            set(SHIPPED_COLUMNS)
+            set(AWAITING_SHIP_DECISION)
+            | set(SHIPPED_COLUMNS)
             | set(SHIPPED_BY_DECISION)
             | set(REJECTED_COLUMNS)
             | set(UNTESTABLE_COLUMNS)
@@ -1021,23 +1025,43 @@ class TestDraftCoverageIsAudited:
             "zero and a missing draft become indistinguishable again"
         )
 
-    def test_every_void_verdict_says_why_it_is_void(self):
-        """A rejection and a void are different claims. The first says we
-        measured it and it was nothing; the second says the measurement was
-        never valid. Recording a void as a plain rejection is how a fixable
-        load gap becomes a closed question."""
-        from scripts.screen_preseason_features import REJECTED_COLUMNS
+    def test_no_verdict_still_rests_on_the_load_gap(self):
+        """The VOIDs are resolved: the 2000-2019 backfill landed and every
+        draft column was re-measured on 27 complete drafts.
 
-        for column in (
-            "draft_picks_3yr",
-            "conversion",
-            "draft_yield",
-            "draft_departures",
-        ):
-            assert column in REJECTED_COLUMNS
-            assert "VOID" in REJECTED_COLUMNS[column], (
-                f"{column} rests on fabricated zeros and must not read as a measurement"
-            )
+        This asserts the ledger no longer carries a VOID anywhere, so a future
+        reader cannot mistake a resolved gap for a live one. If a new load gap
+        appears, the counters above are what should catch it -- not a stale
+        VOID string left behind from this one."""
+        from scripts.screen_preseason_features import (
+            AWAITING_SHIP_DECISION,
+            REJECTED_COLUMNS,
+            SUPERSEDED_COLUMNS,
+        )
+
+        for bucket in (REJECTED_COLUMNS, SUPERSEDED_COLUMNS, AWAITING_SHIP_DECISION):
+            for column, rationale in bucket.items():
+                # A LIVE void announces itself at the head of the rationale --
+                # that was the recorded format. "was a VOID ..." further in is
+                # provenance and must survive: it is how a reader learns the
+                # number changed and why, which is the whole lesson here.
+                assert not rationale.lstrip().startswith("VOID"), (
+                    f"{column} still reads as unmeasured"
+                )
+                assert "pending a draft backfill" not in rationale, (
+                    f"{column} still points at a backfill that has landed"
+                )
+
+    def test_awaiting_columns_are_not_yet_in_the_fit(self):
+        """Section 2.5 selection is advisory: the screen produces a number, the
+        owner rules. A column sitting in AWAITING_SHIP_DECISION that had
+        already reached the vector would mean the decision was taken without
+        being asked for."""
+        from scripts.screen_preseason_features import AWAITING_SHIP_DECISION
+        from scripts.train_model import TEAM_WEEK_SOURCE_COLUMNS
+
+        for column in AWAITING_SHIP_DECISION:
+            assert column not in TEAM_WEEK_SOURCE_COLUMNS
 
 
 class TestMidSeasonCoachingChangesAreExcluded:

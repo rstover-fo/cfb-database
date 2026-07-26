@@ -127,6 +127,35 @@ sign flip) are not explained by imputation -- the audit found those columns
 blue_chip_pipeline value is at most +0.0782. The ad-hoc SQL is gone and the
 discrepancy is recorded rather than reconciled.
 
+AMENDMENT -- the regime-scoped coaching variants (PENDING, not yet run)
+-----------------------------------------------------------------------
+Five candidates were added AFTER run 124 and have NO recorded verdict; they are
+listed in PENDING_COLUMNS below and will move to SHIPPED/REJECTED/UNTESTABLE
+only from a run of this script. They decompose the shipped flat binary
+`hc_first_year` by the incoming coach's career record (see the SQL).
+
+Adding candidates after seeing results is a real cost and is stated here rather
+than hidden. What is and is not compromised:
+
+* NOT compromised: the decision rule. MIN_PARTIAL_R and FDR_ALPHA are unchanged,
+  the new columns are screened by the same code on the same frame, and BH runs
+  across the enlarged set, so their q-values already pay for the extra tests.
+* Compromised: the *definitions* were chosen after an ad-hoc look at the
+  subgroup means, so their effect sizes are optimistically biased in a way BH
+  does not correct. BH controls false discovery across a family of tests; it
+  does not correct a statistic for having chosen the cut that produced it. The
+  answer to that is out-of-sample, not more correction -- re-run with
+  `--from 2015 --to 2020` and `--from 2021 --to 2025` and see whether the split
+  survives in a window it was not chosen on.
+* Watch out: q-values are a property of the SET, not of a candidate. Every
+  q printed by the next run differs from run 124's, including the q=0.0095
+  quoted in SHIPPED_BY_DECISION. Recorded VERDICTS are unaffected -- every
+  rejection above failed on the effect floor, not on q, and every ship had
+  q <= 0.0095 against a 0.10 alpha -- but the numbers are not comparable across
+  runs with different candidate sets, and enlarging the set does not uniformly
+  raise q: BH scales by m/rank, so a strong new candidate that outranks an
+  existing one raises its rank denominator too.
+
 Usage:
     python scripts/screen_preseason_features.py --check-schema
         Preflight only: verify every source column this script reads exists,
@@ -195,6 +224,21 @@ MIN_SCREEN_N = 400
 # ship `draft_picks_3yr` at +0.0949 when its value after recruiting is +0.0068.
 PRIMARY_CONTROL = "recruiting_points_3yr"
 
+# The line between a "proven" and a "previously below-average" head-coaching
+# hire, on the SP+ scale.
+#
+# SP+ is centred so an average FBS team rates 0.0. The threshold is therefore a
+# property of the measurement -- "his previous teams averaged better than an
+# average FBS team" -- and not a cut-point chosen to make a subgroup look good.
+# Pre-registered on the same footing as MIN_PARTIAL_R: moving it after seeing a
+# result is exactly the manoeuvre this gate exists to prevent.
+#
+# It assumes the centring actually holds on this frame. --audit-imputation
+# reports `frame_prior_sp_at_or_above_zero`, which should sit near half the
+# frame; a share far from 0.5 means the scale is not centred where this constant
+# assumes and the split is measuring something other than "above average".
+HC_PROVEN_SP_PLUS = 0.0
+
 
 # =============================================================================
 # Pure math -- no I/O, no DB, unit-tested directly (tests/test_screen_features.py).
@@ -253,6 +297,28 @@ def complete_cases(frame: list[dict], columns: list[str]) -> list[dict]:
         for row in frame
         if all(row.get(col) is not None and math.isfinite(float(row[col])) for col in columns)
     ]
+
+
+def check_one_row_per_team_season(frame: list[dict]) -> None:
+    """Raise unless `frame` has exactly one row per (season, team).
+
+    The screening frame is a (season, team) spine that candidates hang off, and
+    every partial in this script assumes one observation per team-season. A join
+    that fans out would not fail -- it would silently re-weight the duplicated
+    teams in EVERY candidate at once, including the ones already on the record,
+    and the only visible symptom would be a larger n.
+
+    Cheap enough to run on every fetch, and it is checked rather than argued
+    because the argument is exactly the kind that stays convincing after it
+    stops being true: each new CTE is joined on a key that is unique *today*.
+    """
+    keys = {(row["season"], row["team"]) for row in frame}
+    if len(keys) != len(frame):
+        raise RuntimeError(
+            f"screening frame has {len(frame)} rows for {len(keys)} team-seasons -- "
+            "a join fanned out and every candidate's partial is now weighted by "
+            "duplicate teams"
+        )
 
 
 def _pearson(a: list[float], b: list[float]) -> float:
@@ -414,6 +480,17 @@ CANDIDATE_COLUMNS = [
     # to absorb via zero-fill (see the SQL and the 2026-07-26 audit).
     "recruiting_points_regime",
     "hc_first_year",
+    # Section 6.0b second pass: the flat first-year binary decomposed by the
+    # incoming coach's career record. Mutually exclusive by construction --
+    # rookie + prior_below = unproven, and unproven + proven = hc_first_year --
+    # so screening all four says WHERE the penalty lives rather than only that
+    # it exists. `hc_career_prior` is the continuous form, defined only where a
+    # career prior exists, and is expected to fall under MIN_SCREEN_N.
+    "hc_first_year_rookie",
+    "hc_first_year_prior_below",
+    "hc_first_year_unproven",
+    "hc_first_year_proven",
+    "hc_career_prior",
     # Prior-season trench performance (plan section 2.2). Never screened
     # before: the earlier trench test used roster-headcount continuity, which
     # counts walk-ons equally with starters and scored ~0. These measure the
@@ -491,6 +568,51 @@ UNTESTABLE_COLUMNS = {
     "prior_front_seven_havoc": "n=251 (17.4% coverage) -- below MIN_SCREEN_N",
 }
 
+# Added to the candidate set but NOT YET SCREENED. A pending entry states what
+# the candidate is for; it must not state what it will score.
+#
+# This bucket exists because the alternative is worse. The bookkeeping test
+# requires every candidate to carry exactly one recorded verdict, and the only
+# ways to satisfy it without running the screen are to guess a verdict or to
+# leave the candidate out of the set -- the first fabricates a measurement, the
+# second hides that the family being FDR-corrected has grown. An explicit
+# "screened, unadjudicated" state says the true thing.
+#
+# On a run, each of these moves to SHIPPED_COLUMNS, REJECTED_COLUMNS or
+# UNTESTABLE_COLUMNS with the number the screen produced, and is deleted here.
+PENDING_COLUMNS = {
+    "hc_first_year_rookie": (
+        "First-year head coach with no prior head-coaching season anywhere. The "
+        "only regime column that needs no rating at all, so it is the one "
+        "unaffected by how far back SP+ coverage reaches."
+    ),
+    "hc_first_year_prior_below": (
+        "First-year hire whose previous teams averaged below an average FBS "
+        "team. The smallest subgroup in the set and the one whose raw "
+        "subgroup mean is most eye-catching; screened so the effect floor "
+        "adjudicates it rather than the reader."
+    ),
+    "hc_first_year_unproven": (
+        "rookie OR prior_below, pooled -- the single shippable column if the "
+        "penalty really is concentrated in unproven hires. Correlates about "
+        "0.80 with the flat hc_first_year at the observed subgroup sizes: "
+        "overlapping, not the same column."
+    ),
+    "hc_first_year_proven": (
+        "First-year hire whose previous teams averaged at or above average. "
+        "The substantive claim of the decomposition is that THIS one is null; "
+        "a null here is the finding, and it is only on the record if the "
+        "column is screened."
+    ),
+    "hc_career_prior": (
+        "The continuous career prior itself, defined only where one exists -- "
+        "no value invented for a first-time head coach. Only first-year "
+        "coaches with prior head-coaching seasons have it, so it is expected "
+        "to fall below MIN_SCREEN_N and be reported untestable. That is the "
+        "answer to 'why not just use the continuous term', made reproducible."
+    ),
+}
+
 # Recruiting-class decay across the four-year eligibility window: the class
 # entering season S-1 is weighted 1.0, S-2 0.8, and so on. A flat sum would
 # treat a fifth-year contributor and a true freshman identically; the geometric
@@ -499,7 +621,9 @@ UNTESTABLE_COLUMNS = {
 CLASS_DECAY = 0.8
 CLASS_WINDOW = 4
 
-# Head-coach tenure start per (school, year). SHARED between the screen and the
+# Head-coach tenure start per (school, year), and the incoming coach's career
+# prior (coach_season / coach_prior, appended for the section 6.0b second pass).
+# SHARED between the screen and the
 # imputation audit -- defined once because the audit's whole job is to describe
 # the frame the screen builds, and a hand-copied second version of this logic
 # silently disagreed with it (PR #54 review): without the gaps-and-islands
@@ -557,6 +681,78 @@ coach_tenure AS (
            END AS tenure_start
     FROM coach_islands i
     JOIN coach_counts cc ON cc.school = i.school AND cc.year = i.year
+),
+coach_season AS (
+    -- Every school-year that is UNAMBIGUOUSLY one coach's, carrying that
+    -- team's season-final SP+ where the warehouse has one. Raw material for a
+    -- hired coach's CAREER PRIOR (see coach_prior).
+    --
+    -- Ambiguous school-years are excluded for the same reason coach_tenure
+    -- nulls them, though not for the same danger. Here it is an attribution
+    -- error rather than a leak -- these are seasons at other schools, in years
+    -- before season S -- but it runs one way: an interim promoted into a
+    -- collapse inherits the whole season's rating and would then be scored
+    -- "previously below average" for a season he did not run.
+    --
+    -- The cost of that exclusion, stated plainly: a coach whose entire prior
+    -- record is ambiguous school-years reads here as having NO prior seasons,
+    -- so hc_first_year_rookie will call him a first-time head coach. That is
+    -- the intended trade. "No season he unambiguously ran" is the closest thing
+    -- the source supports to "unproven", and the alternative credits him with
+    -- somebody else's season.
+    --
+    -- rating is LEFT JOINed rather than required. A season with no SP+ row (an
+    -- FCS stop, or a year older than the warehouse's ratings coverage) is still
+    -- head-coaching EXPERIENCE; it just cannot be rated. Holding those two
+    -- facts apart is what lets a genuine first-time head coach be told from a
+    -- coach whose record simply cannot be scored -- one is a rookie, the other
+    -- is unknown, and collapsing them would put a fabricated category where a
+    -- missing value belongs.
+    SELECT cy.coach_id, cy.school, cy.year,
+           sp.rating::double precision AS rating
+    FROM coach_year cy
+    JOIN coach_counts cc ON cc.school = cy.school AND cc.year = cy.year
+    LEFT JOIN ratings.sp_ratings sp
+           ON sp.team = cy.school AND sp.year = cy.year
+    WHERE cc.n_coaches = 1
+),
+coach_prior AS (
+    -- Career prior of the coach listed at (school, year): what his teams did
+    -- in seasons STRICTLY BEFORE that year, at any school.
+    --
+    -- LEAK RULE. `prev.year < cy.year` is strict, so season S can never enter
+    -- -- not his row at this school, which is the outcome, and not any other.
+    -- Season S-1 IS included, and that is correct rather than sloppy: S-1 ended
+    -- in January of year S and its final SP+ is published months before week 1,
+    -- so the hiring school knew it.
+    --
+    -- The seasons averaged are almost always at OTHER schools, but not by
+    -- construction: a coach returning to team T for a second stint is a
+    -- first-year coach under the gaps-and-islands tenure rule, and his earlier
+    -- stint at T does enter his prior. That is still strictly before season S,
+    -- so it is not a leak -- it is old news about T, of the same kind the
+    -- prior-season control already carries. What it CANNOT include is T's
+    -- season S-1: a coach listed at (T, S-1) in coach_year would make the
+    -- island contiguous and so would not be a first-year coach at all.
+    --
+    -- prior_seasons counts experience and is never NULL. prior_sp_mean averages
+    -- only seasons that have a rating and is NULL when none do -- AVG skips
+    -- NULLs, so an unratable stop neither drags the mean down nor counts as a
+    -- rated season. No value is substituted anywhere for a coach without a
+    -- record; the absence is carried as an absence.
+    --
+    -- GROUP BY (cy.school, cy.year) on a coach_year that is already unique on
+    -- that pair yields exactly one row per school-year, so joining this to the
+    -- screening spine adds columns and cannot add rows. Every other candidate's
+    -- n is unchanged by it.
+    SELECT cy.school, cy.year,
+           COUNT(prev.year) AS prior_seasons,
+           AVG(prev.rating) AS prior_sp_mean
+    FROM coach_year cy
+    LEFT JOIN coach_season prev
+           ON prev.coach_id = cy.coach_id
+          AND prev.year < cy.year
+    GROUP BY cy.school, cy.year
 )"""
 
 SCREEN_FRAME_QUERY = f"""
@@ -619,11 +815,16 @@ spine AS (
     SELECT sp.year AS season, sp.team,
            sp.rating::double precision AS sp_rating,
            sp0.rating::double precision AS prior_sp_rating,
-           ct.tenure_start AS tenure_start
+           ct.tenure_start AS tenure_start,
+           cp.prior_seasons AS hc_prior_seasons,
+           cp.prior_sp_mean AS hc_prior_sp_mean
     FROM ratings.sp_ratings sp
     JOIN ratings.sp_ratings sp0
       ON sp0.team = sp.team AND sp0.year = sp.year - 1
     LEFT JOIN coach_tenure ct ON ct.school = sp.team AND ct.year = sp.year
+    -- One row per (school, year) by construction (see coach_prior), so this
+    -- join widens the spine without lengthening it.
+    LEFT JOIN coach_prior cp ON cp.school = sp.team AND cp.year = sp.year
     WHERE sp.year BETWEEN %(from_season)s AND %(to_season)s
       AND sp.rating IS NOT NULL AND sp0.rating IS NOT NULL
 )
@@ -673,6 +874,61 @@ SELECT
     CASE WHEN s.tenure_start IS NULL THEN NULL
          WHEN s.tenure_start >= s.season THEN 1.0
          ELSE 0.0 END AS hc_first_year,
+    -- SECTION 6.0b, SECOND PASS -- the first-year penalty is not flat.
+    --
+    -- hc_first_year is an indicator on the coaching change alone, so it forces
+    -- one number onto three different situations: a proven hire inheriting a
+    -- roster, a first-time head coach, and a hire whose previous teams were
+    -- below average. The columns below decompose it, so the screen can report
+    -- where the penalty lives instead of averaging across it.
+    --
+    -- NO FABRICATED CONSTANT, and that is the design constraint. A first-time
+    -- head coach has no career prior, and there is no value on the SP+ scale
+    -- that means "none": a hand-picked -8.0 asserts he is terrible, and a 0.0
+    -- asserts he is exactly average, and the scale cannot tell either apart
+    -- from a measurement. That is the error the zero-filled regime window
+    -- already made here once. So "no prior record" is carried as its own
+    -- INDICATOR, where absence needs no number, and the continuous prior below
+    -- is defined only where a prior actually exists.
+    --
+    -- Each column is 0.0 for a continuing staff, and 0.0 is a TRUE value there:
+    -- there was no hire, so the hire was not unproven. NULL appears only where
+    -- something is genuinely unknown -- an ambiguous school-year (no tenure),
+    -- or a hire whose head-coaching seasons the warehouse cannot rate.
+    --
+    -- Invariants, over rows where the terms are non-NULL:
+    --     rookie + prior_below = unproven
+    --     unproven + proven    = hc_first_year
+    CASE WHEN s.tenure_start IS NULL OR s.hc_prior_seasons IS NULL THEN NULL
+         WHEN s.tenure_start < s.season THEN 0.0
+         WHEN s.hc_prior_seasons = 0 THEN 1.0
+         ELSE 0.0 END AS hc_first_year_rookie,
+    CASE WHEN s.tenure_start IS NULL OR s.hc_prior_seasons IS NULL THEN NULL
+         WHEN s.tenure_start < s.season THEN 0.0
+         WHEN s.hc_prior_seasons = 0 THEN 0.0
+         WHEN s.hc_prior_sp_mean IS NULL THEN NULL
+         WHEN s.hc_prior_sp_mean < {HC_PROVEN_SP_PLUS} THEN 1.0
+         ELSE 0.0 END AS hc_first_year_prior_below,
+    CASE WHEN s.tenure_start IS NULL OR s.hc_prior_seasons IS NULL THEN NULL
+         WHEN s.tenure_start < s.season THEN 0.0
+         WHEN s.hc_prior_seasons = 0 THEN 1.0
+         WHEN s.hc_prior_sp_mean IS NULL THEN NULL
+         WHEN s.hc_prior_sp_mean < {HC_PROVEN_SP_PLUS} THEN 1.0
+         ELSE 0.0 END AS hc_first_year_unproven,
+    CASE WHEN s.tenure_start IS NULL OR s.hc_prior_seasons IS NULL THEN NULL
+         WHEN s.tenure_start < s.season THEN 0.0
+         WHEN s.hc_prior_seasons = 0 THEN 0.0
+         WHEN s.hc_prior_sp_mean IS NULL THEN NULL
+         WHEN s.hc_prior_sp_mean >= {HC_PROVEN_SP_PLUS} THEN 1.0
+         ELSE 0.0 END AS hc_first_year_proven,
+    -- The continuous form, for contrast. NULL for a continuing staff (no hire,
+    -- so no incoming prior) and NULL for a first-time head coach (no prior to
+    -- report) -- which leaves it defined on first-year hires with a ratable
+    -- record only, a few hundred rows at most. The screen will say so itself
+    -- through MIN_SCREEN_N rather than being told.
+    CASE WHEN s.tenure_start IS NULL THEN NULL
+         WHEN s.tenure_start < s.season THEN NULL
+         ELSE s.hc_prior_sp_mean END AS hc_career_prior,
     COALESCE((
         SELECT SUM(bc.blue_chips) / NULLIF(SUM(bc.signees), 0)
         FROM blue_chips bc
@@ -731,6 +987,11 @@ REQUIRED_COLUMNS: list[tuple[str, str, tuple[str, ...]]] = [
     ("recruiting", "transfer_portal", ("season", "origin", "destination", "rating")),
     ("draft", "draft_picks", ("year", "college_team", "round")),
     ("ratings", "sp_ratings", ("year", "team", "rating")),
+    # dlt child table of ref.coaches. `_dlt_parent_id` is the coach identity the
+    # tenure and career-prior CTEs group on -- ref.coaches is merged on
+    # (first_name, last_name), so one parent row is one coach across every
+    # school he has worked at.
+    ("ref", "coaches__seasons", ("school", "year", "games", "_dlt_parent_id")),
     (
         "stats",
         "advanced_team_stats",
@@ -782,11 +1043,15 @@ spine AS (
     -- Mirrors SCREEN_FRAME_QUERY's spine, including the uncoalesced
     -- tenure_start, so the audit measures the frame the screen actually builds.
     SELECT sp.year AS season, sp.team,
-           ct.tenure_start AS tenure_start
+           sp0.rating::double precision AS prior_sp_rating,
+           ct.tenure_start AS tenure_start,
+           cp.prior_seasons AS hc_prior_seasons,
+           cp.prior_sp_mean AS hc_prior_sp_mean
     FROM ratings.sp_ratings sp
     JOIN ratings.sp_ratings sp0
       ON sp0.team = sp.team AND sp0.year = sp.year - 1
     LEFT JOIN coach_tenure ct ON ct.school = sp.team AND ct.year = sp.year
+    LEFT JOIN coach_prior cp ON cp.school = sp.team AND cp.year = sp.year
     WHERE sp.year BETWEEN %(from_season)s AND %(to_season)s
       AND sp.rating IS NOT NULL AND sp0.rating IS NOT NULL
 )
@@ -816,7 +1081,44 @@ SELECT
         FROM blue_chips bc
         WHERE bc.team = s.team
           AND bc.year BETWEEN s.season - {CLASS_WINDOW} AND s.season - 1
-    ) IS NULL) AS blue_chip_pipeline_imputed
+    ) IS NULL) AS blue_chip_pipeline_imputed,
+    -- Subgroup sizes for the section 6.0b decomposition. Counts, not verdicts:
+    -- the screen reports a partial correlation without saying how many rows
+    -- carry the indicator, and a 0.15 partial resting on 30 positives is a
+    -- different object from one resting on 300. These make that legible on the
+    -- same run rather than requiring a separate ad-hoc query -- which is how
+    -- the numbers this amendment came from were produced, and why they could
+    -- not be reproduced.
+    COUNT(*) FILTER (
+        WHERE s.tenure_start IS NOT NULL AND s.tenure_start >= s.season
+    ) AS hc_first_year_rows,
+    COUNT(*) FILTER (
+        WHERE s.tenure_start IS NOT NULL AND s.tenure_start >= s.season
+          AND s.hc_prior_seasons = 0
+    ) AS hc_first_year_rookie_rows,
+    COUNT(*) FILTER (
+        WHERE s.tenure_start IS NOT NULL AND s.tenure_start >= s.season
+          AND s.hc_prior_seasons > 0
+          AND s.hc_prior_sp_mean < {HC_PROVEN_SP_PLUS}
+    ) AS hc_first_year_prior_below_rows,
+    COUNT(*) FILTER (
+        WHERE s.tenure_start IS NOT NULL AND s.tenure_start >= s.season
+          AND s.hc_prior_seasons > 0
+          AND s.hc_prior_sp_mean >= {HC_PROVEN_SP_PLUS}
+    ) AS hc_first_year_proven_rows,
+    -- Head-coaching experience the warehouse cannot rate: an FCS stop, or a
+    -- season older than its SP+ coverage. These rows are NULL on the proven /
+    -- unproven split rather than guessed into either side, so this count is
+    -- how much of the first-year population that split cannot see.
+    COUNT(*) FILTER (
+        WHERE s.tenure_start IS NOT NULL AND s.tenure_start >= s.season
+          AND s.hc_prior_seasons > 0 AND s.hc_prior_sp_mean IS NULL
+    ) AS hc_career_prior_unratable,
+    -- Centring check for HC_PROVEN_SP_PLUS: this share should sit near 0.5 if
+    -- SP+ really is centred on an average FBS team over this frame.
+    COUNT(*) FILTER (
+        WHERE s.prior_sp_rating >= {HC_PROVEN_SP_PLUS}
+    ) AS frame_prior_sp_at_or_above_zero
 FROM spine s
 """
 
@@ -947,6 +1249,7 @@ def fetch_frame(conn, from_season: int, to_season: int) -> list[dict]:
         )
         rows = [dict(r) for r in cur.fetchall()]
 
+    check_one_row_per_team_season(rows)
     return [derive_composites({k: _as_float(v) for k, v in row.items()}) for row in rows]
 
 

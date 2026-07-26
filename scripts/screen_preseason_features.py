@@ -347,6 +347,17 @@ CANDIDATE_COLUMNS = [
     "draft_departures",
     # Section 6.0b regime variant.
     "recruiting_points_regime",
+    # Prior-season trench performance (plan section 2.2). Never screened
+    # before: the earlier trench test used roster-headcount continuity, which
+    # counts walk-ons equally with starters and scored ~0. These measure the
+    # line play itself.
+    "prior_line_yards",
+    "prior_power_success",
+    "prior_stuff_rate_allowed",
+    "prior_havoc_allowed_front_seven",
+    "prior_def_line_yards",
+    "prior_def_stuff_rate",
+    "prior_front_seven_havoc",
 ]
 
 # What actually cleared the 2026-07-26 run (see RESULTS in the module
@@ -513,10 +524,33 @@ SELECT
         SELECT SUM(d3.capital)
         FROM draft_out d3
         WHERE d3.team = s.team AND d3.season BETWEEN s.season - 3 AND s.season - 1
-    ), 0) AS draft_capital_3yr
+    ), 0) AS draft_capital_3yr,
+    -- PRIOR-SEASON TRENCH PERFORMANCE (plan section 2.2, "the cheapest win").
+    -- Measured line play rather than inferred continuity: no roster
+    -- dependency, no new ingest, available from 2004, and computable in July.
+    -- This is the trenches thesis tested DIRECTLY -- the earlier headcount
+    -- continuity screen (OL -0.015, DL +0.013) tested whether the same bodies
+    -- returned, which counts a walk-on the same as a starter. These ask
+    -- whether the line actually blocked and the front actually penetrated.
+    --
+    -- Sign conventions differ and matter for reading the results:
+    --   line_yards / power_success / def_stuff_rate / front_seven_havoc -> higher is better
+    --   stuff_rate_allowed / havoc_allowed_front_seven                  -> LOWER is better
+    -- The screen reports signed partials, so a negative on an "allowed"
+    -- column is the thesis being CONFIRMED, not refuted.
+    ats.offense__line_yards AS prior_line_yards,
+    ats.offense__power_success AS prior_power_success,
+    ats.offense__stuff_rate AS prior_stuff_rate_allowed,
+    ats.offense__havoc__front_seven AS prior_havoc_allowed_front_seven,
+    ats.defense__line_yards AS prior_def_line_yards,
+    ats.defense__stuff_rate AS prior_def_stuff_rate,
+    ats.defense__havoc__front_seven AS prior_front_seven_havoc
 FROM spine s
 LEFT JOIN portal_flow pf ON pf.team = s.team AND pf.season = s.season
 LEFT JOIN draft_out dout ON dout.team = s.team AND dout.season = s.season
+-- Season S-1: what the trenches DID last year, known before season S starts.
+LEFT JOIN stats.advanced_team_stats ats
+       ON ats.team = s.team AND ats.season = s.season - 1
 ORDER BY s.season, s.team
 """
 
@@ -530,6 +564,21 @@ REQUIRED_COLUMNS: list[tuple[str, str, tuple[str, ...]]] = [
     ("recruiting", "transfer_portal", ("season", "origin", "destination", "rating")),
     ("draft", "draft_picks", ("year", "college_team", "round")),
     ("ratings", "sp_ratings", ("year", "team", "rating")),
+    (
+        "stats",
+        "advanced_team_stats",
+        (
+            "season",
+            "team",
+            "offense__line_yards",
+            "offense__power_success",
+            "offense__stuff_rate",
+            "offense__havoc__front_seven",
+            "defense__line_yards",
+            "defense__stuff_rate",
+            "defense__havoc__front_seven",
+        ),
+    ),
 ]
 
 

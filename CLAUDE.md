@@ -57,7 +57,7 @@ The database uses multiple Postgres schemas organized by data domain:
 | `live` | In-game polling | scoreboard_snapshots, wp_params (house live win prob) |
 | `marts` | Materialized views (39) | Denormalized, query-optimized |
 | `api` | API view layer (35) | Contract surface for cfb-app/cfb-scout |
-| `predictions` | Prediction snapshots | game_predictions (append-only daily) |
+| `predictions` | Prediction snapshots | game_predictions, season_projections (append-only daily) |
 | `public` | Convenience views/RPCs (12) | Downstream consumer interface |
 | `meta` | Flat-file load ledger | flat_file_loads |
 | `raw` | Raw archived source files | availability_reports |
@@ -74,9 +74,17 @@ Or use the `refresh_all_marts()` RPC.
 
 `.github/workflows/daily-load.yml` runs daily at 10:00 UTC from `main`: loads the
 current season (`scripts/load_season.py --weekly`, mart refresh included), refits house
-Elo/adjusted EPA (including the as-of weekly EPA build) and the fitted_v1 model's upcoming
-scores, then runs post-load checks (`scripts/verify_load.py`). Failures open/update a
-rolling GitHub issue. Requires repo secrets `CFBD_API_KEY` and `SUPABASE_DB_URL` (session
+Elo/adjusted EPA (including the as-of weekly EPA build), refits fitted_v1 when it is stale
+(`train_model.py --refit-if-stale`, a no-op on all but one day a year) and writes the
+model's upcoming scores, then runs post-load checks (`scripts/verify_load.py`). Failures
+open/update a rolling GitHub issue.
+
+**Season targeting:** the compute chain's `--incremental` resolves target seasons from
+`core.games` via `get_projection_seasons()` -- the most recent season with completed games
+plus every later season with a published schedule -- **not** from `get_current_season()`,
+which is a calendar rule returning `year - 1` until August and is correct only for ingest
+year windows. `verify_load.py` asserts fitted_v1 covers >=90% of pending games so a missing
+feature substrate cannot fail silently. Requires repo secrets `CFBD_API_KEY` and `SUPABASE_DB_URL` (session
 pooler). `.github/workflows/flat-files.yml` runs daily at 11:00 UTC to load flat-file
 sources (massey ratings, nflverse draft/combine, SBR lines, availability reports) using a
 hash-skip ledger in `meta.flat_file_loads` to avoid re-processing unchanged files. Requires
@@ -131,11 +139,14 @@ cfb-database/
 │   ├── compute_adjusted_epa.py   # Compute team adjusted EPA ratings
 │   ├── compute_adjusted_epa_week.py # Walk-forward as-of weekly adjusted EPA (--incremental)
 │   ├── compute_predictions.py    # Generate game predictions and edges
+│   ├── simulate_season.py        # Monte Carlo season win totals + distributions
+│   ├── screen_preseason_features.py # Partial-correlation screen for candidate features
 │   ├── check_backtest.py         # Backtest prediction accuracy and scoring
 │   ├── build_features.py         # Build features.team_week substrate (--incremental)
-│   ├── train_model.py            # Fit fitted_v1 walk-forward model coefficients
+│   ├── train_model.py            # Fit fitted_v1 walk-forward coefficients (--refit-if-stale)
 │   ├── tune_params.py            # Hyperparameter search for fitted_v1
 │   ├── score_fitted.py           # Score games with fitted_v1 (--upcoming default)
+│   ├── probe_offseason_availability.py # Report which CFBD offseason inputs a season has
 │   ├── calibrate_live_wp.py      # Fit live.wp_params sigma against historical win prob
 │   ├── poll_scoreboard.py        # Poll CFBD /scoreboard, write live.scoreboard_snapshots
 │   ├── load_flat_files.py        # Load flat-file sources (massey, nflverse, SBR, availability)

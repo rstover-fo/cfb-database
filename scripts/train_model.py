@@ -618,6 +618,97 @@ def train_walk_forward(conn, score_start: int, score_end: int) -> None:
         fit_one(conn, train_through, train_seasons)
 
 
+def stale_score_seasons(
+    latest_finished_season: int,
+    existing_train_through: list[int],
+    default_start: int = DEFAULT_SCORE_START,
+) -> list[int]:
+    """Score seasons still needed so a fit exists at
+    ``train_through_season = latest_finished_season``.
+
+    Walk-forward keying (design section 2d): score season ``S`` produces the fit
+    ``train_through_season = S-1``. So covering train-through values up through
+    ``latest_finished_season`` means running score seasons up through
+    ``latest_finished_season + 1``.
+
+    The caller MUST pass the last *fully finished* season (see
+    fetch_refit_state). Passing a season that is merely in progress would train
+    a fit on partial data and then score the rest of that same season in-sample.
+
+    Returns ``[]`` when the newest fit is already current -- the no-op the daily
+    workflow hits on 364 days a year. Pure, so the staleness rule is testable
+    without a DB.
+
+    Exists because the annual refit was a manual chore and was missed: the 2025
+    season ended in January 2026 and the newest fit was still
+    ``train_through_season=2024`` in July, so 2026 scoring would have silently
+    used a two-season-stale fit.
+    """
+    target = latest_finished_season
+    if not existing_train_through:
+        return list(range(default_start, target + 2))
+    max_existing = max(existing_train_through)
+    if max_existing >= target:
+        return []
+    return list(range(max_existing + 2, target + 2))
+
+
+# A season counts as FINISHED once at least this share of its games are
+# complete. Not 100%: a cancelled or never-reconciled game would otherwise keep
+# a season "unfinished" forever and permanently freeze the refit. 99% clears a
+# handful of stragglers on a ~1,600-game season while still requiring the
+# season to be genuinely over.
+SEASON_COMPLETE_THRESHOLD = 0.99
+
+# Below this many games a season is too small to judge complete by ratio alone
+# (an early season with 3 of 3 games played would look 100% finished).
+MIN_GAMES_FOR_FINISHED_SEASON = 100
+
+
+def fetch_refit_state(conn) -> tuple[int | None, list[int]]:
+    """``(latest FINISHED season, existing fitted_v1 train_through values)``.
+
+    "Finished" deliberately means *the whole season is over*, not "has at least
+    one completed game". Using ``MAX(season) WHERE completed`` would flip to the
+    new season the moment its first game ends, and the consequences compound:
+
+      1. ``stale_score_seasons`` would train a fit labelled
+         ``train_through_season = S`` on a season with a handful of games played,
+      2. ``score_fitted --upcoming`` selects ``MAX(train_through_season)`` and
+         would adopt it,
+      3. the remaining games of season S would then be scored **in-sample**, and
+      4. the staleness check would never fire again, because the S key now
+         exists.
+
+    That is a leak that inflates apparent accuracy rather than an outage, so it
+    would not announce itself. Requiring a finished season keeps every fit
+    strictly walk-forward.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT MAX(season) FROM (
+                SELECT season
+                FROM core.games
+                GROUP BY season
+                HAVING COUNT(*) >= %s
+                   AND AVG(CASE WHEN COALESCE(completed, false) THEN 1.0 ELSE 0.0 END) >= %s
+            ) finished
+            """,
+            (MIN_GAMES_FOR_FINISHED_SEASON, SEASON_COMPLETE_THRESHOLD),
+        )
+        row = cur.fetchone()[0]
+        latest_finished = int(row) if row is not None else None
+
+        cur.execute(
+            "SELECT DISTINCT train_through_season FROM features.model_metadata "
+            "WHERE model_version = %s",
+            (MODEL_VERSION,),
+        )
+        existing = [int(r[0]) for r in cur.fetchall()]
+    return latest_finished, existing
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Train fitted_v1 walk-forward ridge-margin + IRLS/Platt win-prob "
@@ -633,6 +724,13 @@ def main() -> None:
         f"through S-1 on {TRAIN_START_SEASON}..S-1. Default: "
         f"{DEFAULT_SCORE_START} {DEFAULT_SCORE_END}.",
     )
+    parser.add_argument(
+        "--refit-if-stale",
+        action="store_true",
+        help="Train only the fits missing relative to the latest completed season, "
+        "then exit. A clean no-op when the newest fit is already current -- safe "
+        "to run daily. What the daily workflow runs.",
+    )
     args = parser.parse_args()
     start, end = args.seasons
     if start > end:
@@ -643,6 +741,30 @@ def main() -> None:
 
     conn = psycopg2.connect(get_db_url())
     try:
+        if args.refit_if_stale:
+            latest_finished, existing = fetch_refit_state(conn)
+            if latest_finished is None:
+                logger.info("No finished season in core.games yet; nothing to refit")
+                return
+            needed = stale_score_seasons(latest_finished, existing)
+            if not needed:
+                logger.info(
+                    "fitted_v1 is current: newest fit train_through=%d covers the "
+                    "latest FINISHED season (%d); nothing to refit",
+                    max(existing),
+                    latest_finished,
+                )
+                return
+            logger.info(
+                "fitted_v1 is stale: newest fit train_through=%s vs latest FINISHED "
+                "season %d; training score season(s) %s",
+                max(existing) if existing else "none",
+                latest_finished,
+                needed,
+            )
+            train_walk_forward(conn, needed[0], needed[-1])
+            return
+
         train_walk_forward(conn, start, end)
     except Exception:
         conn.rollback()

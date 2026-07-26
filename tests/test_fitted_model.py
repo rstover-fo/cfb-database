@@ -13,7 +13,11 @@ pytest.importorskip("numpy")
 
 import numpy as np  # noqa: E402
 
-from scripts.score_fitted import select_train_through  # noqa: E402
+from scripts.score_fitted import (  # noqa: E402
+    MIN_UPCOMING_COVERAGE,
+    coverage_verdict,
+    select_train_through,
+)
 from scripts.train_model import (  # noqa: E402
     FEATURE_NAMES,
     INTERCEPT_IDX,
@@ -32,6 +36,7 @@ from scripts.train_model import (  # noqa: E402
     platt_transform,
     ridge_fit,
     sigmoid,
+    stale_score_seasons,
     standardize,
 )
 
@@ -319,3 +324,82 @@ class TestEndToEndWalkForward:
         probs = np.array([platt_transform(float(z), platt_a, platt_b) for z in logits4])
         assert np.all(probs > 0.0)
         assert np.all(probs < 1.0)
+
+
+class TestCoverageVerdict:
+    """The silent-failure regression: score_fitted.run_upcoming used to log
+    'nothing to write' and return normally when features.team_week had no rows
+    for the upcoming season, so the workflow went green for six months while
+    fitted_v1 produced nothing for 2026."""
+
+    def test_no_pending_games_is_success(self):
+        # Legitimately nothing to do (e.g. mid-January, post-bowls).
+        ok, coverage = coverage_verdict(0, 0)
+        assert ok is True
+        assert coverage == 1.0
+
+    def test_pending_games_but_none_scored_fails(self):
+        # The exact 2026 blackout shape: 1,638 pending, zero feature rows.
+        ok, coverage = coverage_verdict(1638, 0)
+        assert ok is False
+        assert coverage == 0.0
+
+    def test_full_coverage_passes(self):
+        ok, coverage = coverage_verdict(1638, 1638)
+        assert ok is True
+        assert coverage == 1.0
+
+    def test_just_below_threshold_fails(self):
+        ok, _ = coverage_verdict(1000, 899, min_coverage=0.90)
+        assert ok is False
+
+    def test_at_threshold_passes(self):
+        ok, coverage = coverage_verdict(1000, 900, min_coverage=0.90)
+        assert ok is True
+        assert coverage == pytest.approx(0.90)
+
+    def test_default_threshold_is_ninety_percent(self):
+        assert MIN_UPCOMING_COVERAGE == 0.90
+
+
+class TestStaleScoreSeasons:
+    """Walk-forward keying: score season S produces train_through = S-1."""
+
+    def test_stale_by_one_season_trains_the_gap(self):
+        # The real July-2026 state: newest fit train_through=2024, 2025 done.
+        assert stale_score_seasons(2025, [2018, 2020, 2024]) == [2026]
+
+    def test_current_fit_is_a_no_op(self):
+        assert stale_score_seasons(2025, [2024, 2025]) == []
+
+    def test_fit_ahead_of_completed_season_is_a_no_op(self):
+        assert stale_score_seasons(2024, [2025]) == []
+
+    def test_no_existing_fits_trains_from_default_start(self):
+        seasons = stale_score_seasons(2025, [], default_start=2018)
+        assert seasons[0] == 2018
+        assert seasons[-1] == 2026
+
+    def test_multi_season_gap(self):
+        # train_through 2023 present, 2025 complete -> need 2024 and 2025.
+        assert stale_score_seasons(2025, [2023]) == [2025, 2026]
+
+
+class TestRefitLeakRegression:
+    """PR #48 P1-A. `stale_score_seasons` must be fed the last FULLY FINISHED
+    season. Feeding it a season that has merely started trains a fit on partial
+    data, which `score_fitted --upcoming` then adopts as MAX(train_through) and
+    uses to score the remainder of that same season -- in-sample, and never
+    refreshed again because the key now exists."""
+
+    def test_in_progress_season_would_produce_an_in_sample_fit(self):
+        # 2025 finished; 2026 has kicked off. Passing 2026 (the WRONG input)
+        # asks for a fit trained through 2026 while 2026 is still being played.
+        wrong = stale_score_seasons(2026, [2024, 2025])
+        assert wrong == [2027], "documents the bad behavior the fix avoids"
+        # Passing the last FINISHED season is a correct no-op.
+        assert stale_score_seasons(2025, [2024, 2025]) == []
+
+    def test_finished_season_still_triggers_the_annual_refit(self):
+        # The real July-2026 state: 2025 finished, newest fit train_through=2024.
+        assert stale_score_seasons(2025, [2024]) == [2026]

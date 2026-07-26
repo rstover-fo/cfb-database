@@ -64,12 +64,30 @@ An MAE means nothing alone. Two denominator-consistent baselines run beside the
 model: prior-season win RATE scaled to the simulated slate, and a flat .500. A
 preseason model that cannot beat "last year's record" has earned nothing.
 
-Read-only: reports to stdout, writes no rows.
+PERSISTENCE
+===========
+The printed BACKTEST_GATE line is unchanged, and every number in it is ALSO
+written to ``predictions.model_backtest`` (migration 045), exposed downstream
+as ``api.model_backtest``. Until that table existed these numbers lived only in
+a log line, so cfb-app -- which must attach the MAE, the asymmetric 80%
+interval and the baselines to every season-outlook answer -- hardcoded them as
+a TypeScript constant. That is correct right up until this script is re-run, at
+which point the shipped numbers describe a model that no longer exists and
+nothing anywhere fails. Same silent-staleness shape as the fitted_v1 coverage
+gap: a stale value that still renders beats an error only for the person who
+never looks.
+
+A ``--sweep-strength-share`` run writes nothing. The sweep measures candidate
+CONFIGURATIONS in order to pick one; it is not a measurement of the shipped
+model, and filling the table with rows nobody should quote is how a contract
+surface stops meaning anything. ``--no-write`` restores the old read-only
+behaviour for an exploratory run.
 
 Usage:
     python scripts/backtest_preseason.py                    # default range
     python scripts/backtest_preseason.py --start 2018 --end 2025
     python scripts/backtest_preseason.py --all-divisions
+    python scripts/backtest_preseason.py --no-write         # report only
 """
 
 import argparse
@@ -247,6 +265,95 @@ def brier(probs: list[float], outcomes: list[bool]) -> float | None:
     return float(np.mean((p - o) ** 2))
 
 
+def build_backtest_row(
+    agg: dict,
+    *,
+    scope: str,
+    season_start: int,
+    season_end: int,
+    n_sims: int,
+    seed: int,
+    feature_build_version: str | None,
+) -> dict | None:
+    """One ``predictions.model_backtest`` row dict from an aggregated pass.
+
+    Pure (no DB) so the exact numbers that get persisted are unit-testable
+    against the same aggregate ``_report`` prints -- the row and the
+    BACKTEST_GATE line must never be able to disagree.
+
+    Returns ``None`` when the pass compared no team-seasons. A row whose
+    ``n`` is 0 and whose every metric is NULL asserts that a backtest ran and
+    measured nothing, which is strictly worse than the absence of a row: a
+    consumer joining to it would read NULLs as "no interval known" for a model
+    that is, as far as anyone can tell, fine. Refusing to write is the same
+    rule migration 045 applies to a model that was never backtested at all.
+    """
+    per_season = agg["per_season"]
+    overall = agg["overall"]
+    if not per_season or not overall["n"]:
+        return None
+
+    quantiles = agg["quantiles"] or {}
+    baseline_prior = win_error_metrics(agg["base_prior"], agg["act"])
+    baseline_flat = win_error_metrics(agg["base_flat"], agg["act"])
+    seasons_covered = sorted(r["season"] for r in per_season)
+    train_through = sorted(r["train_through"] for r in per_season)
+
+    return {
+        "model_version": MODEL_VERSION,
+        "feature_build_version": feature_build_version,
+        "scope": scope,
+        # The REQUESTED range. seasons_covered is what actually contributed --
+        # they differ when a season had no frozen S-1 fit or too few prior
+        # residuals for a sigma estimate, and collapsing the two would let a
+        # partially-measured range read as a fully-measured one.
+        "season_start": season_start,
+        "season_end": season_end,
+        "seasons_covered": seasons_covered,
+        "train_through_min": train_through[0],
+        "train_through_max": train_through[-1],
+        "n_sims": n_sims,
+        "seed": seed,
+        # Already normalized by _simulate_pass, so the stored value is the one
+        # the simulation actually used rather than a rounded neighbour (the
+        # Codex PR #52 P2 defect, in the other direction).
+        "strength_share": agg["strength_share"],
+        # Leak evidence carried with the numbers. maxGP > 0 means a "week-1"
+        # vector already had games of its own season in it and every error
+        # below is understated; it qualifies the row rather than voiding it,
+        # and a consumer is entitled to see the qualification.
+        "max_games_played_to_date": max(r["max_games_played"] for r in per_season),
+        "games_dropped_outcome_dependent": sum(r["dropped_outcome_dependent"] for r in per_season),
+        "n": overall["n"],
+        "win_mae": overall["mae"],
+        "rmse": overall["rmse"],
+        "bias": overall["bias"],
+        "coverage": agg["coverage"],
+        "baseline_prior_mae": baseline_prior["mae"],
+        "baseline_flat_mae": baseline_flat["mae"],
+        "resid_p05": quantiles.get("p05"),
+        "resid_p10": quantiles.get("p10"),
+        "resid_p25": quantiles.get("p25"),
+        "resid_p50": quantiles.get("p50"),
+        "resid_p75": quantiles.get("p75"),
+        "resid_p90": quantiles.get("p90"),
+        "resid_p95": quantiles.get("p95"),
+        "bowl_brier": agg["bowl_brier"],
+        "ten_plus_brier": agg["ten_brier"],
+        # Reliability buckets for the two probabilities api.season_outlook
+        # publishes. The Brier scalars above cannot say "the 0.8-0.9 bucket
+        # came in at 0.72", and that is the sentence a consumer needs.
+        "calibration": {
+            "p_bowl_eligible": calibration_table(agg["bowl_probs"], agg["bowl_out"]),
+            "p_ten_plus": calibration_table(agg["ten_probs"], agg["ten_out"]),
+        },
+        # The bar, not the verdict -- see migration 045. A stored judgement
+        # goes stale the day someone revises what "respectable" means; the
+        # measurement does not.
+        "respectable_win_mae": RESPECTABLE_WIN_MAE,
+    }
+
+
 # =============================================================================
 # --- I/O layer ---
 # =============================================================================
@@ -360,6 +467,119 @@ def fetch_fbs_teams(conn, season: int) -> set:
         return {row[0] for row in cur.fetchall()}
 
 
+def fetch_feature_build_versions(conn, seasons: list[int]) -> str | None:
+    """The features.team_week build version(s) the scored seasons were read from.
+
+    Provenance, not decoration. ``model_version`` names the coefficients;
+    ``feature_build_version`` names the substrate they were applied to, and the
+    same coefficients over a rebuilt feature table are a different model in
+    every way a consumer would care about. Comma-joined when the range spans a
+    rebuild, because "these seasons used tw_v1 and those used tw_v2" is a fact
+    about the measurement, not something to average away. NULL when the column
+    is unset for every scored season -- unknown, never invented.
+    """
+    if not seasons:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT feature_build_version
+            FROM features.team_week
+            WHERE season = ANY(%(seasons)s)
+              AND feature_build_version IS NOT NULL
+            ORDER BY feature_build_version
+            """,
+            {"seasons": list(seasons)},
+        )
+        versions = [row[0] for row in cur.fetchall()]
+    return ",".join(versions) if versions else None
+
+
+# Columns written by this script. backtest_id is identity; computed_at and
+# run_date take their DEFAULTs so the UTC day is decided server-side (same
+# reason simulate_season omits projection_date -- the client's clock must not
+# be able to file a snapshot under the wrong day).
+_BACKTEST_COLUMNS = [
+    "model_version",
+    "feature_build_version",
+    "scope",
+    "season_start",
+    "season_end",
+    "seasons_covered",
+    "train_through_min",
+    "train_through_max",
+    "n_sims",
+    "seed",
+    "strength_share",
+    "max_games_played_to_date",
+    "games_dropped_outcome_dependent",
+    "n",
+    "win_mae",
+    "rmse",
+    "bias",
+    "coverage",
+    "baseline_prior_mae",
+    "baseline_flat_mae",
+    "resid_p05",
+    "resid_p10",
+    "resid_p25",
+    "resid_p50",
+    "resid_p75",
+    "resid_p90",
+    "resid_p95",
+    "bowl_brier",
+    "ten_plus_brier",
+    "calibration",
+    "respectable_win_mae",
+]
+
+# Explicit casts. psycopg2 sends both of these as untyped literals, and while
+# Postgres would coerce them on assignment, an explicit cast is one less thing
+# that depends on a coercion rule holding.
+_BACKTEST_CASTS = {"seasons_covered": "::bigint[]", "calibration": "::jsonb"}
+
+# The conflict-key columns are the ones NOT refreshed on a same-day re-run.
+# run_date is in the conflict target but not in the insert list (it defaults
+# server-side), so it is absent here by construction.
+_BACKTEST_CONFLICT_COLUMNS = (
+    "model_version",
+    "run_date",
+    "scope",
+    "season_start",
+    "season_end",
+    "strength_share",
+)
+_BACKTEST_UPDATE_ASSIGNMENTS = ", ".join(
+    f"{c} = EXCLUDED.{c}" for c in _BACKTEST_COLUMNS if c not in _BACKTEST_CONFLICT_COLUMNS
+)
+
+# Same-day convergence only -- a re-run updates today's snapshot, never a prior
+# day's (migration 045, mirroring 043/024). Every key column is NOT NULL in the
+# DDL: a NULL there would not conflict with another NULL, and two runs of the
+# same configuration on the same day would insert two rows instead of one.
+_BACKTEST_UPSERT_SQL = f"""
+    INSERT INTO predictions.model_backtest ({", ".join(_BACKTEST_COLUMNS)})
+    VALUES ({", ".join(f"%({c})s{_BACKTEST_CASTS.get(c, '')}" for c in _BACKTEST_COLUMNS)})
+    ON CONFLICT ({", ".join(_BACKTEST_CONFLICT_COLUMNS)}) DO UPDATE SET
+        {_BACKTEST_UPDATE_ASSIGNMENTS},
+        computed_at = now()
+"""
+
+
+def write_backtest(conn, row: dict) -> None:
+    """Persist one snapshot. One statement, one commit -- the row lands whole
+    or not at all, so a failure can never leave a half-populated measurement
+    that reads as a real one."""
+    import json
+
+    params = dict(row)
+    params["calibration"] = json.dumps(row["calibration"]) if row["calibration"] else None
+    params["seasons_covered"] = list(row["seasons_covered"])
+    with conn.cursor() as cur:
+        cur.execute(_BACKTEST_UPSERT_SQL, params)
+    conn.commit()
+
+
 # =============================================================================
 # --- Backtest ---
 # =============================================================================
@@ -452,7 +672,14 @@ def preseason_sigma(residuals: list[float]) -> float | None:
 
 
 def run_backtest(
-    conn, start: int, end: int, n_sims: int, seed: int, fbs_only: bool, shares: list[float]
+    conn,
+    start: int,
+    end: int,
+    n_sims: int,
+    seed: int,
+    fbs_only: bool,
+    shares: list[float],
+    write: bool = True,
 ) -> int:
     available = fetch_available_train_through(conn)
     logger.info("frozen fits available for train_through: %s", sorted(available))
@@ -555,7 +782,52 @@ def run_backtest(
             _report(agg, fbs_only, share)
 
     if len(shares) > 1:
+        # A sweep is a calibration exercise over candidate configurations, not
+        # a measurement of the shipped model. Writing every candidate would
+        # leave api.model_backtest holding rows a consumer must not quote.
         _report_sweep(sweep_rows)
+        if write:
+            logger.info("sweep run -- reported only, nothing persisted (see module docstring)")
+        return 0
+
+    if not write:
+        logger.info("--no-write: reported only, predictions.model_backtest not touched")
+        return 0
+
+    agg = sweep_rows[0]
+    row = build_backtest_row(
+        agg,
+        scope="fbs" if fbs_only else "all_divisions",
+        season_start=start,
+        season_end=end,
+        n_sims=n_sims,
+        seed=seed,
+        feature_build_version=fetch_feature_build_versions(
+            conn, [r["season"] for r in agg["per_season"]]
+        ),
+    )
+    if row is None:
+        logger.warning("no team-season was compared; nothing persisted")
+        return 0
+    try:
+        write_backtest(conn, row)
+    except Exception:
+        # Loud, not silent. The measurement is printed above either way, but a
+        # backtest that quietly fails to persist puts consumers straight back
+        # on a stale hardcoded constant -- the exact failure this write exists
+        # to end -- so the run fails.
+        conn.rollback()
+        logger.exception("backtest measured but could NOT be persisted")
+        return 1
+    logger.info(
+        "persisted predictions.model_backtest: model=%s scope=%s seasons=%s-%s share=%.3f n=%d",
+        row["model_version"],
+        row["scope"],
+        row["season_start"],
+        row["season_end"],
+        row["strength_share"],
+        row["n"],
+    )
     return 0
 
 
@@ -823,6 +1095,11 @@ def main() -> None:
         action="store_true",
         help="report every division, not just FBS (FCS/D2 playoff games inflate slates)",
     )
+    parser.add_argument(
+        "--no-write",
+        action="store_true",
+        help="report only; do not write a predictions.model_backtest snapshot",
+    )
     args = parser.parse_args()
 
     if args.start > args.end:
@@ -854,6 +1131,7 @@ def main() -> None:
             seed=args.seed,
             fbs_only=not args.all_divisions,
             shares=shares,
+            write=not args.no_write,
         )
     finally:
         conn.close()

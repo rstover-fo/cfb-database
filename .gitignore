@@ -50,3 +50,7 @@ Thumbs.db
 *.log
 logs/
 .worktrees/
+
+# Subagent worktrees (Agent tool isolation: "worktree"). Transient checkouts of
+# this repo, auto-removed when the agent finishes; never project content.
+.claude/worktrees/

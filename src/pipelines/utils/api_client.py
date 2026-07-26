@@ -12,13 +12,35 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# Consecutive fully-rate-limited requests before the circuit opens.
+# Consecutive HTTP 429 responses before the run is abandoned.
+#
 # Burst throttling clears in ~10 minutes and affects a handful of calls; an
-# exhausted monthly quota 429s everything until the quota resets. After this
-# many requests have each burned their full retry budget without one success,
-# the second explanation is the only one left, and every further minute of
-# waiting is wasted CI time.
-RATE_LIMIT_CIRCUIT_THRESHOLD = 5
+# exhausted monthly quota 429s everything until the quota resets. Once this many
+# responses in a row have been refused without one success, the second
+# explanation is the only one left and every further minute is wasted CI time.
+#
+# Must stay comfortably ABOVE the dlt extract worker pool (.dlt/config.toml sets
+# workers = 5). The counter is shared across the run, so N workers each taking a
+# single transient 429 at the same instant contribute N at once: a threshold of
+# 5 against a 5-worker pool could be reached by one simultaneous blip that every
+# worker would have recovered from on retry, aborting a healthy run. 10 is
+# double the pool, so it needs sustained refusal rather than one bad moment.
+#
+# Read the other way: a fully rate-limited request contributes MAX_RETRIES + 1
+# = 4, so 10 is ~2.5 exhausted requests. Against a spent quota the daily load
+# aborts around six minutes in rather than grinding through every source.
+#
+# Deliberately NOT a multiple of MAX_RETRIES + 1. At an exact multiple the
+# threshold is only ever crossed on a request's FINAL attempt, where the
+# out-of-retries branch raises first, so the mid-request abort below could never
+# fire and a doomed request would always sleep out its whole budget.
+#
+# The trade-off is deliberate and worth stating: CFBD burst-blocks for ~10
+# minutes at a time, and a burst long enough to cross this threshold with no
+# successes in between WILL fail the run. That is the cheaper error for an
+# idempotent job that retries tomorrow and opens an issue when it fails -- the
+# alternative, historically, was a three-hour run that exhausted the quota.
+RATE_LIMIT_CIRCUIT_THRESHOLD = 10
 
 
 class RateLimitExhausted(Exception):
@@ -66,6 +88,14 @@ class RateLimitBreaker:
     sources each burning a full retry budget against a spent quota is exactly
     the wasted-CI case it exists to stop.
 
+    **Counted per 429 response, not per exhausted request.** Sharing the
+    counter was necessary but not sufficient: while each increment cost a whole
+    retry budget, reaching 5 took 20 API calls and 15 minutes, and a run with
+    only 4 active sources could never reach it. The 2026-07-26 daily load
+    proved it -- 12 minutes of sleeping against a spent quota, final count 4,
+    breaker never opened. Counting responses makes the threshold mean what it
+    says.
+
     Locked because dlt runs sources on a worker pool, so increments and resets
     genuinely race.
     """
@@ -89,8 +119,18 @@ class RateLimitBreaker:
         with self._lock:
             self._consecutive = 0
 
-    def record_exhausted(self) -> int:
-        """Count one request that burned its whole retry budget on 429s."""
+    def record_rate_limited(self) -> int:
+        """Count one 429 RESPONSE.
+
+        Counted per response, not per fully-exhausted request, and the unit is
+        the whole point. Counting exhausted requests made each increment cost a
+        full retry budget -- 4 API calls and 3 minutes of sleep -- so the
+        threshold of 5 needed 20 wasted calls and 15 minutes before it could
+        fire. An off-season run only has ~4 active sources, so it could not
+        fire at all: the 2026-07-26 daily load spent 12 minutes retrying a
+        spent quota and finished at a count of 4, one short, having never
+        opened the breaker it was built to trigger.
+        """
         with self._lock:
             self._consecutive += 1
             return self._consecutive
@@ -259,8 +299,8 @@ class CFBDClient:
         """
         if self._breaker.is_open():
             raise RateLimitCircuitOpen(
-                f"{self._breaker.consecutive} consecutive request(s) exhausted their "
-                f"retries on HTTP 429 before {endpoint}. The API is refusing everything -- "
+                f"{self._breaker.consecutive} consecutive HTTP 429 response(s) "
+                f"before {endpoint}. The API is refusing everything -- "
                 "most likely the monthly quota is spent. Stopping instead of retrying; "
                 "further requests cannot succeed until the quota resets."
             )
@@ -276,15 +316,30 @@ class CFBDClient:
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:  # Rate limited
                     retry_after = self._parse_retry_after(e.response.headers.get("Retry-After"))
+                    # Every 429 counts, including the ones we are about to
+                    # retry. See RateLimitBreaker.record_rate_limited.
+                    consecutive = self._breaker.record_rate_limited()
                     if attempt >= retries:
-                        # Out of attempts. Count it and fail loudly -- falling
-                        # through to an empty list here would tell the caller
-                        # this endpoint has no data.
-                        consecutive = self._breaker.record_exhausted()
+                        # Out of attempts. Fail loudly -- falling through to an
+                        # empty list here would tell the caller this endpoint
+                        # has no data.
                         raise RateLimitExhausted(
                             f"Rate limited on all {retries + 1} attempt(s) for {endpoint} "
-                            f"(params={params}). Consecutive rate-limited requests: "
+                            f"(params={params}). Consecutive rate-limited responses: "
                             f"{consecutive}."
+                        ) from e
+                    if self._breaker.is_open():
+                        # Checked BEFORE sleeping, not just at the top of get().
+                        # Sleeping out a retry budget we already know is doomed
+                        # is the exact waste the breaker exists to prevent, and
+                        # the top-of-method guard alone cannot stop it because
+                        # a single request can burn its whole budget without
+                        # ever re-entering get().
+                        raise RateLimitCircuitOpen(
+                            f"{consecutive} consecutive HTTP 429 response(s), most recently "
+                            f"{endpoint}. The API is refusing everything -- most likely the "
+                            "monthly quota is spent. Stopping instead of sleeping "
+                            f"{retry_after}s for a retry that cannot succeed."
                         ) from e
                     logger.warning(
                         f"Rate limited on {endpoint}. Waiting {retry_after}s "

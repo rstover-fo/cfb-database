@@ -140,11 +140,27 @@ class TestSourcesToSkip:
         skipped = sources_to_skip(list(SOURCE_ORDER), season_final=True, allow_skip=True)
         assert "reference" not in skipped
 
-    def test_metrics_wp_is_never_skipped(self):
-        """Already self-limiting: it fetches only games still missing win
-        probability, so a fully-backfilled season costs nothing anyway."""
+    def test_metrics_wp_stays_eligible_even_on_a_finished_season(self):
+        """PR #54 review, P1.
+
+        It was briefly added to the skip set because the 2026-07-26 daily load
+        queued 2,517 games of a season that ended in January. But
+        run_metrics_wp_pipeline derives missing games as completed-minus-loaded,
+        so that backlog includes requests that failed during the quota
+        exhaustion -- recoverable data, not just games CFBD has nothing for.
+        The unattended daily path passes no --season, so skipping the source
+        would strand those rows permanently.
+
+        The cost problem is bounded in the pipeline instead
+        (run.MAX_WP_GAMES_PER_RUN), which caps a run without making anything
+        ineligible.
+        """
         skipped = sources_to_skip(list(SOURCE_ORDER), season_final=True, allow_skip=True)
         assert "metrics_wp" not in skipped
+
+        from src.pipelines.run import MAX_WP_GAMES_PER_RUN
+
+        assert MAX_WP_GAMES_PER_RUN > 0, "the cap is what replaces the skip"
 
     def test_every_immutable_source_is_a_real_source(self):
         """A typo here would silently skip nothing at all."""
@@ -164,3 +180,51 @@ class TestSourcesToSkip:
         skipped = sources_to_skip(default, season_final=True, allow_skip=True)
         after = sum(ESTIMATED_CALLS.get(s, 50) for s in default if s not in skipped)
         assert after < before * 0.15, f"expected a large reduction, got {before} -> {after}"
+
+
+class TestWinProbabilityBacklogIsBounded:
+    """PR #54 review, P1.
+
+    The 2026-07-26 daily load queued 2,517 win-probability calls in one run --
+    ~3% of the monthly budget, every day, for a season that ended in January.
+    The first fix skipped the source once a season was final, which would have
+    stranded any game whose request failed during the quota exhaustion. Capping
+    the run bounds the cost without making anything permanently ineligible.
+    """
+
+    def test_the_cap_is_smaller_than_the_backlog_that_motivated_it(self):
+        from src.pipelines.run import MAX_WP_GAMES_PER_RUN
+
+        assert 0 < MAX_WP_GAMES_PER_RUN < 2517
+
+    def test_newest_games_are_fetched_first(self):
+        """Once the cap truncates, newly-completed games must not be starved
+        behind a historical backlog -- and recency is the best proxy available
+        for 'CFBD actually has win probability for this game'."""
+        from src.pipelines.run import _METRICS_WP_GAMES_QUERY
+
+        order_by = _METRICS_WP_GAMES_QUERY.upper().split("ORDER BY")[1]
+        assert "SEASON DESC" in order_by
+        assert "START_DATE DESC" in order_by
+
+    def test_truncation_is_reported_not_silent(self):
+        """A capped backlog that reads like a completed one is how '2,517
+        missing' went unnoticed for months."""
+        import inspect
+
+        from src.pipelines.run import run_metrics_wp_pipeline
+
+        body = inspect.getsource(run_metrics_wp_pipeline)
+        assert "deferred" in body
+        assert "Backlog capped" in body
+
+    def test_summary_reports_the_full_backlog_not_the_capped_slice(self):
+        """`missing` has to keep meaning "how much is left", or the cap makes
+        the backlog look like it is draining when it is not."""
+        import inspect
+
+        from src.pipelines.run import run_metrics_wp_pipeline
+
+        body = inspect.getsource(run_metrics_wp_pipeline)
+        assert '"missing": total_missing' in body
+        assert '"loaded_this_run"' in body

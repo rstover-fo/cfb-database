@@ -52,51 +52,80 @@ so a re-run reproduces the full table -- deleting them would make the null
 results unreproducible, which is the same failure mode this gate exists to
 prevent.
 
-RESULTS -- run 2026-07-26 against prod, seasons 2015-2025 (n=1,439)
-------------------------------------------------------------------
+RESULTS -- run 2026-07-26 against prod, seasons 2015-2025
+--------------------------------------------------------
+Produced by THIS SCRIPT (deploy run 124). Every figure below is reproducible
+by re-running it, which the earlier recorded table was not: two unescaped
+percent signs meant the frame query had never once executed, so the original
+verdicts came from ad-hoc MCP queries that no longer exist. Where the two
+disagree, these numbers are the ones that stand.
+
 Column 2 controls for prior-season SP+ only; column 3 additionally controls for
 `recruiting_points_3yr`, which is the strongest single candidate and therefore
-the bar every other candidate has to clear.
+the bar every other candidate has to clear. `n`/`coverage` are per candidate:
+each is screened on its own complete cases (see `complete_cases`).
 
-    candidate                   vs prior SP+   + recruiting   verdict
-    recruiting_points_3yr          +0.2642     (is control)   SHIP
-    blue_chip_pipeline             +0.2532        +0.0931     SHIP
-    recruiting_points_regime       +0.1525        +0.0955     SHIP  (see below)
-    talent_stock                   +0.2664     ~+0.002        reject
-    pipeline_index                 +0.0952           --       reject
-    draft_picks_3yr                +0.0949        +0.0068     reject
-    conversion / draft_yield       +0.0760        -0.0007     reject
-    conversion_regime              +0.0876        +0.0344     reject
-    draft_departures               +0.0088           --       reject
-    portal_net_rating (2021-25)    +0.0274        +0.0731     reject, RE-TEST
-    portal_out_n (2021-25)         +0.0586        -0.0139     reject
+    candidate                       n    cov   vs prior   +recr   verdict
+    recruiting_points_3yr        1439  1.000    +0.2642  (ctrl)   SHIP
+    hc_first_year                1426  0.991    -0.1334  -0.1615  SHIP
+    prior_def_line_yards         1423  0.989    -0.0463  -0.0997  SHIP
+    prior_def_stuff_rate         1423  0.989    +0.0536  +0.0816  SHIP (marginal)
+    blue_chip_pipeline           1439  1.000    +0.2532  +0.0782  reject (see below)
+    talent_stock                 1439  1.000    +0.2664  +0.0744  reject
+    draft_departures             1439  1.000    +0.0088  -0.0728  reject
+    recruiting_points_regime     1136  0.789    +0.0712  -0.0620  reject
+    prior_power_success          1423  0.989    +0.0221  +0.0520  reject
+    portal_net_rating            1439  1.000    +0.0247  +0.0481  reject
+    prior_stuff_rate_allowed     1423  0.989    -0.0021  -0.0290  reject
+    prior_line_yards             1423  0.989    -0.0069  +0.0223  reject
+    pipeline_index               1439  1.000    +0.0952  +0.0072  reject
+    draft_picks_3yr              1439  1.000    +0.0949  +0.0068  reject
+    conversion / draft_yield     1439  1.000    +0.0760  -0.0007  reject
+    prior_havoc_allowed_front_7   251  0.174        --       --   untestable
+    prior_front_seven_havoc       251  0.174        --       --   untestable
 
 What the run established:
 
 1. **Trailing recruiting pipeline is the strongest preseason signal found** --
-   3x the pre-registered floor, and STRONGER in the portal era (+0.2840 on
-   2021-25) rather than weaker.
-2. **Draft production is redundant, not absent.** It predicts (+0.0949) until
+   3x the pre-registered floor.
+2. **The trenches thesis half-survives, and it is the DEFENSIVE half.**
+   `prior_def_line_yards` (-0.0997; the column is yards ALLOWED, so negative
+   confirms the thesis) and `prior_def_stuff_rate` (+0.0816) both clear. Every
+   offensive-line measure fails: line yards +0.0223, power success +0.0520,
+   stuff rate allowed -0.0290. Measured line play succeeds where the earlier
+   roster-headcount continuity screen (OL -0.015, DL +0.013) found nothing.
+3. **A first-year head coach is the second-strongest signal in the set**
+   (-0.1615, q < 1e-5), and it was previously invisible. It only became
+   measurable once it was separated from `recruiting_points_regime` -- see 4.
+4. **The regime column's original +0.0955 was not a recruiting signal.** The
+   regime window is empty exactly when the head coach is in year one, and
+   zero-filling put a hard 0 on 291 of 1,439 rows (20.2%, found by
+   --audit-imputation). That 0 is confounded with the coaching change itself,
+   so the column silently blended recruiting with a new-coach indicator. Split
+   apart, the recruiting half falls to -0.0620 and FAILS while the coaching
+   half ships at -0.1615. A column had shipped on a number that measured
+   something other than what the column claimed to measure.
+5. **Draft production is redundant, not absent.** It predicts (+0.0949) until
    recruiting is controlled, then collapses to +0.0068. Draft output identifies
    programs that *recruit* well, not ones that *develop*.
-3. **Regime-scoping is real** (design doc section 6.0b). Restricting the
-   recruiting window to classes signed under the current head coach scores
-   lower on its own (+0.1525 vs +0.2848) but adds +0.0955 BEYOND the flat
-   window -- the two together beat either alone. It partly encodes "new staff,
-   inherited roster", which the flat window cannot express.
-4. **The development term survives regime-scoping but still fails.**
-   `conversion` goes from -0.0007 to +0.0344 once scoped to the current staff
-   -- the right direction, less than half the floor. Draft counts are a coarse,
-   laggy proxy and season-level SP+ may not isolate development; the negative
-   result is on this measurement, not on the concept.
-5. **`draft_departures` is this gate's own justification:** raw correlation
-   +0.3474, partial +0.0088. Losing draft picks correlates with having been
-   good and says nothing about next season.
+6. **`draft_departures` is this gate's own justification:** raw correlation
+   +0.3474, partial -0.0728 -- and it flips sign. Losing draft picks correlates
+   with having been good and says nothing about next season.
+7. **Two candidates are untestable, not null.** The havoc front-seven splits
+   exist for only 17.4% of team-seasons, below MIN_SCREEN_N. That is a
+   data-coverage finding; the thesis they would test is unadjudicated.
 
 Both composites in the original design failed: `pipeline_index`
 (talent_stock x conversion) scores +0.0952 against its own input's +0.2664 --
-the multiplication destroys signal -- and `talent_stock` beats plain recruiting
-by +0.002, complexity for nothing.
+the multiplication destroys signal -- and `talent_stock` (+0.0744) does not
+clear the floor either.
+
+UNRESOLVED. The ad-hoc figures for `blue_chip_pipeline` (+0.0931 vs +0.0782),
+`talent_stock` (~+0.002 vs +0.0744) and `draft_departures` (+0.0088 vs -0.0728,
+sign flip) are not explained by imputation -- the audit found those columns
+1.5% and 0.8% zero-filled, and the zero-fill inflates, so the honest
+blue_chip_pipeline value is at most +0.0782. The ad-hoc SQL is gone and the
+discrepancy is recorded rather than reconciled.
 
 Usage:
     python scripts/screen_preseason_features.py --check-schema
@@ -140,6 +169,24 @@ DEFAULT_TO_SEASON = 2025
 # Below this many degrees of freedom the normal approximation to Student's t
 # (see partial_corr_pvalue) stops being safe and the p-value is not reported.
 MIN_DF_FOR_NORMAL_APPROX = 200
+
+# Minimum complete-case rows for a candidate to be screened at all.
+#
+# Candidates are screened on COMPLETE CASES (see `complete_cases`): rows where
+# the candidate and both controls are all present. Most candidates are
+# COALESCEd to 0 in SQL and so cover the whole frame, but the prior-season
+# trench columns come from a LEFT JOIN against stats.advanced_team_stats and go
+# NULL whenever a team had no prior FBS season.
+#
+# Those NULLs must NOT be COALESCEd to 0 the way the churn columns are. Zero is
+# a true value for a count ("no portal transfers" really is a net rating of 0);
+# it is a fabricated EXTREME for a rate, since no team ever posts 0.000 line
+# yards. Worse, the teams missing a prior-season row -- new FBS entrants,
+# programs up from FCS -- are disproportionately bad in season S, so imputing
+# the floor would manufacture a strong trench correlation that is pure artifact.
+# Dropping the row asks the narrower but answerable question: among teams that
+# DID play last season, does line play predict next season?
+MIN_SCREEN_N = 400
 
 # The second control every other candidate is screened against, alongside
 # prior-season rating. It is the strongest single candidate, so "adds signal
@@ -188,6 +235,24 @@ def partial_correlation(x: list[float], y: list[float], z: list[float]) -> float
     if denom == 0.0:
         return 0.0
     return (r_xy - r_xz * r_yz) / denom
+
+
+def complete_cases(frame: list[dict], columns: list[str]) -> list[dict]:
+    """Rows of `frame` where every column in `columns` is present and finite.
+
+    Available-case analysis, applied per candidate rather than once across the
+    whole set: dropping every row that any candidate is missing would shrink the
+    frame for the columns that are fully populated, so each candidate is scored
+    on the largest sample IT supports. The consequence is that candidates are
+    not all screened on the same n, which is why `screen` reports n per row --
+    a partial measured on 900 rows and one measured on 1,439 are not equally
+    precise, and the reader has to be able to see that.
+    """
+    return [
+        row
+        for row in frame
+        if all(row.get(col) is not None and math.isfinite(float(row[col])) for col in columns)
+    ]
 
 
 def _pearson(a: list[float], b: list[float]) -> float:
@@ -345,39 +410,85 @@ CANDIDATE_COLUMNS = [
     "draft_yield",
     "portal_net_rating",
     "draft_departures",
-    # Section 6.0b regime variant.
+    # Section 6.0b regime variant, plus the coaching-change indicator it used
+    # to absorb via zero-fill (see the SQL and the 2026-07-26 audit).
     "recruiting_points_regime",
+    "hc_first_year",
+    # Prior-season trench performance (plan section 2.2). Never screened
+    # before: the earlier trench test used roster-headcount continuity, which
+    # counts walk-ons equally with starters and scored ~0. These measure the
+    # line play itself.
+    "prior_line_yards",
+    "prior_power_success",
+    "prior_stuff_rate_allowed",
+    "prior_havoc_allowed_front_seven",
+    "prior_def_line_yards",
+    "prior_def_stuff_rate",
+    "prior_front_seven_havoc",
 ]
 
-# What actually cleared the 2026-07-26 run (see RESULTS in the module
-# docstring). This -- NOT CANDIDATE_COLUMNS -- is the set migration 042 should
-# add to features.team_week. CANDIDATE_COLUMNS stays comprehensive so the
-# rejections remain reproducible.
+# What the screen itself ships (deploy run 124; see RESULTS in the module
+# docstring). CANDIDATE_COLUMNS stays comprehensive so the rejections remain
+# reproducible.
 #
-# `recruiting_points_regime` is the section 6.0b variant: the same decayed sum
-# restricted to classes signed from the current head coach's tenure start
-# onward. It is kept ALONGSIDE the flat window rather than replacing it -- it
-# scores lower alone but adds +0.0955 beyond it, so the pair carries more than
-# either does by itself.
+# This list is exactly the set with verdict == "ship", so `screen()` reproduces
+# it. Anything shipped for a reason the screen did not produce belongs in
+# SHIPPED_BY_DECISION below, never here -- collapsing the two is how the gate
+# stops being a gate.
 SHIPPED_COLUMNS = [
     "recruiting_points_3yr",
-    "blue_chip_pipeline",
-    "recruiting_points_regime",
+    "hc_first_year",
+    "prior_def_line_yards",
+    "prior_def_stuff_rate",
 ]
+
+# Shipped by human decision DESPITE a reject verdict, with the argument on the
+# record. Migration 042 adds SHIPPED_COLUMNS + these.
+#
+# Kept separate so the override is legible as an override. The screen's job is
+# to produce a number and apply a pre-registered rule; overruling the rule is a
+# judgment the owner is entitled to make, but it must not be laundered into
+# looking like a measurement.
+SHIPPED_BY_DECISION = {
+    "blue_chip_pipeline": (
+        "+0.0782 vs a 0.08 floor -- short by 0.07 standard errors at n=1,439, "
+        "which the data cannot distinguish, and q=0.0095 says the effect is real. "
+        "The floor separates 'matters' from 'negligible against an 18.5-point "
+        "residual SD'; it was never meant to arbitrate the third decimal."
+    ),
+}
 
 # Rejected, with the reason, so a future reader does not re-propose them
 # without new evidence. Re-test conditions noted where they exist.
 REJECTED_COLUMNS = {
-    "talent_stock": "beats plain recruiting by +0.002 -- complexity for nothing",
-    "pipeline_index": "+0.0952 vs its own input's +0.2664 -- the product destroys signal",
+    "talent_stock": "+0.0744 -- under the floor, and no better than plain recruiting",
+    "pipeline_index": "+0.0072 vs its own input's +0.2664 -- the product destroys signal",
     "draft_picks_3yr": "+0.0068 once recruiting is controlled -- a recruiting proxy",
     "conversion": "-0.0007 once recruiting is controlled",
-    "conversion_regime": "+0.0344 -- regime-scoping helps but stays under the floor",
-    "draft_departures": "+0.0088 partial against +0.3474 raw -- pure confound",
-    "portal_net_rating": (
-        "+0.0731 (2021-25, n=663) -- under floor; RE-TEST as portal history accrues"
+    "draft_yield": "-0.0007 -- identical to conversion by construction",
+    "draft_departures": "-0.0728 partial against +0.3474 raw, sign flipped -- pure confound",
+    "recruiting_points_regime": (
+        "-0.0620 on its 1,136 complete cases. Its earlier +0.0955 was an artifact of "
+        "zero-filling 291 first-year-coach rows; that signal was the coaching change, "
+        "and it now ships separately as hc_first_year (-0.1615)."
     ),
-    "portal_out_n": "-0.0139 once recruiting is controlled",
+    "prior_line_yards": "+0.0223 -- offensive line play carries no signal past recruiting",
+    "prior_power_success": "+0.0520 -- under the floor",
+    "prior_stuff_rate_allowed": "-0.0290 -- under the floor",
+    "portal_net_rating": (
+        "+0.0481 -- under floor; RE-TEST as portal history accrues. Caveat: it is "
+        "COALESCEd to 0 across the full window, but a pre-2021 zero means 'the portal "
+        "did not exist', not 'net zero movement', so the measurement is contaminated "
+        "the same way the trench columns were. Re-test on 2021+ complete cases."
+    ),
+}
+
+# Screened but not scored: too few complete cases to test at all. Recorded
+# because "we could not measure this" is a different finding from "we measured
+# it and it was nothing", and only the second one closes a question.
+UNTESTABLE_COLUMNS = {
+    "prior_havoc_allowed_front_seven": "n=251 (17.4% coverage) -- below MIN_SCREEN_N",
+    "prior_front_seven_havoc": "n=251 (17.4% coverage) -- below MIN_SCREEN_N",
 }
 
 # Recruiting-class decay across the four-year eligibility window: the class
@@ -388,11 +499,18 @@ REJECTED_COLUMNS = {
 CLASS_DECAY = 0.8
 CLASS_WINDOW = 4
 
-SCREEN_FRAME_QUERY = f"""
-WITH coach_year AS (
+# Head-coach tenure start per (school, year). SHARED between the screen and the
+# imputation audit -- defined once because the audit's whole job is to describe
+# the frame the screen builds, and a hand-copied second version of this logic
+# silently disagreed with it (PR #54 review): without the gaps-and-islands
+# grouping a returning coach's second stint inherits the FIRST stint's start
+# year, widening the regime window, so the audit found classes where the screen
+# saw none and under-reported absent regime values.
+_COACH_TENURE_CTE = """
+coach_year AS (
     -- One head coach per (school, year). A school-year can list several
     -- coaches (interim, co-HC), so take the one who actually coached the most
-    -- games. Covers 99.1% of the sp_ratings spine.
+    -- games. Covers 99.1%% of the sp_ratings spine.
     SELECT DISTINCT ON (c.school, c.year)
            c.school, c.year, c._dlt_parent_id AS coach_id
     FROM ref.coaches__seasons c
@@ -409,7 +527,10 @@ coach_tenure AS (
     SELECT school, year, coach_id,
            MIN(year) OVER (PARTITION BY school, coach_id, grp) AS tenure_start
     FROM coach_islands
-),
+)"""
+
+SCREEN_FRAME_QUERY = f"""
+WITH {_COACH_TENURE_CTE},
 class_points AS (
     -- Recruiting class quality per (team, year).
     SELECT tr.team, tr.year, tr.points::double precision AS points
@@ -458,13 +579,17 @@ draft_out AS (
 spine AS (
     -- One row per (season, team) with the outcome, its control, and the
     -- current staff's tenure start (for the section 6.0b regime variant).
-    -- LEFT JOIN on tenure so the ~1% of team-seasons with no coach record
-    -- still screen; tenure_start falls back to the window start, making the
-    -- regime variant equal the flat window for those rows.
+    --
+    -- tenure_start is deliberately NOT coalesced. The earlier fallback to the
+    -- window start made the regime variant silently equal the flat window for
+    -- the ~1%% of team-seasons with no coach record, so those rows entered the
+    -- screen as duplicates of a different candidate. NULL here propagates to
+    -- both regime columns below and drops the row from THEIR complete cases
+    -- only, leaving every other candidate on the full frame.
     SELECT sp.year AS season, sp.team,
            sp.rating::double precision AS sp_rating,
            sp0.rating::double precision AS prior_sp_rating,
-           COALESCE(ct.tenure_start, sp.year - {CLASS_WINDOW}) AS tenure_start
+           ct.tenure_start AS tenure_start
     FROM ratings.sp_ratings sp
     JOIN ratings.sp_ratings sp0
       ON sp0.team = sp.team AND sp0.year = sp.year - 1
@@ -485,16 +610,39 @@ SELECT
           AND cp.year BETWEEN s.season - {CLASS_WINDOW} AND s.season - 1
     ), 0) AS recruiting_points_3yr,
     -- Section 6.0b regime variant: same decayed sum, but only classes signed
-    -- from the current staff's tenure start onward. Scores lower alone than
-    -- the flat window yet adds beyond it, because a short window is itself a
-    -- signal ("new coach, inherited roster").
-    COALESCE((
+    -- from the current staff's tenure start onward.
+    --
+    -- NOT zero-filled, and the reason is the 2026-07-26 imputation audit: the
+    -- previous COALESCE(...,0) hit 291 of 1,439 rows (20.2%%). The regime window
+    -- GREATEST(season-4, tenure_start)..season-1 is EMPTY exactly when
+    -- tenure_start >= season -- a first-year head coach -- so a fifth of the
+    -- sample carried a hard 0 that meant "no classes signed by this staff yet",
+    -- not "this staff recruits badly". Worse, that 0 is confounded with the
+    -- coaching change itself, since programs that just fired a coach were
+    -- usually bad, so the column silently blended a continuous recruiting term
+    -- with a de facto new-coach indicator and its partial could not be
+    -- attributed to either.
+    --
+    -- The two are now separated: this column measures recruiting on the rows
+    -- where the staff has actually signed classes, and `hc_first_year` below
+    -- carries the coaching-change effect explicitly where it can be read.
+    --
+    -- CASE rather than a bare NULL tenure_start: Postgres GREATEST IGNORES
+    -- NULL arguments, so GREATEST(season-4, NULL) returns season-4 and would
+    -- quietly restore the flat window instead of yielding NULL.
+    CASE WHEN s.tenure_start IS NULL THEN NULL ELSE (
         SELECT SUM(cp.points * POWER({CLASS_DECAY}, s.season - cp.year - 1))
         FROM class_points cp
         WHERE cp.team = s.team
           AND cp.year BETWEEN GREATEST(s.season - {CLASS_WINDOW}, s.tenure_start)
                           AND s.season - 1
-    ), 0) AS recruiting_points_regime,
+    ) END AS recruiting_points_regime,
+    -- The coaching-change effect the regime column used to absorb, as its own
+    -- screened candidate. NULL where no coach record exists, so it is never
+    -- inferred from missing data.
+    CASE WHEN s.tenure_start IS NULL THEN NULL
+         WHEN s.tenure_start >= s.season THEN 1.0
+         ELSE 0.0 END AS hc_first_year,
     COALESCE((
         SELECT SUM(bc.blue_chips) / NULLIF(SUM(bc.signees), 0)
         FROM blue_chips bc
@@ -513,10 +661,33 @@ SELECT
         SELECT SUM(d3.capital)
         FROM draft_out d3
         WHERE d3.team = s.team AND d3.season BETWEEN s.season - 3 AND s.season - 1
-    ), 0) AS draft_capital_3yr
+    ), 0) AS draft_capital_3yr,
+    -- PRIOR-SEASON TRENCH PERFORMANCE (plan section 2.2, "the cheapest win").
+    -- Measured line play rather than inferred continuity: no roster
+    -- dependency, no new ingest, available from 2004, and computable in July.
+    -- This is the trenches thesis tested DIRECTLY -- the earlier headcount
+    -- continuity screen (OL -0.015, DL +0.013) tested whether the same bodies
+    -- returned, which counts a walk-on the same as a starter. These ask
+    -- whether the line actually blocked and the front actually penetrated.
+    --
+    -- Sign conventions differ and matter for reading the results:
+    --   line_yards / power_success / def_stuff_rate / front_seven_havoc -> higher is better
+    --   stuff_rate_allowed / havoc_allowed_front_seven                  -> LOWER is better
+    -- The screen reports signed partials, so a negative on an "allowed"
+    -- column is the thesis being CONFIRMED, not refuted.
+    ats.offense__line_yards AS prior_line_yards,
+    ats.offense__power_success AS prior_power_success,
+    ats.offense__stuff_rate AS prior_stuff_rate_allowed,
+    ats.offense__havoc__front_seven AS prior_havoc_allowed_front_seven,
+    ats.defense__line_yards AS prior_def_line_yards,
+    ats.defense__stuff_rate AS prior_def_stuff_rate,
+    ats.defense__havoc__front_seven AS prior_front_seven_havoc
 FROM spine s
 LEFT JOIN portal_flow pf ON pf.team = s.team AND pf.season = s.season
 LEFT JOIN draft_out dout ON dout.team = s.team AND dout.season = s.season
+-- Season S-1: what the trenches DID last year, known before season S starts.
+LEFT JOIN stats.advanced_team_stats ats
+       ON ats.team = s.team AND ats.season = s.season - 1
 ORDER BY s.season, s.team
 """
 
@@ -530,7 +701,103 @@ REQUIRED_COLUMNS: list[tuple[str, str, tuple[str, ...]]] = [
     ("recruiting", "transfer_portal", ("season", "origin", "destination", "rating")),
     ("draft", "draft_picks", ("year", "college_team", "round")),
     ("ratings", "sp_ratings", ("year", "team", "rating")),
+    (
+        "stats",
+        "advanced_team_stats",
+        (
+            "season",
+            "team",
+            "offense__line_yards",
+            "offense__power_success",
+            "offense__stuff_rate",
+            "offense__havoc__front_seven",
+            "defense__line_yards",
+            "defense__stuff_rate",
+            "defense__havoc__front_seven",
+        ),
+    ),
 ]
+
+
+# Imputation audit (--audit-imputation). Reports, per zero-filled candidate,
+# the share of frame rows whose UNDERLYING source was absent and therefore had
+# a 0 substituted by COALESCE.
+#
+# This exists because zero-filling is safe for a COUNT and unsafe for a RATE,
+# and the screened set contains both. `recruiting_points_3yr` is a summed count
+# -- no classes really is zero points -- but `blue_chip_pipeline` is
+# blue_chips/signees, where a missing recruiting record becomes "0% blue chips",
+# a fabricated floor rather than a neutral value. The same substitution inside
+# PRIMARY_CONTROL would propagate into every second-order partial in the screen,
+# so the audit covers the control too.
+#
+# Counts only -- no correlations, no verdicts, no effect on the screened set or
+# the FDR correction.
+AUDIT_QUERY = f"""
+WITH {_COACH_TENURE_CTE},
+class_points AS (
+    SELECT tr.team, tr.year, tr.points::double precision AS points
+    FROM recruiting.team_recruiting tr
+    WHERE tr.points IS NOT NULL
+),
+blue_chips AS (
+    SELECT rc.committed_to AS team, rc.year,
+           COUNT(*) FILTER (WHERE rc.stars >= 4)::double precision AS blue_chips,
+           COUNT(*)::double precision AS signees
+    FROM recruiting.recruits rc
+    WHERE rc.committed_to IS NOT NULL
+    GROUP BY 1, 2
+),
+spine AS (
+    -- Mirrors SCREEN_FRAME_QUERY's spine, including the uncoalesced
+    -- tenure_start, so the audit measures the frame the screen actually builds.
+    SELECT sp.year AS season, sp.team,
+           ct.tenure_start AS tenure_start
+    FROM ratings.sp_ratings sp
+    JOIN ratings.sp_ratings sp0
+      ON sp0.team = sp.team AND sp0.year = sp.year - 1
+    LEFT JOIN coach_tenure ct ON ct.school = sp.team AND ct.year = sp.year
+    WHERE sp.year BETWEEN %(from_season)s AND %(to_season)s
+      AND sp.rating IS NOT NULL AND sp0.rating IS NOT NULL
+)
+SELECT
+    COUNT(*) AS total_rows,
+    COUNT(*) FILTER (WHERE (
+        SELECT SUM(cp.points * POWER({CLASS_DECAY}, s.season - cp.year - 1))
+        FROM class_points cp
+        WHERE cp.team = s.team
+          AND cp.year BETWEEN s.season - {CLASS_WINDOW} AND s.season - 1
+    ) IS NULL) AS recruiting_points_3yr_imputed,
+    -- Now a coverage figure, not an imputation one: these rows are DROPPED
+    -- from the regime column's complete cases rather than zero-filled. The
+    -- CASE mirrors the frame query, since GREATEST ignores NULL arguments.
+    COUNT(*) FILTER (WHERE (
+        CASE WHEN s.tenure_start IS NULL THEN NULL ELSE (
+            SELECT SUM(cp.points * POWER({CLASS_DECAY}, s.season - cp.year - 1))
+            FROM class_points cp
+            WHERE cp.team = s.team
+              AND cp.year BETWEEN GREATEST(s.season - {CLASS_WINDOW}, s.tenure_start)
+                              AND s.season - 1
+        ) END
+    ) IS NULL) AS recruiting_points_regime_absent,
+    COUNT(*) FILTER (WHERE s.tenure_start IS NULL) AS hc_first_year_absent,
+    COUNT(*) FILTER (WHERE (
+        SELECT SUM(bc.blue_chips) / NULLIF(SUM(bc.signees), 0)
+        FROM blue_chips bc
+        WHERE bc.team = s.team
+          AND bc.year BETWEEN s.season - {CLASS_WINDOW} AND s.season - 1
+    ) IS NULL) AS blue_chip_pipeline_imputed
+FROM spine s
+"""
+
+
+def audit_imputation(conn, from_season: int, to_season: int) -> dict:
+    """Count rows where a zero-filled candidate's source was actually absent."""
+    import psycopg2.extras
+
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(AUDIT_QUERY, {"from_season": from_season, "to_season": to_season})
+        return dict(cur.fetchone())
 
 
 def derive_composites(row: dict) -> dict:
@@ -615,6 +882,29 @@ def check_schema(conn) -> list[str]:
     return problems
 
 
+def probe_columns(conn, schema: str, table: str, like: str | None = None) -> list[str]:
+    """Column names for a table, optionally filtered by substring.
+
+    Exists because the screening frame has to name dlt-flattened columns
+    exactly (``offense__line_yards`` and friends), and the compute role is the
+    only one that can see the source schemas -- api-only roles get nothing back
+    from information_schema for `stats`. Guessing a name and iterating through
+    deploy runs is slower and less reliable than asking once.
+    """
+    sql = """
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = %s AND table_name = %s
+    """
+    params: list = [schema, table]
+    if like:
+        sql += " AND column_name ILIKE %s"
+        params.append(f"%{like}%")
+    sql += " ORDER BY column_name"
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        return [r[0] for r in cur.fetchall()]
+
+
 def fetch_frame(conn, from_season: int, to_season: int) -> list[dict]:
     """Screening frame: one dict per (season, team) with outcome, control and
     every candidate, composites already derived."""
@@ -642,14 +932,39 @@ def _as_float(value):
 def screen(frame: list[dict], candidates: list[str]) -> list[dict]:
     """Run the screen over `frame`. Returns one result dict per candidate,
     ordered by descending |partial_r| so the strongest signals read first."""
-    y = [r["sp_rating"] for r in frame]
-    z = [r["prior_sp_rating"] for r in frame]
-    w = [r[PRIMARY_CONTROL] for r in frame]
-    n = len(frame)
+    total = len(frame)
 
     raw: list[dict] = []
     for name in candidates:
-        x = [r[name] for r in frame]
+        # Complete cases for THIS candidate: the candidate plus every control it
+        # will be measured against. A candidate that is NULL for part of the
+        # frame is screened on the part where it exists, not silently imputed.
+        needed = ["sp_rating", "prior_sp_rating", name]
+        if name != PRIMARY_CONTROL:
+            needed.append(PRIMARY_CONTROL)
+        rows = complete_cases(frame, needed)
+        n = len(rows)
+
+        if n < MIN_SCREEN_N:
+            # Too thin to screen. Reported rather than dropped (plan section
+            # 2.5: nulls are findings) and held out of the FDR correction by
+            # p=None, exactly like a candidate whose df is too small to test.
+            raw.append(
+                {
+                    "feature": name,
+                    "n": n,
+                    "coverage": (n / total) if total else 0.0,
+                    "partial_r_vs_prior": 0.0,
+                    "partial_r": 0.0,
+                    "p": None,
+                    "untestable": f"n={n} below MIN_SCREEN_N={MIN_SCREEN_N}",
+                }
+            )
+            continue
+
+        x = [row[name] for row in rows]
+        y = [row["sp_rating"] for row in rows]
+        z = [row["prior_sp_rating"] for row in rows]
         r_first = partial_correlation(x, y, z)
 
         if name == PRIMARY_CONTROL:
@@ -657,6 +972,7 @@ def screen(frame: list[dict], candidates: list[str]) -> list[dict]:
             # the first-order partial alone.
             r_decisive, n_controls = r_first, 1
         else:
+            w = [row[PRIMARY_CONTROL] for row in rows]
             r_decisive = second_order_partial_correlation(x, y, z, w)
             n_controls = 2
 
@@ -665,9 +981,11 @@ def screen(frame: list[dict], candidates: list[str]) -> list[dict]:
             {
                 "feature": name,
                 "n": n,
+                "coverage": (n / total) if total else 0.0,
                 "partial_r_vs_prior": r_first,
                 "partial_r": r_decisive,
                 "p": p,
+                "untestable": None,
             }
         )
 
@@ -680,6 +998,7 @@ def screen(frame: list[dict], candidates: list[str]) -> list[dict]:
         candidate["q"] = q
     for candidate in raw:
         candidate.setdefault("q", None)
+        candidate.setdefault("untestable", None)
         candidate["verdict"] = screen_verdict(candidate["partial_r"], candidate["q"])
 
     return sorted(raw, key=lambda c: abs(c["partial_r"]), reverse=True)
@@ -692,11 +1011,13 @@ def report(results: list[dict], from_season: int, to_season: int) -> int:
     for c in results:
         p_str = f"{c['p']:.5f}" if c["p"] is not None else "na"
         q_str = f"{c['q']:.5f}" if c["q"] is not None else "na"
+        cov_str = f"{c['coverage']:.3f}" if c.get("coverage") is not None else "na"
+        note = f" note={c['untestable']}" if c.get("untestable") else ""
         print(
-            f"SCREEN_RESULT feature={c['feature']} n={c['n']} "
+            f"SCREEN_RESULT feature={c['feature']} n={c['n']} coverage={cov_str} "
             f"partial_r_vs_prior={c['partial_r_vs_prior']:+.4f} "
             f"partial_r={c['partial_r']:+.4f} p={p_str} q={q_str} "
-            f"verdict={c['verdict']}"
+            f"verdict={c['verdict']}{note}"
         )
         if c["verdict"] == "ship":
             shipped += 1
@@ -729,9 +1050,22 @@ def main() -> None:
         help=f"Last season to screen (default {DEFAULT_TO_SEASON})",
     )
     parser.add_argument(
+        "--probe",
+        metavar="SCHEMA.TABLE[:LIKE]",
+        help="Print matching column names for a source table and exit "
+        "(e.g. stats.advanced_team_stats:line). Discovery aid for building "
+        "new candidates against dlt-flattened names.",
+    )
+    parser.add_argument(
         "--check-schema",
         action="store_true",
         help="Verify every source column exists, then exit without screening",
+    )
+    parser.add_argument(
+        "--audit-imputation",
+        action="store_true",
+        help="Report how many rows each zero-filled candidate had substituted "
+        "by COALESCE, then exit. Diagnostic only -- no verdicts.",
     )
     args = parser.parse_args()
 
@@ -743,6 +1077,19 @@ def main() -> None:
 
     conn = psycopg2.connect(get_db_url())
     try:
+        if args.probe:
+            spec, _, like = args.probe.partition(":")
+            schema, _, table = spec.partition(".")
+            if not schema or not table:
+                logger.error("--probe expects SCHEMA.TABLE[:LIKE], got %r", args.probe)
+                sys.exit(1)
+            cols = probe_columns(conn, schema, table, like or None)
+            print(f"\n{schema}.{table}" + (f"  (matching '{like}')" if like else ""))
+            for c in cols:
+                print(f"  {c}")
+            print(f"\nPROBE_GATE table={schema}.{table} matched={len(cols)}\n")
+            return
+
         problems = check_schema(conn)
         if problems:
             for p in problems:
@@ -755,6 +1102,20 @@ def main() -> None:
             sys.exit(1)
         logger.info("Schema preflight passed (%d table(s))", len(REQUIRED_COLUMNS))
         if args.check_schema:
+            return
+
+        if args.audit_imputation:
+            audit = audit_imputation(conn, args.from_season, args.to_season)
+            total = audit.pop("total_rows")
+            for name, imputed in sorted(audit.items()):
+                share = (imputed / total) if total else 0.0
+                print(
+                    f"IMPUTATION_AUDIT candidate={name} imputed={imputed} "
+                    f"total={total} share={share:.4f}"
+                )
+            print(
+                f"IMPUTATION_SUMMARY total_rows={total} window={args.from_season}-{args.to_season}"
+            )
             return
 
         frame = fetch_frame(conn, args.from_season, args.to_season)

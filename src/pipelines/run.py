@@ -489,6 +489,10 @@ def _metrics_wp_db_url() -> str:
 # Games considered for win-probability loading: completed, both scores
 # present. Restricted to the requested seasons so a single-season daily call
 # doesn't rescan all of history.
+# Newest first. The steady-state case -- games that finished since the last run
+# -- must never be starved behind a historical backlog once MAX_GAMES_PER_RUN
+# starts truncating, and recency is the best available proxy for "CFBD actually
+# has win-probability data for this game".
 _METRICS_WP_GAMES_QUERY = """
     SELECT id, season
     FROM core.games
@@ -496,8 +500,24 @@ _METRICS_WP_GAMES_QUERY = """
       AND home_points IS NOT NULL
       AND away_points IS NOT NULL
       AND season = ANY(%s)
-    ORDER BY season, id
+    ORDER BY season DESC, start_date DESC NULLS LAST, id DESC
 """
+
+# Ceiling on games fetched per run -- one API call each.
+#
+# Without it the backlog is unbounded: the 2026-07-26 daily load found 2,517
+# games of a FINISHED 2025 season still missing win probability and queued all
+# of them, ~3% of the monthly budget in a single run, every day. The backlog
+# does not drain on its own because a game CFBD has no data for stays missing
+# and is re-requested forever.
+#
+# Skipping the source entirely once a season is final was the first fix and was
+# wrong (PR #54 review): missing games include ones whose requests failed during
+# the quota exhaustion, and the unattended daily path would never retry them.
+# Capping keeps every game eligible while bounding what a single run can cost,
+# so an interrupted backfill still drains -- 2,517 games in ~9 days at this
+# ceiling -- instead of being abandoned or re-attempted in full.
+MAX_WP_GAMES_PER_RUN = 300
 
 # metrics.win_probability doesn't exist until the first successful pipeline.run()
 # of win_probability_resource creates it (dlt table-on-first-write, same as
@@ -513,6 +533,7 @@ _METRICS_WP_EXISTING_QUERY = """
 def run_metrics_wp_pipeline(
     seasons: list[int] | None = None,
     batch_size: int = 50,
+    max_games: int | None = MAX_WP_GAMES_PER_RUN,
 ) -> dict:
     """Load in-game win probability for completed games missing it.
 
@@ -544,10 +565,14 @@ def run_metrics_wp_pipeline(
             to the current season (matches every other run_*_pipeline's
             incremental default).
         batch_size: Games per pipeline.run() call.
+        max_games: Ceiling on games fetched this run (one API call each), newest
+            first. None disables the cap for a deliberate full backfill. See
+            MAX_WP_GAMES_PER_RUN for why the default is not None.
 
     Returns:
-        Summary dict: seasons, games considered, games missing, batches run,
-        and the list of dlt LoadInfo objects (one per batch).
+        Summary dict: seasons, games considered, `missing` (the FULL backlog,
+        not the capped slice), `loaded_this_run`, `deferred`, batches run, and
+        the list of dlt LoadInfo objects (one per batch).
     """
     import psycopg2
     import psycopg2.errors
@@ -578,18 +603,41 @@ def run_metrics_wp_pipeline(
         conn.close()
 
     missing = [(gid, season) for gid, season in candidate_games if gid not in existing_ids]
+    total_missing = len(missing)
+
+    # Bound the run. Reported, never silent: a truncated backlog that looked
+    # like a completed one is how "2,517 missing" went unnoticed for months.
+    deferred = 0
+    if max_games is not None and total_missing > max_games:
+        deferred = total_missing - max_games
+        missing = missing[:max_games]
+
     game_seasons = dict(missing)
     game_ids = [gid for gid, _ in missing]
 
     print(
         f"  {len(candidate_games)} completed games in {seasons}, "
         f"{len(existing_ids)} already have win probability, "
-        f"{len(game_ids)} missing"
+        f"{total_missing} missing"
     )
+    if deferred:
+        msg = (
+            f"  Backlog capped at {max_games} game(s) this run; {deferred} deferred "
+            f"to a later run (newest first). Re-run to continue draining."
+        )
+        print(msg)
+        logger.info(msg.strip())
 
     if not game_ids:
         print("  Nothing to load.")
-        return {"seasons": seasons, "candidates": len(candidate_games), "missing": 0, "batches": 0}
+        return {
+            "seasons": seasons,
+            "candidates": len(candidate_games),
+            "missing": 0,
+            "loaded_this_run": 0,
+            "deferred": 0,
+            "batches": 0,
+        }
 
     rate_limiter = get_rate_limiter()
     if not rate_limiter.check_budget(len(game_ids)):
@@ -602,7 +650,9 @@ def run_metrics_wp_pipeline(
         return {
             "seasons": seasons,
             "candidates": len(candidate_games),
-            "missing": len(game_ids),
+            "missing": total_missing,
+            "loaded_this_run": 0,
+            "deferred": deferred,
             "batches": 0,
             "error": msg,
         }
@@ -628,7 +678,9 @@ def run_metrics_wp_pipeline(
     return {
         "seasons": seasons,
         "candidates": len(candidate_games),
-        "missing": len(game_ids),
+        "missing": total_missing,
+        "loaded_this_run": len(game_ids),
+        "deferred": deferred,
         "batches": len(batches),
         "info": all_info,
     }

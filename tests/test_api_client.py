@@ -1,5 +1,6 @@
 """Tests for CFBD API client."""
 
+import math
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 from unittest.mock import MagicMock, patch
@@ -118,6 +119,15 @@ class TestCFBDClient:
         client.close()
 
 
+# dlt extract worker pool size (.dlt/config.toml: workers = 5). The shared
+# breaker sees all of them, so the circuit threshold has to clear this.
+DLT_EXTRACT_WORKERS = 5
+
+# Fully-rate-limited requests needed to cross the circuit threshold. Derived so
+# the tests stay meaningful if the threshold or the retry budget changes.
+REQUESTS_TO_TRIP = math.ceil(CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD / (CFBDClient.MAX_RETRIES + 1))
+
+
 def _rate_limited_response(retry_after="1"):
     r = MagicMock()
     r.status_code = 429
@@ -190,15 +200,29 @@ class TestRateLimitCircuitBreaker:
     for three hours cannot succeed; the sweep must abort in seconds."""
 
     def _exhaust(self, client, n):
+        """Drive `n` fully-rate-limited requests.
+
+        Each records `retries + 1` 429s now that the breaker counts responses,
+        so this trips the threshold far faster than it used to -- which is the
+        entire point of the change. Either rate-limit error is acceptable: once
+        the breaker opens mid-request the raise becomes RateLimitCircuitOpen.
+        """
         with patch.object(client._client, "get", side_effect=_rate_limit_error()):
             with patch("src.pipelines.utils.api_client.time.sleep"):
                 for _ in range(n):
-                    with pytest.raises(RateLimitExhausted):
+                    with pytest.raises(RATE_LIMIT_ERRORS):
                         client.get("/plays/stats")
+
+    def test_one_exhausted_request_counts_every_attempt(self):
+        """The unit is the 429 response, not the exhausted request."""
+        client = CFBDClient(api_key="test-key")
+        self._exhaust(client, 1)
+        assert client._consecutive_rate_limited == CFBDClient.MAX_RETRIES + 1
+        client.close()
 
     def test_circuit_opens_after_threshold(self):
         client = CFBDClient(api_key="test-key")
-        self._exhaust(client, CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD)
+        self._exhaust(client, REQUESTS_TO_TRIP)
         # The next call must fail immediately, without sleeping at all.
         with patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep:
             with pytest.raises(RateLimitCircuitOpen, match="quota is spent"):
@@ -208,7 +232,8 @@ class TestRateLimitCircuitBreaker:
 
     def test_circuit_stays_closed_below_threshold(self):
         client = CFBDClient(api_key="test-key")
-        self._exhaust(client, CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD - 1)
+        self._exhaust(client, 1)
+        assert client._consecutive_rate_limited < CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD
         ok = MagicMock()
         ok.json.return_value = [{"ok": True}]
         ok.raise_for_status = MagicMock()
@@ -221,7 +246,7 @@ class TestRateLimitCircuitBreaker:
         threshold -- otherwise transient throttling eventually halts a healthy
         pipeline."""
         client = CFBDClient(api_key="test-key")
-        self._exhaust(client, CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD - 1)
+        self._exhaust(client, 1)
         ok = MagicMock()
         ok.json.return_value = []
         ok.raise_for_status = MagicMock()
@@ -229,9 +254,77 @@ class TestRateLimitCircuitBreaker:
             client.get("/teams")
         assert client._consecutive_rate_limited == 0
         # Full budget available again.
-        self._exhaust(client, CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD - 1)
+        self._exhaust(client, 1)
         with patch.object(client._client, "get", return_value=ok):
             assert client.get("/teams") == []
+        client.close()
+
+    def test_breaker_is_checked_before_sleeping_not_only_between_requests(self):
+        """The regression from the 2026-07-26 daily load.
+
+        A single request can burn its entire retry budget without re-entering
+        get(), so the top-of-method guard alone never sees it. Once the
+        threshold is crossed mid-request, the remaining sleeps must be
+        abandoned rather than served.
+        """
+        client = CFBDClient(api_key="test-key")
+        # Stop one request short of tripping, so the threshold is crossed
+        # partway through the NEXT request rather than between requests.
+        self._exhaust(client, REQUESTS_TO_TRIP - 1)
+        with patch.object(client._client, "get", side_effect=_rate_limit_error()):
+            with patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep:
+                with pytest.raises(RateLimitCircuitOpen):
+                    client.get("/teams")
+                # It may sleep once or twice before crossing, but it must NOT
+                # serve the full retry budget: abandoning the remaining sleeps
+                # is the whole behaviour under test.
+                assert mock_sleep.call_count < CFBDClient.MAX_RETRIES
+        client.close()
+
+    def test_one_transient_429_per_worker_does_not_trip_the_breaker(self):
+        """The regression introduced BY the per-response counting change.
+
+        The breaker is shared across the run and dlt extracts on a worker pool
+        (.dlt/config.toml: workers = 5). Counting every 429 means N concurrent
+        workers each taking a single transient 429 contribute N at once, so a
+        threshold at or below the pool size could be reached by one simultaneous
+        blip that every worker would have recovered from -- turning five
+        successful retries into an aborted run.
+        """
+        assert CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD > DLT_EXTRACT_WORKERS
+
+        client = CFBDClient(api_key="test-key")
+        ok = MagicMock()
+        ok.json.return_value = []
+        ok.raise_for_status = MagicMock()
+        # One 429 then a success, once per worker, with no reset in between
+        # until each recovers -- the shape of a momentary blip across the pool.
+        with patch("src.pipelines.utils.api_client.time.sleep"):
+            for _ in range(DLT_EXTRACT_WORKERS):
+                with patch.object(client._client, "get", side_effect=[_rate_limit_error(), ok]):
+                    assert client.get("/teams") == []
+        assert not client._breaker.is_open()
+        client.close()
+
+    def test_offseason_run_shape_trips_the_breaker(self):
+        """Under the old per-request counting this was unreachable.
+
+        The 2026-07-26 daily load ran 4 sources against a spent quota. Each
+        burned 4 attempts and 3 minutes; the counter finished at 4 against a
+        threshold of 5, so the breaker never opened and the run spent 12
+        minutes sleeping. Counting responses, the same shape trips it during
+        the second source.
+        """
+        client = CFBDClient(api_key="test-key")
+        sleeps = []
+        with patch.object(client._client, "get", side_effect=_rate_limit_error()):
+            with patch("src.pipelines.utils.api_client.time.sleep", sleeps.append):
+                for _ in range(4):  # reference, metrics_wp, games, betting
+                    with pytest.raises(RATE_LIMIT_ERRORS):
+                        client.get("/whatever")
+        # Old behaviour slept 3x per source across all four sources.
+        assert len(sleeps) < 3 * 4
+        assert client._consecutive_rate_limited >= CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD
         client.close()
 
     def test_non_rate_limit_errors_do_not_trip_the_breaker(self):
@@ -338,6 +431,11 @@ class TestBreakerIsSharedAcrossClients:
     unreachable, and the breaker was dead code: a spent quota still burned a
     full retry budget separately for every one of the ~60 resources."""
 
+    # Each fully-rate-limited request now records MAX_RETRIES + 1 responses, so
+    # two sources are enough to cross a threshold of 5 (see
+    # RateLimitBreaker.record_rate_limited).
+    SOURCES_TO_TRIP = REQUESTS_TO_TRIP
+
     def _exhaust_on_a_fresh_client(self, n):
         """Mimic the real call graph: one new client per rate-limited source."""
         for _ in range(n):
@@ -345,13 +443,13 @@ class TestBreakerIsSharedAcrossClients:
             try:
                 with patch.object(client._client, "get", side_effect=_rate_limit_error()):
                     with patch("src.pipelines.utils.api_client.time.sleep"):
-                        with pytest.raises(RateLimitExhausted):
+                        with pytest.raises(RATE_LIMIT_ERRORS):
                             client.get("/plays/stats")
             finally:
                 client.close()
 
     def test_threshold_is_reachable_across_separate_clients(self):
-        self._exhaust_on_a_fresh_client(CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD)
+        self._exhaust_on_a_fresh_client(self.SOURCES_TO_TRIP)
         later = CFBDClient(api_key="test-key")
         with patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep:
             with pytest.raises(RateLimitCircuitOpen, match="quota is spent"):
@@ -360,7 +458,7 @@ class TestBreakerIsSharedAcrossClients:
         later.close()
 
     def test_below_threshold_a_new_client_still_works(self):
-        self._exhaust_on_a_fresh_client(CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD - 1)
+        self._exhaust_on_a_fresh_client(1)
         later = CFBDClient(api_key="test-key")
         ok = MagicMock()
         ok.json.return_value = [{"ok": True}]
@@ -370,7 +468,7 @@ class TestBreakerIsSharedAcrossClients:
         later.close()
 
     def test_a_success_on_any_client_clears_the_shared_count(self):
-        self._exhaust_on_a_fresh_client(CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD - 1)
+        self._exhaust_on_a_fresh_client(1)
         healthy = CFBDClient(api_key="test-key")
         ok = MagicMock()
         ok.json.return_value = []
@@ -379,7 +477,7 @@ class TestBreakerIsSharedAcrossClients:
             healthy.get("/teams")
         healthy.close()
         # Budget restored for everyone, so the breaker must still be closed.
-        self._exhaust_on_a_fresh_client(CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD - 1)
+        self._exhaust_on_a_fresh_client(1)
         later = CFBDClient(api_key="test-key")
         with patch.object(later._client, "get", return_value=ok):
             assert later.get("/games") == []
@@ -387,7 +485,7 @@ class TestBreakerIsSharedAcrossClients:
 
     def test_an_injected_breaker_isolates_a_client(self):
         """The escape hatch: a caller that must not be halted by the run."""
-        self._exhaust_on_a_fresh_client(CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD)
+        self._exhaust_on_a_fresh_client(self.SOURCES_TO_TRIP)
         private = CFBDClient(api_key="test-key", breaker=RateLimitBreaker())
         ok = MagicMock()
         ok.json.return_value = [{"ok": True}]
@@ -397,7 +495,7 @@ class TestBreakerIsSharedAcrossClients:
         private.close()
 
     def test_module_level_reset_clears_the_run(self):
-        self._exhaust_on_a_fresh_client(CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD)
+        self._exhaust_on_a_fresh_client(self.SOURCES_TO_TRIP)
         reset_rate_limit_circuit()
         later = CFBDClient(api_key="test-key")
         ok = MagicMock()
@@ -418,8 +516,12 @@ class TestCircuitIsTerminalButResettable:
         err = httpx.HTTPStatusError("429", request=MagicMock(), response=_rate_limited_response())
         with patch.object(client._client, "get", side_effect=err):
             with patch("src.pipelines.utils.api_client.time.sleep"):
-                for _ in range(CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD):
-                    with pytest.raises(RateLimitExhausted):
+                # Two fully-rate-limited requests now exceed the threshold,
+                # since every 429 response counts rather than every exhausted
+                # request. Loop until it is actually open rather than assuming
+                # a fixed request count.
+                while not client._breaker.is_open():
+                    with pytest.raises(RATE_LIMIT_ERRORS):
                         client.get("/plays/stats")
 
     def test_open_circuit_does_not_self_heal_even_if_the_api_recovers(self):

@@ -20,8 +20,10 @@ import pytest
 from scripts.screen_preseason_features import (
     FDR_ALPHA,
     MIN_PARTIAL_R,
+    MIN_SCREEN_N,
     PRIMARY_CONTROL,
     benjamini_hochberg,
+    complete_cases,
     derive_composites,
     partial_corr_pvalue,
     partial_correlation,
@@ -327,3 +329,271 @@ class TestScreenUsesBothControls:
         for r in screen(self._frame(), [PRIMARY_CONTROL, "redundant_candidate"]):
             assert "partial_r_vs_prior" in r
             assert "partial_r" in r
+
+
+class TestNullCandidatesAreScreenedOnCompleteCases:
+    """The trench candidates arrive NULL for teams with no prior FBS season.
+
+    Screen run 121 (2026-07-26) crashed on exactly this: the seven prior-season
+    trench columns come from a LEFT JOIN against stats.advanced_team_stats,
+    unlike every earlier candidate, which SQL COALESCEs to 0. `_pearson` summed
+    a None and raised.
+
+    Both halves matter. Crashing is bad; the tempting fix is worse. COALESCE to
+    0 is right for a COUNT (no portal transfers really is a net rating of zero)
+    and wrong for a RATE -- no team posts 0.000 line yards, and the teams with
+    no prior-season row are disproportionately bad in season S, so the floor
+    would be imputed precisely where the outcome is low and manufacture a trench
+    signal out of nothing.
+    """
+
+    def _frame_with_gaps(self, n=1000, missing_from=600, seed=23):
+        rng = random.Random(seed)
+        rows = []
+        for i in range(n):
+            z = rng.gauss(0.0, 1.0)
+            w = rng.gauss(0.0, 1.0)
+            y = 0.6 * z + 0.45 * w + rng.gauss(0.0, 0.3)
+            row = {
+                "sp_rating": y,
+                "prior_sp_rating": z,
+                PRIMARY_CONTROL: w,
+                # Present throughout, and genuinely informative.
+                "dense_candidate": 0.5 * y + rng.gauss(0.0, 0.5),
+                # NULL past the cutoff, like a LEFT JOIN miss.
+                "sparse_candidate": None if i >= missing_from else rng.gauss(0.0, 1.0),
+            }
+            rows.append(row)
+        return rows
+
+    def test_complete_cases_drops_only_rows_missing_a_named_column(self):
+        frame = self._frame_with_gaps()
+        assert len(complete_cases(frame, ["dense_candidate"])) == 1000
+        assert len(complete_cases(frame, ["sparse_candidate"])) == 600
+
+    def test_screen_does_not_crash_on_null_candidates(self):
+        # Without per-candidate complete cases this raises TypeError, which is
+        # precisely how run 121 failed.
+        results = screen(self._frame_with_gaps(), [PRIMARY_CONTROL, "sparse_candidate"])
+        assert {r["feature"] for r in results} == {PRIMARY_CONTROL, "sparse_candidate"}
+
+    def test_sparse_candidate_reports_its_own_smaller_n(self):
+        results = screen(
+            self._frame_with_gaps(), [PRIMARY_CONTROL, "dense_candidate", "sparse_candidate"]
+        )
+        by_name = {r["feature"]: r for r in results}
+        assert by_name["dense_candidate"]["n"] == 1000
+        assert by_name["sparse_candidate"]["n"] == 600
+        # Coverage is what stops a 600-row partial from reading as a 1,000-row one.
+        assert by_name["sparse_candidate"]["coverage"] == pytest.approx(0.6)
+
+    def test_candidate_below_min_screen_n_is_untestable_not_shipped(self):
+        frame = self._frame_with_gaps(missing_from=MIN_SCREEN_N - 1)
+        result = next(
+            r
+            for r in screen(frame, [PRIMARY_CONTROL, "sparse_candidate"])
+            if r["feature"] == "sparse_candidate"
+        )
+        assert result["p"] is None
+        assert result["verdict"] == "reject"
+        assert "MIN_SCREEN_N" in result["untestable"]
+
+    def test_missing_rate_is_not_imputed_to_zero(self):
+        """The regression that matters: zero-imputation fabricates signal.
+
+        Here the candidate is pure noise among teams that have it, but it is
+        missing exactly where the outcome is lowest. Zero-filling correlates
+        "missing" with "bad" and invents a large partial; complete-case
+        screening correctly returns ~nothing.
+        """
+        rng = random.Random(5)
+        frame = []
+        for _ in range(1200):
+            z = rng.gauss(0.0, 1.0)
+            w = rng.gauss(0.0, 1.0)
+            y = 0.6 * z + 0.45 * w + rng.gauss(0.0, 0.3)
+            # Noise for teams that played; absent for the weakest teams.
+            value = None if y < -1.0 else rng.gauss(4.5, 1.0)
+            frame.append(
+                {"sp_rating": y, "prior_sp_rating": z, PRIMARY_CONTROL: w, "trench": value}
+            )
+
+        honest = next(
+            r for r in screen(frame, [PRIMARY_CONTROL, "trench"]) if r["feature"] == "trench"
+        )
+
+        zero_filled = [
+            dict(r, trench=(r["trench"] if r["trench"] is not None else 0.0)) for r in frame
+        ]
+        fabricated = next(
+            r for r in screen(zero_filled, [PRIMARY_CONTROL, "trench"]) if r["feature"] == "trench"
+        )
+
+        assert abs(honest["partial_r"]) < MIN_PARTIAL_R, "noise must not ship"
+        assert abs(fabricated["partial_r"]) > abs(honest["partial_r"]), (
+            "zero-filling should visibly inflate the partial -- this is the trap"
+        )
+
+
+class TestRecordedVerdictsAreInternallyConsistent:
+    """The recorded ledger drifted from the screen once already.
+
+    The docstring table said blue_chip_pipeline shipped at +0.0931 and
+    recruiting_points_regime at +0.0955; the first executable run scored them
+    +0.0782 and -0.0620. These assertions cannot verify the numbers without a
+    database, but they can keep the bookkeeping honest -- every candidate
+    accounted for exactly once, and human overrides kept out of the set that is
+    supposed to mirror the screen's own output.
+    """
+
+    def test_every_candidate_has_exactly_one_recorded_verdict(self):
+        from scripts.screen_preseason_features import (
+            CANDIDATE_COLUMNS,
+            REJECTED_COLUMNS,
+            SHIPPED_BY_DECISION,
+            SHIPPED_COLUMNS,
+            UNTESTABLE_COLUMNS,
+        )
+
+        recorded = (
+            list(SHIPPED_COLUMNS)
+            + list(SHIPPED_BY_DECISION)
+            + list(REJECTED_COLUMNS)
+            + list(UNTESTABLE_COLUMNS)
+        )
+        assert len(recorded) == len(set(recorded)), "a candidate has two verdicts"
+        assert set(recorded) == set(CANDIDATE_COLUMNS), (
+            "every screened candidate needs a recorded verdict and vice versa"
+        )
+
+    def test_overrides_are_not_laundered_into_the_shipped_set(self):
+        from scripts.screen_preseason_features import SHIPPED_BY_DECISION, SHIPPED_COLUMNS
+
+        assert not set(SHIPPED_COLUMNS) & set(SHIPPED_BY_DECISION), (
+            "a column shipped against the screen's verdict must stay visible as "
+            "an override, not merge into the set that mirrors the screen"
+        )
+
+    def test_every_override_records_its_argument(self):
+        from scripts.screen_preseason_features import SHIPPED_BY_DECISION
+
+        for column, rationale in SHIPPED_BY_DECISION.items():
+            assert len(rationale) > 40, f"{column} overrides the gate without an argument"
+
+
+class TestRegimeColumnsSeparateRecruitingFromCoachingChange:
+    """The 2026-07-26 imputation audit found `recruiting_points_regime`
+    zero-filled on 291 of 1,439 rows (20.2%).
+
+    The regime window GREATEST(season-4, tenure_start)..season-1 is empty
+    exactly when tenure_start >= season -- a first-year head coach -- so a
+    fifth of the sample carried a hard 0 meaning "no classes signed by this
+    staff yet". That 0 is confounded with the coaching change itself, so the
+    column blended a recruiting measure with a de facto new-coach indicator.
+    The two are now separate columns.
+    """
+
+    def test_regime_column_is_not_zero_filled(self):
+        from scripts.screen_preseason_features import SCREEN_FRAME_QUERY as q
+
+        regime = q[q.index("AS recruiting_points_regime") - 900 :]
+        regime = regime[: regime.index("AS recruiting_points_regime")]
+        assert "COALESCE" not in regime.upper(), (
+            "recruiting_points_regime must not be zero-filled -- an empty "
+            "regime window means 'first-year coach', not 'recruits badly'"
+        )
+
+    def test_hc_first_year_is_screened_separately(self):
+        from scripts.screen_preseason_features import CANDIDATE_COLUMNS
+        from scripts.screen_preseason_features import SCREEN_FRAME_QUERY as q
+
+        assert "hc_first_year" in CANDIDATE_COLUMNS
+        assert "AS hc_first_year" in q
+
+    def test_null_tenure_is_guarded_by_case_not_greatest(self):
+        """Postgres GREATEST IGNORES NULL arguments.
+
+        GREATEST(season - 4, NULL) returns season - 4, so relying on a NULL
+        tenure_start to propagate through GREATEST would quietly restore the
+        flat window instead of yielding NULL -- reintroducing the duplicate
+        candidate this change removes. The CASE guard is what makes it NULL.
+        """
+        from scripts.screen_preseason_features import SCREEN_FRAME_QUERY as q
+
+        assert q.count("WHEN s.tenure_start IS NULL THEN NULL") >= 2, (
+            "both regime columns need an explicit CASE guard on a NULL "
+            "tenure_start; GREATEST will not propagate it"
+        )
+
+    def test_audit_and_screen_share_one_coach_tenure_definition(self):
+        """PR #54 review, P2. The audit's hand-copied coach CTE omitted the
+        gaps-and-islands grouping, so a coach returning to a school inherited
+        his FIRST stint's start year. That widens the regime window, so the
+        audit found recruiting classes where the screen saw none and
+        under-reported exactly the quantity it exists to measure. Sharing one
+        definition is what makes the two unable to disagree.
+        """
+        from scripts.screen_preseason_features import (
+            _COACH_TENURE_CTE,
+            AUDIT_QUERY,
+            SCREEN_FRAME_QUERY,
+        )
+
+        assert "coach_islands" in _COACH_TENURE_CTE, "islands grouping is the point"
+        for query in (SCREEN_FRAME_QUERY, AUDIT_QUERY):
+            assert _COACH_TENURE_CTE.strip() in query, (
+                "both queries must embed the shared coach-tenure CTE verbatim"
+            )
+
+    def test_spine_does_not_coalesce_tenure_start(self):
+        from scripts.screen_preseason_features import SCREEN_FRAME_QUERY as q
+
+        assert "COALESCE(ct.tenure_start" not in q, (
+            "coalescing tenure_start to the window start makes the regime "
+            "variant a silent duplicate of the flat window"
+        )
+
+
+class TestFrameQueryIsBindable:
+    """The screen has NEVER been able to run its own frame query.
+
+    Two literal percent signs in SQL comments ("99.1%", "~1%") were not
+    escaped, and psycopg2's pyformat binding treats any bare % as the start of
+    a placeholder -- so fetch_frame raised `TypeError: dict is not a sequence`
+    before touching the database. The recorded verdicts came from ad-hoc MCP
+    queries instead, which is a deeper version of the reproducibility gap the
+    PR #48 review raised: the script could not reproduce its verdicts because
+    it could not execute at all.
+    """
+
+    def test_no_unescaped_percent_signs(self):
+        import re
+
+        from scripts.screen_preseason_features import SCREEN_FRAME_QUERY as q
+
+        # Strip valid named placeholders and doubled literals, then nothing
+        # containing a bare % may remain.
+        stripped = re.sub(r"%\([a-z_]+\)s", "", q).replace("%%", "")
+        assert "%" not in stripped, (
+            "unescaped % in SCREEN_FRAME_QUERY -- psycopg2 will read it as a "
+            "placeholder and parameter binding will fail before the query runs"
+        )
+
+    def test_named_placeholders_are_present(self):
+        from scripts.screen_preseason_features import SCREEN_FRAME_QUERY as q
+
+        assert "%(from_season)s" in q
+        assert "%(to_season)s" in q
+
+    def test_query_binds_against_psycopg2_mogrify_rules(self):
+        """Exercises the actual binding path rather than a regex proxy."""
+        import re
+
+        from scripts.screen_preseason_features import SCREEN_FRAME_QUERY as q
+
+        params = {"from_season": 2015, "to_season": 2025}
+        # Mirror psycopg2's pyformat substitution; a stray % raises here too.
+        rendered = re.sub(r"%\(([a-z_]+)\)s", lambda m: str(params[m.group(1)]), q).replace(
+            "%%", "%"
+        )
+        assert "2015" in rendered and "2025" in rendered

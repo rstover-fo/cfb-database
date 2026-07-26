@@ -74,8 +74,28 @@ ESTIMATED_CALLS = {
 #
 # NOT on this list, deliberately:
 #   reference   -- no year filter and ~10 calls; always cheap, always current.
-#   metrics_wp  -- already self-limiting; it only fetches games still missing
-#                  win probability, so a fully-backfilled season costs nothing.
+#
+#   metrics_wp  -- NOT skipped, though it was briefly added here. The 2026-07-26
+#                  daily load showed why it looked like it belonged: it reported
+#
+#                      3829 completed games in [2025], 1312 already have win
+#                      probability, 2517 missing -- 51 batches of up to 50
+#
+#                  for a season that ended in January, i.e. ~2,500 calls a day
+#                  for data that cannot change. But skipping the whole source
+#                  once a season is final is the wrong remedy (PR #54 review,
+#                  P1): run_metrics_wp_pipeline computes missing games as
+#                  completed-minus-loaded, so a backfill INTERRUPTED by the very
+#                  quota exhaustion that motivated the skip leaves recoverable
+#                  games in that 2,517. The unattended daily path passes no
+#                  --season, so those rows would never be retried and the gap
+#                  would become permanent by construction.
+#
+#                  The real defect was unbounded cost, not eligibility, and it
+#                  is fixed where it lives: run_metrics_wp_pipeline caps games
+#                  per run (MAX_GAMES_PER_RUN) and logs what it deferred, so the
+#                  backlog drains at a bounded price instead of costing
+#                  everything or nothing.
 IMMUTABLE_ONCE_FINAL = frozenset(
     {
         "games",

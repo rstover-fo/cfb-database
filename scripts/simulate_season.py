@@ -147,6 +147,32 @@ DEFAULT_STRENGTH_SHARE = 0.15
 # =============================================================================
 
 
+# Provenance is stored as NUMERIC(4,3), so the share is normalized to this
+# many decimals BEFORE it reaches the simulation. Codex review on PR #52: the
+# CLI accepted arbitrary precision while the row rounded, so 0.0004 simulated
+# as correlated but recorded as 0.000 (indistinguishable from independent
+# draws), and 0.9999 recorded as 1.000 -- a value strength_sd REJECTS, i.e. a
+# row describing a configuration that cannot be re-run. Normalizing at the
+# boundary makes "recorded == used" structural rather than coincidental.
+STRENGTH_SHARE_DECIMALS = 3
+
+
+def normalize_strength_share(strength_share: float) -> float:
+    """Round the share to stored precision and validate the ROUNDED value.
+
+    Validating after rounding is the point: 0.9999 is in range but rounds to
+    1.000, which leaves no game-level noise at all. Rejecting it here beats
+    storing a share the simulation never used and strength_sd would refuse.
+    """
+    value = round(float(strength_share), STRENGTH_SHARE_DECIMALS)
+    if not 0.0 <= value < 1.0:
+        raise ValueError(
+            f"strength_share must be in [0, 1) after rounding to "
+            f"{STRENGTH_SHARE_DECIMALS} decimals, got {strength_share!r} -> {value!r}"
+        )
+    return value
+
+
 def strength_sd(sigma: float, strength_share: float) -> tuple[float, float]:
     """Split `sigma` into (team-strength SD, game-noise SD) for a given share.
 
@@ -211,6 +237,10 @@ def simulate_wins(games, n_sims, sigma, seed=DEFAULT_SEED, strength_share=DEFAUL
     denominator.
     """
     import numpy as np
+
+    # Normalized once, up front: everything below -- and the value returned
+    # for the writer to record -- uses this exact number.
+    strength_share = normalize_strength_share(strength_share)
 
     teams = sorted({g["home_team"] for g in games} | {g["away_team"] for g in games})
     index = {t: i for i, t in enumerate(teams)}
@@ -279,6 +309,13 @@ def simulate_wins(games, n_sims, sigma, seed=DEFAULT_SEED, strength_share=DEFAUL
         "conf_wins": {t: conf_wins[index[t], :] for t in teams},
         "games_simulated": games_simulated,
         "conf_games": conf_games,
+        # The share ACTUALLY used, post-normalization. The writer records this
+        # rather than its own copy of the argument, so a stored row can always
+        # reproduce the run that produced it.
+        # Normalized here too, so a caller that bypasses simulate_wins cannot
+        # store a share Postgres would silently round to something else.
+        # Idempotent for the normal path.
+        "strength_share": strength_share,
     }
 
 
@@ -439,7 +476,10 @@ def build_projection_row(
         # v1.1 provenance, stored per row for the same reason residual_sigma
         # is: two projections drawn under different correlation structures
         # must not be indistinguishable after the fact.
-        "strength_share": round(float(strength_share), 3),
+        # Normalized here too, so a caller that bypasses simulate_wins
+        # cannot store a share Postgres would silently round to something
+        # else. Idempotent for the normal path.
+        "strength_share": normalize_strength_share(strength_share),
     }
     row.update(summarize(team_wins, games_simulated))
     return row
@@ -742,7 +782,7 @@ def simulate_one_season(
             sigma,
             title_probs.get(team),
             sim["games_simulated"][team],
-            strength_share,
+            sim["strength_share"],
         )
         for team, team_wins in wins_by_team.items()
         if sim["games_simulated"][team] > 0
@@ -762,7 +802,7 @@ def simulate_one_season(
         )
     print(
         f"SIM_GATE season={season} model={model} teams={len(rows)} sims={n_sims} "
-        f"strength_share={strength_share:.2f} "
+        f"strength_share={sim['strength_share']:.3f} "
         f"sigma={sigma:.2f} complete={complete} unscored_team_games={unscored} "
         f"omitted_teams={len(unprojectable)}"
     )
@@ -806,6 +846,11 @@ def main() -> None:
         f"offset (default {DEFAULT_STRENGTH_SHARE}; 0 reproduces v1)",
     )
     args = parser.parse_args()
+
+    try:
+        args.strength_share = normalize_strength_share(args.strength_share)
+    except ValueError as e:
+        parser.error(str(e))
 
     import psycopg2
 

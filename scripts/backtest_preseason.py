@@ -91,6 +91,7 @@ from scripts.simulate_season import (
     DEFAULT_SIMS,
     DEFAULT_STRENGTH_SHARE,
     TEN_PLUS_WINS,
+    normalize_strength_share,
     simulate_wins,
     summarize,
 )
@@ -559,7 +560,13 @@ def run_backtest(
 
 
 def _simulate_pass(scored, n_sims: int, seed: int, strength_share: float) -> dict:
-    """Simulate every scored season at one `strength_share` and aggregate."""
+    """Simulate every scored season at one `strength_share` and aggregate.
+
+    Normalized up front (same reason as simulate_season's writer, Codex PR #52
+    P2): the sweep table must label each row with the share that was actually
+    simulated, or the calibration it reports is attributed to the wrong value.
+    """
+    strength_share = normalize_strength_share(strength_share)
     per_season = []
     all_proj, all_act = [], []
     all_p10, all_p90 = [], []
@@ -830,9 +837,10 @@ def main() -> None:
             parser.error("--sweep-strength-share listed no values")
     else:
         shares = [args.strength_share]
-    for sh in shares:
-        if not 0.0 <= sh < 1.0:
-            parser.error(f"strength share must be in [0, 1), got {sh}")
+    try:
+        shares = [normalize_strength_share(sh) for sh in shares]
+    except ValueError as e:
+        parser.error(str(e))
 
     import psycopg2
 

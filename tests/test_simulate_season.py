@@ -30,6 +30,7 @@ from scripts.simulate_season import (  # noqa: E402
     assign_sos_ranks,
     build_projection_row,
     conference_title_probs,
+    normalize_strength_share,
     schedule_strength,
     simulate_wins,
     strength_sd,
@@ -585,3 +586,104 @@ class TestRowContractCoverage:
             0.15,
         )
         assert row["strength_share"] == pytest.approx(0.15)
+
+
+class TestStrengthShareProvenanceMatchesTheRun:
+    """Codex PR #52 P2: the CLI accepted arbitrary precision while the stored
+    value was rounded to NUMERIC(4,3), so a row could describe a run that never
+    happened -- 0.0004 simulated as correlated but recorded as 0.000, and
+    0.9999 recorded as 1.000, a value strength_sd rejects outright."""
+
+    def test_rounds_to_stored_precision(self):
+        assert normalize_strength_share(0.15) == 0.15
+        assert normalize_strength_share(0.1234) == 0.123
+        assert normalize_strength_share(0.0004) == 0.0
+
+    def test_value_that_rounds_out_of_range_is_rejected(self):
+        """0.9999 is in [0, 1) but rounds to 1.000, which leaves no game-level
+        noise at all. Storing it would describe an unrunnable configuration."""
+        with pytest.raises(ValueError, match="after rounding"):
+            normalize_strength_share(0.9999)
+
+    @pytest.mark.parametrize("bad", [-0.001, 1.0, 2.0])
+    def test_out_of_range_is_rejected(self, bad):
+        with pytest.raises(ValueError, match="strength_share"):
+            normalize_strength_share(bad)
+
+    def test_float_noise_does_not_trip_validation(self):
+        """0.1 + 0.05 is 0.15000000000000002; rounding must absorb that rather
+        than treat a legitimate computed value as unrepresentable."""
+        assert normalize_strength_share(0.1 + 0.05) == 0.15
+
+    def test_simulate_wins_reports_the_share_it_used(self):
+        """The structural guarantee: the writer records what the simulation
+        returns, not its own copy of the argument."""
+        games = [
+            {
+                "home_team": "A",
+                "away_team": "B",
+                "completed": False,
+                "expected_home_margin": 1.0,
+                "conference_game": False,
+            }
+        ]
+        sim = simulate_wins(games, 100, 18.0, seed=1, strength_share=0.1234)
+        assert sim["strength_share"] == 0.123
+
+    def test_a_share_below_stored_precision_really_is_independent(self):
+        """0.0004 must not merely be RECORDED as 0.000 -- it must actually
+        simulate as independent draws, or the row still lies."""
+        games = [
+            {
+                "home_team": "A",
+                "away_team": f"O{i}",
+                "completed": False,
+                "expected_home_margin": 0.0,
+                "conference_game": False,
+            }
+            for i in range(12)
+        ]
+        tiny = simulate_wins(games, 3000, 18.0, seed=4, strength_share=0.0004)
+        zero = simulate_wins(games, 3000, 18.0, seed=4, strength_share=0.0)
+        assert tiny["strength_share"] == 0.0
+        assert np.array_equal(tiny["wins"]["A"], zero["wins"]["A"])
+
+    def test_row_builder_normalizes_even_when_called_directly(self):
+        """Caught by the adversarial pass: the first attempt at this hardening
+        landed on simulate_wins' return dict instead of the row builder, so a
+        direct caller could still store a share Postgres would silently round
+        to something else."""
+        games = [_game("A", "B", margin=3.0)]
+        sim = simulate_wins(games, 50, 18.0, seed=2)
+        row = build_projection_row(
+            "A",
+            sim["wins"]["A"],
+            games,
+            {},
+            "C",
+            "fitted_v1",
+            50,
+            18.0,
+            None,
+            sim["games_simulated"]["A"],
+            0.1234,
+        )
+        assert row["strength_share"] == 0.123
+
+    def test_row_builder_rejects_a_share_that_rounds_out_of_range(self):
+        games = [_game("A", "B", margin=3.0)]
+        sim = simulate_wins(games, 50, 18.0, seed=2)
+        with pytest.raises(ValueError, match="after rounding"):
+            build_projection_row(
+                "A",
+                sim["wins"]["A"],
+                games,
+                {},
+                "C",
+                "fitted_v1",
+                50,
+                18.0,
+                None,
+                sim["games_simulated"]["A"],
+                0.9999,
+            )

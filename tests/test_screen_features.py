@@ -975,6 +975,71 @@ class TestSmallSubgroupsAreDisciplinedByTheEffectFloor:
         )
 
 
+class TestDraftCoverageIsAudited:
+    """The split-window re-run found draft.draft_picks held 2020-2026 only,
+    while years.py configures 2000-2026.
+
+    Nothing errored. `draft_out` is not year-filtered, so the S-1..S-3 lookback
+    simply found no rows and COALESCE(..., 0) turned "this draft was never
+    ingested" into "this program produced zero NFL picks" on 54.2% of the
+    frame. Every draft verdict was measuring the load state of the warehouse.
+
+    --audit-imputation had counters for recruiting and blue-chip zero-fill and
+    none for draft, which is why it ran clean while the defect was live. These
+    tests pin the counters that close that gap."""
+
+    def test_audit_counts_draft_source_years(self):
+        from scripts.screen_preseason_features import AUDIT_QUERY
+
+        assert "draft_picks_3yr_no_source_year" in AUDIT_QUERY
+        assert "draft_departures_no_source_year" in AUDIT_QUERY
+
+    def test_audit_defines_the_draft_cte_it_reads(self):
+        """The counters live in AUDIT_QUERY, which is a separate statement from
+        SCREEN_FRAME_QUERY -- a counter referencing a CTE only the screen
+        defines would fail at runtime, and only when --audit-imputation ran."""
+        from scripts.screen_preseason_features import AUDIT_QUERY
+
+        assert "draft_out AS" in AUDIT_QUERY
+        assert AUDIT_QUERY.index("draft_out AS") < AUDIT_QUERY.index(
+            "draft_picks_3yr_no_source_year"
+        )
+
+    def test_coverage_is_measured_on_source_years_not_team_rows(self):
+        """The distinction the counter exists to draw. A team absent from a
+        draft that WAS ingested really did produce no picks -- a true zero. A
+        team absent because the draft was never loaded is not a measurement.
+        Testing EXISTS over the season alone, with no team predicate, is what
+        separates them; adding `d.team = s.team` would collapse the two back
+        together and make the counter agree with the bug."""
+        from scripts.screen_preseason_features import AUDIT_QUERY
+
+        block = AUDIT_QUERY[AUDIT_QUERY.index("draft_picks_3yr_no_source_year") - 400 :]
+        block = block[: block.index("draft_departures_no_source_year")]
+        assert "d.team" not in block, (
+            "source-year coverage must not be filtered to the team, or a real "
+            "zero and a missing draft become indistinguishable again"
+        )
+
+    def test_every_void_verdict_says_why_it_is_void(self):
+        """A rejection and a void are different claims. The first says we
+        measured it and it was nothing; the second says the measurement was
+        never valid. Recording a void as a plain rejection is how a fixable
+        load gap becomes a closed question."""
+        from scripts.screen_preseason_features import REJECTED_COLUMNS
+
+        for column in (
+            "draft_picks_3yr",
+            "conversion",
+            "draft_yield",
+            "draft_departures",
+        ):
+            assert column in REJECTED_COLUMNS
+            assert "VOID" in REJECTED_COLUMNS[column], (
+                f"{column} rests on fabricated zeros and must not read as a measurement"
+            )
+
+
 class TestMidSeasonCoachingChangesAreExcluded:
     """PR #55 review, P1 -- a leak, not a rounding error.
 

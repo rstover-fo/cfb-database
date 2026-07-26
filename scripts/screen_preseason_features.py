@@ -1192,6 +1192,15 @@ blue_chips AS (
     WHERE rc.committed_to IS NOT NULL
     GROUP BY 1, 2
 ),
+draft_out AS (
+    -- Which draft YEARS exist at all. Deliberately the same shape as
+    -- SCREEN_FRAME_QUERY's draft_out so the coverage counters below describe
+    -- the source the screen actually reads, not an approximation of it.
+    SELECT dp.year AS season, dp.college_team AS team
+    FROM draft.draft_picks dp
+    WHERE dp.college_team IS NOT NULL
+    GROUP BY 1, 2
+),
 spine AS (
     -- Mirrors SCREEN_FRAME_QUERY's spine, including the uncoalesced
     -- tenure_start, so the audit measures the frame the screen actually builds.
@@ -1235,6 +1244,28 @@ SELECT
         WHERE bc.team = s.team
           AND bc.year BETWEEN s.season - {CLASS_WINDOW} AND s.season - 1
     ) IS NULL) AS blue_chip_pipeline_imputed,
+    -- DRAFT COVERAGE. This counter exists because its absence is what let the
+    -- draft verdicts stand for a month on a column that was mostly fabricated
+    -- zeros (see DEFECT FOUND BY THE SPLIT in the module docstring).
+    --
+    -- The distinction it draws is the whole point. `draft_picks_3yr` and
+    -- `draft_departures` are COALESCEd to 0, and a 0 there is AMBIGUOUS: it
+    -- means either "this program produced no NFL picks", which is a true and
+    -- useful measurement, or "no draft was ever ingested for those years",
+    -- which is not a measurement at all. The counters below separate them by
+    -- asking whether the SOURCE YEARS exist in draft.draft_picks, independent
+    -- of whether this particular team appears in them. A zero-fill share is
+    -- fine; a structural-absence share above a percent or two means the column
+    -- is measuring the load state of the warehouse rather than football.
+    COUNT(*) FILTER (
+        WHERE NOT EXISTS (
+            SELECT 1 FROM draft_out d
+            WHERE d.season BETWEEN s.season - 3 AND s.season - 1
+        )
+    ) AS draft_picks_3yr_no_source_year,
+    COUNT(*) FILTER (
+        WHERE NOT EXISTS (SELECT 1 FROM draft_out d WHERE d.season = s.season)
+    ) AS draft_departures_no_source_year,
     -- Subgroup sizes for the section 6.0b decomposition. Counts, not verdicts:
     -- the screen reports a partial correlation without saying how many rows
     -- carry the indicator, and a 0.15 partial resting on 30 positives is a

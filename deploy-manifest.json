@@ -1,0 +1,5 @@
+{
+  "action": "apply",
+  "files": ["src/schemas/migrations/043_season_projections.sql"],
+  "refresh": false
+}

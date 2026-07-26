@@ -56,7 +56,7 @@ The database uses multiple Postgres schemas organized by data domain:
 | `features` | Fitted-model substrate | team_week (as-of feature vector), model_coefficients, model_metadata |
 | `live` | In-game polling | scoreboard_snapshots, wp_params (house live win prob) |
 | `marts` | Materialized views (39) | Denormalized, query-optimized |
-| `api` | API view layer (35) | Contract surface for cfb-app/cfb-scout |
+| `api` | API view layer (36) | Contract surface for cfb-app/cfb-scout |
 | `predictions` | Prediction snapshots | game_predictions, season_projections (append-only daily) |
 | `public` | Convenience views/RPCs (12) | Downstream consumer interface |
 | `meta` | Flat-file load ledger | flat_file_loads |
@@ -124,7 +124,7 @@ cfb-database/
 │   │   │   └── rate_limiter.py   # Monthly budget tracking
 │   │   └── run.py                # Pipeline orchestration
 │   └── schemas/
-│       ├── api/                  # 35 API view definitions (contract surface)
+│       ├── api/                  # 36 API view definitions (contract surface)
 │       ├── functions/            # SQL functions
 │       ├── marts/                # 39 materialized view definitions (+1 plain view)
 │       ├── public/               # 12 convenience views + RPCs

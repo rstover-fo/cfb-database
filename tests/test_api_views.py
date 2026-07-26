@@ -373,6 +373,42 @@ GAME_PREDICTIONS_COLUMNS = {
     "edge_pick",
 }
 
+# Phase 5 of the preseason outlook plan -- latest Monte Carlo season
+# projection per (season, team, model). games_unscored is derived in the view
+# (games_scheduled - games_simulated) so a consumer cannot mistake an unscored
+# game for a loss.
+SEASON_OUTLOOK_COLUMNS = {
+    "projection_id",
+    "computed_at",
+    "projection_date",
+    "model_version",
+    "season",
+    "team",
+    "conference",
+    "games_scheduled",
+    "games_simulated",
+    "games_unscored",
+    "games_completed",
+    "actual_wins",
+    "schedule_complete",
+    "projected_wins",
+    "projected_losses",
+    "median_wins",
+    "wins_p10",
+    "wins_p25",
+    "wins_p75",
+    "wins_p90",
+    "p_win_dist",
+    "p_bowl_eligible",
+    "p_ten_plus",
+    "sos_rating",
+    "sos_rank",
+    "conf_title_prob",
+    "playoff_prob",
+    "n_sims",
+    "residual_sigma",
+}
+
 # P3.2 Lane B (docs/pipeline-manifest.md row 47) -- in-game per-play win
 # probability, distinct from the Tier 2 pregame house win probability above
 # (GAME_ELO_HISTORY_COLUMNS / GAME_PREDICTIONS_COLUMNS). NOT added to
@@ -584,6 +620,12 @@ class TestViewsExistAndReturnRows:
             # embedded mentions; box rows = 2 per game with team stats loaded.
             ("api.penalty_log", 100000),
             ("api.team_penalties", 30000),
+            # Season projections: ~350 teams x the projection seasons
+            # simulate_season maintains (latest completed season plus every
+            # later season with a published schedule). Conservative floor of
+            # one season's worth -- the view is latest-snapshot, so the count
+            # does not grow with the append-only daily history.
+            ("api.season_outlook", 300),
         ],
         ids=[
             "team_detail",
@@ -605,6 +647,7 @@ class TestViewsExistAndReturnRows:
             "coach_records",
             "penalty_log",
             "team_penalties",
+            "season_outlook",
         ],
     )
     def test_view_returns_rows(self, db_conn, view_name, min_rows):
@@ -649,6 +692,7 @@ class TestViewColumns:
             ("api.coach_records", COACH_RECORDS_COLUMNS),
             ("api.penalty_log", PENALTY_LOG_COLUMNS),
             ("api.team_penalties", TEAM_PENALTIES_COLUMNS),
+            ("api.season_outlook", SEASON_OUTLOOK_COLUMNS),
         ],
         ids=[
             "team_detail",
@@ -674,6 +718,7 @@ class TestViewColumns:
             "coach_records",
             "penalty_log",
             "team_penalties",
+            "season_outlook",
         ],
     )
     def test_columns_present(self, db_conn, view_name, expected_columns):
@@ -1337,3 +1382,185 @@ class TestCoachRecords:
             assert ats_win_pct is None or 0 <= ats_win_pct <= 1, (
                 f"ats_win_pct {ats_win_pct} is neither NULL nor in [0, 1] range"
             )
+
+
+# ---------------------------------------------------------------------------
+# Test: season_outlook semantics
+# ---------------------------------------------------------------------------
+
+
+class TestSeasonOutlook:
+    """Phase 5 surface over predictions.season_projections.
+
+    These pin the invariants a consumer will assume without checking. Several
+    correspond to defects already fixed upstream (unscored games counted as
+    losses, postseason games inflating the slate); asserting them here means a
+    regression in simulate_season.py surfaces at the contract boundary rather
+    than as a plausible-looking win total.
+    """
+
+    def test_one_row_per_team_season_model(self, db_conn):
+        """The view is latest-snapshot: the append-only daily history must not
+        leak through as duplicate rows."""
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT season, team, model_version, COUNT(*) AS n
+            FROM api.season_outlook
+            GROUP BY season, team, model_version
+            HAVING COUNT(*) > 1
+            LIMIT 10
+            """,
+        )
+        assert not rows, f"duplicate (season, team, model_version) rows: {rows}"
+
+    def test_unscored_games_are_not_losses(self, db_conn):
+        """projected_wins + projected_losses must span games_simulated, not
+        games_scheduled. Counting the gap as losses is worse than a coin flip
+        and was a real defect in the first cut of simulate_season.py."""
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT team, season, games_simulated, projected_wins, projected_losses
+            FROM api.season_outlook
+            WHERE projected_wins IS NOT NULL
+              AND projected_losses IS NOT NULL
+              AND ABS((projected_wins + projected_losses) - games_simulated) > 0.01
+            LIMIT 10
+            """,
+        )
+        assert not rows, f"projected wins+losses != games_simulated: {rows}"
+
+    def test_games_unscored_is_consistent_and_non_negative(self, db_conn):
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT team, season, games_scheduled, games_simulated, games_unscored
+            FROM api.season_outlook
+            WHERE games_unscored <> games_scheduled - games_simulated
+               OR games_unscored < 0
+            LIMIT 10
+            """,
+        )
+        assert not rows, f"games_unscored inconsistent or negative: {rows}"
+
+    def test_percentiles_are_ordered(self, db_conn):
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT team, season, wins_p10, wins_p25, median_wins, wins_p75, wins_p90
+            FROM api.season_outlook
+            WHERE wins_p10 IS NOT NULL
+              AND NOT (wins_p10 <= wins_p25
+                       AND wins_p25 <= median_wins
+                       AND median_wins <= wins_p75
+                       AND wins_p75 <= wins_p90)
+            LIMIT 10
+            """,
+        )
+        assert not rows, f"percentiles out of order: {rows}"
+
+    def test_probabilities_in_unit_range(self, db_conn):
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT team, season, p_bowl_eligible, p_ten_plus, conf_title_prob
+            FROM api.season_outlook
+            WHERE (p_bowl_eligible IS NOT NULL AND (p_bowl_eligible < 0 OR p_bowl_eligible > 1))
+               OR (p_ten_plus IS NOT NULL AND (p_ten_plus < 0 OR p_ten_plus > 1))
+               OR (conf_title_prob IS NOT NULL AND (conf_title_prob < 0 OR conf_title_prob > 1))
+            LIMIT 10
+            """,
+        )
+        assert not rows, f"probability outside [0, 1]: {rows}"
+
+    def test_win_distribution_sums_to_one(self, db_conn):
+        """p_win_dist is the whole reason this table beats a scalar; a
+        distribution that does not sum to 1 is silently malformed."""
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT team, season, s
+            FROM (
+                SELECT team, season,
+                       (SELECT SUM(value::numeric) FROM jsonb_each_text(p_win_dist)) AS s
+                FROM api.season_outlook
+                WHERE p_win_dist IS NOT NULL
+                LIMIT 500
+            ) d
+            WHERE ABS(s - 1) > 0.01
+            LIMIT 10
+            """,
+        )
+        assert not rows, f"p_win_dist does not sum to 1: {rows}"
+
+    def test_projected_wins_within_simulated_games(self, db_conn):
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT team, season, projected_wins, games_simulated
+            FROM api.season_outlook
+            WHERE projected_wins IS NOT NULL
+              AND (projected_wins < 0 OR projected_wins > games_simulated)
+            LIMIT 10
+            """,
+        )
+        assert not rows, f"projected_wins outside [0, games_simulated]: {rows}"
+
+    def test_regular_season_slate_only(self, db_conn):
+        """Bowls and playoff games must not inflate the slate.
+
+        Checked against core.games rather than a magic ceiling: a fixed bound
+        would be both weak (a bowl only pushes a 12-game team to 13) and
+        wrong, since the Hawaii exemption allows a 13th regular-season game
+        and a conference championship -- also season_type='regular' in CFBD --
+        can make 14 legitimately. Comparing to the actual regular-season count
+        pins the real invariant.
+        """
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            WITH actual AS (
+                SELECT season, team, COUNT(*) AS n
+                FROM (
+                    SELECT season, home_team AS team FROM core.games
+                    WHERE season_type = 'regular'
+                    UNION ALL
+                    SELECT season, away_team FROM core.games
+                    WHERE season_type = 'regular'
+                ) g
+                GROUP BY season, team
+            )
+            SELECT o.season, o.team, o.games_scheduled, a.n AS regular_season_games
+            FROM api.season_outlook o
+            JOIN actual a ON a.season = o.season AND a.team = o.team
+            WHERE o.games_scheduled <> a.n
+            LIMIT 10
+            """,
+        )
+        assert not rows, (
+            f"games_scheduled != regular-season game count (postseason leaked in?): {rows}"
+        )
+
+    def test_playoff_prob_is_null_in_v1(self, db_conn):
+        """Documented as deliberately absent. If this starts failing, the
+        12-team format got modeled and the column comment needs updating."""
+        count = _fetch_count(
+            db_conn,
+            "SELECT COUNT(*) FROM api.season_outlook WHERE playoff_prob IS NOT NULL",
+        )
+        assert count == 0, f"{count} rows have a playoff_prob but v1 ships it NULL"
+
+    def test_residual_sigma_is_positive_where_present(self, db_conn):
+        """sigma drives every probability in the row; a zero or negative one
+        makes the distribution meaningless rather than merely wrong."""
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT team, season, residual_sigma
+            FROM api.season_outlook
+            WHERE residual_sigma IS NOT NULL AND residual_sigma <= 0
+            LIMIT 10
+            """,
+        )
+        assert not rows, f"non-positive residual_sigma: {rows}"

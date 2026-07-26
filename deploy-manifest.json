@@ -1,0 +1,7 @@
+{
+  "action": "compute",
+  "compute": {
+    "script": "screen_preseason_features",
+    "args": ["--probe", "stats.advanced_team_stats"]
+  }
+}

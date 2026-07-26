@@ -178,6 +178,42 @@ its dlt `__v_double` VARIANT twin (mart 005 pattern).
 | `preseason_sp_rating` | NUMERIC(8,3) | **prior-season final** `ratings.sp_ratings.rating` `(year=S−1, team)` — proxy | preseason-known (see decision) |
 | `preseason_sp_offense` | NUMERIC(8,3) | `ratings.sp_ratings.offense__rating` `(year=S−1, team)` | preseason-known |
 | `preseason_sp_defense` | NUMERIC(8,3) | `ratings.sp_ratings.defense__rating` `(year=S−1, team)` | preseason-known |
+| `recruiting_points_3yr` | NUMERIC(10,3) | decayed sum of `recruiting.team_recruiting.points` over `year ∈ [S−4, S−1]`, weight `0.8^(S−year−1)` | preseason-known; classes signed before S starts |
+| `blue_chip_pipeline` | NUMERIC(6,4) | 4–5★ share of `recruiting.recruits` signees over `year ∈ [S−4, S−1]` | preseason-known |
+| `hc_first_year` | NUMERIC(2,1) | 1.0 when the head coach's tenure at this school starts in S, else 0.0 (`ref.coaches__seasons`, gaps-and-islands so a second stint does not inherit the first) | preseason-known; the hire precedes the season |
+| `prior_def_line_yards` | NUMERIC(8,4) | `stats.advanced_team_stats.defense__line_yards` `(season=S−1, team)` | **prior season only** — S−1 is complete before S starts |
+| `prior_def_stuff_rate` | NUMERIC(8,4) | `stats.advanced_team_stats.defense__stuff_rate` `(season=S−1, team)` | **prior season only** |
+
+**Migration 042 additions (2026-07-26).** The five columns above were added
+after the §2.5 partial-correlation screen
+(`scripts/screen_preseason_features.py`), which measured each against season-S
+SP+ controlling for **both** prior-season SP+ and `recruiting_points_3yr`.
+Verdicts, on 2015–2025:
+
+| column | partial | note |
+|---|---|---|
+| `recruiting_points_3yr` | +0.2642 | strongest preseason signal in the set |
+| `hc_first_year` | −0.1615 | second strongest |
+| `prior_def_line_yards` | −0.0997 | yards **allowed**, so negative confirms the trenches thesis |
+| `prior_def_stuff_rate` | +0.0816 | clears the 0.08 floor by 0.0016 — marginal |
+| `blue_chip_pipeline` | +0.0782 | **below** the floor; shipped by explicit decision, see below |
+
+Two notes that matter for anyone reading these numbers later:
+
+- **`blue_chip_pipeline` did not clear the pre-registered rule.** It misses by
+  0.07 standard errors at n=1,439, which the data cannot resolve, and its
+  q-value is 0.0095. It ships as a recorded override
+  (`SHIPPED_BY_DECISION`), not as a screen result.
+- **Every offensive-line measure failed** — `prior_line_yards` +0.0223,
+  `prior_power_success` +0.0520, `prior_stuff_rate_allowed` −0.0290. The
+  trenches thesis is supported for the DEFENSIVE front and unsupported for the
+  offensive front, as measured by prior-season line play. The two
+  `havoc__front_seven` splits are **untestable**, not null: they exist for only
+  17.4% of team-seasons.
+- **The screen computed `recruiting_points_3yr` and `blue_chip_pipeline` with
+  `COALESCE(..., 0)`.** This table does not (see §1i) — so the shipped columns
+  are marginally *cleaner* than the measurement that justified them, not
+  dirtier.
 
 **Preseason SP+ decision:** use **prior-season (S−1) final SP+** as the
 "preseason SP" proxy. The `ratings.sp_ratings` loader merges one value per
@@ -195,9 +231,9 @@ comment; a true-preseason snapshot loader is a follow-up.
 | `computed_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | write time |
 | `feature_build_version` | VARCHAR | `build_features.py` version tag (audit) |
 
-**Column count: 31** (8 identity + 1 Elo + 5 adj-EPA + 7 season-to-date + 2
-havoc + 7 preseason + 2 bookkeeping — minus `game_id`/`feature_build_version`
-if a leaner surface is wanted, still ~28).
+**Column count: 36** (8 identity + 1 Elo + 5 adj-EPA + 7 season-to-date + 2
+havoc + **12** preseason + 2 bookkeeping). Was 31 before migration 042 added
+the five screened preseason columns above.
 
 ### 1h. Explicitly EXCLUDED
 
@@ -216,6 +252,28 @@ game-level model term (§2).
 | season-to-date (§1d) | **NULL** | no plays with `week_index<WI` exist |
 | havoc (§1e) | **NULL** | no games with `week_index<WI` exist |
 | preseason constants (§1f) | **populated** (constant all season) | NULL only if the source row is absent |
+| migration-042 preseason (§1f) | **populated**, `NULL` where the source is absent | see below — never zero-filled |
+
+**Decision — the migration-042 columns are NULL, not 0, when their source is
+absent**, which is the §1i rule applied consistently rather than a new one.
+
+It is worth spelling out because the screen that justified these columns got it
+wrong in both directions and had to be corrected twice. `blue_chip_pipeline` is
+`blue_chips / signees` and `prior_def_line_yards` is a rate: a team-season with
+no prior FBS season does not have *zero* line yards, it has *unknown* line
+yards, and no team ever posts 0.000. Worse, the teams whose source rows are
+missing — new FBS entrants, programs up from FCS — are disproportionately weak
+in season S, so zero-filling would plant the floor value exactly where the
+outcome is low and manufacture signal out of nothing.
+
+Rough absence rates measured 2015–2025: `recruiting_points_3yr` 0.8%,
+`blue_chip_pipeline` 1.5%, `hc_first_year` 0.9% (no coach record),
+`prior_def_*` 1.1% (no prior-season row). §2b's train-window mean imputation
+resolves all of them centrally and leak-free.
+
+**`hc_first_year` is genuinely 0.0, not NULL, for an established coach** — the
+value is known and it is zero. NULL is reserved for "we have no coach record
+for this school-year at all", which is a different statement.
 
 **Decision — NULL, not 0, for empty season-to-date aggregates.** `0` is a false
 signal (0 EPA/play is an *average-team* value, not "unknown"; 0 plays/game
@@ -256,9 +314,26 @@ All non-game-level features are **home-minus-away diffs** of a single
 | 12 | `d_havoc_rate_offense_allowed` | diff | `havoc_rate_offense_allowed` | yes | yes |
 | 13 | `d_returning_ppa_pct` | diff | `returning_ppa_pct` | yes | yes |
 | 14 | `d_preseason_sp_rating` | diff | `preseason_sp_rating` | yes | yes |
+| 15 | `d_recruiting_points_3yr` | diff | `recruiting_points_3yr` | yes | yes |
+| 16 | `d_blue_chip_pipeline` | diff | `blue_chip_pipeline` | yes | yes |
+| 17 | `d_hc_first_year` | diff | `hc_first_year` | yes | yes |
+| 18 | `d_prior_def_line_yards` | diff | `prior_def_line_yards` | yes | yes |
+| 19 | `d_prior_def_stuff_rate` | diff | `prior_def_stuff_rate` | yes | yes |
 
-**15 features + intercept.** Same vector feeds both the ridge-margin and the
-IRLS-logistic fit.
+**20 features + intercept** (was 15 before migration 042). Same vector feeds
+both the ridge-margin and the IRLS-logistic fit.
+
+**Why these five are diffed like everything else.** They are team properties,
+so home-minus-away is the same construction used throughout. `d_hc_first_year`
+takes values in {−1, 0, +1}: a first-year coach on one side only is a relative
+disadvantage, and two first-year coaches correctly cancel — the model term is
+about *relative* disruption, not about how many new coaches are in the game.
+
+**Adding these invalidates every stored fit.** `FEATURE_NAMES` is positional
+and `score_fitted.load_fit` builds its coefficient vector by name lookup over
+it, so a fit trained before migration 042 raises `KeyError` on the new names
+rather than degrading. Every `train_through_season` vintage must be retrained in
+the same deploy that ships the columns; there is no partial-rollout path.
 
 **`adj_epa_net` deliberately omitted from the model vector.** `net = off − def`
 is an *exact* linear combination of `d_adj_epa_off` and `d_adj_epa_def`;
@@ -445,5 +520,18 @@ Per-family assertions the gate runs against the freshly-built `team_week`
   frozen in `model_metadata.feature_means`, applied before differencing.
 - **Migration 028 = whole `features` schema:** `team_week` +
   `model_coefficients` + `model_metadata`, `predictions`-style grants.
+- **Migration 042 = five screened preseason columns** (`recruiting_points_3yr`,
+  `blue_chip_pipeline`, `hc_first_year`, `prior_def_line_yards`,
+  `prior_def_stuff_rate`), all in the `fitted_v1` vector, taking it to 20
+  features. Every column cleared the §2.5 screen except `blue_chip_pipeline`,
+  which is a recorded override rather than a measurement.
+- **Migration-042 columns are NULL when their source is absent, never 0** —
+  the §1i rule, restated because these are rates and counts whose zero is a
+  fabricated extreme rather than a neutral value.
+- **The trenches thesis is supported on defense only.** Prior-season defensive
+  line yards and stuff rate carry signal past prior SP+ and recruiting; every
+  offensive-line measure failed the screen. Recorded as a finding, not dropped
+  — the null is on prior-season line play as an instrument, and the
+  front-seven havoc splits remain untestable at 17.4% coverage.
 - **Feature vector size:** 15 features + unpenalized intercept; `market_*`
   excluded so `edge` stays meaningful.

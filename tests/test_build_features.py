@@ -193,3 +193,144 @@ class TestResolveTeamWeekElo:
     def test_never_returns_none(self):
         assert resolve_team_week_elo(None, "Nobody U", 2024, {}) is not None
         assert resolve_team_week_elo(1500.0, "Big State", 2024, {}) is not None
+
+
+class TestMigration042Columns:
+    """The five preseason columns that cleared the section 2.5 screen.
+
+    Their value depends on being computed the SAME way the screen measured
+    them: the partial correlations that justified shipping them were produced
+    under a specific decay and window, so drift between the two would leave
+    features.team_week populated with a quantity nothing ever validated.
+    """
+
+    COLUMNS = (
+        "recruiting_points_3yr",
+        "blue_chip_pipeline",
+        "hc_first_year",
+        "prior_def_line_yards",
+        "prior_def_stuff_rate",
+    )
+
+    def test_recruiting_window_matches_the_screen_that_validated_it(self):
+        from scripts.build_features import CLASS_DECAY, CLASS_WINDOW
+        from scripts.screen_preseason_features import (
+            CLASS_DECAY as SCREEN_DECAY,
+        )
+        from scripts.screen_preseason_features import (
+            CLASS_WINDOW as SCREEN_WINDOW,
+        )
+
+        assert (CLASS_DECAY, CLASS_WINDOW) == (SCREEN_DECAY, SCREEN_WINDOW)
+
+    def test_columns_are_written(self):
+        from scripts.build_features import _INSERT_COLUMNS
+
+        for col in self.COLUMNS:
+            assert col in _INSERT_COLUMNS
+
+    def test_columns_are_selected(self):
+        from scripts.build_features import FEATURE_ROWS_QUERY
+
+        for col in self.COLUMNS:
+            assert f"AS {col}" in FEATURE_ROWS_QUERY or f'"{col}"' in FEATURE_ROWS_QUERY
+
+    def test_nothing_is_zero_filled(self):
+        """Design doc section 1i. These are rates and decayed sums whose zero
+        is a fabricated extreme, and the teams whose source rows are missing
+        skew weak -- so COALESCE(...,0) here would plant the floor value
+        exactly where the outcome is low and manufacture signal."""
+        from scripts.build_features import FEATURE_ROWS_QUERY
+
+        block = FEATURE_ROWS_QUERY[FEATURE_ROWS_QUERY.index("recruiting_points_3yr") :]
+        block = block[: block.index("prior_def_stuff_rate")]
+        assert "COALESCE" not in block.upper()
+
+    def test_coach_tenure_uses_islands(self):
+        """A coach returning to a school must not inherit his first stint's
+        start year, or hc_first_year silently misses every re-hire."""
+        from scripts.build_features import FEATURE_ROWS_QUERY
+
+        assert "coach_islands" in FEATURE_ROWS_QUERY
+        assert "PARTITION BY i.school, i.coach_id, i.grp" in FEATURE_ROWS_QUERY
+
+    def test_prior_season_join_is_leak_free(self):
+        """S-1, never S: season S's own advanced stats are not knowable in
+        week 1 and would leak the outcome into its own predictor."""
+        from scripts.build_features import FEATURE_ROWS_QUERY
+
+        assert "ats.season = s.season - 1" in FEATURE_ROWS_QUERY
+
+    def test_query_still_binds_with_only_the_season_parameter(self):
+        """FEATURE_ROWS_QUERY became an f-string to interpolate the class
+        window. A stray literal % or brace would break psycopg2 binding at
+        runtime -- the exact failure that left the feature screen unable to
+        execute its own query for months."""
+        import re
+
+        from scripts.build_features import FEATURE_ROWS_QUERY
+
+        stripped = re.sub(r"%\([a-z_]+\)s", "", FEATURE_ROWS_QUERY).replace("%%", "")
+        assert "%" not in stripped
+        assert "{" not in FEATURE_ROWS_QUERY and "}" not in FEATURE_ROWS_QUERY
+        # Exercise the real binding path.
+        FEATURE_ROWS_QUERY % {"season": 2026}
+
+
+class TestFittedVectorContract:
+    def test_every_shipped_screen_column_is_a_model_feature(self):
+        from scripts.screen_preseason_features import SHIPPED_BY_DECISION, SHIPPED_COLUMNS
+        from scripts.train_model import TEAM_WEEK_SOURCE_COLUMNS
+
+        for col in list(SHIPPED_COLUMNS) + list(SHIPPED_BY_DECISION):
+            assert col in TEAM_WEEK_SOURCE_COLUMNS, (
+                f"{col} cleared the gate but never reached the model vector"
+            )
+
+    def test_no_rejected_column_leaked_into_the_vector(self):
+        from scripts.screen_preseason_features import REJECTED_COLUMNS, UNTESTABLE_COLUMNS
+        from scripts.train_model import TEAM_WEEK_SOURCE_COLUMNS
+
+        for col in list(REJECTED_COLUMNS) + list(UNTESTABLE_COLUMNS):
+            assert col not in TEAM_WEEK_SOURCE_COLUMNS, f"{col} failed the screen but is in the fit"
+
+    def test_feature_names_are_unique_and_positional(self):
+        from scripts.train_model import DIFF_FEATURE_COLUMNS, FEATURE_NAMES
+
+        assert len(FEATURE_NAMES) == len(set(FEATURE_NAMES))
+        assert len(FEATURE_NAMES) == len(DIFF_FEATURE_COLUMNS) + 2
+
+
+class TestBackfillCoversTheUpcomingSeason:
+    """--from must not stop one season short of the one being asked about.
+
+    get_current_season() is a CALENDAR rule returning year-1 until August, and
+    it is correct only for ingest year-windows. Phase 1 rewired --incremental
+    onto get_projection_seasons for exactly this reason and left --from behind.
+    On 2026-07-26 the migration-042 rebuild ran `--from 2015`, built 2015-2025,
+    skipped 2026 entirely, and exited 0 -- so the five new preseason columns
+    were NULL for the only season anyone wanted them for, while every gate line
+    reported success.
+    """
+
+    def test_from_branch_does_not_use_the_calendar_rule_alone(self):
+        import inspect
+
+        from scripts import build_features
+
+        src = inspect.getsource(build_features.main)
+        from_branch = src[src.index("else:") :]
+        assert "_resolve_projection_seasons()" in from_branch, (
+            "--from must bound on core.games (get_projection_seasons), not the "
+            "calendar's get_current_season"
+        )
+
+    def test_upper_bound_is_the_max_of_both_sources(self):
+        """Belt and braces: whichever is later wins, so the range can never be
+        shorter than either rule alone would give."""
+        import inspect
+
+        from scripts import build_features
+
+        src = inspect.getsource(build_features.main)
+        assert "max([*projection_seasons, get_current_season()])" in src

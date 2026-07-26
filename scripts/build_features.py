@@ -45,10 +45,12 @@ pattern as scripts/compute_house_elo.py / scripts/compute_adjusted_epa.py).
 
 Usage:
     python scripts/build_features.py --from 2015
-        Backfill every season from YYYY through the current season
-        (src.pipelines.config.years.get_current_season()) -- the design
-        doc's 2015+ backfill scope. A season with no core.games rows is a
-        clean no-op (not a failure).
+        Backfill every season from YYYY through the latest season with a
+        published schedule (get_projection_seasons, NOT the calendar-based
+        get_current_season -- which returns year-1 until August and would
+        silently stop a July backfill one season short of the one being asked
+        about). The design doc's 2015+ backfill scope. A season with no
+        core.games rows is a clean no-op (not a failure).
 
     python scripts/build_features.py --season 2024
         Build a single season.
@@ -87,7 +89,26 @@ MIN_TEAM_PLAYS = 150
 
 # Written to features.team_week.feature_build_version for every row this
 # script writes (audit trail for which build produced a row).
-FEATURE_BUILD_VERSION = "tw_v1"
+FEATURE_BUILD_VERSION = "tw_v2"
+
+# Recruiting-class window for the migration-042 columns. These MUST match
+# scripts/screen_preseason_features.py: the partial correlations that justified
+# shipping these columns were measured under exactly this decay and window, so
+# a drift here would leave the feature table populated with a quantity the
+# screen never evaluated. Duplicated rather than imported so a production build
+# script does not depend on a research script; tests/test_build_features.py
+# asserts the two stay equal.
+CLASS_DECAY = 0.8
+CLASS_WINDOW = 4
+
+# The migration-042 preseason columns, reported individually in FEATURES_GATE.
+PRESEASON_042_COLUMNS = (
+    "recruiting_points_3yr",
+    "blue_chip_pipeline",
+    "hc_first_year",
+    "prior_def_line_yards",
+    "prior_def_stuff_rate",
+)
 
 
 # =============================================================================
@@ -272,8 +293,64 @@ def _resolve_projection_seasons() -> list[int]:
 # then summed for week_index < s.week_index via a LATERAL join -- far
 # cheaper than a LATERAL scanning raw per-play rows, while computing exactly
 # the same weighted average (sum/sum, not an average-of-averages).
-FEATURE_ROWS_QUERY = """
-WITH plays_wi AS (
+FEATURE_ROWS_QUERY = f"""
+WITH coach_counts AS (
+    -- Coaches CFBD lists per school-year. >1 means a mid-season change; those
+    -- school-years are excluded in coach_tenure below (leak guard).
+    SELECT school, year, COUNT(*) AS n_coaches
+    FROM ref.coaches__seasons
+    GROUP BY school, year
+),
+coach_year AS (
+    -- Deliberately NOT filtered to the target season: the gaps-and-islands
+    -- grouping below needs a school's whole coaching history to tell a second
+    -- stint from a continuation. ref.coaches__seasons is small. Filtering it
+    -- would also left-censor tenure, making every long-tenured coach look like
+    -- he started in the first year of the window.
+    SELECT DISTINCT ON (c.school, c.year)
+           c.school, c.year, c._dlt_parent_id AS coach_id
+    FROM ref.coaches__seasons c
+    ORDER BY c.school, c.year, c.games DESC NULLS LAST
+),
+coach_islands AS (
+    SELECT school, year, coach_id,
+           year - ROW_NUMBER() OVER (PARTITION BY school, coach_id ORDER BY year) AS grp
+    FROM coach_year
+),
+coach_tenure AS (
+    -- LEAK GUARD (PR #55 review, P1) -- MUST match the screen's
+    -- _COACH_TENURE_CTE, which carries the full rationale.
+    --
+    -- ref.coaches__seasons cannot split a mid-season coaching change
+    -- (src/schemas/api/038_coach_records.sql), so picking the most-games coach
+    -- resolves an EARLY firing to the replacement and marks week 1 as
+    -- "first-year coach" when it was not. A mid-season firing is caused by
+    -- season-S performance, so that would carry the season's own outcome into a
+    -- feature that claims to be preseason-known.
+    SELECT i.school, i.year, i.coach_id,
+           CASE WHEN cc.n_coaches > 1 THEN NULL
+                ELSE MIN(i.year) OVER (PARTITION BY i.school, i.coach_id, i.grp)
+           END AS tenure_start
+    FROM coach_islands i
+    JOIN coach_counts cc ON cc.school = i.school AND cc.year = i.year
+),
+class_points AS (
+    -- The four recruiting classes signed BEFORE season S (design doc 1f).
+    SELECT tr.team, tr.year, tr.points::double precision AS points
+    FROM recruiting.team_recruiting tr
+    WHERE tr.points IS NOT NULL
+      AND tr.year BETWEEN %(season)s - {CLASS_WINDOW} AND %(season)s - 1
+),
+blue_chip_classes AS (
+    SELECT rc.committed_to AS team,
+           COUNT(*) FILTER (WHERE rc.stars >= 4)::numeric AS blue_chips,
+           COUNT(*)::numeric AS signees
+    FROM recruiting.recruits rc
+    WHERE rc.committed_to IS NOT NULL
+      AND rc.year BETWEEN %(season)s - {CLASS_WINDOW} AND %(season)s - 1
+    GROUP BY 1
+),
+plays_wi AS (
     SELECT
         pe.offense,
         pe.defense,
@@ -395,7 +472,25 @@ SELECT
     rp."usage" AS returning_usage,
     sp.rating AS preseason_sp_rating,
     sp."offense__rating" AS preseason_sp_offense,
-    sp."defense__rating" AS preseason_sp_defense
+    sp."defense__rating" AS preseason_sp_defense,
+    -- Migration 042 (screened, plan section 2.5). NULL and never 0 where a
+    -- source row is absent -- see the design doc's section 1i decision: these
+    -- are rates and decayed sums whose zero is a fabricated extreme, and the
+    -- teams that are missing skew weak, so zero-filling would invent signal.
+    -- train_model.py imputes with a frozen train-window mean instead.
+    (
+        SELECT SUM(cp.points * POWER({CLASS_DECAY}, %(season)s - cp.year - 1))
+        FROM class_points cp
+        WHERE cp.team = s.team
+    ) AS recruiting_points_3yr,
+    bc.blue_chips / NULLIF(bc.signees, 0) AS blue_chip_pipeline,
+    -- 0.0 is a real value here ("established coach"); NULL means we have no
+    -- coach record for this school-year at all.
+    CASE WHEN ct.tenure_start IS NULL THEN NULL
+         WHEN ct.tenure_start >= s.season THEN 1.0
+         ELSE 0.0 END AS hc_first_year,
+    ats."defense__line_yards" AS prior_def_line_yards,
+    ats."defense__stuff_rate" AS prior_def_stuff_rate
 FROM spine s
 LEFT JOIN analytics.house_elo_game he ON he.game_id = s.game_id
 -- Always returns exactly one row (COUNT(*) is an aggregate with no
@@ -441,6 +536,11 @@ LEFT JOIN LATERAL (
 -- a season, so a plain equality join (no as-of window) is correct.
 LEFT JOIN marts.returning_production rp ON rp.season = s.season AND rp.team = s.team
 LEFT JOIN ratings.sp_ratings sp ON sp.year = s.season - 1 AND sp.team = s.team
+LEFT JOIN blue_chip_classes bc ON bc.team = s.team
+LEFT JOIN coach_tenure ct ON ct.school = s.team AND ct.year = s.season
+-- Season S-1 trench performance: complete before S starts, so leak-free.
+LEFT JOIN stats.advanced_team_stats ats
+       ON ats.team = s.team AND ats.season = s.season - 1
 ORDER BY s.team, s.week_index
 """
 
@@ -475,6 +575,12 @@ _INSERT_COLUMNS = [
     "preseason_sp_rating",
     "preseason_sp_offense",
     "preseason_sp_defense",
+    # Migration 042 -- screened preseason columns (plan section 2.5).
+    "recruiting_points_3yr",
+    "blue_chip_pipeline",
+    "hc_first_year",
+    "prior_def_line_yards",
+    "prior_def_stuff_rate",
     "feature_build_version",
 ]
 
@@ -592,6 +698,11 @@ def build_season_rows(conn, season: int, elo_current: dict[str, tuple[float, int
                 "preseason_sp_rating": row["preseason_sp_rating"],
                 "preseason_sp_offense": row["preseason_sp_offense"],
                 "preseason_sp_defense": row["preseason_sp_defense"],
+                "recruiting_points_3yr": row["recruiting_points_3yr"],
+                "blue_chip_pipeline": row["blue_chip_pipeline"],
+                "hc_first_year": row["hc_first_year"],
+                "prior_def_line_yards": row["prior_def_line_yards"],
+                "prior_def_stuff_rate": row["prior_def_stuff_rate"],
                 "feature_build_version": FEATURE_BUILD_VERSION,
             }
         )
@@ -628,16 +739,24 @@ def summarize(rows: list[dict]) -> dict:
         "adj_src_prior": sum(1 for r in rows if r["adj_epa_source"] == "prior_season"),
         "null_std": sum(1 for r in rows if r["off_epa_per_play"] is None),
         "week1_rows": sum(1 for r in rows if r["games_played_to_date"] == 0),
+        # Migration 042. Reported per column because these are the ONLY
+        # features carrying information in week 1 -- if one silently arrives
+        # all-NULL it imputes to the train-window mean, its diff is exactly
+        # zero, and the preseason prediction is unchanged while every other
+        # number on this line looks healthy. A broken join and genuinely sparse
+        # data are indistinguishable without the count.
+        **{f"null_{col}": sum(1 for r in rows if r[col] is None) for col in PRESEASON_042_COLUMNS},
     }
 
 
 def print_gate(season: int, rows: list[dict]) -> None:
     s = summarize(rows)
+    extra = " ".join(f"null_{col}={s[f'null_{col}']}" for col in PRESEASON_042_COLUMNS)
     print(
         f"FEATURES_GATE season={season} rows={s['rows']} null_elo={s['null_elo']} "
         f"null_adj_epa={s['null_adj_epa']} adj_src_week={s['adj_src_week']} "
         f"adj_src_prior={s['adj_src_prior']} null_std={s['null_std']} "
-        f"week1_rows={s['week1_rows']}"
+        f"week1_rows={s['week1_rows']} {extra}"
     )
 
 
@@ -720,13 +839,23 @@ def main() -> None:
         # get_projection_seasons' docstring).
         seasons = _resolve_projection_seasons()
     else:
-        current_season = get_current_season()
-        if args.from_season > current_season:
-            logger.error(
-                f"--from {args.from_season} is after the current season ({current_season})"
-            )
+        # Upper bound from core.games, NOT get_current_season(). The calendar
+        # rule returns year-1 until August, so a July `--from 2015` silently
+        # stopped at 2025 and left the upcoming season untouched -- exactly the
+        # defect Phase 1 fixed for --incremental and missed here.
+        #
+        # It is the worse half of that bug, because a backfill that skips the
+        # only season anyone is asking about still exits 0 and still prints a
+        # gate line per season it DID build. The 2026-07-26 migration-042
+        # rebuild hit this: eleven seasons got the new preseason columns, 2026
+        # kept NULLs, and 2026 predictions would have been unchanged while
+        # every surface reported success.
+        projection_seasons = _resolve_projection_seasons()
+        last_season = max([*projection_seasons, get_current_season()])
+        if args.from_season > last_season:
+            logger.error(f"--from {args.from_season} is after the last season ({last_season})")
             sys.exit(1)
-        seasons = list(range(args.from_season, current_season + 1))
+        seasons = list(range(args.from_season, last_season + 1))
 
     logger.info(f"Building features.team_week for {len(seasons)} season(s): {seasons}")
     failures = compute_seasons(seasons)

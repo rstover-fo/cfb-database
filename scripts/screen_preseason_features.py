@@ -67,13 +67,13 @@ each is screened on its own complete cases (see `complete_cases`).
 
     candidate                       n    cov   vs prior   +recr   verdict
     recruiting_points_3yr        1439  1.000    +0.2642  (ctrl)   SHIP
-    hc_first_year                1426  0.991    -0.1334  -0.1615  SHIP
+    hc_first_year                1324  0.920    -0.1231  -0.1548  SHIP
     prior_def_line_yards         1423  0.989    -0.0463  -0.0997  SHIP
     prior_def_stuff_rate         1423  0.989    +0.0536  +0.0816  SHIP (marginal)
     blue_chip_pipeline           1439  1.000    +0.2532  +0.0782  reject (see below)
     talent_stock                 1439  1.000    +0.2664  +0.0744  reject
     draft_departures             1439  1.000    +0.0088  -0.0728  reject
-    recruiting_points_regime     1136  0.789    +0.0712  -0.0620  reject
+    recruiting_points_regime     1057  0.735    +0.0807  -0.0597  reject
     prior_power_success          1423  0.989    +0.0221  +0.0520  reject
     portal_net_rating            1439  1.000    +0.0247  +0.0481  reject
     prior_stuff_rate_allowed     1423  0.989    -0.0021  -0.0290  reject
@@ -95,15 +95,15 @@ What the run established:
    stuff rate allowed -0.0290. Measured line play succeeds where the earlier
    roster-headcount continuity screen (OL -0.015, DL +0.013) found nothing.
 3. **A first-year head coach is the second-strongest signal in the set**
-   (-0.1615, q < 1e-5), and it was previously invisible. It only became
+   (-0.1548, q < 1e-5), and it was previously invisible. It only became
    measurable once it was separated from `recruiting_points_regime` -- see 4.
 4. **The regime column's original +0.0955 was not a recruiting signal.** The
    regime window is empty exactly when the head coach is in year one, and
    zero-filling put a hard 0 on 291 of 1,439 rows (20.2%, found by
    --audit-imputation). That 0 is confounded with the coaching change itself,
    so the column silently blended recruiting with a new-coach indicator. Split
-   apart, the recruiting half falls to -0.0620 and FAILS while the coaching
-   half ships at -0.1615. A column had shipped on a number that measured
+   apart, the recruiting half falls to -0.0597 and FAILS while the coaching
+   half ships at -0.1548. A column had shipped on a number that measured
    something other than what the column claimed to measure.
 5. **Draft production is redundant, not absent.** It predicts (+0.0949) until
    recruiting is controlled, then collapses to +0.0068. Draft output identifies
@@ -468,9 +468,9 @@ REJECTED_COLUMNS = {
     "draft_yield": "-0.0007 -- identical to conversion by construction",
     "draft_departures": "-0.0728 partial against +0.3474 raw, sign flipped -- pure confound",
     "recruiting_points_regime": (
-        "-0.0620 on its 1,136 complete cases. Its earlier +0.0955 was an artifact of "
+        "-0.0597 on its 1,057 complete cases. Its earlier +0.0955 was an artifact of "
         "zero-filling 291 first-year-coach rows; that signal was the coaching change, "
-        "and it now ships separately as hc_first_year (-0.1615)."
+        "and it now ships separately as hc_first_year (-0.1548)."
     ),
     "prior_line_yards": "+0.0223 -- offensive line play carries no signal past recruiting",
     "prior_power_success": "+0.0520 -- under the floor",
@@ -507,6 +507,13 @@ CLASS_WINDOW = 4
 # year, widening the regime window, so the audit found classes where the screen
 # saw none and under-reported absent regime values.
 _COACH_TENURE_CTE = """
+coach_counts AS (
+    -- How many coaches CFBD lists for a school-year. >1 means a mid-season
+    -- change, and those school-years are EXCLUDED below -- see coach_tenure.
+    SELECT school, year, COUNT(*) AS n_coaches
+    FROM ref.coaches__seasons
+    GROUP BY school, year
+),
 coach_year AS (
     -- One head coach per (school, year). A school-year can list several
     -- coaches (interim, co-HC), so take the one who actually coached the most
@@ -524,9 +531,32 @@ coach_islands AS (
     FROM coach_year
 ),
 coach_tenure AS (
-    SELECT school, year, coach_id,
-           MIN(year) OVER (PARTITION BY school, coach_id, grp) AS tenure_start
-    FROM coach_islands
+    -- LEAK GUARD (PR #55 review, P1). tenure_start is NULL for any school-year
+    -- CFBD lists more than one coach for.
+    --
+    -- ref.coaches__seasons attributes a whole season to each coach it lists and
+    -- cannot split a mid-season change (documented in
+    -- src/schemas/api/038_coach_records.sql). Picking the most-games coach then
+    -- means an early firing -- where the replacement finishes with more games
+    -- than the man he replaced -- resolves to the REPLACEMENT, whose tenure
+    -- starts that year, marking week 1 as "first-year coach" when it was not.
+    --
+    -- That is a leak, not a rounding error: a mid-season firing is CAUSED by
+    -- season-S performance, so the flag would carry the season's own outcome
+    -- into a feature that claims to be preseason-known. Worse, the bias runs
+    -- one way -- the earlier the firing, the more games the replacement gets,
+    -- and the worse the season was.
+    --
+    -- Measured on 2015-2025: 103 of 1,438 school-years are ambiguous (7.2%%),
+    -- and 24 of the 300 hc_first_year=1 cases came from them (8.0%% of the
+    -- positives). Excluded rather than guessed -- an unambiguous school-year
+    -- has exactly one coach, who by definition started the season.
+    SELECT i.school, i.year, i.coach_id,
+           CASE WHEN cc.n_coaches > 1 THEN NULL
+                ELSE MIN(i.year) OVER (PARTITION BY i.school, i.coach_id, i.grp)
+           END AS tenure_start
+    FROM coach_islands i
+    JOIN coach_counts cc ON cc.school = i.school AND cc.year = i.year
 )"""
 
 SCREEN_FRAME_QUERY = f"""

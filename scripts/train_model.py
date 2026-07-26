@@ -95,10 +95,29 @@ DIFF_FEATURE_COLUMNS: list[tuple[str, str]] = [
     ("d_havoc_rate_offense_allowed", "havoc_rate_offense_allowed"),
     ("d_returning_ppa_pct", "returning_ppa_pct"),
     ("d_preseason_sp_rating", "preseason_sp_rating"),
+    # Migration 042 -- preseason columns that cleared the section 2.5 screen
+    # (plus blue_chip_pipeline, a recorded override at +0.0782 against an 0.08
+    # floor). These are the only features in the vector that carry information
+    # in WEEK 1: design doc section 1i leaves all seven season-to-date columns
+    # and both havoc columns NULL before a team has played, so their diffs are
+    # exactly zero and the week-1 prediction previously collapsed to Elo,
+    # prior SP+ and returning production alone.
+    ("d_recruiting_points_3yr", "recruiting_points_3yr"),
+    ("d_blue_chip_pipeline", "blue_chip_pipeline"),
+    ("d_hc_first_year", "hc_first_year"),
+    ("d_prior_def_line_yards", "prior_def_line_yards"),
+    ("d_prior_def_stuff_rate", "prior_def_stuff_rate"),
 ]
 
 # Fixed design-matrix column order (index = position): intercept, neutral_site,
-# then the 13 diffs. 15 features + unpenalized intercept.
+# then the 18 diffs. 20 features + unpenalized intercept (was 15 before
+# migration 042).
+#
+# CHANGING THIS LIST INVALIDATES EVERY STORED FIT. score_fitted.load_fit builds
+# its coefficient vector by name lookup over FEATURE_NAMES, so a fit written
+# before a column was added raises KeyError rather than degrading gracefully.
+# Every train_through_season vintage has to be retrained in the same deploy that
+# ships the column -- there is no partial-rollout path.
 FEATURE_NAMES: list[str] = [INTERCEPT, NEUTRAL_SITE] + [name for name, _ in DIFF_FEATURE_COLUMNS]
 
 INTERCEPT_IDX = 0

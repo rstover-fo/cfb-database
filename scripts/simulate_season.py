@@ -55,6 +55,21 @@ Residual limitation: the offsets are independent ACROSS teams, so a conference
 whose teams all outperform together is still underweighted. Set
 ``--strength-share 0`` to reproduce v1 exactly.
 
+DIVISION AWARENESS (2026-07-26)
+-------------------------------
+The simulator covers all four CFBD classifications, but two of the quantities
+it wrote were FBS rules applied to everybody. ``schedule_complete`` compared
+every team to a flat 11 games, which flagged all 8 Ivy League teams in 2026 at
+10 of 10 games with nothing unscored -- a finished schedule reported as a
+partial one, and downstream that became a "these are floors" warning about the
+Ivy League. ``p_bowl_eligible`` was P(6+ wins) for every team, including Yale
+(0.888), in divisions with no bowl system. Both now key off the division the
+team actually played in that season (``team_classifications``, from
+core.games' per-game classification with ref.teams as a fallback):
+completeness is measured against the conference's modal slate clamped to the
+division standard (``expected_slate_games``) and p_bowl_eligible is NULL
+outside FBS.
+
 Usage:
     python scripts/simulate_season.py
         Simulate every projection season (the current season plus any later
@@ -83,14 +98,51 @@ DEFAULT_SIMS = 10_000
 # the append-only history would show movement that is not a change of opinion.
 DEFAULT_SEED = 20260726
 
+# --- Schedule completeness ---------------------------------------------------
 # A schedule is "complete" enough for a season win total to mean what a reader
-# assumes at this many regular-season games. Below it the projection is still
-# written -- over the games that exist -- but flagged.
-COMPLETE_SCHEDULE_GAMES = 11
+# assumes when it covers the team's DIVISION's full slate. Below that the
+# projection is still written -- over the games that exist -- but flagged, and
+# cfb-app turns the flag into a "these are floors, not full-season projections"
+# caveat.
+#
+# WHY THIS IS NOT ONE NUMBER ANY MORE. It was: COMPLETE_SCHEDULE_GAMES = 11, a
+# flat threshold derived from the 12-game FBS slate. That flagged all 8 Ivy
+# League teams in 2026 with games_scheduled = games_simulated = 10 and
+# games_unscored = 0 -- schedules that are not short, they are *finished*: the
+# Ivy plays a 10-game regular season. cfb-app was warning users about the Ivy
+# League for no reason (reported 2026-07-26).
+#
+# The standard regular-season slate per CFBD classification. Only 'fbs' and
+# 'fcs' are spellings this repo uses anywhere else (verify_load.py,
+# generate_recaps.py, api/005); 'ii'/'iii' come from CFBD's own vocabulary. A
+# key that turns out to be misspelled is not a silent corruption -- it falls
+# through to DEFAULT_STANDARD_SLATE and the conference's modal slate still
+# carries the real norm; the tripwire is
+# TestSeasonOutlook::test_classification_values_are_known_divisions.
+STANDARD_SLATE_GAMES = {"fbs": 12, "fcs": 11, "ii": 11, "iii": 10}
 
-# Bowl eligibility, and the "double-digit season" threshold the outlook surface
-# reports.
+# Used when the division cannot be determined at all. Deliberately the FCS
+# number rather than the FBS one: an unclassifiable team is far more likely to
+# be a small-college opponent than a Power conference member, and the cost of
+# guessing high is a false "incomplete" warning on a whole season.
+DEFAULT_STANDARD_SLATE = 11
+
+# A conference needs this many projected members before its modal slate length
+# is treated as evidence of a local norm. Two teams agreeing is a coincidence;
+# it is also the shape a half-published schedule takes.
+MIN_SLATE_COHORT = 3
+
+# --- Thresholds --------------------------------------------------------------
+# Bowl eligibility is an FBS rule. p_bowl_eligible was previously computed for
+# every division, which is how Yale -- an Ivy League team that cannot play in a
+# bowl at all -- ended up with a p_bowl_eligible of 0.888. A probability about
+# an event that does not exist is worse than no column: it reads as a fact.
+# Outside FBS the field is NULL (same review, 2026-07-26).
 BOWL_ELIGIBLE_WINS = 6
+BOWL_CLASSIFICATIONS = frozenset({"fbs"})
+
+# The "double-digit season" threshold, which is meaningful in every division
+# and so is NOT gated on classification.
 TEN_PLUS_WINS = 10
 
 # Refuse to simulate on a residual SD estimated from fewer than this many
@@ -337,7 +389,117 @@ def win_distribution(team_wins, games_simulated):
     return {w: float(counts[w]) / n_sims for w in range(games_simulated + 1)}
 
 
-def summarize(team_wins, games_simulated):
+def standard_slate(classification):
+    """Full regular-season game count for `classification`."""
+    if not classification:
+        return DEFAULT_STANDARD_SLATE
+    return STANDARD_SLATE_GAMES.get(str(classification).strip().lower(), DEFAULT_STANDARD_SLATE)
+
+
+def bowls_apply(classification):
+    """Whether bowl eligibility is a concept for `classification`.
+
+    Unknown counts as "no": p_bowl_eligible is a claim about postseason
+    access, and a division we could not identify is not evidence that the
+    claim holds. An honest NULL beats a number nobody can check.
+    """
+    return bool(classification) and str(classification).strip().lower() in BOWL_CLASSIFICATIONS
+
+
+def team_classifications(games, fallback=None):
+    """{team: division} from the games the team actually played this season.
+
+    Reads core.games' home_classification/away_classification, so a team that
+    changed divisions is described by the season in front of it rather than by
+    where it plays today -- the realignment defect fixed for
+    api.leaderboard_teams on 2026-07-22, which would otherwise reappear here as
+    a 12-game FBS threshold applied to a team's final FCS season.
+
+    Ties are broken alphabetically, matching Postgres'
+    ``mode() WITHIN GROUP (ORDER BY classification)`` so this agrees with the
+    identical derivation in api.season_outlook rather than merely resembling
+    it. `fallback` (ref.teams, current membership) fills teams whose games
+    carry no classification at all.
+    """
+    sides = (("home_team", "home_classification"), ("away_team", "away_classification"))
+    counts = {}
+    for g in games:
+        for side, key in sides:
+            value = g.get(key)
+            if value:
+                counts.setdefault(g[side], {})
+                counts[g[side]][value] = counts[g[side]].get(value, 0) + 1
+
+    resolved = {}
+    for team, tally in counts.items():
+        resolved[team] = sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+
+    if fallback:
+        for g in games:
+            for side in ("home_team", "away_team"):
+                if g[side] not in resolved and fallback.get(g[side]):
+                    resolved[g[side]] = fallback[g[side]]
+    return resolved
+
+
+def expected_slate_games(scheduled_by_team, conf_by_team, class_by_team):
+    """{team: games a complete schedule holds for that team this season}.
+
+    The rule, in one sentence: **the modal number of games scheduled by the
+    team's conference peers, clamped to [standard - 1, standard] for its
+    division.**
+
+    Each half earns its place.
+
+    - The MODE is what lets the Ivy League be complete at 10 games without
+      hardcoding "the Ivy plays 10": all eight members schedule 10, so 10 is
+      the norm they are measured against. A flat FCS threshold could not tell
+      that apart from an 11-game FCS team missing a game.
+    - The CLAMP is what stops the mode from rubber-stamping a season nobody
+      has finished publishing. In March a Big Ten cohort might modally show 4
+      games; without a floor every member would read "complete". standard - 1
+      keeps the previous FBS behaviour (>= 11 of 12) as the loosest the rule
+      can ever get. The upper end of the clamp matters for completed non-FBS
+      seasons, where playoff bracket games are labelled season_type='regular'
+      and can drag a small conference's mode above its real slate.
+    - A conference smaller than MIN_SLATE_COHORT, or absent entirely (13 of
+      2026's 350 teams have a NULL conference), has no norm to appeal to and
+      falls back to standard - 1.
+
+    Consequences worth stating: an Ivy team at 10 of 10 is COMPLETE; an FBS
+    team at 6 of 12 is not, and neither is one at 11 of 12 whose conference
+    modally plays 12 -- that projection really is missing a game, and warning
+    is the safe direction for a flag whose whole job is to say "this is a
+    floor".
+    """
+    cohorts = {}
+    for team, conf in conf_by_team.items():
+        if conf and team in scheduled_by_team:
+            cohorts.setdefault(conf, []).append(scheduled_by_team[team])
+
+    modal = {}
+    for conf, counts in cohorts.items():
+        if len(counts) < MIN_SLATE_COHORT:
+            continue
+        tally = {}
+        for n in counts:
+            tally[n] = tally.get(n, 0) + 1
+        # Ties resolve to the LONGER slate: over-flagging produces a caveat,
+        # under-flagging produces a win total presented as a full season.
+        modal[conf] = sorted(tally.items(), key=lambda kv: (-kv[1], -kv[0]))[0][0]
+
+    expected = {}
+    for team in scheduled_by_team:
+        standard = standard_slate(class_by_team.get(team))
+        norm = modal.get(conf_by_team.get(team))
+        if norm is None:
+            expected[team] = standard - 1
+        else:
+            expected[team] = min(max(norm, standard - 1), standard)
+    return expected
+
+
+def summarize(team_wins, games_simulated, bowl_eligible=True):
     """Central tendency, percentiles and threshold probabilities for one team.
 
     ``games_simulated`` -- NOT the scheduled count -- is the denominator for
@@ -349,6 +511,11 @@ def summarize(team_wins, games_simulated):
     Percentiles use the ``lower`` interpolation method: win totals are integers,
     and reporting a p10 of 7.4 wins would imply a precision the quantity does
     not have.
+
+    ``bowl_eligible=False`` returns ``p_bowl_eligible = None`` rather than
+    P(6+ wins). Below FBS there is no bowl system to be eligible for, so the
+    probability is well-defined arithmetic about nothing -- and a consumer
+    reading 0.888 next to an Ivy League team has no way to know that.
     """
     import numpy as np
 
@@ -360,7 +527,9 @@ def summarize(team_wins, games_simulated):
         "wins_p25": float(np.percentile(team_wins, 25, method="lower")),
         "wins_p75": float(np.percentile(team_wins, 75, method="lower")),
         "wins_p90": float(np.percentile(team_wins, 90, method="lower")),
-        "p_bowl_eligible": float(np.mean(team_wins >= BOWL_ELIGIBLE_WINS)),
+        "p_bowl_eligible": (
+            float(np.mean(team_wins >= BOWL_ELIGIBLE_WINS)) if bowl_eligible else None
+        ),
         "p_ten_plus": float(np.mean(team_wins >= TEN_PLUS_WINS)),
     }
 
@@ -437,6 +606,8 @@ def build_projection_row(
     conf_title_prob,
     games_simulated,
     strength_share,
+    classification=None,
+    expected_slate=None,
 ):
     """One predictions.season_projections row dict for `team`.
 
@@ -445,6 +616,18 @@ def build_projection_row(
     contributed an outcome. When a pending game has no prediction the two
     differ, and folding that gap into ``projected_losses`` would present a
     missing game as a certain defeat.
+
+    ``classification`` is the division the team played in this season (see
+    team_classifications). It gates two things and is stored in neither: which
+    slate length counts as complete, and whether p_bowl_eligible is a
+    meaningful quantity at all. It defaults to None -- unknown -- rather than
+    to 'fbs', because a default that silently claims FBS is the same
+    plausible-number-instead-of-an-absence failure the games_simulated split
+    exists to prevent.
+
+    ``expected_slate`` is the cohort-derived complete-schedule length from
+    expected_slate_games. Omitted, it falls back to the division's standard
+    slate minus one, which is the loosest the cohort rule can ever be.
     """
     team_games = [g for g in games if team in (g["home_team"], g["away_team"])]
     completed = [g for g in team_games if g["completed"]]
@@ -455,6 +638,8 @@ def build_projection_row(
         or (g["away_team"] == team and not g["home_win"])
     )
     games_scheduled = len(team_games)
+    if expected_slate is None:
+        expected_slate = standard_slate(classification) - 1
 
     row = {
         "model_version": model_version,
@@ -465,7 +650,7 @@ def build_projection_row(
         "games_simulated": games_simulated,
         "games_completed": len(completed),
         "actual_wins": actual_wins,
-        "schedule_complete": games_scheduled >= COMPLETE_SCHEDULE_GAMES,
+        "schedule_complete": games_scheduled >= expected_slate,
         "p_win_dist": {str(k): v for k, v in win_distribution(team_wins, games_simulated).items()},
         "sos_rating": schedule_strength(team, team_games, ratings),
         "sos_rank": None,  # filled after all teams are summarized
@@ -481,7 +666,7 @@ def build_projection_row(
         # else. Idempotent for the normal path.
         "strength_share": normalize_strength_share(strength_share),
     }
-    row.update(summarize(team_wins, games_simulated))
+    row.update(summarize(team_wins, games_simulated, bowl_eligible=bowls_apply(classification)))
     return row
 
 
@@ -534,6 +719,11 @@ SEASON_GAMES_QUERY = """
            COALESCE(g.completed, false) AS completed,
            g.home_points, g.away_points,
            g.home_conference, g.away_conference,
+           -- The division each side carried in THIS game, not where the team
+           -- plays today: schedule_complete and p_bowl_eligible both depend on
+           -- it, and ref.teams would misclassify a team's final season before
+           -- a move up (the 2026-07-22 realignment fix, same source).
+           g.home_classification, g.away_classification,
            COALESCE(g.conference_game, false) AS conference_game,
            p.expected_home_margin
     FROM core.games g
@@ -553,6 +743,17 @@ SEASON_GAMES_QUERY = """
 # Elo the model recorded for that team this season.
 TEAM_RATINGS_QUERY = """
     SELECT team, rating FROM analytics.house_elo_current
+"""
+
+# Fallback division per school, for teams whose games carry no classification
+# at all. Current membership, so it is the fallback and never the primary --
+# same precedence api.season_outlook and api.leaderboard_teams use. ref.teams
+# has ~35 duplicate school names; 'fbs' sorts first, so DISTINCT ON picks the
+# FBS row on a name collision.
+REF_CLASSIFICATION_QUERY = """
+    SELECT DISTINCT ON (school) school, classification
+    FROM ref.teams
+    ORDER BY school, classification NULLS LAST
 """
 
 # ONE snapshot per game before the aggregate. predictions.game_predictions is
@@ -643,6 +844,8 @@ def fetch_season_games(conn, season: int, model: str) -> list[dict]:
                 "home_win": home_win,
                 "home_conference": r["home_conference"],
                 "away_conference": r["away_conference"],
+                "home_classification": r["home_classification"],
+                "away_classification": r["away_classification"],
                 "conference_game": bool(r["conference_game"]),
                 "expected_home_margin": (
                     float(r["expected_home_margin"])
@@ -658,6 +861,12 @@ def fetch_team_ratings(conn) -> dict:
     with conn.cursor() as cur:
         cur.execute(TEAM_RATINGS_QUERY)
         return {team: float(rating) for team, rating in cur.fetchall() if rating is not None}
+
+
+def fetch_ref_classifications(conn) -> dict:
+    with conn.cursor() as cur:
+        cur.execute(REF_CLASSIFICATION_QUERY)
+        return {school: cls for school, cls in cur.fetchall() if cls is not None}
 
 
 _ROW_COLUMNS = [
@@ -751,6 +960,28 @@ def simulate_one_season(
         for side, conf in (("home_team", "home_conference"), ("away_team", "away_conference")):
             conf_by_team.setdefault(g[side], g[conf])
 
+    # Division per team, and from it the slate length a complete schedule has
+    # and whether bowl eligibility is a concept. Both were previously FBS
+    # constants applied to all four divisions.
+    class_by_team = team_classifications(games, fetch_ref_classifications(conn))
+    scheduled_by_team = {}
+    for g in games:
+        for side in ("home_team", "away_team"):
+            scheduled_by_team[g[side]] = scheduled_by_team.get(g[side], 0) + 1
+    expected_slate = expected_slate_games(scheduled_by_team, conf_by_team, class_by_team)
+
+    unclassified = [t for t in scheduled_by_team if not class_by_team.get(t)]
+    if unclassified:
+        logger.warning(
+            "season=%d: %d team(s) have no classification in core.games or ref.teams; "
+            "they get p_bowl_eligible=NULL and are measured for completeness against "
+            "the default %d-game slate (e.g. %s)",
+            season,
+            len(unclassified),
+            DEFAULT_STANDARD_SLATE,
+            ", ".join(sorted(unclassified)[:5]),
+        )
+
     # Conference-only records, from the same draws as the overall tally.
     title_probs = conference_title_probs(sim["conf_wins"], conf_by_team, sim["conf_games"])
 
@@ -783,6 +1014,8 @@ def simulate_one_season(
             title_probs.get(team),
             sim["games_simulated"][team],
             sim["strength_share"],
+            classification=class_by_team.get(team),
+            expected_slate=expected_slate.get(team),
         )
         for team, team_wins in wins_by_team.items()
         if sim["games_simulated"][team] > 0

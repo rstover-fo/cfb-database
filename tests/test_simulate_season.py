@@ -25,22 +25,34 @@ import numpy as np  # noqa: E402
 from scripts.simulate_season import (  # noqa: E402
     _ROW_COLUMNS,
     BOWL_ELIGIBLE_WINS,
-    COMPLETE_SCHEDULE_GAMES,
     DEFAULT_STRENGTH_SHARE,
+    MIN_SLATE_COHORT,
+    STANDARD_SLATE_GAMES,
     assign_sos_ranks,
+    bowls_apply,
     build_projection_row,
     conference_title_probs,
+    expected_slate_games,
     normalize_strength_share,
     schedule_strength,
     simulate_wins,
+    standard_slate,
     strength_sd,
     summarize,
+    team_classifications,
     win_distribution,
 )
 
 
 def _game(
-    home, away, completed=False, home_win=None, margin=None, season=2026, conference_game=True
+    home,
+    away,
+    completed=False,
+    home_win=None,
+    margin=None,
+    season=2026,
+    conference_game=True,
+    classification=None,
 ):
     return {
         "season": season,
@@ -51,6 +63,8 @@ def _game(
         "expected_home_margin": margin,
         "home_conference": "TestConf",
         "away_conference": "TestConf",
+        "home_classification": classification,
+        "away_classification": classification,
         "conference_game": conference_game,
     }
 
@@ -273,7 +287,7 @@ class TestBuildProjectionRow:
     def test_short_schedule_is_flagged_incomplete(self):
         row = self._row()
         assert row["schedule_complete"] is False
-        assert COMPLETE_SCHEDULE_GAMES == 11
+        assert STANDARD_SLATE_GAMES["fbs"] == 12
 
     def test_win_distribution_keys_are_strings_for_jsonb(self):
         row = self._row()
@@ -401,8 +415,22 @@ class TestSelfReviewRegressions:
         assert sim["games_simulated"]["A"] == 0
 
         # The row builder still produces the degenerate shape if called...
+        # (classification='fbs' so p_bowl_eligible is a number here at all --
+        # outside FBS it is NULL by design, which would hide the defect this
+        # test is about behind a different absence.)
         row = build_projection_row(
-            "A", sim["wins"]["A"], games, {}, "C", "fitted_v1", 100, 18.5, None, 0, 0.15
+            "A",
+            sim["wins"]["A"],
+            games,
+            {},
+            "C",
+            "fitted_v1",
+            100,
+            18.5,
+            None,
+            0,
+            0.15,
+            classification="fbs",
         )
         assert row["projected_wins"] == 0.0
         assert row["p_bowl_eligible"] == 0.0
@@ -687,3 +715,216 @@ class TestStrengthShareProvenanceMatchesTheRun:
                 sim["games_simulated"]["A"],
                 0.9999,
             )
+
+
+class TestTeamClassifications:
+    """The division a team played in THIS season, from its own games.
+
+    ref.teams reports current membership, which is why this is not a plain
+    lookup: North Dakota State moved FCS -> FBS for 2026, so ref.teams alone
+    would describe its 2025 FCS season as FBS -- the realignment defect fixed
+    for api.leaderboard_teams on 2026-07-22, which would land here as a 12-game
+    completeness threshold applied to an 11-game FCS slate.
+    """
+
+    def test_derives_division_from_the_games_played(self):
+        games = [_game("A", "B", classification="fcs")]
+        assert team_classifications(games) == {"A": "fcs", "B": "fcs"}
+
+    def test_each_side_keeps_its_own_division(self):
+        # An FCS team visiting an FBS team is the common cross-division game.
+        games = [
+            {
+                "home_team": "Big School",
+                "away_team": "Small School",
+                "home_classification": "fbs",
+                "away_classification": "fcs",
+            }
+        ]
+        assert team_classifications(games) == {"Big School": "fbs", "Small School": "fcs"}
+
+    def test_majority_wins_when_a_teams_games_disagree(self):
+        games = [
+            _game("A", "B", classification="fcs"),
+            _game("A", "C", classification="fcs"),
+            _game("A", "D", classification="fbs"),
+        ]
+        assert team_classifications(games)["A"] == "fcs"
+
+    def test_ties_break_alphabetically_like_postgres_mode(self):
+        """Must match `mode() WITHIN GROUP (ORDER BY classification)` in
+        api.season_outlook, or the view and the simulator disagree about the
+        same team on the same day."""
+        games = [
+            _game("A", "B", classification="fbs"),
+            _game("A", "C", classification="fcs"),
+        ]
+        assert team_classifications(games)["A"] == "fbs"
+
+    def test_ref_teams_is_a_fallback_not_an_override(self):
+        games = [_game("A", "B", classification="fcs")]
+        resolved = team_classifications(games, {"A": "fbs", "B": "fbs"})
+        assert resolved["A"] == "fcs", "current membership must not overwrite the season played"
+
+    def test_fallback_fills_teams_whose_games_carry_no_division(self):
+        games = [_game("A", "B")]  # no classification on either side
+        assert team_classifications(games, {"A": "iii"}) == {"A": "iii"}
+
+    def test_unknown_stays_unknown(self):
+        assert team_classifications([_game("A", "B")]) == {}
+
+
+class TestDivisionAwareCompleteness:
+    """schedule_complete against the team's own division, not a 12-game FBS
+    slate.
+
+    The defect: COMPLETE_SCHEDULE_GAMES was a flat 11, so all 8 Ivy League
+    teams in 2026 -- games_scheduled = games_simulated = 10, games_unscored = 0
+    -- were reported as incomplete schedules. They are not short; the Ivy plays
+    a 10-game regular season. cfb-app turns this flag into a "these are floors,
+    not full-season projections" caveat, so it was warning users about a
+    conference whose seasons were fully described.
+    """
+
+    @staticmethod
+    def _cohort(conf, classification, counts):
+        scheduled = {f"{conf}{i}": n for i, n in enumerate(counts)}
+        conf_by_team = dict.fromkeys(scheduled, conf)
+        class_by_team = dict.fromkeys(scheduled, classification)
+        return expected_slate_games(scheduled, conf_by_team, class_by_team), scheduled
+
+    def test_ivy_ten_game_schedule_is_complete(self):
+        expected, scheduled = self._cohort("Ivy", "fcs", [10] * 8)
+        assert all(scheduled[t] >= expected[t] for t in scheduled), (
+            f"a full Ivy slate must not be flagged short: {expected}"
+        )
+
+    def test_short_fbs_schedule_is_still_incomplete(self):
+        """The case the flag exists for: 6 of a 12-game slate published."""
+        expected, scheduled = self._cohort("Big", "fbs", [12] * 15 + [6])
+        short = "Big15"
+        assert scheduled[short] < expected[short]
+
+    def test_fbs_missing_one_game_is_incomplete_against_twelve_game_peers(self):
+        """Stricter than the old flat 11. A team at 11 of 12 really is missing
+        a game, and its win total really is a floor -- which is exactly what
+        the flag says."""
+        expected, scheduled = self._cohort("Big", "fbs", [12] * 15 + [11])
+        eleven = "Big15"
+        assert expected[eleven] == 12
+        assert scheduled[eleven] < expected[eleven]
+
+    def test_a_half_published_season_does_not_read_as_complete(self):
+        """The trap in a pure cohort rule: in March a conference can modally
+        show 4 published games, and 'everyone matches the norm' would call the
+        whole league complete. The clamp floor is what refuses that."""
+        expected, scheduled = self._cohort("Big", "fbs", [4] * 16)
+        assert all(scheduled[t] < expected[t] for t in scheduled)
+        assert set(expected.values()) == {STANDARD_SLATE_GAMES["fbs"] - 1}
+
+    def test_cohort_cannot_push_the_threshold_above_the_division_standard(self):
+        """Completed FCS seasons carry playoff bracket games as
+        season_type='regular' (the documented api.season_outlook limitation),
+        so a small conference's mode can exceed its real slate. The upper clamp
+        stops that from flagging its non-playoff members."""
+        expected, scheduled = self._cohort("Small", "fcs", [11, 11, 14, 14])
+        assert expected["Small0"] == STANDARD_SLATE_GAMES["fcs"]
+        assert scheduled["Small0"] >= expected["Small0"]
+
+    def test_a_conference_too_small_to_be_a_norm_falls_back_to_the_standard(self):
+        expected, _ = self._cohort("Tiny", "fbs", [12] * (MIN_SLATE_COHORT - 1))
+        assert set(expected.values()) == {STANDARD_SLATE_GAMES["fbs"] - 1}
+
+    def test_teams_with_no_conference_fall_back_to_the_standard(self):
+        """13 of 2026's 350 projected teams have a NULL conference."""
+        scheduled = {"Loner": 10}
+        expected = expected_slate_games(scheduled, {"Loner": None}, {"Loner": "fcs"})
+        assert expected["Loner"] == STANDARD_SLATE_GAMES["fcs"] - 1
+
+    def test_unknown_division_uses_the_default_standard(self):
+        assert standard_slate(None) == standard_slate("not-a-division")
+
+    def test_row_builder_honors_the_cohort_expectation(self):
+        games = [_game("A", f"O{i}", margin=3.0, classification="fcs") for i in range(10)]
+        sim = simulate_wins(games, 100, 18.0, seed=7)
+        row = build_projection_row(
+            "A",
+            sim["wins"]["A"],
+            games,
+            {},
+            "Ivy",
+            "fitted_v1",
+            100,
+            18.0,
+            None,
+            sim["games_simulated"]["A"],
+            0.15,
+            classification="fcs",
+            expected_slate=10,
+        )
+        assert row["games_scheduled"] == 10
+        assert row["schedule_complete"] is True
+
+
+class TestBowlEligibilityIsAnFbsRule:
+    """p_bowl_eligible was P(6+ wins) for every division, so Yale -- which
+    cannot play in a bowl -- carried 0.888. Bowl eligibility does not exist in
+    FCS/DII/DIII, so the honest value there is NULL, not a number."""
+
+    def test_summarize_returns_none_when_bowls_do_not_apply(self):
+        s = summarize(np.array([5, 6, 7, 8]), 10, bowl_eligible=False)
+        assert s["p_bowl_eligible"] is None
+
+    def test_the_double_digit_threshold_still_applies_everywhere(self):
+        """p_ten_plus is not a postseason rule -- a 10-win season means the
+        same thing in every division, so it must NOT be nulled alongside."""
+        s = summarize(np.full(100, 10), 10, bowl_eligible=False)
+        assert s["p_ten_plus"] == pytest.approx(1.0)
+
+    @pytest.mark.parametrize("division", ["fcs", "ii", "iii"])
+    def test_non_fbs_rows_carry_no_bowl_probability(self, division):
+        games = [_game("A", f"O{i}", margin=20.0, classification=division) for i in range(11)]
+        sim = simulate_wins(games, 200, 18.0, seed=8)
+        row = build_projection_row(
+            "A",
+            sim["wins"]["A"],
+            games,
+            {},
+            "TestConf",
+            "fitted_v1",
+            200,
+            18.0,
+            None,
+            sim["games_simulated"]["A"],
+            0.15,
+            classification=division,
+        )
+        assert row["p_bowl_eligible"] is None
+        assert row["p_ten_plus"] is not None
+
+    def test_fbs_rows_still_carry_it(self):
+        games = [_game("A", f"O{i}", margin=20.0, classification="fbs") for i in range(12)]
+        sim = simulate_wins(games, 200, 18.0, seed=8)
+        row = build_projection_row(
+            "A",
+            sim["wins"]["A"],
+            games,
+            {},
+            "TestConf",
+            "fitted_v1",
+            200,
+            18.0,
+            None,
+            sim["games_simulated"]["A"],
+            0.15,
+            classification="fbs",
+        )
+        # A 20-point favorite in all 12 games clears 6 wins nearly always.
+        assert row["p_bowl_eligible"] > 0.9
+        assert BOWL_ELIGIBLE_WINS == 6
+
+    def test_unknown_division_is_null_not_assumed_fbs(self):
+        """A default that silently claims FBS is the plausible-number-instead-
+        of-an-absence failure this file already has three tests about."""
+        assert bowls_apply(None) is False
+        assert bowls_apply("fbs") is True

@@ -87,7 +87,17 @@ MIN_TEAM_PLAYS = 150
 
 # Written to features.team_week.feature_build_version for every row this
 # script writes (audit trail for which build produced a row).
-FEATURE_BUILD_VERSION = "tw_v1"
+FEATURE_BUILD_VERSION = "tw_v2"
+
+# Recruiting-class window for the migration-042 columns. These MUST match
+# scripts/screen_preseason_features.py: the partial correlations that justified
+# shipping these columns were measured under exactly this decay and window, so
+# a drift here would leave the feature table populated with a quantity the
+# screen never evaluated. Duplicated rather than imported so a production build
+# script does not depend on a research script; tests/test_build_features.py
+# asserts the two stay equal.
+CLASS_DECAY = 0.8
+CLASS_WINDOW = 4
 
 
 # =============================================================================
@@ -272,8 +282,43 @@ def _resolve_projection_seasons() -> list[int]:
 # then summed for week_index < s.week_index via a LATERAL join -- far
 # cheaper than a LATERAL scanning raw per-play rows, while computing exactly
 # the same weighted average (sum/sum, not an average-of-averages).
-FEATURE_ROWS_QUERY = """
-WITH plays_wi AS (
+FEATURE_ROWS_QUERY = f"""
+WITH coach_year AS (
+    -- Deliberately NOT filtered to the target season: the gaps-and-islands
+    -- grouping below needs a school's whole coaching history to tell a second
+    -- stint from a continuation. ref.coaches__seasons is small.
+    SELECT DISTINCT ON (c.school, c.year)
+           c.school, c.year, c._dlt_parent_id AS coach_id
+    FROM ref.coaches__seasons c
+    ORDER BY c.school, c.year, c.games DESC NULLS LAST
+),
+coach_islands AS (
+    SELECT school, year, coach_id,
+           year - ROW_NUMBER() OVER (PARTITION BY school, coach_id ORDER BY year) AS grp
+    FROM coach_year
+),
+coach_tenure AS (
+    SELECT school, year, coach_id,
+           MIN(year) OVER (PARTITION BY school, coach_id, grp) AS tenure_start
+    FROM coach_islands
+),
+class_points AS (
+    -- The four recruiting classes signed BEFORE season S (design doc 1f).
+    SELECT tr.team, tr.year, tr.points::double precision AS points
+    FROM recruiting.team_recruiting tr
+    WHERE tr.points IS NOT NULL
+      AND tr.year BETWEEN %(season)s - {CLASS_WINDOW} AND %(season)s - 1
+),
+blue_chip_classes AS (
+    SELECT rc.committed_to AS team,
+           COUNT(*) FILTER (WHERE rc.stars >= 4)::numeric AS blue_chips,
+           COUNT(*)::numeric AS signees
+    FROM recruiting.recruits rc
+    WHERE rc.committed_to IS NOT NULL
+      AND rc.year BETWEEN %(season)s - {CLASS_WINDOW} AND %(season)s - 1
+    GROUP BY 1
+),
+plays_wi AS (
     SELECT
         pe.offense,
         pe.defense,
@@ -395,7 +440,25 @@ SELECT
     rp."usage" AS returning_usage,
     sp.rating AS preseason_sp_rating,
     sp."offense__rating" AS preseason_sp_offense,
-    sp."defense__rating" AS preseason_sp_defense
+    sp."defense__rating" AS preseason_sp_defense,
+    -- Migration 042 (screened, plan section 2.5). NULL and never 0 where a
+    -- source row is absent -- see the design doc's section 1i decision: these
+    -- are rates and decayed sums whose zero is a fabricated extreme, and the
+    -- teams that are missing skew weak, so zero-filling would invent signal.
+    -- train_model.py imputes with a frozen train-window mean instead.
+    (
+        SELECT SUM(cp.points * POWER({CLASS_DECAY}, %(season)s - cp.year - 1))
+        FROM class_points cp
+        WHERE cp.team = s.team
+    ) AS recruiting_points_3yr,
+    bc.blue_chips / NULLIF(bc.signees, 0) AS blue_chip_pipeline,
+    -- 0.0 is a real value here ("established coach"); NULL means we have no
+    -- coach record for this school-year at all.
+    CASE WHEN ct.tenure_start IS NULL THEN NULL
+         WHEN ct.tenure_start >= s.season THEN 1.0
+         ELSE 0.0 END AS hc_first_year,
+    ats."defense__line_yards" AS prior_def_line_yards,
+    ats."defense__stuff_rate" AS prior_def_stuff_rate
 FROM spine s
 LEFT JOIN analytics.house_elo_game he ON he.game_id = s.game_id
 -- Always returns exactly one row (COUNT(*) is an aggregate with no
@@ -441,6 +504,11 @@ LEFT JOIN LATERAL (
 -- a season, so a plain equality join (no as-of window) is correct.
 LEFT JOIN marts.returning_production rp ON rp.season = s.season AND rp.team = s.team
 LEFT JOIN ratings.sp_ratings sp ON sp.year = s.season - 1 AND sp.team = s.team
+LEFT JOIN blue_chip_classes bc ON bc.team = s.team
+LEFT JOIN coach_tenure ct ON ct.school = s.team AND ct.year = s.season
+-- Season S-1 trench performance: complete before S starts, so leak-free.
+LEFT JOIN stats.advanced_team_stats ats
+       ON ats.team = s.team AND ats.season = s.season - 1
 ORDER BY s.team, s.week_index
 """
 
@@ -475,6 +543,12 @@ _INSERT_COLUMNS = [
     "preseason_sp_rating",
     "preseason_sp_offense",
     "preseason_sp_defense",
+    # Migration 042 -- screened preseason columns (plan section 2.5).
+    "recruiting_points_3yr",
+    "blue_chip_pipeline",
+    "hc_first_year",
+    "prior_def_line_yards",
+    "prior_def_stuff_rate",
     "feature_build_version",
 ]
 
@@ -592,6 +666,11 @@ def build_season_rows(conn, season: int, elo_current: dict[str, tuple[float, int
                 "preseason_sp_rating": row["preseason_sp_rating"],
                 "preseason_sp_offense": row["preseason_sp_offense"],
                 "preseason_sp_defense": row["preseason_sp_defense"],
+                "recruiting_points_3yr": row["recruiting_points_3yr"],
+                "blue_chip_pipeline": row["blue_chip_pipeline"],
+                "hc_first_year": row["hc_first_year"],
+                "prior_def_line_yards": row["prior_def_line_yards"],
+                "prior_def_stuff_rate": row["prior_def_stuff_rate"],
                 "feature_build_version": FEATURE_BUILD_VERSION,
             }
         )

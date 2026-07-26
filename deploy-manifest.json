@@ -1,0 +1,7 @@
+{
+  "action": "compute",
+  "compute": {
+    "script": "build_features",
+    "args": ["--incremental"]
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "action": "compute",
+  "compute": {
+    "script": "train_model",
+    "args": ["--refit-if-stale"]
+  }
+}

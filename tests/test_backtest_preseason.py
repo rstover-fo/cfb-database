@@ -8,8 +8,10 @@ from scripts.backtest_preseason import (
     baseline_prior_rate,
     brier,
     calibration_table,
+    drop_outcome_dependent,
     interval_coverage,
     preseason_sigma,
+    residual_quantiles,
     win_error_metrics,
 )
 
@@ -173,3 +175,104 @@ class TestLeakGuards:
         sim2 = simulate_wins(pending, n_sims=500, sigma=17.0, seed=1)
         wins = sim2["wins"]["A"]
         assert set(wins) == {0, 1}, "a pending coin-flip game must vary across simulations"
+
+
+class TestDropOutcomeDependent:
+    """Codex PR #51 P1: season_type='regular' still admits conference
+    championship games (and, below FBS, whole playoff brackets), whose
+    participants were decided by that season's results."""
+
+    @staticmethod
+    def _slate(team, n, start_id=0, opponent_prefix="opp"):
+        return [
+            {
+                "game_id": start_id + i,
+                "home_team": team,
+                "away_team": f"{opponent_prefix}{i}",
+                "start_date": f"2024-09-{i + 1:02d}",
+            }
+            for i in range(n)
+        ]
+
+    def test_keeps_a_standard_twelve_game_slate(self):
+        kept, dropped = drop_outcome_dependent(self._slate("A", 12))
+        assert len(kept) == 12
+        assert dropped == 0
+
+    def test_drops_the_thirteenth_game(self):
+        """The conference championship: earned, never scheduled."""
+        kept, dropped = drop_outcome_dependent(self._slate("A", 13))
+        assert len(kept) == 12
+        assert dropped == 1
+
+    def test_drops_a_deep_playoff_run(self):
+        kept, dropped = drop_outcome_dependent(self._slate("A", 15))
+        assert len(kept) == 12
+        assert dropped == 3
+
+    def test_drops_when_beyond_the_cap_for_either_side(self):
+        """Both participants must keep identical slates or the actual-wins
+        comparison stops being matched."""
+        games = self._slate("A", 12)
+        # B's first game, but A's thirteenth.
+        games.append(
+            {"game_id": 99, "home_team": "A", "away_team": "B", "start_date": "2024-12-07"}
+        )
+        kept, dropped = drop_outcome_dependent(games)
+        assert dropped == 1
+        assert all(g["game_id"] != 99 for g in kept)
+
+    def test_ordering_is_chronological_not_insertion_order(self):
+        games = self._slate("A", 13)
+        shuffled = list(reversed(games))
+        kept, dropped = drop_outcome_dependent(shuffled)
+        assert dropped == 1
+        # The dropped game is the LAST by date, whatever order it arrived in.
+        assert all(g["start_date"] != "2024-09-13" for g in kept)
+
+    def test_null_start_dates_do_not_crash(self):
+        games = [
+            {"game_id": 1, "home_team": "A", "away_team": "X", "start_date": None},
+            {"game_id": 2, "home_team": "A", "away_team": "Y", "start_date": "2024-09-01"},
+        ]
+        kept, dropped = drop_outcome_dependent(games)
+        assert len(kept) == 2
+        assert dropped == 0
+
+    def test_empty(self):
+        assert drop_outcome_dependent([]) == ([], 0)
+
+
+class TestResidualQuantiles:
+    """Codex PR #51 P1: MAE is an average loss, not an interval half-width.
+    Quoting `point +/- MAE` as an honest range overstates the coverage badly."""
+
+    def test_quantiles_of_a_known_distribution(self):
+        rng = np.random.default_rng(7)
+        actual = rng.normal(0.0, 1.0, size=20000)
+        projected = np.zeros_like(actual)
+        q = residual_quantiles(list(projected), list(actual))
+        assert q["p10"] == pytest.approx(-1.2816, abs=0.05)
+        assert q["p90"] == pytest.approx(1.2816, abs=0.05)
+        assert q["p50"] == pytest.approx(0.0, abs=0.05)
+
+    def test_sign_convention_is_actual_minus_projected(self):
+        """A model that under-projects must show POSITIVE residuals."""
+        q = residual_quantiles([5.0] * 100, [7.0] * 100)
+        assert q["p50"] == pytest.approx(2.0)
+
+    def test_mae_is_a_narrower_span_than_the_80pct_interval(self):
+        """The actual defect, stated as a test: for a normal error the +/-MAE
+        band is materially narrower than p10..p90, so the two must not be used
+        interchangeably."""
+        rng = np.random.default_rng(11)
+        actual = list(rng.normal(0.0, 2.24, size=20000))
+        projected = [0.0] * len(actual)
+        q = residual_quantiles(projected, actual)
+        mae = win_error_metrics(projected, actual)["mae"]
+        assert (q["p90"] - q["p10"]) > 2 * mae * 1.3, (
+            "p10..p90 must be clearly wider than the +/- MAE band"
+        )
+
+    def test_empty(self):
+        assert residual_quantiles([], []) is None

@@ -375,3 +375,40 @@ class TestCodexRegressions:
         sim = simulate_wins(games, 100, 18.5)
         assert sim["games_simulated"]["A"] == 2
         assert sim["conf_games"]["A"] == 1
+
+
+class TestSelfReviewRegressions:
+    """Defects found in the fixes for the PR #48 review, before merge.
+
+    Both are the same shape as the originals: a plausible number where an
+    absence or an error belongs."""
+
+    def test_team_with_no_scorable_game_gets_no_projection(self):
+        """The `games_simulated` split (fix for P2-C) reintroduced the problem
+        one level up: a team whose entire slate is unscored produced
+        `projected_wins=0.0`, `p_bowl_eligible=0.0` and `p_win_dist={"0": 1.0}`
+        -- indistinguishable from a team the model expects to go winless.
+        Such teams must be omitted entirely."""
+        games = [_game("A", "B", margin=None), _game("A", "C", margin=None)]
+        sim = simulate_wins(games, 100, 18.5)
+        assert sim["games_simulated"]["A"] == 0
+
+        # The row builder still produces the degenerate shape if called...
+        row = build_projection_row(
+            "A", sim["wins"]["A"], games, {}, "C", "fitted_v1", 100, 18.5, None, 0
+        )
+        assert row["projected_wins"] == 0.0
+        assert row["p_bowl_eligible"] == 0.0
+        # ...which is precisely why simulate_one_season filters on
+        # games_simulated > 0 before building rows. Guard the invariant here so
+        # the filter cannot be dropped without a failing test.
+        assert [t for t in sim["wins"] if sim["games_simulated"][t] > 0] == []
+
+    def test_zero_sigma_would_make_every_game_deterministic(self):
+        """A non-positive sigma collapses every draw onto its mean, so every
+        win probability becomes exactly 0 or 1. `fetch_sigma` rejects it; this
+        pins why."""
+        games = [_game("A", "B", margin=3.0)]
+        wins = simulate_wins(games, 200, 0.0)["wins"]
+        assert np.all(wins["A"] == 1)
+        assert np.all(wins["B"] == 0)

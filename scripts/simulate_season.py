@@ -462,6 +462,16 @@ def fetch_sigma(conn, model: str) -> float:
             f"(need >= {MIN_SIGMA_GAMES}); cannot measure a trustworthy residual sigma. "
             "Backfill predictions before simulating."
         )
+    if sigma <= 0.0:
+        # Degenerate rather than merely small: every draw would collapse onto
+        # its mean, so every game would resolve deterministically and every
+        # win probability would be exactly 0 or 1. That is a broken input
+        # (identical residuals across hundreds of games), not a confident
+        # model, and it must not pass silently.
+        raise RuntimeError(
+            f"Residual sigma for {model} measured as {sigma} over {n_games} game(s); "
+            "a non-positive sigma would make every simulated game deterministic."
+        )
     logger.info("Measured residual sigma for %s: %.2f over %d game(s)", model, sigma, n_games)
     return float(sigma)
 
@@ -602,6 +612,22 @@ def simulate_one_season(conn, season: int, model: str, n_sims: int, seed: int) -
     # Conference-only records, from the same draws as the overall tally.
     title_probs = conference_title_probs(sim["conf_wins"], conf_by_team, sim["conf_games"])
 
+    # A team none of whose games could be scored gets NO row rather than a row
+    # of zeros. `projected_wins = 0.0` with `p_bowl_eligible = 0.0` reads as
+    # "the model expects this team to win nothing", when the truth is that the
+    # model has no opinion at all -- the same plausible-number-instead-of-an-
+    # absence failure the games_simulated split exists to prevent, reintroduced
+    # one level up.
+    unprojectable = [t for t in wins_by_team if sim["games_simulated"][t] == 0]
+    if unprojectable:
+        logger.warning(
+            "season=%d: %d team(s) had no scorable game and are omitted from "
+            "projections entirely (e.g. %s)",
+            season,
+            len(unprojectable),
+            ", ".join(sorted(unprojectable)[:5]),
+        )
+
     rows = [
         build_projection_row(
             team,
@@ -616,6 +642,7 @@ def simulate_one_season(conn, season: int, model: str, n_sims: int, seed: int) -
             sim["games_simulated"][team],
         )
         for team, team_wins in wins_by_team.items()
+        if sim["games_simulated"][team] > 0
     ]
     assign_sos_ranks(rows)
     write_projections(conn, rows)
@@ -632,7 +659,8 @@ def simulate_one_season(conn, season: int, model: str, n_sims: int, seed: int) -
         )
     print(
         f"SIM_GATE season={season} model={model} teams={len(rows)} sims={n_sims} "
-        f"sigma={sigma:.2f} complete={complete} unscored_team_games={unscored}"
+        f"sigma={sigma:.2f} complete={complete} unscored_team_games={unscored} "
+        f"omitted_teams={len(unprojectable)}"
     )
     logger.info(
         "season=%d: wrote %d team projection(s), sigma=%.2f, %d with a complete schedule",

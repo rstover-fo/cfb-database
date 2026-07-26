@@ -617,7 +617,7 @@ CANDIDATE_COLUMNS = [
 # stops being a gate.
 SHIPPED_COLUMNS = [
     "recruiting_points_3yr",
-    "hc_first_year",
+    "hc_first_year_unproven",
     "prior_def_line_yards",
     "prior_def_stuff_rate",
 ]
@@ -739,15 +739,14 @@ SUPERSEDED_COLUMNS = {
         "hc_first_year_unproven rather than shipped alone, because a "
         "coefficient fit on 33 rows would be applied with false confidence."
     ),
-    "hc_first_year_unproven": (
-        "-0.1844 (n=1,322, 184 positives) -- the strongest coaching term "
-        "measured and better than the shipped flat binary's -0.1548. The "
-        "split-window check the AMENDMENT prescribes has now been run and it "
-        "held: unproven beats the flat binary in BOTH halves (-0.1417 vs "
-        "-0.1332 on 2015-2020, -0.2257 vs -0.1738 on 2021-2025), and proven "
-        "is null in both. HELD only because swapping the shipped column is an "
-        "owner decision, not a screen verdict -- the evidence is in, and it "
-        "costs a migration, a feature rebuild, a retrain and a re-backtest."
+    "hc_first_year": (
+        "-0.1548 (n=1,324, 266 positives) -- real, and it shipped in migration "
+        "042. SUPERSEDED by hc_first_year_unproven (-0.1844) in migration 046, "
+        "which is the same indicator with the proven hires taken out. The flat "
+        "binary's number is the two subgroups averaged, and averaging a real "
+        "penalty with a powered null costs about 0.03 of partial correlation. "
+        "The column stays POPULATED in features.team_week -- it is cheap and "
+        "downstream consumers may read it -- it just no longer enters the fit."
     ),
 }
 

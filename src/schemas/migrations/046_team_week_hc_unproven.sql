@@ -1,0 +1,79 @@
+-- features.team_week: hc_first_year_unproven
+-- =============================================================================
+-- Preseason outlook plan Phase 2, second pass. Follows migration 042, which
+-- shipped the flat binary `hc_first_year` at -0.1548.
+--
+-- Column contract authority: migration 028's header forbids adding columns to
+-- features.team_week without first updating
+-- docs/brainstorms/2026-07-21-team-week-feature-design.md. That doc has been
+-- amended -- section 1f carries this row, section 1i its NULL rule, section 2a
+-- its position in the fitted_v1 vector (REPLACING hc_first_year, so the vector
+-- stays at 20 features), and the column count goes 36 -> 37.
+--
+-- WHY. The first-year penalty is not a penalty for changing coaches. Split by
+-- the incoming coach's career record -- his mean SP+ at previous stops,
+-- strictly before season S -- all of it sits on one side. Second-order partial
+-- against season-S SP+, controlling prior-season SP+ AND recruiting_points_3yr
+-- (screen runs 138/139/140, scripts/screen_preseason_features.py finding 8):
+--
+--     subgroup            positives   2015-2025   2015-2020   2021-2025
+--     unproven hire             184     -0.1844     -0.1417     -0.2257
+--     proven hire                80     +0.0096     -0.0155     +0.0368
+--     flat hc_first_year        266     -0.1548     -0.1332     -0.1738
+--
+-- A hire whose previous teams averaged at or above an average FBS team costs
+-- his new team essentially nothing in year one. At n=1,322 the standard error
+-- is ~0.028, so that is a POWERED null -- the interval excludes anything near
+-- the unproven effect -- not an underpowered shrug. The flat binary's -0.1548
+-- is what you get from averaging a real penalty against a zero, and pooling
+-- costs about 0.03 of partial correlation.
+--
+-- The three-way cut (rookie / prior-below / proven) was chosen after inspecting
+-- subgroup means, so the AMENDMENT's split-window check was run before shipping
+-- anything. It held: unproven beats the flat binary in BOTH halves, and proven
+-- is null in both. Neither half is strictly held out, but the effect is LARGER
+-- in the portal era, which is the opposite of what selection bias alone would
+-- produce.
+--
+-- WHY NOT THE FINER SPLIT. `hc_first_year_rookie` (-0.1340, 151 positives) and
+-- `hc_first_year_prior_below` (-0.1345, 33 positives) both cleared the floor,
+-- and shipping them alongside their own sum would put an exact linear
+-- dependence in the vector. `prior_below` also carries the largest per-hire
+-- effect in the set -- an implied 0.86-SD gap -- on 33 team-seasons, so a
+-- coefficient fit on it would be applied with false confidence. Pooled, not
+-- shipped. `hc_career_prior`, the continuous form, is UNTESTABLE at n=113
+-- (7.9% coverage): that is the reproducible answer to "why indicators rather
+-- than the career number itself".
+--
+-- WHY hc_first_year SURVIVES. It stays populated and stays in the table; only
+-- its place in the fitted vector passes to this column. It is a cheap, fully
+-- interpretable column that downstream consumers may already read, and keeping
+-- it costs one NUMERIC(2,1) per row.
+--
+-- NULL, NEVER 0 (design doc section 1i), and the distinction is load-bearing
+-- here in a way it is not for the rate columns. 0.0 is a TRUE value for a
+-- continuing staff: there was no hire, so the hire was not unproven. NULL means
+-- the classification is genuinely unknown -- either no coach record for the
+-- school-year (the same ambiguity guard hc_first_year uses: a school-year CFBD
+-- lists more than one coach for is excluded, because resolving a mid-season
+-- firing to the replacement would carry season S's own outcome into a
+-- preseason feature), or a hire whose head-coaching seasons the warehouse
+-- cannot rate. That second case is why prior_seasons and prior_sp_mean are
+-- guarded separately: a coach with zero prior seasons is a genuine first-timer
+-- and IS unproven, while a coach with prior seasons that carry no SP+ row (an
+-- FCS stop, or a year older than ratings coverage) is UNKNOWN. Collapsing the
+-- two would put a fabricated category where a missing value belongs.
+--
+-- 2026 CAVEAT for downstream consumers: CFBD publishes no 2026 coaching records
+-- as of late July, so this column is 100% NULL for 2026 and contributes nothing
+-- until roughly August. Teams with new head coaches are projected as though
+-- nothing changed until then. Same caveat as hc_first_year.
+--
+-- Not in MIGRATION_ORDER: applied via run_migrations.py --file (deploy
+-- manifest), like 019-028 and 041-045. Idempotent.
+
+ALTER TABLE features.team_week
+    ADD COLUMN IF NOT EXISTS hc_first_year_unproven NUMERIC(2, 1);
+
+COMMENT ON COLUMN features.team_week.hc_first_year_unproven IS
+    '1.0 when season S is the head coach''s first at this school AND he is unproven -- either no prior head-coaching season anywhere, or prior seasons averaging below 0.0 SP+ (an average FBS team). 0.0 for a continuing staff and for a first-year hire whose previous teams averaged at or above average. Career prior is his mean SP+ over seasons STRICTLY before S at any school, so S itself can never enter; S-1 can, and should, because its final SP+ publishes months before week 1. Tenure computed gaps-and-islands over ref.coaches__seasons; school-years CFBD lists multiple coaches for yield NULL rather than a guess. Screened -0.1844 controlling for prior SP+ and recruiting_points_3yr, versus +0.0096 (p=0.73) for proven hires and -0.1548 for the flat hc_first_year it replaces in the fitted_v1 vector. NULL means the classification is unknown (no coach record, or an unratable prior career); 0.0 is a real value. 100% NULL for 2026 until CFBD publishes coaching records around August.';

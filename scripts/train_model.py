@@ -104,7 +104,14 @@ DIFF_FEATURE_COLUMNS: list[tuple[str, str]] = [
     # prior SP+ and returning production alone.
     ("d_recruiting_points_3yr", "recruiting_points_3yr"),
     ("d_blue_chip_pipeline", "blue_chip_pipeline"),
-    ("d_hc_first_year", "hc_first_year"),
+    # Migration 046 -- REPLACES d_hc_first_year, keeping the vector at 20.
+    # The first-year penalty is not a penalty for changing coaches: split by the
+    # incoming coach's career record it sits entirely on unproven hires
+    # (-0.1844), while proven hires screen as a powered null (+0.0096, p=0.73).
+    # The flat binary's -0.1548 was those two averaged together. Both halves of
+    # a split-window re-run agree. hc_first_year stays populated in
+    # features.team_week; it just no longer enters the fit.
+    ("d_hc_first_year_unproven", "hc_first_year_unproven"),
     ("d_prior_def_line_yards", "prior_def_line_yards"),
     ("d_prior_def_stuff_rate", "prior_def_stuff_rate"),
 ]

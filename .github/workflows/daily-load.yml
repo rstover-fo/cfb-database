@@ -84,6 +84,8 @@ jobs:
         run: python scripts/train_model.py --refit-if-stale
       - name: Score fitted model (upcoming)
         run: python scripts/score_fitted.py --upcoming
+      - name: Simulate season projections
+        run: python scripts/simulate_season.py
       - name: Refresh Tier 2 + Tier 3 marts
         run: python scripts/refresh_marts.py --views marts.house_elo,marts.house_elo_game,marts.team_adjusted_epa,marts.scored_matchup_edges,marts.prediction_accuracy,marts.team_week_features,marts.adjusted_epa_week
       - name: Verify load

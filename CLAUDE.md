@@ -57,7 +57,7 @@ The database uses multiple Postgres schemas organized by data domain:
 | `live` | In-game polling | scoreboard_snapshots, wp_params (house live win prob) |
 | `marts` | Materialized views (39) | Denormalized, query-optimized |
 | `api` | API view layer (35) | Contract surface for cfb-app/cfb-scout |
-| `predictions` | Prediction snapshots | game_predictions (append-only daily) |
+| `predictions` | Prediction snapshots | game_predictions, season_projections (append-only daily) |
 | `public` | Convenience views/RPCs (12) | Downstream consumer interface |
 | `meta` | Flat-file load ledger | flat_file_loads |
 | `raw` | Raw archived source files | availability_reports |
@@ -139,6 +139,8 @@ cfb-database/
 │   ├── compute_adjusted_epa.py   # Compute team adjusted EPA ratings
 │   ├── compute_adjusted_epa_week.py # Walk-forward as-of weekly adjusted EPA (--incremental)
 │   ├── compute_predictions.py    # Generate game predictions and edges
+│   ├── simulate_season.py        # Monte Carlo season win totals + distributions
+│   ├── screen_preseason_features.py # Partial-correlation screen for candidate features
 │   ├── check_backtest.py         # Backtest prediction accuracy and scoring
 │   ├── build_features.py         # Build features.team_week substrate (--incremental)
 │   ├── train_model.py            # Fit fitted_v1 walk-forward coefficients (--refit-if-stale)

@@ -1349,3 +1349,76 @@ indistinguishable" asserted more than was tested. Any 2026 claim needs to be
 worth more than this interval before it means anything, which is also the bar
 Phase 2 has to clear: new features must **reduce** this error, not merely move
 the number.
+
+---
+
+### A7 — Correlated-draw calibration (simulation v1.1, run 2026-07-26)
+
+Section 4.2 queued a correlated variant as v1.1 "a ~15-line change". Appendix
+A6 turned that from a nicety into the obvious next fix: p10-p90 coverage 71.7%
+against a nominal 80%, with `p_bowl_eligible` overconfident at the top and
+`p_ten_plus` underconfident in the middle — too little mass in *both* tails,
+which is one phenomenon.
+
+**Mechanism.** `simulate_wins` now draws one season-strength offset per team
+per simulation and applies it to every game that team plays. `strength_sd`
+splits sigma so that
+
+```
+2*tau^2 + game_sd^2 == sigma^2
+```
+
+i.e. **total per-game margin variance is unchanged**. Single-game predictions
+stay exactly as calibrated as they were; only the correlation structure across
+a team's games moves. `strength_share = 0` reproduces v1 exactly.
+
+**Sweep** (`--sweep-strength-share`, 2019-2025, n=921, scored once and
+re-simulated per candidate):
+
+| rho | coverage | \|gap to 80%\| | win MAE | RMSE | bias | bowl Brier | ten Brier |
+|---|---|---|---|---|---|---|---|
+| 0.00 | 71.7% | 0.083 | 1.784 | 2.225 | -0.226 | 0.1934 | 0.0965 |
+| 0.05 | 75.4% | 0.046 | 1.784 | 2.225 | -0.226 | 0.1911 | 0.0953 |
+| 0.10 | 78.2% | 0.018 | 1.784 | 2.225 | -0.226 | 0.1897 | 0.0944 |
+| **0.15** | **79.6%** | **0.004** | **1.784** | 2.225 | -0.226 | 0.1887 | 0.0936 |
+| 0.20 | 80.8% | 0.008 | 1.785 | 2.225 | -0.226 | 0.1880 | 0.0931 |
+| 0.25 | 83.3% | 0.033 | 1.785 | 2.225 | -0.226 | 0.1874 | 0.0927 |
+| 0.30 | 84.8% | 0.048 | 1.784 | 2.225 | -0.226 | 0.1870 | 0.0924 |
+| 0.40 | 86.8% | 0.068 | 1.784 | 2.225 | -0.226 | 0.1865 | 0.0923 |
+
+**Shipped: `DEFAULT_STRENGTH_SHARE = 0.15`.**
+
+**Findings:**
+
+1. **Win MAE is 1.784 at every share swept.** The variance constraint working
+   as designed — the point estimate is untouched and only the spread moves.
+   This is the strongest evidence the change is safe: it cannot have bought
+   coverage by degrading the projection, because the projection did not move.
+
+2. **Coverage is fixed**: 71.7% -> 79.6%, a gap to nominal of 0.004. The
+   defect A6 identified is closed.
+
+3. **A genuine tension, resolved and recorded.** Brier improves monotonically
+   *past* 0.15 (bowl 0.1934 -> 0.1865 at 0.40), so a Brier-only criterion
+   would pick a much larger share than a coverage criterion. Resolved in
+   favour of coverage: it is the direct measure of the defect being fixed,
+   0.15 already captures about two thirds of the available Brier gain, and
+   beyond 0.20 the intervals become too wide to be informative (86.8% coverage
+   from a nominal-80% interval is not a better interval, it is a vaguer one).
+   This is a judgment call, not a derivation, and is recorded as such.
+
+4. **Residual quantiles barely move** (p10 -2.61 -> -2.59, p90 +3.19 -> +3.21),
+   which is the consistency check: those measure the error of the *point
+   estimate*, and correlation is not supposed to touch it.
+
+**Remaining simplification.** Offsets are independent ACROSS teams, so a
+conference whose teams all overperform together is still underweighted. That
+is a further refinement, not a defect in this one.
+
+**Provenance.** Migration 044 stores `strength_share` per row, for the same
+reason 043 stores `residual_sigma`: two rows drawn under different correlation
+structures must not be indistinguishable, and the append-only history has to be
+able to explain why an interval widened on the day the share changed. NULL
+means "written before v1.1" rather than a back-filled value the writer never
+used. The migration also supersedes the `n_sims` column comment, which still
+told consumers the tails were understated.

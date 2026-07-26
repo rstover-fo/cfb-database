@@ -618,6 +618,89 @@ REQUIRED_COLUMNS: list[tuple[str, str, tuple[str, ...]]] = [
 ]
 
 
+# Imputation audit (--audit-imputation). Reports, per zero-filled candidate,
+# the share of frame rows whose UNDERLYING source was absent and therefore had
+# a 0 substituted by COALESCE.
+#
+# This exists because zero-filling is safe for a COUNT and unsafe for a RATE,
+# and the screened set contains both. `recruiting_points_3yr` is a summed count
+# -- no classes really is zero points -- but `blue_chip_pipeline` is
+# blue_chips/signees, where a missing recruiting record becomes "0% blue chips",
+# a fabricated floor rather than a neutral value. The same substitution inside
+# PRIMARY_CONTROL would propagate into every second-order partial in the screen,
+# so the audit covers the control too.
+#
+# Counts only -- no correlations, no verdicts, no effect on the screened set or
+# the FDR correction.
+AUDIT_QUERY = f"""
+WITH coach_year AS (
+    SELECT DISTINCT ON (c.school, c.year)
+           c.school, c.year, c._dlt_parent_id AS coach_id
+    FROM ref.coaches__seasons c
+    ORDER BY c.school, c.year, COALESCE(c.games, 0) DESC
+),
+coach_tenure AS (
+    SELECT cy.school, cy.year,
+           MIN(cy.year) OVER (PARTITION BY cy.school, cy.coach_id) AS tenure_start
+    FROM coach_year cy
+),
+class_points AS (
+    SELECT tr.team, tr.year, tr.points::double precision AS points
+    FROM recruiting.team_recruiting tr
+    WHERE tr.points IS NOT NULL
+),
+blue_chips AS (
+    SELECT rc.committed_to AS team, rc.year,
+           COUNT(*) FILTER (WHERE rc.stars >= 4)::double precision AS blue_chips,
+           COUNT(*)::double precision AS signees
+    FROM recruiting.recruits rc
+    WHERE rc.committed_to IS NOT NULL
+    GROUP BY 1, 2
+),
+spine AS (
+    SELECT sp.year AS season, sp.team,
+           COALESCE(ct.tenure_start, sp.year - {CLASS_WINDOW}) AS tenure_start
+    FROM ratings.sp_ratings sp
+    JOIN ratings.sp_ratings sp0
+      ON sp0.team = sp.team AND sp0.year = sp.year - 1
+    LEFT JOIN coach_tenure ct ON ct.school = sp.team AND ct.year = sp.year
+    WHERE sp.year BETWEEN %(from_season)s AND %(to_season)s
+      AND sp.rating IS NOT NULL AND sp0.rating IS NOT NULL
+)
+SELECT
+    COUNT(*) AS total_rows,
+    COUNT(*) FILTER (WHERE (
+        SELECT SUM(cp.points * POWER({CLASS_DECAY}, s.season - cp.year - 1))
+        FROM class_points cp
+        WHERE cp.team = s.team
+          AND cp.year BETWEEN s.season - {CLASS_WINDOW} AND s.season - 1
+    ) IS NULL) AS recruiting_points_3yr_imputed,
+    COUNT(*) FILTER (WHERE (
+        SELECT SUM(cp.points * POWER({CLASS_DECAY}, s.season - cp.year - 1))
+        FROM class_points cp
+        WHERE cp.team = s.team
+          AND cp.year BETWEEN GREATEST(s.season - {CLASS_WINDOW}, s.tenure_start)
+                          AND s.season - 1
+    ) IS NULL) AS recruiting_points_regime_imputed,
+    COUNT(*) FILTER (WHERE (
+        SELECT SUM(bc.blue_chips) / NULLIF(SUM(bc.signees), 0)
+        FROM blue_chips bc
+        WHERE bc.team = s.team
+          AND bc.year BETWEEN s.season - {CLASS_WINDOW} AND s.season - 1
+    ) IS NULL) AS blue_chip_pipeline_imputed
+FROM spine s
+"""
+
+
+def audit_imputation(conn, from_season: int, to_season: int) -> dict:
+    """Count rows where a zero-filled candidate's source was actually absent."""
+    import psycopg2.extras
+
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(AUDIT_QUERY, {"from_season": from_season, "to_season": to_season})
+        return dict(cur.fetchone())
+
+
 def derive_composites(row: dict) -> dict:
     """Add the Tier A composites that are cheaper to build in Python than SQL.
 
@@ -879,6 +962,12 @@ def main() -> None:
         action="store_true",
         help="Verify every source column exists, then exit without screening",
     )
+    parser.add_argument(
+        "--audit-imputation",
+        action="store_true",
+        help="Report how many rows each zero-filled candidate had substituted "
+        "by COALESCE, then exit. Diagnostic only -- no verdicts.",
+    )
     args = parser.parse_args()
 
     if args.from_season > args.to_season:
@@ -914,6 +1003,20 @@ def main() -> None:
             sys.exit(1)
         logger.info("Schema preflight passed (%d table(s))", len(REQUIRED_COLUMNS))
         if args.check_schema:
+            return
+
+        if args.audit_imputation:
+            audit = audit_imputation(conn, args.from_season, args.to_season)
+            total = audit.pop("total_rows")
+            for name, imputed in sorted(audit.items()):
+                share = (imputed / total) if total else 0.0
+                print(
+                    f"IMPUTATION_AUDIT candidate={name} imputed={imputed} "
+                    f"total={total} share={share:.4f}"
+                )
+            print(
+                f"IMPUTATION_SUMMARY total_rows={total} window={args.from_season}-{args.to_season}"
+            )
             return
 
         frame = fetch_frame(conn, args.from_season, args.to_season)

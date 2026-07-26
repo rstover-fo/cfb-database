@@ -20,8 +20,10 @@ import pytest
 from scripts.screen_preseason_features import (
     FDR_ALPHA,
     MIN_PARTIAL_R,
+    MIN_SCREEN_N,
     PRIMARY_CONTROL,
     benjamini_hochberg,
+    complete_cases,
     derive_composites,
     partial_corr_pvalue,
     partial_correlation,
@@ -327,6 +329,110 @@ class TestScreenUsesBothControls:
         for r in screen(self._frame(), [PRIMARY_CONTROL, "redundant_candidate"]):
             assert "partial_r_vs_prior" in r
             assert "partial_r" in r
+
+
+class TestNullCandidatesAreScreenedOnCompleteCases:
+    """The trench candidates arrive NULL for teams with no prior FBS season.
+
+    Screen run 121 (2026-07-26) crashed on exactly this: the seven prior-season
+    trench columns come from a LEFT JOIN against stats.advanced_team_stats,
+    unlike every earlier candidate, which SQL COALESCEs to 0. `_pearson` summed
+    a None and raised.
+
+    Both halves matter. Crashing is bad; the tempting fix is worse. COALESCE to
+    0 is right for a COUNT (no portal transfers really is a net rating of zero)
+    and wrong for a RATE -- no team posts 0.000 line yards, and the teams with
+    no prior-season row are disproportionately bad in season S, so the floor
+    would be imputed precisely where the outcome is low and manufacture a trench
+    signal out of nothing.
+    """
+
+    def _frame_with_gaps(self, n=1000, missing_from=600, seed=23):
+        rng = random.Random(seed)
+        rows = []
+        for i in range(n):
+            z = rng.gauss(0.0, 1.0)
+            w = rng.gauss(0.0, 1.0)
+            y = 0.6 * z + 0.45 * w + rng.gauss(0.0, 0.3)
+            row = {
+                "sp_rating": y,
+                "prior_sp_rating": z,
+                PRIMARY_CONTROL: w,
+                # Present throughout, and genuinely informative.
+                "dense_candidate": 0.5 * y + rng.gauss(0.0, 0.5),
+                # NULL past the cutoff, like a LEFT JOIN miss.
+                "sparse_candidate": None if i >= missing_from else rng.gauss(0.0, 1.0),
+            }
+            rows.append(row)
+        return rows
+
+    def test_complete_cases_drops_only_rows_missing_a_named_column(self):
+        frame = self._frame_with_gaps()
+        assert len(complete_cases(frame, ["dense_candidate"])) == 1000
+        assert len(complete_cases(frame, ["sparse_candidate"])) == 600
+
+    def test_screen_does_not_crash_on_null_candidates(self):
+        # Without per-candidate complete cases this raises TypeError, which is
+        # precisely how run 121 failed.
+        results = screen(self._frame_with_gaps(), [PRIMARY_CONTROL, "sparse_candidate"])
+        assert {r["feature"] for r in results} == {PRIMARY_CONTROL, "sparse_candidate"}
+
+    def test_sparse_candidate_reports_its_own_smaller_n(self):
+        results = screen(
+            self._frame_with_gaps(), [PRIMARY_CONTROL, "dense_candidate", "sparse_candidate"]
+        )
+        by_name = {r["feature"]: r for r in results}
+        assert by_name["dense_candidate"]["n"] == 1000
+        assert by_name["sparse_candidate"]["n"] == 600
+        # Coverage is what stops a 600-row partial from reading as a 1,000-row one.
+        assert by_name["sparse_candidate"]["coverage"] == pytest.approx(0.6)
+
+    def test_candidate_below_min_screen_n_is_untestable_not_shipped(self):
+        frame = self._frame_with_gaps(missing_from=MIN_SCREEN_N - 1)
+        result = next(
+            r
+            for r in screen(frame, [PRIMARY_CONTROL, "sparse_candidate"])
+            if r["feature"] == "sparse_candidate"
+        )
+        assert result["p"] is None
+        assert result["verdict"] == "reject"
+        assert "MIN_SCREEN_N" in result["untestable"]
+
+    def test_missing_rate_is_not_imputed_to_zero(self):
+        """The regression that matters: zero-imputation fabricates signal.
+
+        Here the candidate is pure noise among teams that have it, but it is
+        missing exactly where the outcome is lowest. Zero-filling correlates
+        "missing" with "bad" and invents a large partial; complete-case
+        screening correctly returns ~nothing.
+        """
+        rng = random.Random(5)
+        frame = []
+        for _ in range(1200):
+            z = rng.gauss(0.0, 1.0)
+            w = rng.gauss(0.0, 1.0)
+            y = 0.6 * z + 0.45 * w + rng.gauss(0.0, 0.3)
+            # Noise for teams that played; absent for the weakest teams.
+            value = None if y < -1.0 else rng.gauss(4.5, 1.0)
+            frame.append(
+                {"sp_rating": y, "prior_sp_rating": z, PRIMARY_CONTROL: w, "trench": value}
+            )
+
+        honest = next(
+            r for r in screen(frame, [PRIMARY_CONTROL, "trench"]) if r["feature"] == "trench"
+        )
+
+        zero_filled = [
+            dict(r, trench=(r["trench"] if r["trench"] is not None else 0.0)) for r in frame
+        ]
+        fabricated = next(
+            r for r in screen(zero_filled, [PRIMARY_CONTROL, "trench"]) if r["feature"] == "trench"
+        )
+
+        assert abs(honest["partial_r"]) < MIN_PARTIAL_R, "noise must not ship"
+        assert abs(fabricated["partial_r"]) > abs(honest["partial_r"]), (
+            "zero-filling should visibly inflate the partial -- this is the trap"
+        )
 
 
 class TestFrameQueryIsBindable:

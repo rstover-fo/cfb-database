@@ -141,6 +141,24 @@ DEFAULT_TO_SEASON = 2025
 # (see partial_corr_pvalue) stops being safe and the p-value is not reported.
 MIN_DF_FOR_NORMAL_APPROX = 200
 
+# Minimum complete-case rows for a candidate to be screened at all.
+#
+# Candidates are screened on COMPLETE CASES (see `complete_cases`): rows where
+# the candidate and both controls are all present. Most candidates are
+# COALESCEd to 0 in SQL and so cover the whole frame, but the prior-season
+# trench columns come from a LEFT JOIN against stats.advanced_team_stats and go
+# NULL whenever a team had no prior FBS season.
+#
+# Those NULLs must NOT be COALESCEd to 0 the way the churn columns are. Zero is
+# a true value for a count ("no portal transfers" really is a net rating of 0);
+# it is a fabricated EXTREME for a rate, since no team ever posts 0.000 line
+# yards. Worse, the teams missing a prior-season row -- new FBS entrants,
+# programs up from FCS -- are disproportionately bad in season S, so imputing
+# the floor would manufacture a strong trench correlation that is pure artifact.
+# Dropping the row asks the narrower but answerable question: among teams that
+# DID play last season, does line play predict next season?
+MIN_SCREEN_N = 400
+
 # The second control every other candidate is screened against, alongside
 # prior-season rating. It is the strongest single candidate, so "adds signal
 # beyond prior rating" is too weak a bar -- a candidate must add signal beyond
@@ -188,6 +206,24 @@ def partial_correlation(x: list[float], y: list[float], z: list[float]) -> float
     if denom == 0.0:
         return 0.0
     return (r_xy - r_xz * r_yz) / denom
+
+
+def complete_cases(frame: list[dict], columns: list[str]) -> list[dict]:
+    """Rows of `frame` where every column in `columns` is present and finite.
+
+    Available-case analysis, applied per candidate rather than once across the
+    whole set: dropping every row that any candidate is missing would shrink the
+    frame for the columns that are fully populated, so each candidate is scored
+    on the largest sample IT supports. The consequence is that candidates are
+    not all screened on the same n, which is why `screen` reports n per row --
+    a partial measured on 900 rows and one measured on 1,439 are not equally
+    precise, and the reader has to be able to see that.
+    """
+    return [
+        row
+        for row in frame
+        if all(row.get(col) is not None and math.isfinite(float(row[col])) for col in columns)
+    ]
 
 
 def _pearson(a: list[float], b: list[float]) -> float:
@@ -714,14 +750,39 @@ def _as_float(value):
 def screen(frame: list[dict], candidates: list[str]) -> list[dict]:
     """Run the screen over `frame`. Returns one result dict per candidate,
     ordered by descending |partial_r| so the strongest signals read first."""
-    y = [r["sp_rating"] for r in frame]
-    z = [r["prior_sp_rating"] for r in frame]
-    w = [r[PRIMARY_CONTROL] for r in frame]
-    n = len(frame)
+    total = len(frame)
 
     raw: list[dict] = []
     for name in candidates:
-        x = [r[name] for r in frame]
+        # Complete cases for THIS candidate: the candidate plus every control it
+        # will be measured against. A candidate that is NULL for part of the
+        # frame is screened on the part where it exists, not silently imputed.
+        needed = ["sp_rating", "prior_sp_rating", name]
+        if name != PRIMARY_CONTROL:
+            needed.append(PRIMARY_CONTROL)
+        rows = complete_cases(frame, needed)
+        n = len(rows)
+
+        if n < MIN_SCREEN_N:
+            # Too thin to screen. Reported rather than dropped (plan section
+            # 2.5: nulls are findings) and held out of the FDR correction by
+            # p=None, exactly like a candidate whose df is too small to test.
+            raw.append(
+                {
+                    "feature": name,
+                    "n": n,
+                    "coverage": (n / total) if total else 0.0,
+                    "partial_r_vs_prior": 0.0,
+                    "partial_r": 0.0,
+                    "p": None,
+                    "untestable": f"n={n} below MIN_SCREEN_N={MIN_SCREEN_N}",
+                }
+            )
+            continue
+
+        x = [row[name] for row in rows]
+        y = [row["sp_rating"] for row in rows]
+        z = [row["prior_sp_rating"] for row in rows]
         r_first = partial_correlation(x, y, z)
 
         if name == PRIMARY_CONTROL:
@@ -729,6 +790,7 @@ def screen(frame: list[dict], candidates: list[str]) -> list[dict]:
             # the first-order partial alone.
             r_decisive, n_controls = r_first, 1
         else:
+            w = [row[PRIMARY_CONTROL] for row in rows]
             r_decisive = second_order_partial_correlation(x, y, z, w)
             n_controls = 2
 
@@ -737,9 +799,11 @@ def screen(frame: list[dict], candidates: list[str]) -> list[dict]:
             {
                 "feature": name,
                 "n": n,
+                "coverage": (n / total) if total else 0.0,
                 "partial_r_vs_prior": r_first,
                 "partial_r": r_decisive,
                 "p": p,
+                "untestable": None,
             }
         )
 
@@ -752,6 +816,7 @@ def screen(frame: list[dict], candidates: list[str]) -> list[dict]:
         candidate["q"] = q
     for candidate in raw:
         candidate.setdefault("q", None)
+        candidate.setdefault("untestable", None)
         candidate["verdict"] = screen_verdict(candidate["partial_r"], candidate["q"])
 
     return sorted(raw, key=lambda c: abs(c["partial_r"]), reverse=True)
@@ -764,11 +829,13 @@ def report(results: list[dict], from_season: int, to_season: int) -> int:
     for c in results:
         p_str = f"{c['p']:.5f}" if c["p"] is not None else "na"
         q_str = f"{c['q']:.5f}" if c["q"] is not None else "na"
+        cov_str = f"{c['coverage']:.3f}" if c.get("coverage") is not None else "na"
+        note = f" note={c['untestable']}" if c.get("untestable") else ""
         print(
-            f"SCREEN_RESULT feature={c['feature']} n={c['n']} "
+            f"SCREEN_RESULT feature={c['feature']} n={c['n']} coverage={cov_str} "
             f"partial_r_vs_prior={c['partial_r_vs_prior']:+.4f} "
             f"partial_r={c['partial_r']:+.4f} p={p_str} q={q_str} "
-            f"verdict={c['verdict']}"
+            f"verdict={c['verdict']}{note}"
         )
         if c["verdict"] == "ship":
             shipped += 1

@@ -140,10 +140,23 @@ class TestSourcesToSkip:
         skipped = sources_to_skip(list(SOURCE_ORDER), season_final=True, allow_skip=True)
         assert "reference" not in skipped
 
-    def test_metrics_wp_is_never_skipped(self):
-        """Already self-limiting: it fetches only games still missing win
-        probability, so a fully-backfilled season costs nothing anyway."""
+    def test_metrics_wp_is_skipped_once_the_season_is_final(self):
+        """It was exempted as "already self-limiting: it fetches only games
+        still missing win probability, so a fully-backfilled season costs
+        nothing". The 2026-07-26 daily load disproved that -- it reported 2,517
+        of 3,829 games still missing for a season that ended in January,
+        because games CFBD has no win-probability data for are missing forever
+        and come back every single day. Self-limiting requires the missing set
+        to drain; this one does not.
+        """
         skipped = sources_to_skip(list(SOURCE_ORDER), season_final=True, allow_skip=True)
+        assert "metrics_wp" in skipped
+
+    def test_metrics_wp_still_runs_during_a_live_season(self):
+        """The skip is conditional on the season being FINISHED. In-game win
+        probability for a game that has not been played yet is exactly the data
+        this source exists to collect."""
+        skipped = sources_to_skip(list(SOURCE_ORDER), season_final=False, allow_skip=True)
         assert "metrics_wp" not in skipped
 
     def test_every_immutable_source_is_a_real_source(self):

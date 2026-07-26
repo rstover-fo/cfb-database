@@ -436,6 +436,10 @@ def build_projection_row(
         "playoff_prob": None,  # see migration 043 -- not modeled in v1
         "n_sims": n_sims,
         "residual_sigma": sigma,
+        # v1.1 provenance, stored per row for the same reason residual_sigma
+        # is: two projections drawn under different correlation structures
+        # must not be indistinguishable after the fact.
+        "strength_share": round(float(strength_share), 3),
     }
     row.update(summarize(team_wins, games_simulated))
     return row

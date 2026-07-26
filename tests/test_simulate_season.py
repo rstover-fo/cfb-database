@@ -23,6 +23,7 @@ pytest.importorskip("numpy")
 import numpy as np  # noqa: E402
 
 from scripts.simulate_season import (  # noqa: E402
+    _ROW_COLUMNS,
     BOWL_ELIGIBLE_WINS,
     COMPLETE_SCHEDULE_GAMES,
     DEFAULT_STRENGTH_SHARE,
@@ -534,3 +535,53 @@ class TestCorrelatedDraws:
         ]
         sim = simulate_wins(games, 2000, 18.0, seed=19, strength_share=0.35)
         assert np.all(sim["conf_wins"]["A"] <= sim["wins"]["A"])
+
+
+class TestRowContractCoverage:
+    """build_projection_row and _ROW_COLUMNS must not drift apart.
+
+    They did: v1.1 added strength_share to _ROW_COLUMNS and to the function
+    signature, but the returned dict never got the key. Every unit test still
+    passed -- none of them asserted the row covers the write contract -- and
+    the gap only surfaced as a KeyError inside write_projections against prod.
+    This is the guard that makes the next such drift a local failure.
+    """
+
+    def test_row_dict_covers_the_write_contract_exactly(self):
+        games = [_game("A", "B", margin=7.0)]
+        sim = simulate_wins(games, 100, 18.5, seed=2)
+        row = build_projection_row(
+            "A",
+            sim["wins"]["A"],
+            games,
+            {"B": 1500.0},
+            "TestConf",
+            "fitted_v1",
+            100,
+            18.5,
+            0.25,
+            sim["games_simulated"]["A"],
+            0.15,
+        )
+        missing = set(_ROW_COLUMNS) - set(row)
+        extra = set(row) - set(_ROW_COLUMNS)
+        assert not missing, f"_ROW_COLUMNS keys absent from the row: {sorted(missing)}"
+        assert not extra, f"row keys the writer will not persist: {sorted(extra)}"
+
+    def test_strength_share_is_recorded_on_the_row(self):
+        games = [_game("A", "B", margin=7.0)]
+        sim = simulate_wins(games, 100, 18.5, seed=2)
+        row = build_projection_row(
+            "A",
+            sim["wins"]["A"],
+            games,
+            {},
+            "TestConf",
+            "fitted_v1",
+            100,
+            18.5,
+            None,
+            sim["games_simulated"]["A"],
+            0.15,
+        )
+        assert row["strength_share"] == pytest.approx(0.15)

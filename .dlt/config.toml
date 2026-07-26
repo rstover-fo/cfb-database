@@ -26,6 +26,6 @@ file_max_items = 2000
 # CFBD API base URL
 base_url = "https://api.collegefootballdata.com"
 
-# Monthly API budget (Tier 3: 75,000 calls/month), read by get_rate_limiter().
+# Monthly API budget (Tier 4: 125,000 calls/month), read by get_rate_limiter().
 # Year ranges live in src/pipelines/config/years.py (single source of truth).
-monthly_budget = 75000
+monthly_budget = 125000

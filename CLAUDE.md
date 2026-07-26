@@ -34,7 +34,7 @@ Schema contract for downstream consumers: `docs/SCHEMA_CONTRACT.md`
 
 ## Key Constraints
 
-- **75,000 API calls/month (Tier 3)** -- use incremental loading, cache reference data
+- **125,000 API calls/month (Tier 4)** -- use incremental loading, cache reference data
 - **No native pagination** -- CFBD uses year-based filtering, iterate programmatically
 - **Storage** -- no hard limit; will upgrade Supabase Pro ($25/mo, 8GB) if needed
 
@@ -84,8 +84,8 @@ open/update a rolling GitHub issue.
 (`IMMUTABLE_ONCE_FINAL` -- plays, game_stats, ratings, recruiting, draft, ...).
 Before this, every off-season run re-ingested the entire finished previous season
 -- `get_current_season()` returns `year - 1` until August -- and `plays` fans out
-to one `/plays/stats` call **per game**, roughly 2,000 calls a day against a
-75,000/month budget for immutable data. That is what exhausted the quota behind
+to one `/plays/stats` call **per game**, roughly 2,000 calls a day against the
+then-75,000/month budget for immutable data. That is what exhausted the quota behind
 the 2026-07-25 three-hour rate-limited run. `reference` and `metrics_wp` are
 never skipped (cheap / already self-limiting), and the upcoming-schedule refresh
 is unaffected. An explicit `--season` or `--sources` disables the skip entirely,
@@ -327,5 +327,5 @@ Historical depth varies by endpoint:
 ## Configuration
 
 - `pyproject.toml` -- project metadata, dependencies, CLI entry point (`cfb-pipeline`), ruff config (line-length 100, py311), pytest config
-- `.dlt/config.toml` -- runtime config: worker count, file chunking, monthly API budget (75,000). Year ranges live in `src/pipelines/config/years.py`
+- `.dlt/config.toml` -- runtime config: worker count, file chunking, monthly API budget (125,000). Year ranges live in `src/pipelines/config/years.py`
 - Supabase MCP server enabled in `.claude/settings.local.json` for interactive SQL during development

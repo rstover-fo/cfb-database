@@ -16,13 +16,13 @@ class RateLimiter:
 
     def __init__(
         self,
-        monthly_budget: int = 75000,
+        monthly_budget: int = 125000,
         state_file: Path | None = None,
     ):
         """Initialize the rate limiter.
 
         Args:
-            monthly_budget: Maximum API calls per month (Tier 3 = 75,000)
+            monthly_budget: Maximum API calls per month (Tier 4 = 125,000)
             state_file: Path to state file. Defaults to .dlt/rate_limit_state.json
         """
         self.monthly_budget = monthly_budget
@@ -118,7 +118,7 @@ class RateLimiter:
 _rate_limiter: RateLimiter | None = None
 
 
-def _configured_budget(default: int = 75000) -> int:
+def _configured_budget(default: int = 125000) -> int:
     """Read sources.cfbd.monthly_budget from dlt config, falling back to default."""
     try:
         import dlt

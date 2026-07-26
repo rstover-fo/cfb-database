@@ -551,7 +551,7 @@ def run_metrics_wp_pipeline(
     50, mirroring run_game_stats_weekly's proven batch size for staying under
     Supabase's statement timeout).
 
-    Budget math (Tier 3 = 75,000 calls/month, see docs/pipeline-manifest.md
+    Budget math (Tier 4 = 125,000 calls/month, see docs/pipeline-manifest.md
     and src/pipelines/utils/rate_limiter.py): one call per missing game.
     Full 2014+ backfill is ~12,000 completed FBS games -> ~12K calls, a
     one-time cost well inside the monthly budget. Steady-state daily/weekly

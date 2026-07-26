@@ -43,6 +43,8 @@ class TestComputeScripts:
             "simulate_season",
             # Section 4.3 preseason backtest -- read-only, reports to stdout.
             "backtest_preseason",
+            # Section 2.5 feature screen -- read-only, reports to stdout.
+            "screen_preseason_features",
         }
 
 

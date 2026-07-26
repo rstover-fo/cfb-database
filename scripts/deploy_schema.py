@@ -87,6 +87,11 @@ COMPUTE_SCRIPTS = {
     # Section 4.3 preseason backtest. Read-only -- re-scores history from
     # week-1 feature vectors and reports to stdout; writes no rows.
     "backtest_preseason",
+    # Section 2.5 candidate-feature screen. Read-only -- partial correlations
+    # and column discovery, reports to stdout. Previously runnable only via an
+    # interactive MCP session, which made the gate depend on a connector being
+    # authorized rather than on the deploy path everything else uses.
+    "screen_preseason_features",
 }
 
 # Marts refreshed after a compute run when plan.refresh is set. One home for

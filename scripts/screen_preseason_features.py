@@ -381,8 +381,10 @@ CANDIDATE_COLUMNS = [
     "draft_yield",
     "portal_net_rating",
     "draft_departures",
-    # Section 6.0b regime variant.
+    # Section 6.0b regime variant, plus the coaching-change indicator it used
+    # to absorb via zero-fill (see the SQL and the 2026-07-26 audit).
     "recruiting_points_regime",
+    "hc_first_year",
     # Prior-season trench performance (plan section 2.2). Never screened
     # before: the earlier trench test used roster-headcount continuity, which
     # counts walk-ons equally with starters and scored ~0. These measure the
@@ -505,13 +507,17 @@ draft_out AS (
 spine AS (
     -- One row per (season, team) with the outcome, its control, and the
     -- current staff's tenure start (for the section 6.0b regime variant).
-    -- LEFT JOIN on tenure so the ~1%% of team-seasons with no coach record
-    -- still screen; tenure_start falls back to the window start, making the
-    -- regime variant equal the flat window for those rows.
+    --
+    -- tenure_start is deliberately NOT coalesced. The earlier fallback to the
+    -- window start made the regime variant silently equal the flat window for
+    -- the ~1%% of team-seasons with no coach record, so those rows entered the
+    -- screen as duplicates of a different candidate. NULL here propagates to
+    -- both regime columns below and drops the row from THEIR complete cases
+    -- only, leaving every other candidate on the full frame.
     SELECT sp.year AS season, sp.team,
            sp.rating::double precision AS sp_rating,
            sp0.rating::double precision AS prior_sp_rating,
-           COALESCE(ct.tenure_start, sp.year - {CLASS_WINDOW}) AS tenure_start
+           ct.tenure_start AS tenure_start
     FROM ratings.sp_ratings sp
     JOIN ratings.sp_ratings sp0
       ON sp0.team = sp.team AND sp0.year = sp.year - 1
@@ -532,16 +538,39 @@ SELECT
           AND cp.year BETWEEN s.season - {CLASS_WINDOW} AND s.season - 1
     ), 0) AS recruiting_points_3yr,
     -- Section 6.0b regime variant: same decayed sum, but only classes signed
-    -- from the current staff's tenure start onward. Scores lower alone than
-    -- the flat window yet adds beyond it, because a short window is itself a
-    -- signal ("new coach, inherited roster").
-    COALESCE((
+    -- from the current staff's tenure start onward.
+    --
+    -- NOT zero-filled, and the reason is the 2026-07-26 imputation audit: the
+    -- previous COALESCE(...,0) hit 291 of 1,439 rows (20.2%%). The regime window
+    -- GREATEST(season-4, tenure_start)..season-1 is EMPTY exactly when
+    -- tenure_start >= season -- a first-year head coach -- so a fifth of the
+    -- sample carried a hard 0 that meant "no classes signed by this staff yet",
+    -- not "this staff recruits badly". Worse, that 0 is confounded with the
+    -- coaching change itself, since programs that just fired a coach were
+    -- usually bad, so the column silently blended a continuous recruiting term
+    -- with a de facto new-coach indicator and its partial could not be
+    -- attributed to either.
+    --
+    -- The two are now separated: this column measures recruiting on the rows
+    -- where the staff has actually signed classes, and `hc_first_year` below
+    -- carries the coaching-change effect explicitly where it can be read.
+    --
+    -- CASE rather than a bare NULL tenure_start: Postgres GREATEST IGNORES
+    -- NULL arguments, so GREATEST(season-4, NULL) returns season-4 and would
+    -- quietly restore the flat window instead of yielding NULL.
+    CASE WHEN s.tenure_start IS NULL THEN NULL ELSE (
         SELECT SUM(cp.points * POWER({CLASS_DECAY}, s.season - cp.year - 1))
         FROM class_points cp
         WHERE cp.team = s.team
           AND cp.year BETWEEN GREATEST(s.season - {CLASS_WINDOW}, s.tenure_start)
                           AND s.season - 1
-    ), 0) AS recruiting_points_regime,
+    ) END AS recruiting_points_regime,
+    -- The coaching-change effect the regime column used to absorb, as its own
+    -- screened candidate. NULL where no coach record exists, so it is never
+    -- inferred from missing data.
+    CASE WHEN s.tenure_start IS NULL THEN NULL
+         WHEN s.tenure_start >= s.season THEN 1.0
+         ELSE 0.0 END AS hc_first_year,
     COALESCE((
         SELECT SUM(bc.blue_chips) / NULLIF(SUM(bc.signees), 0)
         FROM blue_chips bc
@@ -658,8 +687,10 @@ blue_chips AS (
     GROUP BY 1, 2
 ),
 spine AS (
+    -- Mirrors SCREEN_FRAME_QUERY's spine, including the uncoalesced
+    -- tenure_start, so the audit measures the frame the screen actually builds.
     SELECT sp.year AS season, sp.team,
-           COALESCE(ct.tenure_start, sp.year - {CLASS_WINDOW}) AS tenure_start
+           ct.tenure_start AS tenure_start
     FROM ratings.sp_ratings sp
     JOIN ratings.sp_ratings sp0
       ON sp0.team = sp.team AND sp0.year = sp.year - 1
@@ -675,13 +706,19 @@ SELECT
         WHERE cp.team = s.team
           AND cp.year BETWEEN s.season - {CLASS_WINDOW} AND s.season - 1
     ) IS NULL) AS recruiting_points_3yr_imputed,
+    -- Now a coverage figure, not an imputation one: these rows are DROPPED
+    -- from the regime column's complete cases rather than zero-filled. The
+    -- CASE mirrors the frame query, since GREATEST ignores NULL arguments.
     COUNT(*) FILTER (WHERE (
-        SELECT SUM(cp.points * POWER({CLASS_DECAY}, s.season - cp.year - 1))
-        FROM class_points cp
-        WHERE cp.team = s.team
-          AND cp.year BETWEEN GREATEST(s.season - {CLASS_WINDOW}, s.tenure_start)
-                          AND s.season - 1
-    ) IS NULL) AS recruiting_points_regime_imputed,
+        CASE WHEN s.tenure_start IS NULL THEN NULL ELSE (
+            SELECT SUM(cp.points * POWER({CLASS_DECAY}, s.season - cp.year - 1))
+            FROM class_points cp
+            WHERE cp.team = s.team
+              AND cp.year BETWEEN GREATEST(s.season - {CLASS_WINDOW}, s.tenure_start)
+                              AND s.season - 1
+        ) END
+    ) IS NULL) AS recruiting_points_regime_absent,
+    COUNT(*) FILTER (WHERE s.tenure_start IS NULL) AS hc_first_year_absent,
     COUNT(*) FILTER (WHERE (
         SELECT SUM(bc.blue_chips) / NULLIF(SUM(bc.signees), 0)
         FROM blue_chips bc

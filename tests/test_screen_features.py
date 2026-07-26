@@ -435,6 +435,59 @@ class TestNullCandidatesAreScreenedOnCompleteCases:
         )
 
 
+class TestRegimeColumnsSeparateRecruitingFromCoachingChange:
+    """The 2026-07-26 imputation audit found `recruiting_points_regime`
+    zero-filled on 291 of 1,439 rows (20.2%).
+
+    The regime window GREATEST(season-4, tenure_start)..season-1 is empty
+    exactly when tenure_start >= season -- a first-year head coach -- so a
+    fifth of the sample carried a hard 0 meaning "no classes signed by this
+    staff yet". That 0 is confounded with the coaching change itself, so the
+    column blended a recruiting measure with a de facto new-coach indicator.
+    The two are now separate columns.
+    """
+
+    def test_regime_column_is_not_zero_filled(self):
+        from scripts.screen_preseason_features import SCREEN_FRAME_QUERY as q
+
+        regime = q[q.index("AS recruiting_points_regime") - 900 :]
+        regime = regime[: regime.index("AS recruiting_points_regime")]
+        assert "COALESCE" not in regime.upper(), (
+            "recruiting_points_regime must not be zero-filled -- an empty "
+            "regime window means 'first-year coach', not 'recruits badly'"
+        )
+
+    def test_hc_first_year_is_screened_separately(self):
+        from scripts.screen_preseason_features import CANDIDATE_COLUMNS
+        from scripts.screen_preseason_features import SCREEN_FRAME_QUERY as q
+
+        assert "hc_first_year" in CANDIDATE_COLUMNS
+        assert "AS hc_first_year" in q
+
+    def test_null_tenure_is_guarded_by_case_not_greatest(self):
+        """Postgres GREATEST IGNORES NULL arguments.
+
+        GREATEST(season - 4, NULL) returns season - 4, so relying on a NULL
+        tenure_start to propagate through GREATEST would quietly restore the
+        flat window instead of yielding NULL -- reintroducing the duplicate
+        candidate this change removes. The CASE guard is what makes it NULL.
+        """
+        from scripts.screen_preseason_features import SCREEN_FRAME_QUERY as q
+
+        assert q.count("WHEN s.tenure_start IS NULL THEN NULL") >= 2, (
+            "both regime columns need an explicit CASE guard on a NULL "
+            "tenure_start; GREATEST will not propagate it"
+        )
+
+    def test_spine_does_not_coalesce_tenure_start(self):
+        from scripts.screen_preseason_features import SCREEN_FRAME_QUERY as q
+
+        assert "COALESCE(ct.tenure_start" not in q, (
+            "coalescing tenure_start to the window start makes the regime "
+            "variant a silent duplicate of the flat window"
+        )
+
+
 class TestFrameQueryIsBindable:
     """The screen has NEVER been able to run its own frame query.
 

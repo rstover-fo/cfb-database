@@ -101,6 +101,15 @@ FEATURE_BUILD_VERSION = "tw_v2"
 CLASS_DECAY = 0.8
 CLASS_WINDOW = 4
 
+# The migration-042 preseason columns, reported individually in FEATURES_GATE.
+PRESEASON_042_COLUMNS = (
+    "recruiting_points_3yr",
+    "blue_chip_pipeline",
+    "hc_first_year",
+    "prior_def_line_yards",
+    "prior_def_stuff_rate",
+)
+
 
 # =============================================================================
 # Pure helpers -- no I/O, no DB, unit-tested directly (tests/test_build_features.py).
@@ -709,16 +718,24 @@ def summarize(rows: list[dict]) -> dict:
         "adj_src_prior": sum(1 for r in rows if r["adj_epa_source"] == "prior_season"),
         "null_std": sum(1 for r in rows if r["off_epa_per_play"] is None),
         "week1_rows": sum(1 for r in rows if r["games_played_to_date"] == 0),
+        # Migration 042. Reported per column because these are the ONLY
+        # features carrying information in week 1 -- if one silently arrives
+        # all-NULL it imputes to the train-window mean, its diff is exactly
+        # zero, and the preseason prediction is unchanged while every other
+        # number on this line looks healthy. A broken join and genuinely sparse
+        # data are indistinguishable without the count.
+        **{f"null_{col}": sum(1 for r in rows if r[col] is None) for col in PRESEASON_042_COLUMNS},
     }
 
 
 def print_gate(season: int, rows: list[dict]) -> None:
     s = summarize(rows)
+    extra = " ".join(f"null_{col}={s[f'null_{col}']}" for col in PRESEASON_042_COLUMNS)
     print(
         f"FEATURES_GATE season={season} rows={s['rows']} null_elo={s['null_elo']} "
         f"null_adj_epa={s['null_adj_epa']} adj_src_week={s['adj_src_week']} "
         f"adj_src_prior={s['adj_src_prior']} null_std={s['null_std']} "
-        f"week1_rows={s['week1_rows']}"
+        f"week1_rows={s['week1_rows']} {extra}"
     )
 
 

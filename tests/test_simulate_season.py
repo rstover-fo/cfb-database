@@ -25,6 +25,7 @@ import numpy as np  # noqa: E402
 from scripts.simulate_season import (  # noqa: E402
     BOWL_ELIGIBLE_WINS,
     COMPLETE_SCHEDULE_GAMES,
+    DEFAULT_STRENGTH_SHARE,
     assign_sos_ranks,
     build_projection_row,
     conference_title_probs,
@@ -258,6 +259,7 @@ class TestBuildProjectionRow:
             18.5,
             0.25,
             sim["games_simulated"]["A"],
+            0.15,
         )
 
     def test_counts_actual_wins_from_both_sides(self):
@@ -311,6 +313,7 @@ class TestCodexRegressions:
             18.5,
             None,
             sim["games_simulated"]["A"],
+            0.15,
         )
         assert row["games_scheduled"] == 2
         assert row["games_simulated"] == 1
@@ -335,6 +338,7 @@ class TestCodexRegressions:
             18.5,
             None,
             sim["games_simulated"]["A"],
+            0.15,
         )
         assert set(row["p_win_dist"]) == {"0", "1"}
         assert sum(row["p_win_dist"].values()) == pytest.approx(1.0)
@@ -396,7 +400,7 @@ class TestSelfReviewRegressions:
 
         # The row builder still produces the degenerate shape if called...
         row = build_projection_row(
-            "A", sim["wins"]["A"], games, {}, "C", "fitted_v1", 100, 18.5, None, 0
+            "A", sim["wins"]["A"], games, {}, "C", "fitted_v1", 100, 18.5, None, 0, 0.15
         )
         assert row["projected_wins"] == 0.0
         assert row["p_bowl_eligible"] == 0.0
@@ -447,11 +451,24 @@ class TestCorrelatedDraws:
         tau, game_sd = strength_sd(sigma, share)
         assert 2 * tau**2 + game_sd**2 == pytest.approx(sigma**2)
 
-    def test_share_zero_reproduces_v1_exactly(self):
+    def test_share_zero_reproduces_independent_draws(self):
+        """share=0 must still be the exact v1 path -- it is the escape hatch
+        for reproducing any pre-v1.1 projection. Checked against the binomial
+        SD that independent games of equal probability would give, not against
+        the default (which is now the calibrated 0.15)."""
+        games = self._slate(n=12, margin=0.0)  # 12 independent coin flips
+        w = simulate_wins(games, 40000, 18.0, seed=5, strength_share=0.0)["wins"]["A"]
+        binomial_sd = (12 * 0.5 * 0.5) ** 0.5
+        assert float(np.std(w)) == pytest.approx(binomial_sd, abs=0.05)
+
+    def test_shipped_default_is_the_calibrated_share(self):
+        """Pins the sweep result so the default cannot drift back to a guess.
+        0.15 put backtest p10-p90 coverage at 79.6% against a nominal 80%."""
+        assert DEFAULT_STRENGTH_SHARE == 0.15
         games = self._slate()
-        a = simulate_wins(games, 2000, 18.0, seed=5, strength_share=0.0)["wins"]["A"]
-        b = simulate_wins(games, 2000, 18.0, seed=5)["wins"]["A"]
-        assert np.array_equal(a, b), "default must be the v1 path"
+        explicit = simulate_wins(games, 1000, 18.0, seed=5, strength_share=0.15)["wins"]["A"]
+        default = simulate_wins(games, 1000, 18.0, seed=5)["wins"]["A"]
+        assert np.array_equal(explicit, default)
 
     def test_tails_fatten_as_share_rises(self):
         """The defect being fixed, stated as a monotonicity check."""

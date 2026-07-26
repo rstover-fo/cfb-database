@@ -34,18 +34,26 @@ single, explicit, tunable uncertainty parameter instead of relying on per-game
 Platt-calibrated probabilities that were never jointly calibrated across a
 season.
 
-KNOWN v1 LIMITATION -- INDEPENDENT DRAWS
-----------------------------------------
-Each game is drawn independently. Real season outcomes are correlated: a team
-genuinely better than its rating beats *everyone* more often, so its wins
-cluster. Independent draws therefore understate BOTH tails -- 11-win and 2-win
-seasons are each less likely under this model than in reality. Central
-tendency (``projected_wins``, ``median_wins``) is essentially unaffected;
-``wins_p10``/``wins_p90``/``p_ten_plus`` are conservative at the edges. The
-fix (draw one per-team season-strength offset per simulation and apply it to
-all of that team's games) is a small change, deliberately deferred to v1.1 so
-the honest version ships first. The limitation is also recorded in the
-``n_sims`` column comment for downstream consumers.
+CORRELATED DRAWS (v1.1)
+-----------------------
+v1 drew every game independently, which treats a team's true strength as
+perfectly known and every deviation as game-level noise. Real seasons are
+correlated -- a team better than its rating beats *everyone* more often -- so
+independent draws understate BOTH tails. The section 4.5 backtest measured it:
+p10-p90 coverage 71.7% against a nominal 80%, with p_bowl_eligible
+overconfident at the top and p_ten_plus underconfident in the middle.
+
+v1.1 draws one season-strength offset per team per simulation and applies it to
+every game that team plays. ``strength_sd`` splits sigma so total per-game
+margin variance is UNCHANGED (2*tau^2 + game_sd^2 == sigma^2), so single-game
+predictions stay exactly as calibrated as before and only the correlation
+structure moves. The share was calibrated against backtest coverage rather than
+chosen: 0.15 lands coverage at 79.6%, and win MAE was 1.784 at every share
+swept, confirming the point estimate is untouched.
+
+Residual limitation: the offsets are independent ACROSS teams, so a conference
+whose teams all outperform together is still underweighted. Set
+``--strength-share 0`` to reproduce v1 exactly.
 
 Usage:
     python scripts/simulate_season.py
@@ -126,7 +134,11 @@ PROJECTION_SEASON_TYPE = "regular"
 # CALIBRATED, NOT GUESSED: chosen by sweeping rho in the preseason backtest
 # and taking the value whose p10-p90 coverage lands nearest the nominal 80%
 # (scripts/backtest_preseason.py --sweep-strength-share). See appendix A7.
-DEFAULT_STRENGTH_SHARE = 0.0
+# Calibrated 2026-07-26 by --sweep-strength-share over 2019-2025 (n=921):
+# coverage 71.7% at 0.00 -> 79.6% at 0.15, against a nominal 80%. Win MAE was
+# 1.784 at EVERY share in the sweep, which is the variance constraint above
+# doing its job -- the point estimate is untouched and only the spread moves.
+DEFAULT_STRENGTH_SHARE = 0.15
 
 
 # =============================================================================
@@ -387,6 +399,7 @@ def build_projection_row(
     sigma,
     conf_title_prob,
     games_simulated,
+    strength_share,
 ):
     """One predictions.season_projections row dict for `team`.
 
@@ -629,6 +642,7 @@ _ROW_COLUMNS = [
     "playoff_prob",
     "n_sims",
     "residual_sigma",
+    "strength_share",
 ]
 
 # The conflict-key columns are the ones NOT refreshed on a same-day re-run.
@@ -663,7 +677,9 @@ def write_projections(conn, rows: list[dict]) -> None:
     conn.commit()
 
 
-def simulate_one_season(conn, season: int, model: str, n_sims: int, seed: int) -> int:
+def simulate_one_season(
+    conn, season: int, model: str, n_sims: int, seed: int, strength_share: float
+) -> int:
     """Simulate and write one season. Returns the number of team rows written."""
     games = fetch_season_games(conn, season, model)
     if not games:
@@ -683,7 +699,7 @@ def simulate_one_season(conn, season: int, model: str, n_sims: int, seed: int) -
 
     sigma = fetch_sigma(conn, model)
     ratings = fetch_team_ratings(conn)
-    sim = simulate_wins(games, n_sims, sigma, seed=seed)
+    sim = simulate_wins(games, n_sims, sigma, seed=seed, strength_share=strength_share)
     wins_by_team = sim["wins"]
 
     conf_by_team = {}
@@ -722,6 +738,7 @@ def simulate_one_season(conn, season: int, model: str, n_sims: int, seed: int) -
             sigma,
             title_probs.get(team),
             sim["games_simulated"][team],
+            strength_share,
         )
         for team, team_wins in wins_by_team.items()
         if sim["games_simulated"][team] > 0
@@ -741,6 +758,7 @@ def simulate_one_season(conn, season: int, model: str, n_sims: int, seed: int) -
         )
     print(
         f"SIM_GATE season={season} model={model} teams={len(rows)} sims={n_sims} "
+        f"strength_share={strength_share:.2f} "
         f"sigma={sigma:.2f} complete={complete} unscored_team_games={unscored} "
         f"omitted_teams={len(unprojectable)}"
     )
@@ -776,6 +794,13 @@ def main() -> None:
     parser.add_argument(
         "--seed", type=int, default=DEFAULT_SEED, help="RNG seed; fixed so re-runs reproduce"
     )
+    parser.add_argument(
+        "--strength-share",
+        type=float,
+        default=DEFAULT_STRENGTH_SHARE,
+        help=f"Share of margin variance carried by the per-team season-strength "
+        f"offset (default {DEFAULT_STRENGTH_SHARE}; 0 reproduces v1)",
+    )
     args = parser.parse_args()
 
     import psycopg2
@@ -792,7 +817,9 @@ def main() -> None:
 
         total = 0
         for season in seasons:
-            total += simulate_one_season(conn, season, args.model, args.sims, args.seed)
+            total += simulate_one_season(
+                conn, season, args.model, args.sims, args.seed, args.strength_share
+            )
         logger.info("Wrote %d projection row(s) across %d season(s)", total, len(seasons))
     except Exception:
         conn.rollback()

@@ -47,7 +47,56 @@ REPORTING NULLS
 ---------------
 Failures are printed, not silently dropped. A documented null on trench
 continuity is a finding: it tells us whether the ceiling is the metric or the
-data.
+data. Rejected candidates are deliberately RETAINED in CANDIDATE_COLUMNS below
+so a re-run reproduces the full table -- deleting them would make the null
+results unreproducible, which is the same failure mode this gate exists to
+prevent.
+
+RESULTS -- run 2026-07-26 against prod, seasons 2015-2025 (n=1,439)
+------------------------------------------------------------------
+Column 2 controls for prior-season SP+ only; column 3 additionally controls for
+`recruiting_points_3yr`, which is the strongest single candidate and therefore
+the bar every other candidate has to clear.
+
+    candidate                   vs prior SP+   + recruiting   verdict
+    recruiting_points_3yr          +0.2642     (is control)   SHIP
+    blue_chip_pipeline             +0.2532        +0.0931     SHIP
+    recruiting_points_regime       +0.1525        +0.0955     SHIP  (see below)
+    talent_stock                   +0.2664     ~+0.002        reject
+    pipeline_index                 +0.0952           --       reject
+    draft_picks_3yr                +0.0949        +0.0068     reject
+    conversion / draft_yield       +0.0760        -0.0007     reject
+    conversion_regime              +0.0876        +0.0344     reject
+    draft_departures               +0.0088           --       reject
+    portal_net_rating (2021-25)    +0.0274        +0.0731     reject, RE-TEST
+    portal_out_n (2021-25)         +0.0586        -0.0139     reject
+
+What the run established:
+
+1. **Trailing recruiting pipeline is the strongest preseason signal found** --
+   3x the pre-registered floor, and STRONGER in the portal era (+0.2840 on
+   2021-25) rather than weaker.
+2. **Draft production is redundant, not absent.** It predicts (+0.0949) until
+   recruiting is controlled, then collapses to +0.0068. Draft output identifies
+   programs that *recruit* well, not ones that *develop*.
+3. **Regime-scoping is real** (design doc section 6.0b). Restricting the
+   recruiting window to classes signed under the current head coach scores
+   lower on its own (+0.1525 vs +0.2848) but adds +0.0955 BEYOND the flat
+   window -- the two together beat either alone. It partly encodes "new staff,
+   inherited roster", which the flat window cannot express.
+4. **The development term survives regime-scoping but still fails.**
+   `conversion` goes from -0.0007 to +0.0344 once scoped to the current staff
+   -- the right direction, less than half the floor. Draft counts are a coarse,
+   laggy proxy and season-level SP+ may not isolate development; the negative
+   result is on this measurement, not on the concept.
+5. **`draft_departures` is this gate's own justification:** raw correlation
+   +0.3474, partial +0.0088. Losing draft picks correlates with having been
+   good and says nothing about next season.
+
+Both composites in the original design failed: `pipeline_index`
+(talent_stock x conversion) scores +0.0952 against its own input's +0.2664 --
+the multiplication destroys signal -- and `talent_stock` beats plain recruiting
+by +0.002, complexity for nothing.
 
 Usage:
     python scripts/screen_preseason_features.py --check-schema
@@ -257,7 +306,40 @@ CANDIDATE_COLUMNS = [
     "draft_yield",
     "portal_net_rating",
     "draft_departures",
+    # Section 6.0b regime variant.
+    "recruiting_points_regime",
 ]
+
+# What actually cleared the 2026-07-26 run (see RESULTS in the module
+# docstring). This -- NOT CANDIDATE_COLUMNS -- is the set migration 042 should
+# add to features.team_week. CANDIDATE_COLUMNS stays comprehensive so the
+# rejections remain reproducible.
+#
+# `recruiting_points_regime` is the section 6.0b variant: the same decayed sum
+# restricted to classes signed from the current head coach's tenure start
+# onward. It is kept ALONGSIDE the flat window rather than replacing it -- it
+# scores lower alone but adds +0.0955 beyond it, so the pair carries more than
+# either does by itself.
+SHIPPED_COLUMNS = [
+    "recruiting_points_3yr",
+    "blue_chip_pipeline",
+    "recruiting_points_regime",
+]
+
+# Rejected, with the reason, so a future reader does not re-propose them
+# without new evidence. Re-test conditions noted where they exist.
+REJECTED_COLUMNS = {
+    "talent_stock": "beats plain recruiting by +0.002 -- complexity for nothing",
+    "pipeline_index": "+0.0952 vs its own input's +0.2664 -- the product destroys signal",
+    "draft_picks_3yr": "+0.0068 once recruiting is controlled -- a recruiting proxy",
+    "conversion": "-0.0007 once recruiting is controlled",
+    "conversion_regime": "+0.0344 -- regime-scoping helps but stays under the floor",
+    "draft_departures": "+0.0088 partial against +0.3474 raw -- pure confound",
+    "portal_net_rating": (
+        "+0.0731 (2021-25, n=663) -- under floor; RE-TEST as portal history accrues"
+    ),
+    "portal_out_n": "-0.0139 once recruiting is controlled",
+}
 
 # Recruiting-class decay across the four-year eligibility window: the class
 # entering season S-1 is weighted 1.0, S-2 0.8, and so on. A flat sum would
@@ -268,7 +350,28 @@ CLASS_DECAY = 0.8
 CLASS_WINDOW = 4
 
 SCREEN_FRAME_QUERY = f"""
-WITH class_points AS (
+WITH coach_year AS (
+    -- One head coach per (school, year). A school-year can list several
+    -- coaches (interim, co-HC), so take the one who actually coached the most
+    -- games. Covers 99.1% of the sp_ratings spine.
+    SELECT DISTINCT ON (c.school, c.year)
+           c.school, c.year, c._dlt_parent_id AS coach_id
+    FROM ref.coaches__seasons c
+    ORDER BY c.school, c.year, c.games DESC NULLS LAST
+),
+coach_islands AS (
+    -- Gaps-and-islands: a coach's SECOND stint at the same school must not
+    -- inherit the first stint's start year.
+    SELECT school, year, coach_id,
+           year - ROW_NUMBER() OVER (PARTITION BY school, coach_id ORDER BY year) AS grp
+    FROM coach_year
+),
+coach_tenure AS (
+    SELECT school, year, coach_id,
+           MIN(year) OVER (PARTITION BY school, coach_id, grp) AS tenure_start
+    FROM coach_islands
+),
+class_points AS (
     -- Recruiting class quality per (team, year).
     SELECT tr.team, tr.year, tr.points::double precision AS points
     FROM recruiting.team_recruiting tr
@@ -314,13 +417,19 @@ draft_out AS (
     GROUP BY 1, 2
 ),
 spine AS (
-    -- One row per (season, team) with the outcome and its control.
+    -- One row per (season, team) with the outcome, its control, and the
+    -- current staff's tenure start (for the section 6.0b regime variant).
+    -- LEFT JOIN on tenure so the ~1% of team-seasons with no coach record
+    -- still screen; tenure_start falls back to the window start, making the
+    -- regime variant equal the flat window for those rows.
     SELECT sp.year AS season, sp.team,
            sp.rating::double precision AS sp_rating,
-           sp0.rating::double precision AS prior_sp_rating
+           sp0.rating::double precision AS prior_sp_rating,
+           COALESCE(ct.tenure_start, sp.year - {CLASS_WINDOW}) AS tenure_start
     FROM ratings.sp_ratings sp
     JOIN ratings.sp_ratings sp0
       ON sp0.team = sp.team AND sp0.year = sp.year - 1
+    LEFT JOIN coach_tenure ct ON ct.school = sp.team AND ct.year = sp.year
     WHERE sp.year BETWEEN %(from_season)s AND %(to_season)s
       AND sp.rating IS NOT NULL AND sp0.rating IS NOT NULL
 )
@@ -336,6 +445,17 @@ SELECT
         WHERE cp.team = s.team
           AND cp.year BETWEEN s.season - {CLASS_WINDOW} AND s.season - 1
     ), 0) AS recruiting_points_3yr,
+    -- Section 6.0b regime variant: same decayed sum, but only classes signed
+    -- from the current staff's tenure start onward. Scores lower alone than
+    -- the flat window yet adds beyond it, because a short window is itself a
+    -- signal ("new coach, inherited roster").
+    COALESCE((
+        SELECT SUM(cp.points * POWER({CLASS_DECAY}, s.season - cp.year - 1))
+        FROM class_points cp
+        WHERE cp.team = s.team
+          AND cp.year BETWEEN GREATEST(s.season - {CLASS_WINDOW}, s.tenure_start)
+                          AND s.season - 1
+    ), 0) AS recruiting_points_regime,
     COALESCE((
         SELECT SUM(bc.blue_chips) / NULLIF(SUM(bc.signees), 0)
         FROM blue_chips bc

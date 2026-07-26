@@ -721,6 +721,13 @@ and bottom-half draft output is not the same team as the reverse, and
 Columns: `pipeline_index`, `talent_stock`, `draft_yield` (§2.4b),
 `blue_chip_pipeline` (4–5★ share of the four-year window).
 
+> **SUPERSEDED BY THE SCREEN (appendix A4, run 2026-07-26).** This section was
+> written before evidence existed. `pipeline_index` and `talent_stock` both
+> failed and must not ship; `conversion`/`draft_yield` failed even after
+> regime-scoping. What survives is `recruiting_points_3yr`,
+> `blue_chip_pipeline`, and the §6.0b variant `recruiting_points_regime`. The
+> design below is retained as the record of what was tested and why.
+
 | | Tier A hybrid | Tier B `draft_prob_v1` | Tier C external board |
 |---|---|---|---|
 | Available for 2026 | **July, today** | August (roster) | July, unvalidated |
@@ -1094,9 +1101,58 @@ instrument on mean-reverting data. But "the thesis is right and my test was
 bad" is exactly what a wrong thesis also looks like, which is why §2.5 makes
 the partial-correlation screen a hard gate rather than a formality.
 
-**Not yet run:** the partial-correlation screen itself (`partial_r(x, sp_S |
-sp_S−1)`) — the session lost direct SQL access before it could be executed. It
-is the first task of Phase 2, and its results should be appended here.
+**A4. The partial-correlation screen — RUN 2026-07-26 against prod.**
+Seasons 2015–2025, n = 1,439 team-seasons. Column 2 controls for prior-season
+SP+; column 3 additionally controls for `recruiting_points_3yr`, the strongest
+single candidate and therefore the bar every other candidate must clear.
+
+| candidate | vs prior SP+ | + recruiting | verdict |
+|---|---|---|---|
+| `recruiting_points_3yr` | **+0.2642** | *(is the control)* | **SHIP** |
+| `blue_chip_pipeline` | +0.2532 | **+0.0931** | **SHIP** |
+| `recruiting_points_regime` | +0.1525 | **+0.0955** | **SHIP** |
+| `talent_stock` | +0.2664 | ~+0.002 | reject |
+| `pipeline_index` | +0.0952 | — | reject |
+| `draft_picks_3yr` | +0.0949 | **+0.0068** | reject |
+| `conversion` / `draft_yield` | +0.0760 | **−0.0007** | reject |
+| `conversion_regime` | +0.0876 | +0.0344 | reject |
+| `draft_departures` | +0.0088 | — | reject |
+| `portal_net_rating` (2021–25, n=663) | +0.0274 | +0.0731 | reject, **re-test** |
+| `portal_out_n` (2021–25) | +0.0586 | −0.0139 | reject |
+
+Portal-era recruiting partial is **+0.2840** — the signal is *stronger* after
+2021, not weaker.
+
+**What this settles.**
+
+1. **Trailing recruiting pipeline is the strongest preseason signal found**,
+   at 3× the pre-registered floor.
+2. **Draft production is redundant, not absent.** +0.0949 alone, +0.0068 once
+   recruiting is controlled. It identifies programs that *recruit* well, not
+   ones that *develop*.
+3. **Regime-scoping is real (§6.0b validated).** Restricting the recruiting
+   window to classes signed under the current head coach scores lower alone
+   (+0.1525 vs +0.2848) but adds **+0.0955 beyond** the flat window — the pair
+   beats either alone, because a short window itself encodes "new staff,
+   inherited roster."
+4. **The development term survives regime-scoping but still fails.**
+   `conversion` moves from −0.0007 to +0.0344 when scoped to the current staff
+   — right direction, under half the floor. Draft counts are a coarse, laggy
+   proxy and season-level SP+ may not isolate development; the negative result
+   is on **this measurement**, not on the concept.
+5. **`draft_departures` justifies the whole gate:** raw +0.3474, partial
+   +0.0088.
+
+**Both composites in §6.0 failed.** `pipeline_index` scores +0.0952 against
+its own input's +0.2664 — the multiplication destroys signal. `talent_stock`
+beats plain recruiting by +0.002.
+
+**Revised Tier A — ship three columns, not five:** `recruiting_points_3yr`,
+`blue_chip_pipeline`, `recruiting_points_regime`. Drop `talent_stock`,
+`pipeline_index`, `conversion`/`draft_yield`, `draft_picks_3yr`,
+`draft_departures`. Rejected candidates stay in
+`screen_preseason_features.py`'s `CANDIDATE_COLUMNS` so the nulls remain
+reproducible; `SHIPPED_COLUMNS` is what migration 042 consumes.
 
 **Unaffected by any of this:** §2.0's finding that `returning_ppa_pct` cannot
 see the lines is structural — it follows from PPA's definition, not from these

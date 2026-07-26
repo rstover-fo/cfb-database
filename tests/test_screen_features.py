@@ -435,6 +435,52 @@ class TestNullCandidatesAreScreenedOnCompleteCases:
         )
 
 
+class TestRecordedVerdictsAreInternallyConsistent:
+    """The recorded ledger drifted from the screen once already.
+
+    The docstring table said blue_chip_pipeline shipped at +0.0931 and
+    recruiting_points_regime at +0.0955; the first executable run scored them
+    +0.0782 and -0.0620. These assertions cannot verify the numbers without a
+    database, but they can keep the bookkeeping honest -- every candidate
+    accounted for exactly once, and human overrides kept out of the set that is
+    supposed to mirror the screen's own output.
+    """
+
+    def test_every_candidate_has_exactly_one_recorded_verdict(self):
+        from scripts.screen_preseason_features import (
+            CANDIDATE_COLUMNS,
+            REJECTED_COLUMNS,
+            SHIPPED_BY_DECISION,
+            SHIPPED_COLUMNS,
+            UNTESTABLE_COLUMNS,
+        )
+
+        recorded = (
+            list(SHIPPED_COLUMNS)
+            + list(SHIPPED_BY_DECISION)
+            + list(REJECTED_COLUMNS)
+            + list(UNTESTABLE_COLUMNS)
+        )
+        assert len(recorded) == len(set(recorded)), "a candidate has two verdicts"
+        assert set(recorded) == set(CANDIDATE_COLUMNS), (
+            "every screened candidate needs a recorded verdict and vice versa"
+        )
+
+    def test_overrides_are_not_laundered_into_the_shipped_set(self):
+        from scripts.screen_preseason_features import SHIPPED_BY_DECISION, SHIPPED_COLUMNS
+
+        assert not set(SHIPPED_COLUMNS) & set(SHIPPED_BY_DECISION), (
+            "a column shipped against the screen's verdict must stay visible as "
+            "an override, not merge into the set that mirrors the screen"
+        )
+
+    def test_every_override_records_its_argument(self):
+        from scripts.screen_preseason_features import SHIPPED_BY_DECISION
+
+        for column, rationale in SHIPPED_BY_DECISION.items():
+            assert len(rationale) > 40, f"{column} overrides the gate without an argument"
+
+
 class TestRegimeColumnsSeparateRecruitingFromCoachingChange:
     """The 2026-07-26 imputation audit found `recruiting_points_regime`
     zero-filled on 291 of 1,439 rows (20.2%).

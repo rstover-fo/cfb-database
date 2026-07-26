@@ -52,51 +52,80 @@ so a re-run reproduces the full table -- deleting them would make the null
 results unreproducible, which is the same failure mode this gate exists to
 prevent.
 
-RESULTS -- run 2026-07-26 against prod, seasons 2015-2025 (n=1,439)
-------------------------------------------------------------------
+RESULTS -- run 2026-07-26 against prod, seasons 2015-2025
+--------------------------------------------------------
+Produced by THIS SCRIPT (deploy run 124). Every figure below is reproducible
+by re-running it, which the earlier recorded table was not: two unescaped
+percent signs meant the frame query had never once executed, so the original
+verdicts came from ad-hoc MCP queries that no longer exist. Where the two
+disagree, these numbers are the ones that stand.
+
 Column 2 controls for prior-season SP+ only; column 3 additionally controls for
 `recruiting_points_3yr`, which is the strongest single candidate and therefore
-the bar every other candidate has to clear.
+the bar every other candidate has to clear. `n`/`coverage` are per candidate:
+each is screened on its own complete cases (see `complete_cases`).
 
-    candidate                   vs prior SP+   + recruiting   verdict
-    recruiting_points_3yr          +0.2642     (is control)   SHIP
-    blue_chip_pipeline             +0.2532        +0.0931     SHIP
-    recruiting_points_regime       +0.1525        +0.0955     SHIP  (see below)
-    talent_stock                   +0.2664     ~+0.002        reject
-    pipeline_index                 +0.0952           --       reject
-    draft_picks_3yr                +0.0949        +0.0068     reject
-    conversion / draft_yield       +0.0760        -0.0007     reject
-    conversion_regime              +0.0876        +0.0344     reject
-    draft_departures               +0.0088           --       reject
-    portal_net_rating (2021-25)    +0.0274        +0.0731     reject, RE-TEST
-    portal_out_n (2021-25)         +0.0586        -0.0139     reject
+    candidate                       n    cov   vs prior   +recr   verdict
+    recruiting_points_3yr        1439  1.000    +0.2642  (ctrl)   SHIP
+    hc_first_year                1426  0.991    -0.1334  -0.1615  SHIP
+    prior_def_line_yards         1423  0.989    -0.0463  -0.0997  SHIP
+    prior_def_stuff_rate         1423  0.989    +0.0536  +0.0816  SHIP (marginal)
+    blue_chip_pipeline           1439  1.000    +0.2532  +0.0782  reject (see below)
+    talent_stock                 1439  1.000    +0.2664  +0.0744  reject
+    draft_departures             1439  1.000    +0.0088  -0.0728  reject
+    recruiting_points_regime     1136  0.789    +0.0712  -0.0620  reject
+    prior_power_success          1423  0.989    +0.0221  +0.0520  reject
+    portal_net_rating            1439  1.000    +0.0247  +0.0481  reject
+    prior_stuff_rate_allowed     1423  0.989    -0.0021  -0.0290  reject
+    prior_line_yards             1423  0.989    -0.0069  +0.0223  reject
+    pipeline_index               1439  1.000    +0.0952  +0.0072  reject
+    draft_picks_3yr              1439  1.000    +0.0949  +0.0068  reject
+    conversion / draft_yield     1439  1.000    +0.0760  -0.0007  reject
+    prior_havoc_allowed_front_7   251  0.174        --       --   untestable
+    prior_front_seven_havoc       251  0.174        --       --   untestable
 
 What the run established:
 
 1. **Trailing recruiting pipeline is the strongest preseason signal found** --
-   3x the pre-registered floor, and STRONGER in the portal era (+0.2840 on
-   2021-25) rather than weaker.
-2. **Draft production is redundant, not absent.** It predicts (+0.0949) until
+   3x the pre-registered floor.
+2. **The trenches thesis half-survives, and it is the DEFENSIVE half.**
+   `prior_def_line_yards` (-0.0997; the column is yards ALLOWED, so negative
+   confirms the thesis) and `prior_def_stuff_rate` (+0.0816) both clear. Every
+   offensive-line measure fails: line yards +0.0223, power success +0.0520,
+   stuff rate allowed -0.0290. Measured line play succeeds where the earlier
+   roster-headcount continuity screen (OL -0.015, DL +0.013) found nothing.
+3. **A first-year head coach is the second-strongest signal in the set**
+   (-0.1615, q < 1e-5), and it was previously invisible. It only became
+   measurable once it was separated from `recruiting_points_regime` -- see 4.
+4. **The regime column's original +0.0955 was not a recruiting signal.** The
+   regime window is empty exactly when the head coach is in year one, and
+   zero-filling put a hard 0 on 291 of 1,439 rows (20.2%, found by
+   --audit-imputation). That 0 is confounded with the coaching change itself,
+   so the column silently blended recruiting with a new-coach indicator. Split
+   apart, the recruiting half falls to -0.0620 and FAILS while the coaching
+   half ships at -0.1615. A column had shipped on a number that measured
+   something other than what the column claimed to measure.
+5. **Draft production is redundant, not absent.** It predicts (+0.0949) until
    recruiting is controlled, then collapses to +0.0068. Draft output identifies
    programs that *recruit* well, not ones that *develop*.
-3. **Regime-scoping is real** (design doc section 6.0b). Restricting the
-   recruiting window to classes signed under the current head coach scores
-   lower on its own (+0.1525 vs +0.2848) but adds +0.0955 BEYOND the flat
-   window -- the two together beat either alone. It partly encodes "new staff,
-   inherited roster", which the flat window cannot express.
-4. **The development term survives regime-scoping but still fails.**
-   `conversion` goes from -0.0007 to +0.0344 once scoped to the current staff
-   -- the right direction, less than half the floor. Draft counts are a coarse,
-   laggy proxy and season-level SP+ may not isolate development; the negative
-   result is on this measurement, not on the concept.
-5. **`draft_departures` is this gate's own justification:** raw correlation
-   +0.3474, partial +0.0088. Losing draft picks correlates with having been
-   good and says nothing about next season.
+6. **`draft_departures` is this gate's own justification:** raw correlation
+   +0.3474, partial -0.0728 -- and it flips sign. Losing draft picks correlates
+   with having been good and says nothing about next season.
+7. **Two candidates are untestable, not null.** The havoc front-seven splits
+   exist for only 17.4% of team-seasons, below MIN_SCREEN_N. That is a
+   data-coverage finding; the thesis they would test is unadjudicated.
 
 Both composites in the original design failed: `pipeline_index`
 (talent_stock x conversion) scores +0.0952 against its own input's +0.2664 --
-the multiplication destroys signal -- and `talent_stock` beats plain recruiting
-by +0.002, complexity for nothing.
+the multiplication destroys signal -- and `talent_stock` (+0.0744) does not
+clear the floor either.
+
+UNRESOLVED. The ad-hoc figures for `blue_chip_pipeline` (+0.0931 vs +0.0782),
+`talent_stock` (~+0.002 vs +0.0744) and `draft_departures` (+0.0088 vs -0.0728,
+sign flip) are not explained by imputation -- the audit found those columns
+1.5% and 0.8% zero-filled, and the zero-fill inflates, so the honest
+blue_chip_pipeline value is at most +0.0782. The ad-hoc SQL is gone and the
+discrepancy is recorded rather than reconciled.
 
 Usage:
     python scripts/screen_preseason_features.py --check-schema
@@ -398,35 +427,68 @@ CANDIDATE_COLUMNS = [
     "prior_front_seven_havoc",
 ]
 
-# What actually cleared the 2026-07-26 run (see RESULTS in the module
-# docstring). This -- NOT CANDIDATE_COLUMNS -- is the set migration 042 should
-# add to features.team_week. CANDIDATE_COLUMNS stays comprehensive so the
-# rejections remain reproducible.
+# What the screen itself ships (deploy run 124; see RESULTS in the module
+# docstring). CANDIDATE_COLUMNS stays comprehensive so the rejections remain
+# reproducible.
 #
-# `recruiting_points_regime` is the section 6.0b variant: the same decayed sum
-# restricted to classes signed from the current head coach's tenure start
-# onward. It is kept ALONGSIDE the flat window rather than replacing it -- it
-# scores lower alone but adds +0.0955 beyond it, so the pair carries more than
-# either does by itself.
+# This list is exactly the set with verdict == "ship", so `screen()` reproduces
+# it. Anything shipped for a reason the screen did not produce belongs in
+# SHIPPED_BY_DECISION below, never here -- collapsing the two is how the gate
+# stops being a gate.
 SHIPPED_COLUMNS = [
     "recruiting_points_3yr",
-    "blue_chip_pipeline",
-    "recruiting_points_regime",
+    "hc_first_year",
+    "prior_def_line_yards",
+    "prior_def_stuff_rate",
 ]
+
+# Shipped by human decision DESPITE a reject verdict, with the argument on the
+# record. Migration 042 adds SHIPPED_COLUMNS + these.
+#
+# Kept separate so the override is legible as an override. The screen's job is
+# to produce a number and apply a pre-registered rule; overruling the rule is a
+# judgment the owner is entitled to make, but it must not be laundered into
+# looking like a measurement.
+SHIPPED_BY_DECISION = {
+    "blue_chip_pipeline": (
+        "+0.0782 vs a 0.08 floor -- short by 0.07 standard errors at n=1,439, "
+        "which the data cannot distinguish, and q=0.0095 says the effect is real. "
+        "The floor separates 'matters' from 'negligible against an 18.5-point "
+        "residual SD'; it was never meant to arbitrate the third decimal."
+    ),
+}
 
 # Rejected, with the reason, so a future reader does not re-propose them
 # without new evidence. Re-test conditions noted where they exist.
 REJECTED_COLUMNS = {
-    "talent_stock": "beats plain recruiting by +0.002 -- complexity for nothing",
-    "pipeline_index": "+0.0952 vs its own input's +0.2664 -- the product destroys signal",
+    "talent_stock": "+0.0744 -- under the floor, and no better than plain recruiting",
+    "pipeline_index": "+0.0072 vs its own input's +0.2664 -- the product destroys signal",
     "draft_picks_3yr": "+0.0068 once recruiting is controlled -- a recruiting proxy",
     "conversion": "-0.0007 once recruiting is controlled",
-    "conversion_regime": "+0.0344 -- regime-scoping helps but stays under the floor",
-    "draft_departures": "+0.0088 partial against +0.3474 raw -- pure confound",
-    "portal_net_rating": (
-        "+0.0731 (2021-25, n=663) -- under floor; RE-TEST as portal history accrues"
+    "draft_yield": "-0.0007 -- identical to conversion by construction",
+    "draft_departures": "-0.0728 partial against +0.3474 raw, sign flipped -- pure confound",
+    "recruiting_points_regime": (
+        "-0.0620 on its 1,136 complete cases. Its earlier +0.0955 was an artifact of "
+        "zero-filling 291 first-year-coach rows; that signal was the coaching change, "
+        "and it now ships separately as hc_first_year (-0.1615)."
     ),
-    "portal_out_n": "-0.0139 once recruiting is controlled",
+    "prior_line_yards": "+0.0223 -- offensive line play carries no signal past recruiting",
+    "prior_power_success": "+0.0520 -- under the floor",
+    "prior_stuff_rate_allowed": "-0.0290 -- under the floor",
+    "portal_net_rating": (
+        "+0.0481 -- under floor; RE-TEST as portal history accrues. Caveat: it is "
+        "COALESCEd to 0 across the full window, but a pre-2021 zero means 'the portal "
+        "did not exist', not 'net zero movement', so the measurement is contaminated "
+        "the same way the trench columns were. Re-test on 2021+ complete cases."
+    ),
+}
+
+# Screened but not scored: too few complete cases to test at all. Recorded
+# because "we could not measure this" is a different finding from "we measured
+# it and it was nothing", and only the second one closes a question.
+UNTESTABLE_COLUMNS = {
+    "prior_havoc_allowed_front_seven": "n=251 (17.4% coverage) -- below MIN_SCREEN_N",
+    "prior_front_seven_havoc": "n=251 (17.4% coverage) -- below MIN_SCREEN_N",
 }
 
 # Recruiting-class decay across the four-year eligibility window: the class

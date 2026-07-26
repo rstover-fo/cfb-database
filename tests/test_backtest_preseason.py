@@ -5,8 +5,10 @@ import pytest
 
 from scripts.backtest_preseason import (
     MIN_SIGMA_GAMES,
+    RESPECTABLE_WIN_MAE,
     baseline_prior_rate,
     brier,
+    build_backtest_row,
     calibration_table,
     drop_outcome_dependent,
     interval_coverage,
@@ -276,3 +278,334 @@ class TestResidualQuantiles:
 
     def test_empty(self):
         assert residual_quantiles([], []) is None
+
+
+# =============================================================================
+# Persistence -- predictions.model_backtest (migration 045)
+# =============================================================================
+
+
+def _agg(
+    proj=None,
+    act=None,
+    per_season=None,
+    strength_share=0.15,
+):
+    """An aggregate shaped exactly like ``_simulate_pass`` returns.
+
+    Built with the module's own metric functions rather than hand-written
+    numbers, so a test asserting "the row matches the report" is asserting
+    agreement and not re-deriving the same arithmetic twice.
+    """
+    from scripts.backtest_preseason import brier as _brier
+
+    proj = [8.0, 6.0, 3.0, 10.0] if proj is None else proj
+    act = [7.0, 8.0, 4.0, 9.0] if act is None else act
+    p10 = [p - 2.0 for p in proj]
+    p90 = [p + 2.0 for p in proj]
+    base_prior = [p + 0.5 for p in proj]
+    base_flat = [6.0] * len(proj)
+    bowl_probs = [0.9, 0.5, 0.1, 0.95][: len(proj)]
+    bowl_out = [a >= 6 for a in act]
+    ten_probs = [0.2, 0.05, 0.01, 0.6][: len(proj)]
+    ten_out = [a >= 10 for a in act]
+    if per_season is None:
+        per_season = [
+            {
+                "season": 2025,
+                "train_through": 2024,
+                "max_games_played": 0,
+                "dropped_outcome_dependent": 5,
+            },
+            {
+                "season": 2024,
+                "train_through": 2023,
+                "max_games_played": 0,
+                "dropped_outcome_dependent": 3,
+            },
+        ]
+    return {
+        "strength_share": strength_share,
+        "per_season": per_season,
+        "proj": proj,
+        "act": act,
+        "p10": p10,
+        "p90": p90,
+        "base_prior": base_prior,
+        "base_flat": base_flat,
+        "bowl_probs": bowl_probs,
+        "bowl_out": bowl_out,
+        "ten_probs": ten_probs,
+        "ten_out": ten_out,
+        "overall": win_error_metrics(proj, act),
+        "coverage": interval_coverage(act, p10, p90),
+        "quantiles": residual_quantiles(proj, act),
+        "bowl_brier": _brier(bowl_probs, bowl_out),
+        "ten_brier": _brier(ten_probs, ten_out),
+    }
+
+
+def _row(**kwargs):
+    defaults = {
+        "scope": "fbs",
+        "season_start": 2018,
+        "season_end": 2025,
+        "n_sims": 10000,
+        "seed": 20260726,
+        "feature_build_version": "tw_v2",
+    }
+    agg = kwargs.pop("agg", None) or _agg()
+    return build_backtest_row(agg, **{**defaults, **kwargs})
+
+
+class TestBuildBacktestRow:
+    """The row and the BACKTEST_GATE log line must never be able to disagree --
+    cfb-app attaches these numbers to every season-outlook answer it gives."""
+
+    def test_metrics_match_the_reported_aggregate(self):
+        agg = _agg()
+        row = _row(agg=agg)
+        assert row["n"] == agg["overall"]["n"]
+        assert row["win_mae"] == pytest.approx(agg["overall"]["mae"])
+        assert row["rmse"] == pytest.approx(agg["overall"]["rmse"])
+        assert row["bias"] == pytest.approx(agg["overall"]["bias"])
+        assert row["coverage"] == pytest.approx(agg["coverage"])
+        assert row["resid_p10"] == pytest.approx(agg["quantiles"]["p10"])
+        assert row["resid_p90"] == pytest.approx(agg["quantiles"]["p90"])
+        assert row["bowl_brier"] == pytest.approx(agg["bowl_brier"])
+        assert row["ten_plus_brier"] == pytest.approx(agg["ten_brier"])
+
+    def test_baselines_use_the_same_denominator_as_the_model(self):
+        """An MAE alone means nothing; the baselines are how it is read."""
+        agg = _agg()
+        row = _row(agg=agg)
+        assert row["baseline_prior_mae"] == pytest.approx(
+            win_error_metrics(agg["base_prior"], agg["act"])["mae"]
+        )
+        assert row["baseline_flat_mae"] == pytest.approx(
+            win_error_metrics(agg["base_flat"], agg["act"])["mae"]
+        )
+
+    def test_every_conflict_key_column_is_populated(self):
+        """A NULL in a unique index does not conflict with another NULL, so a
+        missing key column would let two runs of the same configuration on the
+        same day insert two rows instead of converging onto one."""
+        from scripts.backtest_preseason import _BACKTEST_CONFLICT_COLUMNS
+
+        row = _row()
+        for col in _BACKTEST_CONFLICT_COLUMNS:
+            if col == "run_date":
+                continue  # server-side DEFAULT, deliberately not in the row
+            assert row.get(col) is not None, f"key column {col} is NULL -- duplicates possible"
+
+    def test_provenance_records_which_model_and_seasons(self):
+        from scripts.train_model import MODEL_VERSION
+
+        row = _row()
+        assert row["model_version"] == MODEL_VERSION
+        assert row["feature_build_version"] == "tw_v2"
+        assert row["seasons_covered"] == [2024, 2025]
+        # Season S is scored with the frozen S-1 fit.
+        assert row["train_through_min"] == 2023
+        assert row["train_through_max"] == 2024
+
+    def test_requested_range_is_kept_distinct_from_seasons_covered(self):
+        """2018-2025 was requested; only 2024-2025 had a usable S-1 fit. If the
+        two collapsed, a partially-measured range would read as a full one."""
+        row = _row(season_start=2018, season_end=2025)
+        assert (row["season_start"], row["season_end"]) == (2018, 2025)
+        assert row["seasons_covered"] == [2024, 2025]
+
+    def test_scope_distinguishes_the_two_populations(self):
+        assert _row(scope="fbs")["scope"] == "fbs"
+        assert _row(scope="all_divisions")["scope"] == "all_divisions"
+
+    def test_leak_evidence_travels_with_the_numbers(self):
+        """maxGP > 0 means a 'week-1' vector already held that season's own
+        games, so every error metric on the row is understated."""
+        per_season = [
+            {
+                "season": 2025,
+                "train_through": 2024,
+                "max_games_played": 4,
+                "dropped_outcome_dependent": 5,
+            },
+            {
+                "season": 2024,
+                "train_through": 2023,
+                "max_games_played": 0,
+                "dropped_outcome_dependent": 3,
+            },
+        ]
+        row = _row(agg=_agg(per_season=per_season))
+        assert row["max_games_played_to_date"] == 4
+        assert row["games_dropped_outcome_dependent"] == 8
+
+    def test_stores_the_bar_not_the_verdict(self):
+        """A stored measurement outlives a stored judgement: the bar can be
+        revised, win_mae cannot."""
+        row = _row()
+        assert row["respectable_win_mae"] == RESPECTABLE_WIN_MAE
+        assert not any("verdict" in k for k in row)
+
+    def test_calibration_covers_both_published_probabilities(self):
+        """api.season_outlook publishes p_bowl_eligible and p_ten_plus as
+        probability claims; a Brier scalar cannot say which bucket missed."""
+        import json
+
+        row = _row()
+        assert set(row["calibration"]) == {"p_bowl_eligible", "p_ten_plus"}
+        # Must survive json.dumps -- the writer stores it as JSONB.
+        json.loads(json.dumps(row["calibration"]))
+
+    def test_strength_share_is_the_value_the_simulation_used(self):
+        """_simulate_pass normalizes before simulating and puts the normalized
+        share in the aggregate; the row must copy THAT, not re-round."""
+        row = _row(agg=_agg(strength_share=0.15))
+        assert row["strength_share"] == pytest.approx(0.15)
+
+    def test_no_rows_compared_writes_nothing(self):
+        """A row with n=0 and every metric NULL asserts a backtest ran and
+        measured nothing, which reads to a consumer as 'no interval known' for
+        a model that is actually fine. Absence is the honest answer."""
+        assert (
+            build_backtest_row(
+                _agg(per_season=[]),
+                scope="fbs",
+                season_start=2025,
+                season_end=2025,
+                n_sims=10,
+                seed=1,
+                feature_build_version=None,
+            )
+            is None
+        )
+        assert (
+            build_backtest_row(
+                _agg(proj=[], act=[]),
+                scope="fbs",
+                season_start=2025,
+                season_end=2025,
+                n_sims=10,
+                seed=1,
+                feature_build_version=None,
+            )
+            is None
+        )
+
+    def test_null_feature_build_version_is_allowed(self):
+        """Unknown, never invented -- the column is nullable for this case."""
+        assert _row(feature_build_version=None)["feature_build_version"] is None
+
+
+class TestBacktestUpsert:
+    """The write shape, asserted rather than trusted -- a same-day re-run must
+    converge, and a column added to the table but not to the UPDATE list would
+    silently keep a stale value on that re-run."""
+
+    def test_row_keys_match_the_insert_column_list_exactly(self):
+        from scripts.backtest_preseason import _BACKTEST_COLUMNS
+
+        assert set(_row()) == set(_BACKTEST_COLUMNS)
+
+    def test_every_non_key_column_is_refreshed_on_conflict(self):
+        from scripts.backtest_preseason import (
+            _BACKTEST_COLUMNS,
+            _BACKTEST_CONFLICT_COLUMNS,
+            _BACKTEST_UPDATE_ASSIGNMENTS,
+        )
+
+        for col in _BACKTEST_COLUMNS:
+            if col in _BACKTEST_CONFLICT_COLUMNS:
+                assert f"{col} = EXCLUDED.{col}" not in _BACKTEST_UPDATE_ASSIGNMENTS
+            else:
+                assert f"{col} = EXCLUDED.{col}" in _BACKTEST_UPDATE_ASSIGNMENTS, (
+                    f"{col} would keep a stale value on a same-day re-run"
+                )
+
+    def test_computed_at_is_refreshed_so_a_rerun_is_visible(self):
+        from scripts.backtest_preseason import _BACKTEST_UPSERT_SQL
+
+        assert "computed_at = now()" in _BACKTEST_UPSERT_SQL
+
+    def test_conflict_target_matches_the_unique_index(self):
+        """ON CONFLICT must name exactly model_backtest_daily_key's columns, in
+        its order, or the same-day upsert raises instead of converging."""
+        from scripts.backtest_preseason import _BACKTEST_UPSERT_SQL
+
+        assert (
+            "ON CONFLICT (model_version, run_date, scope, season_start, "
+            "season_end, strength_share) DO UPDATE SET" in _BACKTEST_UPSERT_SQL
+        )
+
+    def test_run_date_is_left_to_the_server_default(self):
+        """The UTC day must be decided server-side; a client clock filing a
+        snapshot under the wrong day breaks the append-only guarantee."""
+        from scripts.backtest_preseason import _BACKTEST_COLUMNS
+
+        assert "run_date" not in _BACKTEST_COLUMNS
+        assert "computed_at" not in _BACKTEST_COLUMNS
+
+    def test_placeholder_count_matches_the_column_count(self):
+        import re
+
+        from scripts.backtest_preseason import _BACKTEST_COLUMNS, _BACKTEST_UPSERT_SQL
+
+        values_clause = _BACKTEST_UPSERT_SQL.split("VALUES", 1)[1].split("ON CONFLICT", 1)[0]
+        assert len(re.findall(r"%\([a-z_0-9]+\)s", values_clause)) == len(_BACKTEST_COLUMNS)
+
+    def test_no_unescaped_percent_signs(self):
+        """A literal % in SQL passed with parameters must be %% or psycopg2
+        reads it as a placeholder; that silently disabled a whole script in
+        this repo for months."""
+        import re
+
+        from scripts.backtest_preseason import _BACKTEST_UPSERT_SQL as q
+
+        stripped = re.sub(r"%\([a-z_0-9]+\)s", "", q).replace("%%", "")
+        assert "%" not in stripped
+
+    def test_json_and_array_columns_are_explicitly_cast(self):
+        from scripts.backtest_preseason import _BACKTEST_UPSERT_SQL
+
+        assert "%(calibration)s::jsonb" in _BACKTEST_UPSERT_SQL
+        assert "%(seasons_covered)s::bigint[]" in _BACKTEST_UPSERT_SQL
+
+
+class TestStoredPrecision:
+    """NUMERIC(6,3) on the quantile columns must not silently truncate a value
+    the gate line prints -- e.g. resid_p10 = -2.684."""
+
+    @staticmethod
+    def _numeric(value, precision, scale):
+        from decimal import ROUND_HALF_UP, Decimal
+
+        quantized = Decimal(repr(value)).quantize(Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP)
+        assert len(quantized.as_tuple().digits) <= precision, (
+            f"{value} overflows NUMERIC({precision},{scale})"
+        )
+        return quantized
+
+    def test_gate_line_quantiles_round_trip_exactly(self):
+        from decimal import Decimal
+
+        for printed in ("-2.684", "3.022", "1.743", "2.168", "-0.126"):
+            assert self._numeric(float(printed), 6, 3) == Decimal(printed)
+
+    def test_win_error_metrics_fit_the_declared_precision(self):
+        """Six digits at scale 3 tops out at 999.999 wins of error; a backtest
+        that produced more than that has a different problem."""
+        row = _row()
+        for col in ("win_mae", "rmse", "bias", "resid_p05", "resid_p95"):
+            self._numeric(row[col], 6, 3)
+
+    def test_coverage_keeps_more_precision_than_the_gate_prints(self):
+        """Stored at 4 decimals against the gate's 3, so nothing is lost."""
+        from decimal import Decimal
+
+        assert self._numeric(0.7996, 5, 4) == Decimal("0.7996")
+
+    def test_brier_scale_holds_the_printed_four_decimals(self):
+        from decimal import Decimal
+
+        assert self._numeric(0.1637, 6, 5) == Decimal("0.16370")

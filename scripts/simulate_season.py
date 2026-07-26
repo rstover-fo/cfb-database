@@ -61,6 +61,7 @@ Each season prints:
 
 import argparse
 import logging
+import math
 import sys
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -96,6 +97,37 @@ MIN_SIGMA_GAMES = 100
 # projections to jump as the postseason bracket is published.
 PROJECTION_SEASON_TYPE = "regular"
 
+# --- v1.1 correlated draws ---------------------------------------------------
+# Share of margin variance attributed to a per-team SEASON-STRENGTH offset,
+# drawn once per simulation and applied to every game that team plays, rather
+# than independently per game.
+#
+# WHY. v1 drew each game independently, which treats a team's true strength as
+# perfectly known and every deviation as game-level noise. Real seasons do not
+# work that way: a team better than its rating beats *everyone* more often, so
+# win totals cluster far more than independent draws imply. The section 4.5
+# backtest measured the consequence -- p10-p90 coverage of 71.7% against a
+# nominal 80%, with p_bowl_eligible overconfident at the top (0.848 predicted
+# vs 0.720 observed) and p_ten_plus underconfident in the middle (0.246 vs
+# 0.426). Too little mass in BOTH tails is one phenomenon, and this is it.
+#
+# THE VARIANCE CONSTRAINT. The total per-game margin variance must stay exactly
+# sigma^2, or single-game predictions stop being calibrated -- the correlated
+# variant is meant to fix season totals without touching a quantity that was
+# already right. With independent per-team offsets u ~ N(0, tau^2) on each
+# side and game noise eps ~ N(0, game_sd^2):
+#
+#     Var(margin) = 2*tau^2 + game_sd^2  ==  sigma^2
+#
+# So a share rho of the variance moved into team strength gives
+# tau = sigma * sqrt(rho/2) and game_sd = sigma * sqrt(1 - rho). rho = 0
+# reproduces v1 exactly.
+#
+# CALIBRATED, NOT GUESSED: chosen by sweeping rho in the preseason backtest
+# and taking the value whose p10-p90 coverage lands nearest the nominal 80%
+# (scripts/backtest_preseason.py --sweep-strength-share). See appendix A7.
+DEFAULT_STRENGTH_SHARE = 0.0
+
 
 # =============================================================================
 # Pure functions -- no I/O, no DB, unit-tested directly
@@ -103,7 +135,35 @@ PROJECTION_SEASON_TYPE = "regular"
 # =============================================================================
 
 
-def simulate_wins(games, n_sims, sigma, seed=DEFAULT_SEED):
+def strength_sd(sigma: float, strength_share: float) -> tuple[float, float]:
+    """Split `sigma` into (team-strength SD, game-noise SD) for a given share.
+
+    Returns ``(tau, game_sd)`` with ``2*tau**2 + game_sd**2 == sigma**2``, so
+    the total per-game margin variance is unchanged and single-game
+    predictions stay exactly as calibrated as they were in v1. Only the
+    *correlation structure* across a team's games changes.
+
+    ``strength_share`` is the fraction of margin variance carried by the two
+    teams' season-strength offsets combined. 0.0 reproduces v1 exactly; 1.0
+    would make every game deterministic given the offsets, which is why it is
+    rejected rather than clamped -- a season with no game-level noise is not a
+    model anyone wants by accident.
+    """
+    if not 0.0 <= strength_share < 1.0:
+        raise ValueError(f"strength_share must be in [0, 1), got {strength_share!r}")
+    # Negative is nonsense; zero is degenerate but well defined, and
+    # simulate_wins' documented sigma=0 behaviour (every draw collapses onto
+    # its mean) is pinned by a test. fetch_sigma is what refuses a
+    # non-positive sigma in production -- rejecting it a second time here
+    # would break the test that exists to explain why that guard is there.
+    if sigma < 0:
+        raise ValueError(f"sigma must not be negative, got {sigma!r}")
+    tau = sigma * math.sqrt(strength_share / 2.0)
+    game_sd = sigma * math.sqrt(1.0 - strength_share)
+    return tau, game_sd
+
+
+def simulate_wins(games, n_sims, sigma, seed=DEFAULT_SEED, strength_share=DEFAULT_STRENGTH_SHARE):
     """Simulate `n_sims` seasons over `games`.
 
     Returns a dict of per-team results:
@@ -170,15 +230,37 @@ def simulate_wins(games, n_sims, sigma, seed=DEFAULT_SEED):
     if pending:
         rng = np.random.default_rng(seed)
         mu = np.array([g["expected_home_margin"] for g in pending], dtype=np.float64)
-        draws = rng.normal(loc=mu[:, None], scale=sigma, size=(len(pending), n_sims))
-        home_won = draws > 0.0
+        tau, game_sd = strength_sd(sigma, strength_share)
+
+        # One season-strength offset per team per simulation, reused across
+        # every game that team plays. This is what makes outcomes correlate:
+        # in a simulation where a team drew a positive offset it is better
+        # than its rating against ALL its opponents, which is how real seasons
+        # produce 11-win and 3-win records far more often than independent
+        # coin flips do.
+        u = (
+            rng.normal(0.0, tau, size=(n_teams, n_sims))
+            if tau > 0.0
+            else np.zeros((n_teams, n_sims), dtype=np.float64)
+        )
+
+        # Game noise generated in one block, as in v1. The per-row offsets are
+        # then added in place, so peak memory is unchanged -- no second
+        # (n_pending, n_sims) array is ever materialized.
+        eps = rng.normal(loc=0.0, scale=game_sd, size=(len(pending), n_sims))
         for row, g in enumerate(pending):
             h, a = index[g["home_team"]], index[g["away_team"]]
-            wins[h, :] += home_won[row]
-            wins[a, :] += ~home_won[row]
+            margin = eps[row]
+            margin += mu[row]
+            if tau > 0.0:
+                margin += u[h]
+                margin -= u[a]
+            home_won_row = margin > 0.0
+            wins[h, :] += home_won_row
+            wins[a, :] += ~home_won_row
             if g.get("conference_game"):
-                conf_wins[h, :] += home_won[row]
-                conf_wins[a, :] += ~home_won[row]
+                conf_wins[h, :] += home_won_row
+                conf_wins[a, :] += ~home_won_row
 
     return {
         "wins": {t: wins[index[t], :] for t in teams},

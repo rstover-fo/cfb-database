@@ -89,6 +89,7 @@ from scripts.simulate_season import (
     BOWL_ELIGIBLE_WINS,
     DEFAULT_SEED,
     DEFAULT_SIMS,
+    DEFAULT_STRENGTH_SHARE,
     TEN_PLUS_WINS,
     simulate_wins,
     summarize,
@@ -449,7 +450,9 @@ def preseason_sigma(residuals: list[float]) -> float | None:
     return sd if sd > 0 else None
 
 
-def run_backtest(conn, start: int, end: int, n_sims: int, seed: int, fbs_only: bool) -> int:
+def run_backtest(
+    conn, start: int, end: int, n_sims: int, seed: int, fbs_only: bool, shares: list[float]
+) -> int:
     available = fetch_available_train_through(conn)
     logger.info("frozen fits available for train_through: %s", sorted(available))
 
@@ -477,15 +480,14 @@ def run_backtest(conn, start: int, end: int, n_sims: int, seed: int, fbs_only: b
         logger.error("no season in %d-%d has a frozen S-1 fit; nothing to backtest", start, end)
         return 1
 
-    # Walk forward. Residuals accumulate from earlier seasons ONLY, so the
-    # sigma used to simulate season S never sees season S.
+    # PASS 1 -- score. Walk forward so residuals accumulate from earlier
+    # seasons ONLY; the sigma used for season S never sees season S. Nothing
+    # here depends on strength_share (scoring residuals are a property of the
+    # fit, not of the simulation), so a sweep re-simulates from this one pass
+    # instead of re-scoring per candidate.
     prior_residuals: list[float] = []
     prior_actuals: dict = {}
-    per_season = []
-    all_proj, all_act = [], []
-    all_p10, all_p90 = [], []
-    bowl_probs, bowl_out, ten_probs, ten_out = [], [], [], []
-    base_prior, base_flat = [], []
+    scored: list[dict] = []
 
     for season in usable:
         train_through = select_train_through("backfill", season)
@@ -520,10 +522,56 @@ def run_backtest(conn, start: int, end: int, n_sims: int, seed: int, fbs_only: b
             prior_actuals[season] = actual_wins_over(games)
             continue
 
-        sim = simulate_wins(games, n_sims=n_sims, sigma=sigma, seed=seed)
-        truth = actual_wins_over(games)
-        scheduled = fetch_scheduled_counts(conn, season)
-        fbs = fetch_fbs_teams(conn, season) if fbs_only else None
+        scored.append(
+            {
+                "season": season,
+                "train_through": train_through,
+                "games": games,
+                "sigma": sigma,
+                "sigma_n": len(prior_residuals),
+                "dropped": dropped,
+                "gp_max": gp_max,
+                "margin_mae": margin_mae,
+                "truth": actual_wins_over(games),
+                "prior": dict(prior_actuals.get(season - 1, {})),
+                "scheduled": fetch_scheduled_counts(conn, season),
+                "fbs": fetch_fbs_teams(conn, season) if fbs_only else None,
+            }
+        )
+        prior_residuals.extend(g["actual_margin"] - g["expected_home_margin"] for g in games)
+        prior_actuals[season] = scored[-1]["truth"]
+
+    if not scored:
+        logger.error("no season could be simulated (insufficient prior residuals throughout)")
+        return 1
+
+    # PASS 2 -- simulate, once per candidate strength share.
+    sweep_rows = []
+    for share in shares:
+        agg = _simulate_pass(scored, n_sims=n_sims, seed=seed, strength_share=share)
+        sweep_rows.append(agg)
+        if len(shares) == 1:
+            _report(agg, fbs_only, share)
+
+    if len(shares) > 1:
+        _report_sweep(sweep_rows)
+    return 0
+
+
+def _simulate_pass(scored, n_sims: int, seed: int, strength_share: float) -> dict:
+    """Simulate every scored season at one `strength_share` and aggregate."""
+    per_season = []
+    all_proj, all_act = [], []
+    all_p10, all_p90 = [], []
+    bowl_probs, bowl_out, ten_probs, ten_out = [], [], [], []
+    base_prior, base_flat = [], []
+
+    for s in scored:
+        season, games, sigma = s["season"], s["games"], s["sigma"]
+        sim = simulate_wins(
+            games, n_sims=n_sims, sigma=sigma, seed=seed, strength_share=strength_share
+        )
+        truth, scheduled, fbs = s["truth"], s["scheduled"], s["fbs"]
 
         rows = []
         for team, team_wins in sim["wins"].items():
@@ -532,20 +580,20 @@ def run_backtest(conn, start: int, end: int, n_sims: int, seed: int, fbs_only: b
                 continue
             if fbs is not None and team not in fbs:
                 continue
-            s = summarize(team_wins, gs)
+            summ = summarize(team_wins, gs)
             actual = truth["wins"].get(team, 0)
-            prior = prior_actuals.get(season - 1, {})
+            prior = s["prior"]
             rows.append(
                 {
                     "team": team,
                     "games_simulated": gs,
                     "games_scheduled": scheduled.get(team, gs),
-                    "projected_wins": s["projected_wins"],
+                    "projected_wins": summ["projected_wins"],
                     "actual_wins": actual,
-                    "p10": s["wins_p10"],
-                    "p90": s["wins_p90"],
-                    "p_bowl": s["p_bowl_eligible"],
-                    "p_ten": s["p_ten_plus"],
+                    "p10": summ["wins_p10"],
+                    "p90": summ["wins_p90"],
+                    "p_bowl": summ["p_bowl_eligible"],
+                    "p_ten": summ["p_ten_plus"],
                     "baseline_prior": baseline_prior_rate(
                         prior.get("wins", {}).get(team),
                         prior.get("played", {}).get(team),
@@ -567,14 +615,14 @@ def run_backtest(conn, start: int, end: int, n_sims: int, seed: int, fbs_only: b
         per_season.append(
             {
                 "season": season,
-                "train_through": train_through,
+                "train_through": s["train_through"],
                 "teams": len(rows),
                 "games": len(games),
                 "sigma": sigma,
-                "sigma_n": len(prior_residuals),
-                "margin_mae": margin_mae,
-                "max_games_played": gp_max,
-                "dropped_outcome_dependent": dropped,
+                "sigma_n": s["sigma_n"],
+                "margin_mae": s["margin_mae"],
+                "max_games_played": s["gp_max"],
+                "dropped_outcome_dependent": s["dropped"],
                 "win_mae": m["mae"],
                 "win_rmse": m["rmse"],
                 "bias": m["bias"],
@@ -595,47 +643,75 @@ def run_backtest(conn, start: int, end: int, n_sims: int, seed: int, fbs_only: b
         ten_probs += [r["p_ten"] for r in rows]
         ten_out += [r["actual_wins"] >= TEN_PLUS_WINS for r in rows]
 
-        prior_residuals.extend(g["actual_margin"] - g["expected_home_margin"] for g in games)
-        prior_actuals[season] = truth
+    return {
+        "strength_share": strength_share,
+        "per_season": per_season,
+        "proj": all_proj,
+        "act": all_act,
+        "p10": all_p10,
+        "p90": all_p90,
+        "base_prior": base_prior,
+        "base_flat": base_flat,
+        "bowl_probs": bowl_probs,
+        "bowl_out": bowl_out,
+        "ten_probs": ten_probs,
+        "ten_out": ten_out,
+        "overall": win_error_metrics(all_proj, all_act),
+        "coverage": interval_coverage(all_act, all_p10, all_p90),
+        "quantiles": residual_quantiles(all_proj, all_act),
+        "bowl_brier": brier(bowl_probs, bowl_out),
+        "ten_brier": brier(ten_probs, ten_out),
+    }
 
-    if not per_season:
-        logger.error("no season could be simulated (insufficient prior residuals throughout)")
-        return 1
 
-    _report(
-        per_season,
-        all_proj,
-        all_act,
-        all_p10,
-        all_p90,
-        base_prior,
-        base_flat,
-        bowl_probs,
-        bowl_out,
-        ten_probs,
-        ten_out,
-        fbs_only,
+def _report_sweep(rows: list[dict]) -> None:
+    """Coverage vs strength share -- how rho is chosen rather than guessed.
+
+    Nominal p10-p90 coverage is 80%. The share whose coverage lands nearest
+    that is the calibrated value; win MAE is shown alongside because a
+    correlation term that widened the distribution at the cost of the point
+    estimate would be a bad trade, and this is where that would show.
+    """
+    print(f"\n{'=' * 78}")
+    print("STRENGTH-SHARE SWEEP -- calibrating the v1.1 correlated draw")
+    print(f"{'=' * 78}")
+    print(
+        f"{'rho':>6} {'coverage':>9} {'|gap|':>7} {'winMAE':>8} {'RMSE':>7} "
+        f"{'bias':>7} {'bowlBri':>8} {'tenBri':>7} {'p10':>7} {'p90':>7}"
     )
-    return 0
+    best = min(rows, key=lambda r: abs(r["coverage"] - 0.80))
+    for r in rows:
+        mark = "  <-- nearest 80%" if r is best else ""
+        q = r["quantiles"]
+        print(
+            f"{r['strength_share']:>6.2f} {r['coverage']:>9.1%} "
+            f"{abs(r['coverage'] - 0.80):>7.3f} {r['overall']['mae']:>8.3f} "
+            f"{r['overall']['rmse']:>7.3f} {r['overall']['bias']:>+7.3f} "
+            f"{r['bowl_brier']:>8.4f} {r['ten_brier']:>7.4f} "
+            f"{q['p10']:>+7.2f} {q['p90']:>+7.2f}{mark}"
+        )
+    print(f"{'-' * 78}")
+    print(
+        f"SWEEP_GATE best_strength_share={best['strength_share']:.2f} "
+        f"coverage={best['coverage']:.3f} win_mae={best['overall']['mae']:.3f} "
+        f"bowl_brier={best['bowl_brier']:.4f} ten_brier={best['ten_brier']:.4f}"
+    )
+    print(f"{'=' * 78}\n")
 
 
-def _report(
-    per_season,
-    proj,
-    act,
-    p10,
-    p90,
-    base_prior,
-    base_flat,
-    bowl_probs,
-    bowl_out,
-    ten_probs,
-    ten_out,
-    fbs_only,
-):
+def _report(agg, fbs_only, strength_share):
+    per_season = agg["per_season"]
+    proj, act = agg["proj"], agg["act"]
+    p10, p90 = agg["p10"], agg["p90"]
+    base_prior, base_flat = agg["base_prior"], agg["base_flat"]
+    bowl_probs, bowl_out = agg["bowl_probs"], agg["bowl_out"]
+    ten_probs, ten_out = agg["ten_probs"], agg["ten_out"]
     scope = "FBS only" if fbs_only else "all divisions"
     print(f"\n{'=' * 78}")
-    print(f"PRESEASON BACKTEST -- {MODEL_VERSION} -- week-1 vectors, frozen S-1 fits ({scope})")
+    print(
+        f"PRESEASON BACKTEST -- {MODEL_VERSION} -- week-1 vectors, frozen S-1 fits "
+        f"({scope}, strength_share={strength_share:.2f})"
+    )
     print(f"{'=' * 78}")
     print(
         f"{'season':>6} {'fit':>5} {'teams':>6} {'games':>6} {'drop':>5} {'maxGP':>6} {'sigma':>7} "
@@ -724,6 +800,18 @@ def main() -> None:
     parser.add_argument("--sims", type=int, default=DEFAULT_SIMS)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument(
+        "--strength-share",
+        type=float,
+        default=DEFAULT_STRENGTH_SHARE,
+        help="Share of margin variance carried by the per-team season-strength "
+        "offset (v1.1 correlated draws). 0 reproduces v1.",
+    )
+    parser.add_argument(
+        "--sweep-strength-share",
+        help="Comma-separated shares to sweep, e.g. 0,0.1,0.2,0.3. Scores once "
+        "and re-simulates per candidate; reports coverage vs the nominal 80%%.",
+    )
+    parser.add_argument(
         "--all-divisions",
         action="store_true",
         help="report every division, not just FBS (FCS/D2 playoff games inflate slates)",
@@ -732,6 +820,19 @@ def main() -> None:
 
     if args.start > args.end:
         parser.error("--start must not be after --end")
+
+    if args.sweep_strength_share:
+        try:
+            shares = [float(x) for x in args.sweep_strength_share.split(",") if x.strip()]
+        except ValueError:
+            parser.error("--sweep-strength-share must be comma-separated numbers")
+        if not shares:
+            parser.error("--sweep-strength-share listed no values")
+    else:
+        shares = [args.strength_share]
+    for sh in shares:
+        if not 0.0 <= sh < 1.0:
+            parser.error(f"strength share must be in [0, 1), got {sh}")
 
     import psycopg2
 
@@ -744,6 +845,7 @@ def main() -> None:
             n_sims=args.sims,
             seed=args.seed,
             fbs_only=not args.all_divisions,
+            shares=shares,
         )
     finally:
         conn.close()

@@ -30,6 +30,7 @@ from scripts.simulate_season import (  # noqa: E402
     conference_title_probs,
     schedule_strength,
     simulate_wins,
+    strength_sd,
     summarize,
     win_distribution,
 )
@@ -412,3 +413,107 @@ class TestSelfReviewRegressions:
         wins = simulate_wins(games, 200, 0.0)["wins"]
         assert np.all(wins["A"] == 1)
         assert np.all(wins["B"] == 0)
+
+
+class TestCorrelatedDraws:
+    """v1.1: one season-strength offset per team per simulation, applied to
+    every game that team plays.
+
+    Motivated by the section 4.5 backtest, which measured p10-p90 coverage of
+    71.7% against a nominal 80% with both tails underweighted. Independent
+    draws treat a team's true strength as perfectly known; real seasons do not.
+    """
+
+    @staticmethod
+    def _slate(n=12, margin=3.0):
+        return [
+            {
+                "home_team": "A",
+                "away_team": f"O{i}",
+                "completed": False,
+                "expected_home_margin": margin,
+                "conference_game": False,
+            }
+            for i in range(n)
+        ]
+
+    @pytest.mark.parametrize("share", [0.0, 0.05, 0.25, 0.5, 0.9])
+    def test_total_variance_is_preserved(self, share):
+        """The whole point of the split: per-game margin variance must stay
+        sigma^2 so single-game predictions remain exactly as calibrated as v1.
+        A correlation term that also inflated game variance would be fixing
+        season totals by breaking something that was already right."""
+        sigma = 18.95
+        tau, game_sd = strength_sd(sigma, share)
+        assert 2 * tau**2 + game_sd**2 == pytest.approx(sigma**2)
+
+    def test_share_zero_reproduces_v1_exactly(self):
+        games = self._slate()
+        a = simulate_wins(games, 2000, 18.0, seed=5, strength_share=0.0)["wins"]["A"]
+        b = simulate_wins(games, 2000, 18.0, seed=5)["wins"]["A"]
+        assert np.array_equal(a, b), "default must be the v1 path"
+
+    def test_tails_fatten_as_share_rises(self):
+        """The defect being fixed, stated as a monotonicity check."""
+        games = self._slate()
+        sds = []
+        for share in (0.0, 0.2, 0.4, 0.6):
+            w = simulate_wins(games, 20000, 18.0, seed=11, strength_share=share)["wins"]["A"]
+            sds.append(float(np.std(w)))
+        assert sds == sorted(sds), f"win-total SD must not shrink as share rises: {sds}"
+        assert sds[-1] > sds[0] * 1.5, f"correlation should widen materially: {sds}"
+
+    def test_central_tendency_is_essentially_unchanged(self):
+        """Correlation is meant to fix the SPREAD, not move the projection."""
+        games = self._slate()
+        base = simulate_wins(games, 20000, 18.0, seed=13, strength_share=0.0)["wins"]["A"]
+        corr = simulate_wins(games, 20000, 18.0, seed=13, strength_share=0.4)["wins"]["A"]
+        assert float(np.mean(corr)) == pytest.approx(float(np.mean(base)), abs=0.15)
+
+    def test_a_teams_games_become_correlated(self):
+        """Directly: within a simulation, wins should co-move. With a strong
+        offset the win total is far more dispersed than the binomial that
+        independent draws with the same per-game probability would give."""
+        games = self._slate(n=12, margin=0.0)  # every game a coin flip
+        w = simulate_wins(games, 20000, 18.0, seed=17, strength_share=0.5)["wins"]["A"]
+        binomial_sd = (12 * 0.5 * 0.5) ** 0.5  # ~1.73 if games were independent
+        assert float(np.std(w)) > binomial_sd * 1.4, (
+            f"correlated draws must exceed the independent binomial SD; got {np.std(w):.2f}"
+        )
+
+    def test_determinism_under_a_fixed_seed_still_holds(self):
+        games = self._slate()
+        a = simulate_wins(games, 500, 18.0, seed=3, strength_share=0.3)["wins"]["A"]
+        b = simulate_wins(games, 500, 18.0, seed=3, strength_share=0.3)["wins"]["A"]
+        assert np.array_equal(a, b)
+
+    @pytest.mark.parametrize("bad", [-0.1, 1.0, 1.5])
+    def test_out_of_range_share_is_rejected(self, bad):
+        """1.0 would leave zero game-level noise -- not something to arrive at
+        by accident, so it is rejected rather than clamped."""
+        with pytest.raises(ValueError, match="strength_share"):
+            strength_sd(18.0, bad)
+
+    def test_negative_sigma_is_rejected_but_zero_is_allowed(self):
+        """fetch_sigma is what refuses a non-positive sigma in production; the
+        degenerate sigma=0 behaviour is pinned by its own test above, so this
+        split must not reject it a second time."""
+        with pytest.raises(ValueError, match="negative"):
+            strength_sd(-1.0, 0.2)
+        assert strength_sd(0.0, 0.2) == (0.0, 0.0)
+
+    def test_conference_wins_come_from_the_same_correlated_draws(self):
+        """Conference tallies must stay consistent with overall wins under
+        correlation too, or title odds contradict the win totals beside them."""
+        games = [
+            {
+                "home_team": "A",
+                "away_team": f"O{i}",
+                "completed": False,
+                "expected_home_margin": 2.0,
+                "conference_game": True,
+            }
+            for i in range(9)
+        ]
+        sim = simulate_wins(games, 2000, 18.0, seed=19, strength_share=0.35)
+        assert np.all(sim["conf_wins"]["A"] <= sim["wins"]["A"])

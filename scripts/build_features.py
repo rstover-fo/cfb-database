@@ -115,6 +115,8 @@ PRESEASON_042_COLUMNS = (
     "blue_chip_pipeline",
     "hc_first_year",
     "hc_first_year_unproven",
+    "draft_picks_3yr",
+    "draft_departures",
     "prior_def_line_yards",
     "prior_def_stuff_rate",
 )
@@ -382,6 +384,16 @@ coach_prior AS (
           AND prev.year < cy.year
     GROUP BY cy.school, cy.year
 ),
+draft_out AS (
+    -- Draft picks by (draft year, college team). MUST match the screen's
+    -- draft_out: the partials that justified these columns were measured on
+    -- exactly this aggregation.
+    SELECT dp.year AS season, dp.college_team AS team,
+           COUNT(*)::double precision AS picks
+    FROM draft.draft_picks dp
+    WHERE dp.college_team IS NOT NULL
+    GROUP BY 1, 2
+),
 class_points AS (
     -- The four recruiting classes signed BEFORE season S (design doc 1f).
     SELECT tr.team, tr.year, tr.points::double precision AS points
@@ -559,6 +571,37 @@ SELECT
          WHEN cpr.prior_sp_mean IS NULL THEN NULL
          WHEN cpr.prior_sp_mean < {HC_PROVEN_SP_PLUS} THEN 1.0
          ELSE 0.0 END AS hc_first_year_unproven,
+    -- MIGRATION 047. Counts, so 0.0 is a REAL value here -- a program that
+    -- sent nobody to the NFL produced zero picks, and NULLing that would throw
+    -- away signal. This is the documented exception to section 1i's blanket
+    -- never-zero rule, and it is safe ONLY because the zero is guarded.
+    --
+    -- The guard is the lesson of this column's own history. Before the
+    -- 2000-2019 backfill, draft.draft_picks held 2020-2026 while years.py
+    -- configured 2000-2026, and a bare COALESCE(...,0) turned "this draft was
+    -- never ingested" into "this program produced zero picks" on 54.2%% of the
+    -- screening frame. Nothing errored and the column screened as a null.
+    --
+    -- So the zero is only written where the SOURCE YEARS EXIST. The EXISTS
+    -- deliberately has NO team predicate: a team absent from a draft that was
+    -- loaded really did produce nothing, and that true zero has to stay
+    -- distinguishable from a draft nobody loaded.
+    CASE WHEN EXISTS (
+             SELECT 1 FROM draft_out d
+             WHERE d.season BETWEEN s.season - 3 AND s.season - 1
+         )
+         THEN COALESCE((
+             SELECT SUM(d2.picks) FROM draft_out d2
+             WHERE d2.team = s.team
+               AND d2.season BETWEEN s.season - 3 AND s.season - 1
+         ), 0)
+    END AS draft_picks_3yr,
+    CASE WHEN EXISTS (SELECT 1 FROM draft_out d WHERE d.season = s.season)
+         THEN COALESCE((
+             SELECT d3.picks FROM draft_out d3
+             WHERE d3.team = s.team AND d3.season = s.season
+         ), 0)
+    END AS draft_departures,
     ats."defense__line_yards" AS prior_def_line_yards,
     ats."defense__stuff_rate" AS prior_def_stuff_rate
 FROM spine s
@@ -653,6 +696,9 @@ _INSERT_COLUMNS = [
     # Migration 046 -- the screened replacement for hc_first_year in the
     # fitted vector; hc_first_year stays populated for continuity.
     "hc_first_year_unproven",
+    # Migration 047 -- adjudicated only after the draft backfill.
+    "draft_picks_3yr",
+    "draft_departures",
     "prior_def_line_yards",
     "prior_def_stuff_rate",
     "feature_build_version",
@@ -776,6 +822,8 @@ def build_season_rows(conn, season: int, elo_current: dict[str, tuple[float, int
                 "blue_chip_pipeline": row["blue_chip_pipeline"],
                 "hc_first_year": row["hc_first_year"],
                 "hc_first_year_unproven": row["hc_first_year_unproven"],
+                "draft_picks_3yr": row["draft_picks_3yr"],
+                "draft_departures": row["draft_departures"],
                 "prior_def_line_yards": row["prior_def_line_yards"],
                 "prior_def_stuff_rate": row["prior_def_stuff_rate"],
                 "feature_build_version": FEATURE_BUILD_VERSION,

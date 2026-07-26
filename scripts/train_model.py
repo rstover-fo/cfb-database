@@ -112,6 +112,12 @@ DIFF_FEATURE_COLUMNS: list[tuple[str, str]] = [
     # a split-window re-run agree. hc_first_year stays populated in
     # features.team_week; it just no longer enters the fit.
     ("d_hc_first_year_unproven", "hc_first_year_unproven"),
+    # Migration 047 -- opposite signs, so they are two terms and not one net.
+    # draft_picks_3yr +0.0834 (picks PRODUCED S-1..S-3, survives the recruiting
+    # control), draft_departures -0.0925 (picks LOST in year S). Both rejections
+    # before the 2000-2019 backfill were measured on fabricated zeros.
+    ("d_draft_picks_3yr", "draft_picks_3yr"),
+    ("d_draft_departures", "draft_departures"),
     ("d_prior_def_line_yards", "prior_def_line_yards"),
     ("d_prior_def_stuff_rate", "prior_def_stuff_rate"),
 ]

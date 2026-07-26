@@ -620,6 +620,12 @@ SHIPPED_COLUMNS = [
     "hc_first_year_unproven",
     "prior_def_line_yards",
     "prior_def_stuff_rate",
+    # Migration 047, shipped on the owner's call once the 2000-2019 backfill
+    # made them measurable. Two columns rather than one net, because the signs
+    # are opposite: picks PRODUCED over S-1..S-3 at +0.0834, picks LOST in year
+    # S at -0.0925. Both earlier rejections were measured on fabricated zeros.
+    "draft_picks_3yr",
+    "draft_departures",
 ]
 
 # Cleared the screen, awaiting the owner's ship call. Distinct from SUPERSEDED
@@ -628,21 +634,10 @@ SHIPPED_COLUMNS = [
 # argues against them. What they need is a migration, a rebuild, a retrain and
 # a re-backtest, and section 2.5 selection is advisory -- the screen produces
 # the number, the owner rules.
-AWAITING_SHIP_DECISION = {
-    "draft_picks_3yr": (
-        "+0.2342 vs prior SP+, +0.0834 also controlling recruiting (was a VOID "
-        "+0.0068 on 54.2% fabricated zeros). Picks PRODUCED over S-1..S-3. The "
-        "recorded finding that draft output is a mere recruiting proxy is "
-        "REVERSED: it survives the recruiting control."
-    ),
-    "draft_departures": (
-        "-0.0925 (was a VOID -0.0728 on 45.1% fabricated zeros). Picks LOST in "
-        "year S, and the sign is now interpretable rather than a confound: "
-        "losing draftable players predicts a worse season once prior quality "
-        "and recruiting are held fixed. Opposite in sign to draft_picks_3yr, "
-        "which is what the plan predicted before the data existed."
-    ),
-}
+#
+# Emptied when the draft pair shipped; kept as the mechanism for the next
+# column that clears the floor between deploys.
+AWAITING_SHIP_DECISION: dict[str, str] = {}
 
 # Shipped by human decision DESPITE a reject verdict, with the argument on the
 # record. Migration 042 adds SHIPPED_COLUMNS + these.

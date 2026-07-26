@@ -276,12 +276,41 @@ class TestMigration042Columns:
         """Design doc section 1i. These are rates and decayed sums whose zero
         is a fabricated extreme, and the teams whose source rows are missing
         skew weak -- so COALESCE(...,0) here would plant the floor value
-        exactly where the outcome is low and manufacture signal."""
+        exactly where the outcome is low and manufacture signal.
+
+        Scoped to end at the migration-047 draft columns, which are the
+        documented exception: they are COUNTS, where a zero is a true
+        measurement, and they get their own guard test below."""
         from scripts.build_features import FEATURE_ROWS_QUERY
 
         block = FEATURE_ROWS_QUERY[FEATURE_ROWS_QUERY.index("recruiting_points_3yr") :]
-        block = block[: block.index("prior_def_stuff_rate")]
+        block = block[: block.index("-- MIGRATION 047")]
         assert "COALESCE" not in block.upper()
+
+    def test_a_draft_zero_is_only_written_where_the_drafts_exist(self):
+        """The exception to 1i, and the reason it is safe.
+
+        A count's zero can be true -- a program that sent nobody to the NFL
+        produced zero picks -- but only if the drafts were LOADED. Before the
+        2000-2019 backfill a bare COALESCE(...,0) read an uningested draft as
+        "produced zero picks" on 54.2%% of the screening frame, and the column
+        screened as a null without anything erroring.
+
+        So each COALESCE must sit behind an EXISTS over the draft years, and
+        that EXISTS must NOT be filtered to the team: a team absent from a
+        draft that was loaded is a real zero, and collapsing the two cases is
+        precisely the defect."""
+        from scripts.build_features import FEATURE_ROWS_QUERY
+
+        block = FEATURE_ROWS_QUERY[FEATURE_ROWS_QUERY.index("-- MIGRATION 047") :]
+        block = block[: block.index("AS draft_departures")]
+        assert block.count("EXISTS (") == 2, "each draft column needs its own source guard"
+        assert "d.team" not in block, (
+            "the source-year guard must not be filtered to the team, or a real "
+            "zero and an unloaded draft become indistinguishable again"
+        )
+        # The team predicate belongs on the inner sum, not the guard.
+        assert "d2.team = s.team" in block
 
     def test_coach_tenure_uses_islands(self):
         """A coach returning to a school must not inherit his first stint's

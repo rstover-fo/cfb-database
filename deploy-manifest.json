@@ -1,0 +1,7 @@
+{
+  "action": "compute",
+  "compute": {
+    "script": "backtest_preseason",
+    "args": ["--start", "2019", "--end", "2025"]
+  }
+}

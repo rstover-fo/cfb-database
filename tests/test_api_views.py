@@ -407,6 +407,7 @@ SEASON_OUTLOOK_COLUMNS = {
     "playoff_prob",
     "n_sims",
     "residual_sigma",
+    "strength_share",
 }
 
 # P3.2 Lane B (docs/pipeline-manifest.md row 47) -- in-game per-play win

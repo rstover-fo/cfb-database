@@ -408,6 +408,11 @@ SEASON_OUTLOOK_COLUMNS = {
     "n_sims",
     "residual_sigma",
     "strength_share",
+    # Appended 2026-07-26 (cfb-app review): the view mixes FBS/FCS/DII/DIII, so
+    # a division column is what makes an unfiltered leaderboard safe, and a
+    # completed season had no way to say it was a record rather than a forecast.
+    "classification",
+    "is_projection",
 }
 
 # P3.2 Lane B (docs/pipeline-manifest.md row 47) -- in-game per-play win
@@ -1569,3 +1574,178 @@ class TestSeasonOutlook:
             """,
         )
         assert not rows, f"non-positive residual_sigma: {rows}"
+
+    # -- classification (added 2026-07-26) ---------------------------------
+
+    def test_classification_join_neither_drops_nor_multiplies_rows(self, db_conn):
+        """The whole risk of adding the column. team_season_class is grouped by
+        (team, season) and teams_deduped is DISTINCT ON (school), so both joins
+        are 1:1 -- but an INNER join, or a dedup that stopped deduping, would
+        silently change the population of a view consumers rank on."""
+        view_rows = _fetch_count(db_conn, "SELECT COUNT(*) FROM api.season_outlook")
+        snapshots = _fetch_count(
+            db_conn,
+            """
+            SELECT COUNT(*) FROM (
+                SELECT DISTINCT season, team, model_version
+                FROM predictions.season_projections
+            ) d
+            """,
+        )
+        assert view_rows == snapshots, (
+            f"view has {view_rows} rows for {snapshots} latest snapshots -- "
+            "the classification join changed the row count"
+        )
+
+    def test_classification_values_are_known_divisions(self, db_conn):
+        """NULL is allowed (unplaceable team, LEFT JOIN by design); a value
+        outside CFBD's four is not.
+
+        This also pins the spelling that scripts/simulate_season.py's
+        STANDARD_SLATE_GAMES keys off. Only 'fbs' and 'fcs' appear anywhere
+        else in this repo -- 'ii'/'iii' are taken from CFBD's own vocabulary,
+        so a failure here means that assumption is wrong and the DII/DIII slate
+        lengths are falling through to the default.
+        """
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT DISTINCT classification
+            FROM api.season_outlook
+            WHERE classification IS NOT NULL
+              AND classification NOT IN ('fbs', 'fcs', 'ii', 'iii')
+            """,
+        )
+        assert not rows, f"unexpected classification values: {rows}"
+
+    def test_classification_is_populated_and_fbs_is_plausibly_sized(self, db_conn):
+        """The column has to be usable as a filter, which means it cannot be
+        mostly NULL, and 'fbs' has to actually select FBS. Asserted on the
+        per-season MAX rather than every season: a future season whose schedule
+        is only half published legitimately projects fewer teams, and the flag
+        for that is schedule_complete, not this."""
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT MAX(fbs), SUM(unknown), SUM(total)
+            FROM (
+                SELECT COUNT(*) FILTER (WHERE classification = 'fbs') AS fbs,
+                       COUNT(*) FILTER (WHERE classification IS NULL) AS unknown,
+                       COUNT(*) AS total
+                FROM api.season_outlook
+                GROUP BY season
+            ) s
+            """,
+        )
+        max_fbs, unknown, total = rows[0]
+        assert total, "no rows in api.season_outlook"
+        # FBS has run 127-136 teams over the modern era; nothing may exceed it.
+        assert 120 <= max_fbs <= 140, f"largest FBS season is {max_fbs} teams"
+        assert unknown * 10 < total, f"{unknown} of {total} rows have no classification"
+
+    def test_classification_is_season_accurate_not_current_membership(self, db_conn):
+        """North Dakota State played 2025 in FCS and moves to FBS in 2026, so
+        ref.teams (current membership) says 'fbs' for both. Mirrors
+        TestLeaderboardTeams::test_classification_is_season_accurate -- the
+        same defect, one view over."""
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT season, classification
+            FROM api.season_outlook
+            WHERE team = 'North Dakota State' AND season = 2025
+            """,
+        )
+        if not rows:
+            pytest.skip("North Dakota State has no 2025 projection row")
+        assert all(r[1] == "fcs" for r in rows), f"2025 NDSU classified as {rows}"
+
+    # -- is_projection (added 2026-07-26) ----------------------------------
+
+    def test_is_projection_tracks_whether_anything_was_simulated(self, db_conn):
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT season, team, games_simulated, games_completed, is_projection
+            FROM api.season_outlook
+            WHERE is_projection IS DISTINCT FROM (games_simulated > games_completed)
+            LIMIT 10
+            """,
+        )
+        assert not rows, f"is_projection disagrees with the games it is derived from: {rows}"
+
+    def test_a_settled_row_is_pure_hindsight(self, db_conn):
+        """is_projection = false has to MEAN something: with no simulated game
+        the win total is the record book, so projected_wins must equal
+        actual_wins. This is the shape the whole 699-row 2025 season has, and
+        the reason a consumer defaulting to 'current season' needed the flag."""
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT season, team, projected_wins, actual_wins, wins_p10, wins_p90
+            FROM api.season_outlook
+            WHERE NOT is_projection
+              AND (projected_wins IS DISTINCT FROM actual_wins::numeric
+                   OR wins_p10 IS DISTINCT FROM wins_p90)
+            LIMIT 10
+            """,
+        )
+        assert not rows, f"is_projection=false but the row is not a settled record: {rows}"
+
+    def test_a_forward_looking_season_is_labelled_a_projection(self, db_conn):
+        """The inverse guard: if nothing anywhere is flagged as a projection,
+        the column has degenerated into a constant and consumers branching on
+        it would show a schedule as a finished season."""
+        seasons = _fetch_count(
+            db_conn,
+            """
+            SELECT COUNT(*) FROM (
+                SELECT season FROM api.season_outlook
+                GROUP BY season HAVING bool_or(is_projection)
+            ) s
+            """,
+        )
+        assert seasons >= 1, "no season has a single projected row"
+
+    # -- division-aware stored columns (2026-07-26) ------------------------
+    #
+    # SEQUENCING. Unlike everything above, these two assert values WRITTEN by
+    # scripts/simulate_season.py, not derived by the view. Replacing the view
+    # does not satisfy them; they go green when the simulator is re-run, and
+    # until then a failure here means the deploy is half done.
+
+    def test_bowl_probability_is_absent_outside_fbs(self, db_conn):
+        """Bowl eligibility is an FBS rule. Yale carried p_bowl_eligible =
+        0.888 -- arithmetic about a postseason its division does not have."""
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT season, team, classification, p_bowl_eligible
+            FROM api.season_outlook
+            WHERE classification IS DISTINCT FROM 'fbs'
+              AND p_bowl_eligible IS NOT NULL
+            LIMIT 10
+            """,
+        )
+        assert not rows, f"p_bowl_eligible set outside FBS (re-run simulate_season.py?): {rows}"
+
+    def test_a_full_ten_game_ivy_slate_counts_as_complete(self, db_conn):
+        """The reported defect: all 8 Ivy teams at games_scheduled = 10,
+        games_unscored = 0 were flagged schedule_complete = false against a
+        flat 11-game FBS threshold, and cfb-app rendered that as a "these are
+        floors" warning about a conference whose season was fully described."""
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT season, team, games_scheduled, games_unscored, schedule_complete
+            FROM api.season_outlook
+            -- ILIKE because CFBD's conference label for the league is not
+            -- pinned anywhere in this repo ('Ivy' vs 'Ivy League').
+            WHERE conference ILIKE 'Ivy%'
+              AND games_scheduled >= 10
+              AND games_unscored = 0
+              AND NOT schedule_complete
+            LIMIT 10
+            """,
+        )
+        assert not rows, f"full Ivy slates flagged short (re-run simulate_season.py?): {rows}"

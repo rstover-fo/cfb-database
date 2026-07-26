@@ -41,6 +41,8 @@ class TestComputeScripts:
             # Phase 4 season projections. Runnable through the deploy path so
             # the compute chain does not depend on a healthy ingest run.
             "simulate_season",
+            # Section 4.3 preseason backtest -- read-only, reports to stdout.
+            "backtest_preseason",
         }
 
 

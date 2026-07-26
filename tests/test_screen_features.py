@@ -525,6 +525,26 @@ class TestRegimeColumnsSeparateRecruitingFromCoachingChange:
             "tenure_start; GREATEST will not propagate it"
         )
 
+    def test_audit_and_screen_share_one_coach_tenure_definition(self):
+        """PR #54 review, P2. The audit's hand-copied coach CTE omitted the
+        gaps-and-islands grouping, so a coach returning to a school inherited
+        his FIRST stint's start year. That widens the regime window, so the
+        audit found recruiting classes where the screen saw none and
+        under-reported exactly the quantity it exists to measure. Sharing one
+        definition is what makes the two unable to disagree.
+        """
+        from scripts.screen_preseason_features import (
+            _COACH_TENURE_CTE,
+            AUDIT_QUERY,
+            SCREEN_FRAME_QUERY,
+        )
+
+        assert "coach_islands" in _COACH_TENURE_CTE, "islands grouping is the point"
+        for query in (SCREEN_FRAME_QUERY, AUDIT_QUERY):
+            assert _COACH_TENURE_CTE.strip() in query, (
+                "both queries must embed the shared coach-tenure CTE verbatim"
+            )
+
     def test_spine_does_not_coalesce_tenure_start(self):
         from scripts.screen_preseason_features import SCREEN_FRAME_QUERY as q
 

@@ -499,8 +499,15 @@ UNTESTABLE_COLUMNS = {
 CLASS_DECAY = 0.8
 CLASS_WINDOW = 4
 
-SCREEN_FRAME_QUERY = f"""
-WITH coach_year AS (
+# Head-coach tenure start per (school, year). SHARED between the screen and the
+# imputation audit -- defined once because the audit's whole job is to describe
+# the frame the screen builds, and a hand-copied second version of this logic
+# silently disagreed with it (PR #54 review): without the gaps-and-islands
+# grouping a returning coach's second stint inherits the FIRST stint's start
+# year, widening the regime window, so the audit found classes where the screen
+# saw none and under-reported absent regime values.
+_COACH_TENURE_CTE = """
+coach_year AS (
     -- One head coach per (school, year). A school-year can list several
     -- coaches (interim, co-HC), so take the one who actually coached the most
     -- games. Covers 99.1%% of the sp_ratings spine.
@@ -520,7 +527,10 @@ coach_tenure AS (
     SELECT school, year, coach_id,
            MIN(year) OVER (PARTITION BY school, coach_id, grp) AS tenure_start
     FROM coach_islands
-),
+)"""
+
+SCREEN_FRAME_QUERY = f"""
+WITH {_COACH_TENURE_CTE},
 class_points AS (
     -- Recruiting class quality per (team, year).
     SELECT tr.team, tr.year, tr.points::double precision AS points
@@ -724,17 +734,7 @@ REQUIRED_COLUMNS: list[tuple[str, str, tuple[str, ...]]] = [
 # Counts only -- no correlations, no verdicts, no effect on the screened set or
 # the FDR correction.
 AUDIT_QUERY = f"""
-WITH coach_year AS (
-    SELECT DISTINCT ON (c.school, c.year)
-           c.school, c.year, c._dlt_parent_id AS coach_id
-    FROM ref.coaches__seasons c
-    ORDER BY c.school, c.year, COALESCE(c.games, 0) DESC
-),
-coach_tenure AS (
-    SELECT cy.school, cy.year,
-           MIN(cy.year) OVER (PARTITION BY cy.school, cy.coach_id) AS tenure_start
-    FROM coach_year cy
-),
+WITH {_COACH_TENURE_CTE},
 class_points AS (
     SELECT tr.team, tr.year, tr.points::double precision AS points
     FROM recruiting.team_recruiting tr

@@ -75,24 +75,27 @@ ESTIMATED_CALLS = {
 # NOT on this list, deliberately:
 #   reference   -- no year filter and ~10 calls; always cheap, always current.
 #
-# metrics_wp WAS exempted here on the grounds that it is "already
-# self-limiting: it only fetches games still missing win probability, so a
-# fully-backfilled season costs nothing". That argument is wrong, and the
-# 2026-07-26 daily load is the counter-example: it reported
+#   metrics_wp  -- NOT skipped, though it was briefly added here. The 2026-07-26
+#                  daily load showed why it looked like it belonged: it reported
 #
-#     3829 completed games in [2025], 1312 already have win probability,
-#     2517 missing -- Processing 2517 games in 51 batches of up to 50
+#                      3829 completed games in [2025], 1312 already have win
+#                      probability, 2517 missing -- 51 batches of up to 50
 #
-# for a season that ended in January. "Only the missing ones" is self-limiting
-# only if the missing set actually drains to zero. It has not: 66% of a
-# finished season is still missing after months of daily runs, because games
-# CFBD has no win-probability data for stay missing forever. The query returns
-# them every day, so the cost is not amortized -- it is ~2,500 calls a day in
-# perpetuity, 3% of the monthly budget, for a season that cannot change.
+#                  for a season that ended in January, i.e. ~2,500 calls a day
+#                  for data that cannot change. But skipping the whole source
+#                  once a season is final is the wrong remedy (PR #54 review,
+#                  P1): run_metrics_wp_pipeline computes missing games as
+#                  completed-minus-loaded, so a backfill INTERRUPTED by the very
+#                  quota exhaustion that motivated the skip leaves recoverable
+#                  games in that 2,517. The unattended daily path passes no
+#                  --season, so those rows would never be retried and the gap
+#                  would become permanent by construction.
 #
-# In-game win probability for a COMPLETED game is as immutable as its box
-# score, so it belongs here. A live season is unaffected: the skip only applies
-# once season_is_final() is true.
+#                  The real defect was unbounded cost, not eligibility, and it
+#                  is fixed where it lives: run_metrics_wp_pipeline caps games
+#                  per run (MAX_GAMES_PER_RUN) and logs what it deferred, so the
+#                  backlog drains at a bounded price instead of costing
+#                  everything or nothing.
 IMMUTABLE_ONCE_FINAL = frozenset(
     {
         "games",
@@ -105,7 +108,6 @@ IMMUTABLE_ONCE_FINAL = frozenset(
         "betting",
         "draft",
         "metrics",
-        "metrics_wp",
         "rosters",
     }
 )

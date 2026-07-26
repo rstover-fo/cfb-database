@@ -294,10 +294,19 @@ def _resolve_projection_seasons() -> list[int]:
 # cheaper than a LATERAL scanning raw per-play rows, while computing exactly
 # the same weighted average (sum/sum, not an average-of-averages).
 FEATURE_ROWS_QUERY = f"""
-WITH coach_year AS (
+WITH coach_counts AS (
+    -- Coaches CFBD lists per school-year. >1 means a mid-season change; those
+    -- school-years are excluded in coach_tenure below (leak guard).
+    SELECT school, year, COUNT(*) AS n_coaches
+    FROM ref.coaches__seasons
+    GROUP BY school, year
+),
+coach_year AS (
     -- Deliberately NOT filtered to the target season: the gaps-and-islands
     -- grouping below needs a school's whole coaching history to tell a second
-    -- stint from a continuation. ref.coaches__seasons is small.
+    -- stint from a continuation. ref.coaches__seasons is small. Filtering it
+    -- would also left-censor tenure, making every long-tenured coach look like
+    -- he started in the first year of the window.
     SELECT DISTINCT ON (c.school, c.year)
            c.school, c.year, c._dlt_parent_id AS coach_id
     FROM ref.coaches__seasons c
@@ -309,9 +318,21 @@ coach_islands AS (
     FROM coach_year
 ),
 coach_tenure AS (
-    SELECT school, year, coach_id,
-           MIN(year) OVER (PARTITION BY school, coach_id, grp) AS tenure_start
-    FROM coach_islands
+    -- LEAK GUARD (PR #55 review, P1) -- MUST match the screen's
+    -- _COACH_TENURE_CTE, which carries the full rationale.
+    --
+    -- ref.coaches__seasons cannot split a mid-season coaching change
+    -- (src/schemas/api/038_coach_records.sql), so picking the most-games coach
+    -- resolves an EARLY firing to the replacement and marks week 1 as
+    -- "first-year coach" when it was not. A mid-season firing is caused by
+    -- season-S performance, so that would carry the season's own outcome into a
+    -- feature that claims to be preseason-known.
+    SELECT i.school, i.year, i.coach_id,
+           CASE WHEN cc.n_coaches > 1 THEN NULL
+                ELSE MIN(i.year) OVER (PARTITION BY i.school, i.coach_id, i.grp)
+           END AS tenure_start
+    FROM coach_islands i
+    JOIN coach_counts cc ON cc.school = i.school AND cc.year = i.year
 ),
 class_points AS (
     -- The four recruiting classes signed BEFORE season S (design doc 1f).

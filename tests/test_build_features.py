@@ -252,7 +252,7 @@ class TestMigration042Columns:
         from scripts.build_features import FEATURE_ROWS_QUERY
 
         assert "coach_islands" in FEATURE_ROWS_QUERY
-        assert "PARTITION BY school, coach_id, grp" in FEATURE_ROWS_QUERY
+        assert "PARTITION BY i.school, i.coach_id, i.grp" in FEATURE_ROWS_QUERY
 
     def test_prior_season_join_is_leak_free(self):
         """S-1, never S: season S's own advanced stats are not knowable in

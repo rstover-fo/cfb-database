@@ -597,3 +597,47 @@ class TestFrameQueryIsBindable:
             "%%", "%"
         )
         assert "2015" in rendered and "2025" in rendered
+
+
+class TestMidSeasonCoachingChangesAreExcluded:
+    """PR #55 review, P1 -- a leak, not a rounding error.
+
+    ref.coaches__seasons attributes a whole season to each coach it lists and
+    cannot split a mid-season change (src/schemas/api/038_coach_records.sql).
+    Picking the most-games coach therefore resolves an EARLY firing to the
+    replacement, whose tenure starts that year, marking week 1 as "first-year
+    coach" when it was not.
+
+    The bias runs one way: the earlier the firing, the more games the
+    replacement inherits, and the worse the season was going. So the
+    contaminated cases are exactly the ones most correlated with a bad season,
+    and the flag would carry season S's own outcome into a feature that claims
+    to be preseason-known. 24 of 300 positives on 2015-2025.
+    """
+
+    def test_screen_and_build_share_the_guard(self):
+        from scripts.build_features import FEATURE_ROWS_QUERY
+        from scripts.screen_preseason_features import AUDIT_QUERY, SCREEN_FRAME_QUERY
+
+        for query in (SCREEN_FRAME_QUERY, AUDIT_QUERY, FEATURE_ROWS_QUERY):
+            assert "coach_counts" in query, "ambiguity guard missing"
+            assert "WHEN cc.n_coaches > 1 THEN NULL" in query, (
+                "a school-year with several listed coaches must yield NULL tenure, "
+                "not a guessed one"
+            )
+
+    def test_guard_nulls_tenure_rather_than_dropping_the_row(self):
+        """The team-week row still has to exist -- every other feature on it is
+        fine. Only the coaching signal is unknown."""
+        from scripts.build_features import FEATURE_ROWS_QUERY
+
+        assert "LEFT JOIN coach_tenure" in FEATURE_ROWS_QUERY
+
+    def test_coach_history_is_not_year_filtered(self):
+        """Filtering the coach CTE to the screened window would left-censor
+        tenure, making every long-tenured coach look like he started in the
+        window's first year -- which inflates hc_first_year wholesale."""
+        from scripts.screen_preseason_features import _COACH_TENURE_CTE
+
+        assert "%(from_season)s" not in _COACH_TENURE_CTE
+        assert "BETWEEN" not in _COACH_TENURE_CTE.upper()

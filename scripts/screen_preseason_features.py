@@ -507,6 +507,13 @@ CLASS_WINDOW = 4
 # year, widening the regime window, so the audit found classes where the screen
 # saw none and under-reported absent regime values.
 _COACH_TENURE_CTE = """
+coach_counts AS (
+    -- How many coaches CFBD lists for a school-year. >1 means a mid-season
+    -- change, and those school-years are EXCLUDED below -- see coach_tenure.
+    SELECT school, year, COUNT(*) AS n_coaches
+    FROM ref.coaches__seasons
+    GROUP BY school, year
+),
 coach_year AS (
     -- One head coach per (school, year). A school-year can list several
     -- coaches (interim, co-HC), so take the one who actually coached the most
@@ -524,9 +531,32 @@ coach_islands AS (
     FROM coach_year
 ),
 coach_tenure AS (
-    SELECT school, year, coach_id,
-           MIN(year) OVER (PARTITION BY school, coach_id, grp) AS tenure_start
-    FROM coach_islands
+    -- LEAK GUARD (PR #55 review, P1). tenure_start is NULL for any school-year
+    -- CFBD lists more than one coach for.
+    --
+    -- ref.coaches__seasons attributes a whole season to each coach it lists and
+    -- cannot split a mid-season change (documented in
+    -- src/schemas/api/038_coach_records.sql). Picking the most-games coach then
+    -- means an early firing -- where the replacement finishes with more games
+    -- than the man he replaced -- resolves to the REPLACEMENT, whose tenure
+    -- starts that year, marking week 1 as "first-year coach" when it was not.
+    --
+    -- That is a leak, not a rounding error: a mid-season firing is CAUSED by
+    -- season-S performance, so the flag would carry the season's own outcome
+    -- into a feature that claims to be preseason-known. Worse, the bias runs
+    -- one way -- the earlier the firing, the more games the replacement gets,
+    -- and the worse the season was.
+    --
+    -- Measured on 2015-2025: 103 of 1,438 school-years are ambiguous (7.2%%),
+    -- and 24 of the 300 hc_first_year=1 cases came from them (8.0%% of the
+    -- positives). Excluded rather than guessed -- an unambiguous school-year
+    -- has exactly one coach, who by definition started the season.
+    SELECT i.school, i.year, i.coach_id,
+           CASE WHEN cc.n_coaches > 1 THEN NULL
+                ELSE MIN(i.year) OVER (PARTITION BY i.school, i.coach_id, i.grp)
+           END AS tenure_start
+    FROM coach_islands i
+    JOIN coach_counts cc ON cc.school = i.school AND cc.year = i.year
 )"""
 
 SCREEN_FRAME_QUERY = f"""

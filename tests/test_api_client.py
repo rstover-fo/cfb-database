@@ -1,14 +1,19 @@
 """Tests for CFBD API client."""
 
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 
 from src.pipelines.utils.api_client import (
+    RATE_LIMIT_ERRORS,
     CFBDClient,
+    RateLimitBreaker,
     RateLimitCircuitOpen,
     RateLimitExhausted,
+    reset_rate_limit_circuit,
 )
 
 
@@ -253,7 +258,6 @@ class TestRetryAfterParsing:
             (" 45 ", 45),
             (None, 60),
             ("soon", 60),
-            ("Wed, 21 Oct 2026 07:28:00 GMT", 60),
             ("", 60),
             ("-5", 60),
             ("86400", CFBDClient.MAX_RETRY_AFTER_SECONDS),
@@ -262,11 +266,11 @@ class TestRetryAfterParsing:
     def test_parse_retry_after(self, raw, expected):
         assert CFBDClient._parse_retry_after(raw) == expected
 
-    def test_malformed_header_does_not_crash_the_request(self):
+    def test_unparseable_header_does_not_crash_the_request(self):
         client = CFBDClient(api_key="test-key")
         bad = MagicMock()
         bad.status_code = 429
-        bad.headers = {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}
+        bad.headers = {"Retry-After": "whenever"}
         err = httpx.HTTPStatusError("429", request=MagicMock(), response=bad)
         ok = MagicMock()
         ok.json.return_value = [{"ok": True}]
@@ -276,6 +280,132 @@ class TestRetryAfterParsing:
                 assert client.get("/teams") == [{"ok": True}]
                 mock_sleep.assert_called_with(60)
         client.close()
+
+
+class TestRetryAfterHttpDate:
+    """Codex review on PR #49: a valid HTTP-date fell through to the flat 60s
+    default. When the date is further out than that, the client retries before
+    the server said to and can burn its whole budget -- raising
+    RateLimitExhausted on a request that simply waiting would have satisfied.
+    """
+
+    NOW = datetime(2026, 10, 21, 7, 28, 0, tzinfo=UTC)
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            # 90s out: honored exactly, not collapsed to the 60s default.
+            ("Wed, 21 Oct 2026 07:29:30 GMT", 90),
+            # Already past: retry now rather than sleeping a default minute.
+            ("Wed, 21 Oct 2026 07:00:00 GMT", 0),
+            # Distant date still cannot park the pipeline.
+            ("Fri, 25 Dec 2026 00:00:00 GMT", CFBDClient.MAX_RETRY_AFTER_SECONDS),
+            # RFC 9110 fixes HTTP-dates to GMT; a missing offset is not local time.
+            ("Wed, 21 Oct 2026 07:29:00", 60),
+        ],
+    )
+    def test_http_date_is_honored_relative_to_now(self, raw, expected):
+        assert CFBDClient._parse_retry_after(raw, now=self.NOW) == expected
+
+    def test_a_date_beyond_the_default_is_actually_slept(self):
+        """The regression in effect: 90s away must sleep 90, not 60."""
+        client = CFBDClient(api_key="test-key")
+        far = MagicMock()
+        far.status_code = 429
+        far.headers = {"Retry-After": format_datetime(self.NOW + timedelta(seconds=90))}
+        err = httpx.HTTPStatusError("429", request=MagicMock(), response=far)
+        ok = MagicMock()
+        ok.json.return_value = []
+        ok.raise_for_status = MagicMock()
+        with patch.object(client._client, "get", side_effect=[err, ok]):
+            with patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep:
+                with patch("src.pipelines.utils.api_client.datetime") as mock_dt:
+                    mock_dt.now.return_value = self.NOW
+                    client.get("/teams")
+                slept = mock_sleep.call_args[0][0]
+                assert 85 <= slept <= 95, f"expected ~90s from the header, slept {slept}"
+        client.close()
+
+
+class TestBreakerIsSharedAcrossClients:
+    """Codex review on PR #49: the breaker lived on the client instance, but
+    every source calls `get_client()` fresh and nothing catches
+    RateLimitExhausted while keeping its client alive -- `play_stats_resource`
+    catches only httpx.HTTPStatusError, so the first exhaustion unwinds the
+    loop and `finally` closes the client.
+
+    The per-instance counter therefore topped out at 1, the threshold of 5 was
+    unreachable, and the breaker was dead code: a spent quota still burned a
+    full retry budget separately for every one of the ~60 resources."""
+
+    def _exhaust_on_a_fresh_client(self, n):
+        """Mimic the real call graph: one new client per rate-limited source."""
+        for _ in range(n):
+            client = CFBDClient(api_key="test-key")
+            try:
+                with patch.object(client._client, "get", side_effect=_rate_limit_error()):
+                    with patch("src.pipelines.utils.api_client.time.sleep"):
+                        with pytest.raises(RateLimitExhausted):
+                            client.get("/plays/stats")
+            finally:
+                client.close()
+
+    def test_threshold_is_reachable_across_separate_clients(self):
+        self._exhaust_on_a_fresh_client(CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD)
+        later = CFBDClient(api_key="test-key")
+        with patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep:
+            with pytest.raises(RateLimitCircuitOpen, match="quota is spent"):
+                later.get("/games")
+            mock_sleep.assert_not_called()
+        later.close()
+
+    def test_below_threshold_a_new_client_still_works(self):
+        self._exhaust_on_a_fresh_client(CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD - 1)
+        later = CFBDClient(api_key="test-key")
+        ok = MagicMock()
+        ok.json.return_value = [{"ok": True}]
+        ok.raise_for_status = MagicMock()
+        with patch.object(later._client, "get", return_value=ok):
+            assert later.get("/games") == [{"ok": True}]
+        later.close()
+
+    def test_a_success_on_any_client_clears_the_shared_count(self):
+        self._exhaust_on_a_fresh_client(CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD - 1)
+        healthy = CFBDClient(api_key="test-key")
+        ok = MagicMock()
+        ok.json.return_value = []
+        ok.raise_for_status = MagicMock()
+        with patch.object(healthy._client, "get", return_value=ok):
+            healthy.get("/teams")
+        healthy.close()
+        # Budget restored for everyone, so the breaker must still be closed.
+        self._exhaust_on_a_fresh_client(CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD - 1)
+        later = CFBDClient(api_key="test-key")
+        with patch.object(later._client, "get", return_value=ok):
+            assert later.get("/games") == []
+        later.close()
+
+    def test_an_injected_breaker_isolates_a_client(self):
+        """The escape hatch: a caller that must not be halted by the run."""
+        self._exhaust_on_a_fresh_client(CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD)
+        private = CFBDClient(api_key="test-key", breaker=RateLimitBreaker())
+        ok = MagicMock()
+        ok.json.return_value = [{"ok": True}]
+        ok.raise_for_status = MagicMock()
+        with patch.object(private._client, "get", return_value=ok):
+            assert private.get("/teams") == [{"ok": True}]
+        private.close()
+
+    def test_module_level_reset_clears_the_run(self):
+        self._exhaust_on_a_fresh_client(CFBDClient.RATE_LIMIT_CIRCUIT_THRESHOLD)
+        reset_rate_limit_circuit()
+        later = CFBDClient(api_key="test-key")
+        ok = MagicMock()
+        ok.json.return_value = []
+        ok.raise_for_status = MagicMock()
+        with patch.object(later._client, "get", return_value=ok):
+            assert later.get("/teams") == []
+        later.close()
 
 
 class TestCircuitIsTerminalButResettable:
@@ -313,3 +443,101 @@ class TestCircuitIsTerminalButResettable:
         with patch.object(client._client, "get", return_value=ok):
             assert client.get("/teams") == [{"ok": True}]
         client.close()
+
+
+class TestBroadExceptHandlersDoNotSwallowRateLimits:
+    """Found by the pre-PR adversarial pass on the Codex fixes.
+
+    Three source loops caught bare `Exception` and continued -- game_stats'
+    two week loops (to skip weeks with no games) and rosters' per-team loop.
+    Those handlers swallowed RateLimitExhausted and RateLimitCircuitOpen too,
+    so a quota-exhausted load would spin through every remaining week/team and
+    complete "successfully" with silently missing data: the exact bug raising
+    instead of returning `[]` was meant to eliminate, reintroduced one layer
+    up. For rosters it is worse than lost rows -- a partial roster poisons
+    every roster-derived feature with no signal that it happened.
+    """
+
+    @staticmethod
+    def _rate_limited_client():
+        client = CFBDClient(api_key="test-key")
+        patcher = patch.object(client._client, "get", side_effect=_rate_limit_error())
+        patcher.start()
+        return client, patcher
+
+    @staticmethod
+    def _assert_rate_limit_escapes(resource):
+        """dlt wraps a generator exception in ResourceExtractionError, so assert
+        on the chained cause -- the point is that it escaped the loop at all."""
+        from dlt.extract.exceptions import ResourceExtractionError
+
+        with pytest.raises(ResourceExtractionError) as exc_info:
+            list(resource)
+        causes = []
+        err = exc_info.value
+        while err is not None:
+            causes.append(type(err))
+            err = err.__cause__ or err.__context__
+        assert any(c in RATE_LIMIT_ERRORS for c in causes), (
+            f"rate limit was swallowed; chain was {causes}"
+        )
+
+    @pytest.mark.parametrize("exc", [RateLimitExhausted, RateLimitCircuitOpen])
+    def test_rate_limit_errors_tuple_covers_both(self, exc):
+        assert exc in RATE_LIMIT_ERRORS
+
+    def test_game_team_stats_propagates_rate_limit(self):
+        from src.pipelines.sources.game_stats import game_team_stats_resource
+
+        client, patcher = self._rate_limited_client()
+        try:
+            with patch("src.pipelines.sources.game_stats.get_client", return_value=client):
+                with patch("src.pipelines.utils.api_client.time.sleep"):
+                    res = game_team_stats_resource([2026], season_type="regular", weeks=[1, 2, 3])
+                    self._assert_rate_limit_escapes(res)
+        finally:
+            patcher.stop()
+            client.close()
+
+    def test_game_player_stats_propagates_rate_limit(self):
+        from src.pipelines.sources.game_stats import game_player_stats_resource
+
+        client, patcher = self._rate_limited_client()
+        try:
+            with patch("src.pipelines.sources.game_stats.get_client", return_value=client):
+                with patch("src.pipelines.utils.api_client.time.sleep"):
+                    res = game_player_stats_resource([2026], season_type="regular", weeks=[1, 2, 3])
+                    self._assert_rate_limit_escapes(res)
+        finally:
+            patcher.stop()
+            client.close()
+
+    def test_roster_propagates_rate_limit_instead_of_warning(self):
+        from src.pipelines.sources.rosters import rosters_resource
+
+        client, patcher = self._rate_limited_client()
+        try:
+            with patch("src.pipelines.sources.rosters.get_client", return_value=client):
+                with patch("src.pipelines.utils.api_client.time.sleep"):
+                    res = rosters_resource(teams=["Oklahoma", "Texas"], years=[2026])
+                    self._assert_rate_limit_escapes(res)
+        finally:
+            patcher.stop()
+            client.close()
+
+    def test_non_rate_limit_errors_are_still_skipped(self):
+        """The skip behaviour these handlers exist for must survive: a week
+        with no games still yields nothing rather than failing the load."""
+        from src.pipelines.sources.game_stats import game_team_stats_resource
+
+        client = CFBDClient(api_key="test-key")
+        boom = MagicMock()
+        boom.status_code = 400
+        err = httpx.HTTPStatusError("400", request=MagicMock(), response=boom)
+        try:
+            with patch.object(client._client, "get", side_effect=err):
+                with patch("src.pipelines.sources.game_stats.get_client", return_value=client):
+                    res = game_team_stats_resource([2026], season_type="regular", weeks=[1, 2])
+                    assert list(res) == []
+        finally:
+            client.close()

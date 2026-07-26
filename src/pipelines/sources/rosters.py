@@ -10,7 +10,7 @@ import dlt
 from dlt.sources import DltSource
 
 from ..config.years import YEAR_RANGES, get_current_season
-from ..utils.api_client import get_client
+from ..utils.api_client import RATE_LIMIT_ERRORS, get_client
 from .base import make_request
 
 logger = logging.getLogger(__name__)
@@ -79,6 +79,12 @@ def rosters_resource(
                         player["year"] = year
                         yield player
 
+                except RATE_LIMIT_ERRORS:
+                    # Demoting a 429 to a warning here yields a roster that is
+                    # quietly missing teams, which poisons every roster-derived
+                    # feature (continuity, trench counts) without any signal
+                    # that it happened. Fail the load instead.
+                    raise
                 except Exception as e:
                     logger.warning(f"Error fetching roster for {team} {year}: {e}")
                     continue

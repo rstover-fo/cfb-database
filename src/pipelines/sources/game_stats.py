@@ -12,7 +12,7 @@ import dlt
 from dlt.sources import DltSource
 
 from ..config.years import YEAR_RANGES, get_current_season
-from ..utils.api_client import get_client
+from ..utils.api_client import RATE_LIMIT_ERRORS, get_client
 from .base import make_request
 
 logger = logging.getLogger(__name__)
@@ -97,6 +97,12 @@ def game_team_stats_resource(
                                 },
                             )
                             yield from data
+                        except RATE_LIMIT_ERRORS:
+                            # A 429 is not "this week has no games". Swallowing
+                            # it here would complete the resource with silently
+                            # missing weeks -- the exact failure the rate-limit
+                            # exceptions exist to make loud.
+                            raise
                         except Exception:
                             # Some weeks may not have games (esp postseason)
                             continue
@@ -151,6 +157,12 @@ def game_player_stats_resource(
                                 },
                             )
                             yield from data
+                        except RATE_LIMIT_ERRORS:
+                            # A 429 is not "this week has no games". Swallowing
+                            # it here would complete the resource with silently
+                            # missing weeks -- the exact failure the rate-limit
+                            # exceptions exist to make loud.
+                            raise
                         except Exception:
                             # Some weeks may not have games (esp postseason)
                             continue

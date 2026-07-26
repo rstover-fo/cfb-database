@@ -11,6 +11,22 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limit_breaker():
+    """Clear the run-wide CFBD rate-limit breaker around every test.
+
+    The breaker is deliberately process-wide (that is what makes its threshold
+    reachable in production), so without this any test that trips it would
+    leave every later CFBDClient raising RateLimitCircuitOpen -- an
+    order-dependent failure in unrelated suites.
+    """
+    from src.pipelines.utils.api_client import reset_rate_limit_circuit
+
+    reset_rate_limit_circuit()
+    yield
+    reset_rate_limit_circuit()
+
+
 def _load_postgres_dsn() -> str:
     """Read the Postgres connection string from env var or .dlt/secrets.toml."""
     import os

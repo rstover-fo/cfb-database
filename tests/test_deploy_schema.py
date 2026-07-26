@@ -38,6 +38,9 @@ class TestComputeScripts:
             "tune_params",
             "calibrate_live_wp",
             "poll_scoreboard",
+            # Phase 4 season projections. Runnable through the deploy path so
+            # the compute chain does not depend on a healthy ingest run.
+            "simulate_season",
         }
 
 

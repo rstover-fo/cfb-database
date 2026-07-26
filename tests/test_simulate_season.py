@@ -23,13 +23,17 @@ pytest.importorskip("numpy")
 import numpy as np  # noqa: E402
 
 from scripts.simulate_season import (  # noqa: E402
+    _ROW_COLUMNS,
     BOWL_ELIGIBLE_WINS,
     COMPLETE_SCHEDULE_GAMES,
+    DEFAULT_STRENGTH_SHARE,
     assign_sos_ranks,
     build_projection_row,
     conference_title_probs,
+    normalize_strength_share,
     schedule_strength,
     simulate_wins,
+    strength_sd,
     summarize,
     win_distribution,
 )
@@ -257,6 +261,7 @@ class TestBuildProjectionRow:
             18.5,
             0.25,
             sim["games_simulated"]["A"],
+            0.15,
         )
 
     def test_counts_actual_wins_from_both_sides(self):
@@ -310,6 +315,7 @@ class TestCodexRegressions:
             18.5,
             None,
             sim["games_simulated"]["A"],
+            0.15,
         )
         assert row["games_scheduled"] == 2
         assert row["games_simulated"] == 1
@@ -334,6 +340,7 @@ class TestCodexRegressions:
             18.5,
             None,
             sim["games_simulated"]["A"],
+            0.15,
         )
         assert set(row["p_win_dist"]) == {"0", "1"}
         assert sum(row["p_win_dist"].values()) == pytest.approx(1.0)
@@ -395,7 +402,7 @@ class TestSelfReviewRegressions:
 
         # The row builder still produces the degenerate shape if called...
         row = build_projection_row(
-            "A", sim["wins"]["A"], games, {}, "C", "fitted_v1", 100, 18.5, None, 0
+            "A", sim["wins"]["A"], games, {}, "C", "fitted_v1", 100, 18.5, None, 0, 0.15
         )
         assert row["projected_wins"] == 0.0
         assert row["p_bowl_eligible"] == 0.0
@@ -412,3 +419,271 @@ class TestSelfReviewRegressions:
         wins = simulate_wins(games, 200, 0.0)["wins"]
         assert np.all(wins["A"] == 1)
         assert np.all(wins["B"] == 0)
+
+
+class TestCorrelatedDraws:
+    """v1.1: one season-strength offset per team per simulation, applied to
+    every game that team plays.
+
+    Motivated by the section 4.5 backtest, which measured p10-p90 coverage of
+    71.7% against a nominal 80% with both tails underweighted. Independent
+    draws treat a team's true strength as perfectly known; real seasons do not.
+    """
+
+    @staticmethod
+    def _slate(n=12, margin=3.0):
+        return [
+            {
+                "home_team": "A",
+                "away_team": f"O{i}",
+                "completed": False,
+                "expected_home_margin": margin,
+                "conference_game": False,
+            }
+            for i in range(n)
+        ]
+
+    @pytest.mark.parametrize("share", [0.0, 0.05, 0.25, 0.5, 0.9])
+    def test_total_variance_is_preserved(self, share):
+        """The whole point of the split: per-game margin variance must stay
+        sigma^2 so single-game predictions remain exactly as calibrated as v1.
+        A correlation term that also inflated game variance would be fixing
+        season totals by breaking something that was already right."""
+        sigma = 18.95
+        tau, game_sd = strength_sd(sigma, share)
+        assert 2 * tau**2 + game_sd**2 == pytest.approx(sigma**2)
+
+    def test_share_zero_reproduces_independent_draws(self):
+        """share=0 must still be the exact v1 path -- it is the escape hatch
+        for reproducing any pre-v1.1 projection. Checked against the binomial
+        SD that independent games of equal probability would give, not against
+        the default (which is now the calibrated 0.15)."""
+        games = self._slate(n=12, margin=0.0)  # 12 independent coin flips
+        w = simulate_wins(games, 40000, 18.0, seed=5, strength_share=0.0)["wins"]["A"]
+        binomial_sd = (12 * 0.5 * 0.5) ** 0.5
+        assert float(np.std(w)) == pytest.approx(binomial_sd, abs=0.05)
+
+    def test_shipped_default_is_the_calibrated_share(self):
+        """Pins the sweep result so the default cannot drift back to a guess.
+        0.15 put backtest p10-p90 coverage at 79.6% against a nominal 80%."""
+        assert DEFAULT_STRENGTH_SHARE == 0.15
+        games = self._slate()
+        explicit = simulate_wins(games, 1000, 18.0, seed=5, strength_share=0.15)["wins"]["A"]
+        default = simulate_wins(games, 1000, 18.0, seed=5)["wins"]["A"]
+        assert np.array_equal(explicit, default)
+
+    def test_tails_fatten_as_share_rises(self):
+        """The defect being fixed, stated as a monotonicity check."""
+        games = self._slate()
+        sds = []
+        for share in (0.0, 0.2, 0.4, 0.6):
+            w = simulate_wins(games, 20000, 18.0, seed=11, strength_share=share)["wins"]["A"]
+            sds.append(float(np.std(w)))
+        assert sds == sorted(sds), f"win-total SD must not shrink as share rises: {sds}"
+        assert sds[-1] > sds[0] * 1.5, f"correlation should widen materially: {sds}"
+
+    def test_central_tendency_is_essentially_unchanged(self):
+        """Correlation is meant to fix the SPREAD, not move the projection."""
+        games = self._slate()
+        base = simulate_wins(games, 20000, 18.0, seed=13, strength_share=0.0)["wins"]["A"]
+        corr = simulate_wins(games, 20000, 18.0, seed=13, strength_share=0.4)["wins"]["A"]
+        assert float(np.mean(corr)) == pytest.approx(float(np.mean(base)), abs=0.15)
+
+    def test_a_teams_games_become_correlated(self):
+        """Directly: within a simulation, wins should co-move. With a strong
+        offset the win total is far more dispersed than the binomial that
+        independent draws with the same per-game probability would give."""
+        games = self._slate(n=12, margin=0.0)  # every game a coin flip
+        w = simulate_wins(games, 20000, 18.0, seed=17, strength_share=0.5)["wins"]["A"]
+        binomial_sd = (12 * 0.5 * 0.5) ** 0.5  # ~1.73 if games were independent
+        assert float(np.std(w)) > binomial_sd * 1.4, (
+            f"correlated draws must exceed the independent binomial SD; got {np.std(w):.2f}"
+        )
+
+    def test_determinism_under_a_fixed_seed_still_holds(self):
+        games = self._slate()
+        a = simulate_wins(games, 500, 18.0, seed=3, strength_share=0.3)["wins"]["A"]
+        b = simulate_wins(games, 500, 18.0, seed=3, strength_share=0.3)["wins"]["A"]
+        assert np.array_equal(a, b)
+
+    @pytest.mark.parametrize("bad", [-0.1, 1.0, 1.5])
+    def test_out_of_range_share_is_rejected(self, bad):
+        """1.0 would leave zero game-level noise -- not something to arrive at
+        by accident, so it is rejected rather than clamped."""
+        with pytest.raises(ValueError, match="strength_share"):
+            strength_sd(18.0, bad)
+
+    def test_negative_sigma_is_rejected_but_zero_is_allowed(self):
+        """fetch_sigma is what refuses a non-positive sigma in production; the
+        degenerate sigma=0 behaviour is pinned by its own test above, so this
+        split must not reject it a second time."""
+        with pytest.raises(ValueError, match="negative"):
+            strength_sd(-1.0, 0.2)
+        assert strength_sd(0.0, 0.2) == (0.0, 0.0)
+
+    def test_conference_wins_come_from_the_same_correlated_draws(self):
+        """Conference tallies must stay consistent with overall wins under
+        correlation too, or title odds contradict the win totals beside them."""
+        games = [
+            {
+                "home_team": "A",
+                "away_team": f"O{i}",
+                "completed": False,
+                "expected_home_margin": 2.0,
+                "conference_game": True,
+            }
+            for i in range(9)
+        ]
+        sim = simulate_wins(games, 2000, 18.0, seed=19, strength_share=0.35)
+        assert np.all(sim["conf_wins"]["A"] <= sim["wins"]["A"])
+
+
+class TestRowContractCoverage:
+    """build_projection_row and _ROW_COLUMNS must not drift apart.
+
+    They did: v1.1 added strength_share to _ROW_COLUMNS and to the function
+    signature, but the returned dict never got the key. Every unit test still
+    passed -- none of them asserted the row covers the write contract -- and
+    the gap only surfaced as a KeyError inside write_projections against prod.
+    This is the guard that makes the next such drift a local failure.
+    """
+
+    def test_row_dict_covers_the_write_contract_exactly(self):
+        games = [_game("A", "B", margin=7.0)]
+        sim = simulate_wins(games, 100, 18.5, seed=2)
+        row = build_projection_row(
+            "A",
+            sim["wins"]["A"],
+            games,
+            {"B": 1500.0},
+            "TestConf",
+            "fitted_v1",
+            100,
+            18.5,
+            0.25,
+            sim["games_simulated"]["A"],
+            0.15,
+        )
+        missing = set(_ROW_COLUMNS) - set(row)
+        extra = set(row) - set(_ROW_COLUMNS)
+        assert not missing, f"_ROW_COLUMNS keys absent from the row: {sorted(missing)}"
+        assert not extra, f"row keys the writer will not persist: {sorted(extra)}"
+
+    def test_strength_share_is_recorded_on_the_row(self):
+        games = [_game("A", "B", margin=7.0)]
+        sim = simulate_wins(games, 100, 18.5, seed=2)
+        row = build_projection_row(
+            "A",
+            sim["wins"]["A"],
+            games,
+            {},
+            "TestConf",
+            "fitted_v1",
+            100,
+            18.5,
+            None,
+            sim["games_simulated"]["A"],
+            0.15,
+        )
+        assert row["strength_share"] == pytest.approx(0.15)
+
+
+class TestStrengthShareProvenanceMatchesTheRun:
+    """Codex PR #52 P2: the CLI accepted arbitrary precision while the stored
+    value was rounded to NUMERIC(4,3), so a row could describe a run that never
+    happened -- 0.0004 simulated as correlated but recorded as 0.000, and
+    0.9999 recorded as 1.000, a value strength_sd rejects outright."""
+
+    def test_rounds_to_stored_precision(self):
+        assert normalize_strength_share(0.15) == 0.15
+        assert normalize_strength_share(0.1234) == 0.123
+        assert normalize_strength_share(0.0004) == 0.0
+
+    def test_value_that_rounds_out_of_range_is_rejected(self):
+        """0.9999 is in [0, 1) but rounds to 1.000, which leaves no game-level
+        noise at all. Storing it would describe an unrunnable configuration."""
+        with pytest.raises(ValueError, match="after rounding"):
+            normalize_strength_share(0.9999)
+
+    @pytest.mark.parametrize("bad", [-0.001, 1.0, 2.0])
+    def test_out_of_range_is_rejected(self, bad):
+        with pytest.raises(ValueError, match="strength_share"):
+            normalize_strength_share(bad)
+
+    def test_float_noise_does_not_trip_validation(self):
+        """0.1 + 0.05 is 0.15000000000000002; rounding must absorb that rather
+        than treat a legitimate computed value as unrepresentable."""
+        assert normalize_strength_share(0.1 + 0.05) == 0.15
+
+    def test_simulate_wins_reports_the_share_it_used(self):
+        """The structural guarantee: the writer records what the simulation
+        returns, not its own copy of the argument."""
+        games = [
+            {
+                "home_team": "A",
+                "away_team": "B",
+                "completed": False,
+                "expected_home_margin": 1.0,
+                "conference_game": False,
+            }
+        ]
+        sim = simulate_wins(games, 100, 18.0, seed=1, strength_share=0.1234)
+        assert sim["strength_share"] == 0.123
+
+    def test_a_share_below_stored_precision_really_is_independent(self):
+        """0.0004 must not merely be RECORDED as 0.000 -- it must actually
+        simulate as independent draws, or the row still lies."""
+        games = [
+            {
+                "home_team": "A",
+                "away_team": f"O{i}",
+                "completed": False,
+                "expected_home_margin": 0.0,
+                "conference_game": False,
+            }
+            for i in range(12)
+        ]
+        tiny = simulate_wins(games, 3000, 18.0, seed=4, strength_share=0.0004)
+        zero = simulate_wins(games, 3000, 18.0, seed=4, strength_share=0.0)
+        assert tiny["strength_share"] == 0.0
+        assert np.array_equal(tiny["wins"]["A"], zero["wins"]["A"])
+
+    def test_row_builder_normalizes_even_when_called_directly(self):
+        """Caught by the adversarial pass: the first attempt at this hardening
+        landed on simulate_wins' return dict instead of the row builder, so a
+        direct caller could still store a share Postgres would silently round
+        to something else."""
+        games = [_game("A", "B", margin=3.0)]
+        sim = simulate_wins(games, 50, 18.0, seed=2)
+        row = build_projection_row(
+            "A",
+            sim["wins"]["A"],
+            games,
+            {},
+            "C",
+            "fitted_v1",
+            50,
+            18.0,
+            None,
+            sim["games_simulated"]["A"],
+            0.1234,
+        )
+        assert row["strength_share"] == 0.123
+
+    def test_row_builder_rejects_a_share_that_rounds_out_of_range(self):
+        games = [_game("A", "B", margin=3.0)]
+        sim = simulate_wins(games, 50, 18.0, seed=2)
+        with pytest.raises(ValueError, match="after rounding"):
+            build_projection_row(
+                "A",
+                sim["wins"]["A"],
+                games,
+                {},
+                "C",
+                "fitted_v1",
+                50,
+                18.0,
+                None,
+                sim["games_simulated"]["A"],
+                0.9999,
+            )

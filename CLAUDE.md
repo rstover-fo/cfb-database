@@ -79,6 +79,19 @@ Elo/adjusted EPA (including the as-of weekly EPA build), refits fitted_v1 when i
 model's upcoming scores, then runs post-load checks (`scripts/verify_load.py`). Failures
 open/update a rolling GitHub issue.
 
+**Finished-season skip:** on the unattended path (no `--season`, no `--sources`)
+`load_season.py` skips sources whose data cannot change once a season is complete
+(`IMMUTABLE_ONCE_FINAL` -- plays, game_stats, ratings, recruiting, draft, ...).
+Before this, every off-season run re-ingested the entire finished previous season
+-- `get_current_season()` returns `year - 1` until August -- and `plays` fans out
+to one `/plays/stats` call **per game**, roughly 2,000 calls a day against a
+75,000/month budget for immutable data. That is what exhausted the quota behind
+the 2026-07-25 three-hour rate-limited run. `reference` and `metrics_wp` are
+never skipped (cheap / already self-limiting), and the upcoming-schedule refresh
+is unaffected. An explicit `--season` or `--sources` disables the skip entirely,
+so a backfill is never silently turned into a no-op; `--no-skip-final` forces it
+off on the daily path.
+
 **Season targeting:** the compute chain's `--incremental` resolves target seasons from
 `core.games` via `get_projection_seasons()` -- the most recent season with completed games
 plus every later season with a published schedule -- **not** from `get_current_season()`,

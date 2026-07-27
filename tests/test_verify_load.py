@@ -302,3 +302,57 @@ class TestCoverageChecksScopedToFbs:
         sql = self._check_sql(check_completed_have_plays)
         assert "g.home_classification = 'fbs'" in sql
         assert "g.away_classification = 'fbs'" in sql
+
+
+class TestBacktestFreshnessGate:
+    """The honesty numbers must be CURRENT, not merely present.
+
+    cfb-app dropped its hardcoded win-MAE constant in favour of reading
+    api.model_backtest, and its staleness check is run_date. That check is only
+    meaningful if something advances run_date -- otherwise a consumer reads a
+    plausible row describing a model that no longer exists and nothing fails.
+
+    This gate exists because the failure already happened: migration 045
+    shipped the view before any run had written to it, so api.model_backtest
+    returned zero rows for a day while the handoff told cfb-app to depend on
+    it. The deploy verified the view existed; nobody verified it had rows."""
+
+    def test_an_empty_table_fails_rather_than_skips(self):
+        """'Never backtested' and 'backtested last week' are different
+        problems, but neither is a working state -- and an empty table is the
+        one that already shipped."""
+        import inspect
+
+        from scripts.verify_load import check_backtest_freshness
+
+        src = inspect.getsource(check_backtest_freshness)
+        assert "total == 0" in src
+        assert "FAIL" in src.split("total == 0")[1][:400], "no row must FAIL, not pass quietly"
+
+    def test_the_gate_is_wired_into_the_run(self):
+        """A gate that is never called is a comment."""
+        import inspect
+
+        import scripts.verify_load as vl
+
+        assert "check_backtest_freshness(cur, report)" in inspect.getsource(vl)
+
+    def test_threshold_absorbs_one_failed_night(self):
+        """The workflow runs daily, so a 1-day threshold would fail on any
+        single bad night. Tight enough to catch the step silently dying,
+        loose enough not to cry wolf."""
+        from scripts.verify_load import MAX_BACKTEST_AGE_DAYS
+
+        assert 2 <= MAX_BACKTEST_AGE_DAYS <= 7
+
+    def test_it_scopes_to_the_published_configuration(self):
+        """api.model_backtest can hold several configurations. Freshness of an
+        all_divisions or alternate-strength_share row says nothing about the
+        fbs row consumers are told to read."""
+        import inspect
+
+        from scripts.verify_load import check_backtest_freshness
+
+        src = inspect.getsource(check_backtest_freshness)
+        assert "model_version = 'fitted_v1'" in src
+        assert "scope = 'fbs'" in src

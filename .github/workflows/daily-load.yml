@@ -86,6 +86,19 @@ jobs:
         run: python scripts/score_fitted.py --upcoming
       - name: Simulate season projections
         run: python scripts/simulate_season.py
+      # Runs DAILY, not annually, even though the measurement only moves on a
+      # refit or a feature rebuild. Two reasons. api.model_backtest.run_date is
+      # what cfb-app checks to decide whether its cached honesty numbers are
+      # stale, and a date that only advances once a year cannot distinguish
+      # "still current" from "nobody has run this since January". And because
+      # the backtest re-measures against the CURRENT feature substrate, a
+      # rebuild that silently changed a column shows up here the next morning
+      # instead of at the next annual refit.
+      #
+      # Cheap (~12s, fixed seed so identical inputs give an identical row) and
+      # append-only per day, which is the drift history the table exists for.
+      - name: Backtest season projections
+        run: python scripts/backtest_preseason.py
       - name: Refresh Tier 2 + Tier 3 marts
         run: python scripts/refresh_marts.py --views marts.house_elo,marts.house_elo_game,marts.team_adjusted_epa,marts.scored_matchup_edges,marts.prediction_accuracy,marts.team_week_features,marts.adjusted_epa_week
       - name: Verify load

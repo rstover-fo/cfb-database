@@ -328,6 +328,55 @@ def check_fitted_coverage(cur, report: Report) -> None:
     )
 
 
+# How old the newest predictions.model_backtest row may be before the honesty
+# numbers count as stale. The daily workflow re-runs the backtest every morning,
+# so anything past a couple of days means the step stopped running -- generous
+# enough to absorb a single failed night without crying wolf.
+MAX_BACKTEST_AGE_DAYS = 3
+
+
+def check_backtest_freshness(cur, report: Report) -> None:
+    """The published accuracy numbers must be current, not merely present.
+
+    cfb-app reads api.model_backtest instead of hardcoding win MAE and the
+    interval, and its staleness check is `run_date`. That only means something
+    if something is actually advancing run_date -- otherwise a consumer reads a
+    plausible row describing a model that no longer exists, and nothing fails.
+    Precisely the shape this table was built to end.
+
+    It is also the failure that already happened once: migration 045 shipped
+    the view before anything had written to it, so api.model_backtest returned
+    zero rows while the handoff said to depend on it. NO ROW is therefore a
+    FAIL here, not a skip -- "never backtested" and "backtested last week" are
+    different problems, but neither is a working state.
+    """
+    cur.execute(
+        """
+        SELECT MAX(run_date),
+               (SELECT COUNT(*) FROM predictions.model_backtest)
+        FROM predictions.model_backtest
+        WHERE model_version = 'fitted_v1' AND scope = 'fbs'
+        """
+    )
+    latest, total = cur.fetchone()
+    if total == 0 or latest is None:
+        report.record(
+            FAIL,
+            "backtest_freshness",
+            "predictions.model_backtest has no fitted_v1/fbs row -- "
+            "api.model_backtest publishes nothing and consumers have no honesty numbers",
+        )
+        return
+    cur.execute("SELECT ((now() AT TIME ZONE 'utc')::date - %s)", (latest,))
+    age = int(cur.fetchone()[0])
+    report.record(
+        PASS if age <= MAX_BACKTEST_AGE_DAYS else FAIL,
+        "backtest_freshness",
+        f"newest fitted_v1/fbs backtest is {age} day(s) old "
+        f"(run_date {latest}, threshold {MAX_BACKTEST_AGE_DAYS})",
+    )
+
+
 def check_freshness(cur, in_season: bool, strict: bool, report: Report) -> None:
     cur.execute(
         """
@@ -369,6 +418,7 @@ def verify(season: int, strict: bool) -> int:
             check_completed_have_team_stats(cur, season, report)
             check_completed_have_plays(cur, season, report)
             check_fitted_coverage(cur, report)
+            check_backtest_freshness(cur, report)
             check_freshness(cur, in_season, strict, report)
             check_massey_composite(cur, season, report)
             check_availability_archive(cur, season, report)

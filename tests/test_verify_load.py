@@ -302,3 +302,102 @@ class TestCoverageChecksScopedToFbs:
         sql = self._check_sql(check_completed_have_plays)
         assert "g.home_classification = 'fbs'" in sql
         assert "g.away_classification = 'fbs'" in sql
+
+
+class TestBacktestFreshnessGate:
+    """The honesty numbers must be CURRENT, not merely present.
+
+    cfb-app dropped its hardcoded win-MAE constant in favour of reading
+    api.model_backtest, and its staleness check is run_date. That check is only
+    meaningful if something advances run_date -- otherwise a consumer reads a
+    plausible row describing a model that no longer exists and nothing fails.
+
+    This gate exists because the failure already happened: migration 045
+    shipped the view before any run had written to it, so api.model_backtest
+    returned zero rows for a day while the handoff told cfb-app to depend on
+    it. The deploy verified the view existed; nobody verified it had rows."""
+
+    def test_an_empty_table_fails_rather_than_skips(self):
+        """'Never backtested' and 'backtested last week' are different
+        problems, but neither is a working state -- and an empty table is the
+        one that already shipped."""
+        import inspect
+
+        from scripts.verify_load import check_backtest_freshness
+
+        src = inspect.getsource(check_backtest_freshness)
+        assert "total == 0" in src
+        assert "FAIL" in src.split("total == 0")[1][:400], "no row must FAIL, not pass quietly"
+
+    def test_the_gate_is_wired_into_the_run(self):
+        """A gate that is never called is a comment."""
+        import inspect
+
+        import scripts.verify_load as vl
+
+        assert "check_backtest_freshness(cur, report)" in inspect.getsource(vl)
+
+    def test_threshold_absorbs_one_failed_night(self):
+        """The workflow runs daily, so a 1-day threshold would fail on any
+        single bad night. Tight enough to catch the step silently dying,
+        loose enough not to cry wolf."""
+        from scripts.verify_load import MAX_BACKTEST_AGE_DAYS
+
+        assert 2 <= MAX_BACKTEST_AGE_DAYS <= 7
+
+    def test_it_scopes_to_the_published_configuration(self):
+        """api.model_backtest keys on (model_version, scope, season_start,
+        season_end, strength_share) because those are different measurements.
+
+        Filtering on model+scope alone is not enough: a one-off exploratory run
+        over a narrower season range writes its own row with today's date, and
+        a MAX(run_date) across all FBS rows would be refreshed by that
+        experiment while the published row sat stale."""
+        import inspect
+
+        from scripts.verify_load import check_backtest_freshness
+
+        src = inspect.getsource(check_backtest_freshness)
+        for predicate in (
+            "model_version = 'fitted_v1'",
+            "scope = 'fbs'",
+            "season_start = %(start)s",
+            "season_end = %(end)s",
+            "strength_share = %(share)s",
+        ):
+            assert predicate in src, f"gate must pin {predicate}"
+
+    def test_the_canonical_bounds_are_imported_not_restated(self):
+        """The daily workflow runs backtest_preseason.py with NO arguments, so
+        the script defaults ARE the canonical configuration. Importing them is
+        what keeps the gate and the workflow from drifting apart.
+
+        Restating them is exactly how the row first published to cfb-app ended
+        up on --start 2019 against a DEFAULT_START of 2018 -- a configuration
+        the daily job would never reproduce, leaving two FBS rows and no way to
+        tell which one consumers should read."""
+        import inspect
+
+        from scripts.verify_load import check_backtest_freshness
+
+        src = inspect.getsource(check_backtest_freshness)
+        assert "from scripts.backtest_preseason import DEFAULT_END, DEFAULT_START" in src
+        assert "from scripts.simulate_season import DEFAULT_STRENGTH_SHARE" in src
+        # The bounds must reach the query as bound parameters, never literals.
+        assert "%(start)s" in src and "%(end)s" in src
+
+    def test_the_workflow_runs_the_canonical_configuration(self):
+        """The gate checks the defaults, so the workflow must USE the defaults.
+        Any explicit --start/--end here would write a row the gate never looks
+        at, and the gate would then fail every night on a missing canonical
+        row while a perfectly good non-canonical one sat beside it."""
+        import pathlib
+
+        wf = pathlib.Path(".github/workflows/daily-load.yml").read_text()
+        bare = "run: python scripts/backtest_preseason.py"
+        assert bare in wf, "the daily workflow must run the backtest"
+        invoked = next(ln for ln in wf.splitlines() if bare in ln)
+        assert invoked.strip() == bare, (
+            "the daily backtest must run BARE so the script defaults stay "
+            f"canonical; found: {invoked.strip()!r}"
+        )

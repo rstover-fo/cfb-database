@@ -104,7 +104,20 @@ DIFF_FEATURE_COLUMNS: list[tuple[str, str]] = [
     # prior SP+ and returning production alone.
     ("d_recruiting_points_3yr", "recruiting_points_3yr"),
     ("d_blue_chip_pipeline", "blue_chip_pipeline"),
-    ("d_hc_first_year", "hc_first_year"),
+    # Migration 046 -- REPLACES d_hc_first_year, keeping the vector at 20.
+    # The first-year penalty is not a penalty for changing coaches: split by the
+    # incoming coach's career record it sits entirely on unproven hires
+    # (-0.1844), while proven hires screen as a powered null (+0.0096, p=0.73).
+    # The flat binary's -0.1548 was those two averaged together. Both halves of
+    # a split-window re-run agree. hc_first_year stays populated in
+    # features.team_week; it just no longer enters the fit.
+    ("d_hc_first_year_unproven", "hc_first_year_unproven"),
+    # Migration 047 -- opposite signs, so they are two terms and not one net.
+    # draft_picks_3yr +0.0834 (picks PRODUCED S-1..S-3, survives the recruiting
+    # control), draft_departures -0.0925 (picks LOST in year S). Both rejections
+    # before the 2000-2019 backfill were measured on fabricated zeros.
+    ("d_draft_picks_3yr", "draft_picks_3yr"),
+    ("d_draft_departures", "draft_departures"),
     ("d_prior_def_line_yards", "prior_def_line_yards"),
     ("d_prior_def_stuff_rate", "prior_def_stuff_rate"),
 ]
@@ -719,12 +732,50 @@ def fetch_refit_state(conn) -> tuple[int | None, list[int]]:
         row = cur.fetchone()[0]
         latest_finished = int(row) if row is not None else None
 
+        # A fit counts as EXISTING only if it was written under the CURRENT
+        # feature contract (PR #56 review, P1).
+        #
+        # Season recency alone is not staleness. Changing DIFF_FEATURE_COLUMNS
+        # invalidates every stored fit -- score_fitted.load_fit builds its
+        # coefficient vector by name lookup, so a fit written before a column
+        # was added raises KeyError rather than degrading. But a fit for the
+        # latest finished season already EXISTS by season, so --refit-if-stale
+        # returned [] and the daily workflow no-opped straight into that
+        # KeyError. Predictions and season simulation both stop, and the
+        # staleness check can never recover on its own because the season key
+        # is present.
+        #
+        # This file's own header says "there is no partial-rollout path", and
+        # until now that invariant was enforced by whoever remembered to run
+        # the retrain by hand. Comparing the frozen feature_means key set to
+        # TEAM_WEEK_SOURCE_COLUMNS makes it self-enforcing: a vector change
+        # drops every mismatched fit out of `existing`, so stale_score_seasons
+        # rebuilds the whole walk-forward ladder.
+        #
+        # Set EQUALITY, not containment -- migration 046 REMOVED hc_first_year
+        # from the vector, and a fit carrying a column the model no longer uses
+        # is just as wrong as one missing a column it does.
         cur.execute(
-            "SELECT DISTINCT train_through_season FROM features.model_metadata "
+            "SELECT train_through_season, feature_means FROM features.model_metadata "
             "WHERE model_version = %s",
             (MODEL_VERSION,),
         )
-        existing = [int(r[0]) for r in cur.fetchall()]
+        expected = set(TEAM_WEEK_SOURCE_COLUMNS)
+        existing = []
+        stale_by_contract = []
+        for season, means in cur.fetchall():
+            if isinstance(means, dict) and set(means) == expected:
+                existing.append(int(season))
+            else:
+                stale_by_contract.append(int(season))
+        if stale_by_contract:
+            logger.warning(
+                "%d stored fit(s) predate the current %d-feature contract and will be "
+                "retrained: train_through=%s",
+                len(stale_by_contract),
+                len(TEAM_WEEK_SOURCE_COLUMNS),
+                sorted(stale_by_contract),
+            )
     return latest_finished, existing
 
 

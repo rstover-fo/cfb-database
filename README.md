@@ -78,7 +78,7 @@ python -m src.pipelines.run --status
 
 ## Rate Limits
 
-Using Tier 3 (75,000 calls/month), read by the rate limiter from
+Using Tier 4 (125,000 calls/month), read by the rate limiter from
 `.dlt/config.toml` (`sources.cfbd.monthly_budget`). A full single-season
 refresh is ~730 estimated calls (`scripts/load_season.py --dry-run` prints the
 current estimate), so even daily loads stay well under budget.

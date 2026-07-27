@@ -181,6 +181,9 @@ its dlt `__v_double` VARIANT twin (mart 005 pattern).
 | `recruiting_points_3yr` | NUMERIC(10,3) | decayed sum of `recruiting.team_recruiting.points` over `year ∈ [S−4, S−1]`, weight `0.8^(S−year−1)` | preseason-known; classes signed before S starts |
 | `blue_chip_pipeline` | NUMERIC(6,4) | 4–5★ share of `recruiting.recruits` signees over `year ∈ [S−4, S−1]` | preseason-known |
 | `hc_first_year` | NUMERIC(2,1) | 1.0 when the head coach's tenure at this school starts in S, else 0.0 (`ref.coaches__seasons`, gaps-and-islands so a second stint does not inherit the first) | preseason-known; the hire precedes the season |
+| `hc_first_year_unproven` | NUMERIC(2,1) | 1.0 when S is the head coach's first at this school **and** he is unproven — no prior head-coaching season anywhere, or prior seasons averaging below 0.0 SP+. Career prior is his mean SP+ over seasons *strictly before* S at any school | preseason-known; both the hire and S−1's final SP+ precede week 1 |
+| `draft_picks_3yr` | NUMERIC(6,1) | count of NFL draft picks the program produced in draft years S−3..S−1, never season S's own draft | preseason-known; all three drafts precede week 1 |
+| `draft_departures` | NUMERIC(6,1) | count of picks the program LOST in the April draft of year S | preseason-known; the draft precedes week 1 |
 | `prior_def_line_yards` | NUMERIC(8,4) | `stats.advanced_team_stats.defense__line_yards` `(season=S−1, team)` | **prior season only** — S−1 is complete before S starts |
 | `prior_def_stuff_rate` | NUMERIC(8,4) | `stats.advanced_team_stats.defense__stuff_rate` `(season=S−1, team)` | **prior season only** |
 
@@ -193,7 +196,10 @@ Verdicts, on 2015–2025:
 | column | partial | note |
 |---|---|---|
 | `recruiting_points_3yr` | +0.2642 | strongest preseason signal in the set |
-| `hc_first_year` | −0.1615 | second strongest |
+| `hc_first_year` | −0.1615 | second strongest; **superseded in the vector by `hc_first_year_unproven`**, migration 046 |
+| `hc_first_year_unproven` | −0.1844 | migration 046 — the flat binary split by the incoming coach's career record |
+| `draft_picks_3yr` | +0.0834 | migration 047 — survives the recruiting control, so NOT a recruiting proxy |
+| `draft_departures` | −0.0925 | migration 047 — opposite sign; losing draftable players predicts worse |
 | `prior_def_line_yards` | −0.0997 | yards **allowed**, so negative confirms the trenches thesis |
 | `prior_def_stuff_rate` | +0.0816 | clears the 0.08 floor by 0.0016 — marginal |
 | `blue_chip_pipeline` | +0.0782 | **below** the floor; shipped by explicit decision, see below |
@@ -231,9 +237,12 @@ comment; a true-preseason snapshot loader is a follow-up.
 | `computed_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | write time |
 | `feature_build_version` | VARCHAR | `build_features.py` version tag (audit) |
 
-**Column count: 36** (8 identity + 1 Elo + 5 adj-EPA + 7 season-to-date + 2
-havoc + **12** preseason + 2 bookkeeping). Was 31 before migration 042 added
-the five screened preseason columns above.
+**Column count: 39** (8 identity + 1 Elo + 5 adj-EPA + 7 season-to-date + 2
+havoc + **15** preseason + 2 bookkeeping). Was 31 before migration 042 added
+five screened preseason columns, 36 before migration 046 added
+`hc_first_year_unproven`, and 37 before migration 047 added the draft pair.
+The fitted vector is 22: 046 SWAPPED slot 17 rather than extending, 047 adds
+two (§2a).
 
 ### 1h. Explicitly EXCLUDED
 
@@ -274,6 +283,24 @@ resolves all of them centrally and leak-free.
 **`hc_first_year` is genuinely 0.0, not NULL, for an established coach** — the
 value is known and it is zero. NULL is reserved for "we have no coach record
 for this school-year at all", which is a different statement.
+
+**`hc_first_year_unproven` (migration 046) carries the same 0.0-is-real rule
+and one more NULL case.** 0.0 is true for a continuing staff — there was no
+hire, so the hire was not unproven — and true for a first-year hire whose
+previous teams averaged at or above average. NULL covers two genuinely unknown
+situations, and holding them apart is load-bearing: a coach with **zero** prior
+head-coaching seasons is a real first-timer and *is* unproven (1.0), while a
+coach with prior seasons that carry **no SP+ row** — an FCS stop, or a year
+older than ratings coverage — is unknown (NULL). Collapsing the second into
+"unproven" would put a fabricated category where a missing value belongs, which
+is the error the zero-filled `recruiting_points_regime` column already made
+once. Absence rate 2015–2025: 8.1% (115 school-years with no unambiguous coach
+record, plus 2 with an unratable prior career).
+
+**Both coach columns are 100% NULL for 2026** as of late July — CFBD has not
+published 2026 coaching records — so they contribute nothing to the current
+outlook until roughly August, and teams with new head coaches are projected as
+though nothing changed until then.
 
 **Decision — NULL, not 0, for empty season-to-date aggregates.** `0` is a false
 signal (0 EPA/play is an *average-team* value, not "unknown"; 0 plays/game
@@ -316,18 +343,47 @@ All non-game-level features are **home-minus-away diffs** of a single
 | 14 | `d_preseason_sp_rating` | diff | `preseason_sp_rating` | yes | yes |
 | 15 | `d_recruiting_points_3yr` | diff | `recruiting_points_3yr` | yes | yes |
 | 16 | `d_blue_chip_pipeline` | diff | `blue_chip_pipeline` | yes | yes |
-| 17 | `d_hc_first_year` | diff | `hc_first_year` | yes | yes |
-| 18 | `d_prior_def_line_yards` | diff | `prior_def_line_yards` | yes | yes |
-| 19 | `d_prior_def_stuff_rate` | diff | `prior_def_stuff_rate` | yes | yes |
+| 17 | `d_hc_first_year_unproven` | diff | `hc_first_year_unproven` | yes | yes |
+| 18 | `d_draft_picks_3yr` | diff | `draft_picks_3yr` | yes | yes |
+| 19 | `d_draft_departures` | diff | `draft_departures` | yes | yes |
+| 20 | `d_prior_def_line_yards` | diff | `prior_def_line_yards` | yes | yes |
+| 21 | `d_prior_def_stuff_rate` | diff | `prior_def_stuff_rate` | yes | yes |
 
-**20 features + intercept** (was 15 before migration 042). Same vector feeds
+**22 features + intercept** (was 15 before migration 042, 20 before 047). Same vector feeds
 both the ridge-margin and the IRLS-logistic fit.
 
 **Why these five are diffed like everything else.** They are team properties,
-so home-minus-away is the same construction used throughout. `d_hc_first_year`
-takes values in {−1, 0, +1}: a first-year coach on one side only is a relative
-disadvantage, and two first-year coaches correctly cancel — the model term is
-about *relative* disruption, not about how many new coaches are in the game.
+so home-minus-away is the same construction used throughout.
+`d_hc_first_year_unproven` takes values in {−1, 0, +1}: an unproven first-year
+coach on one side only is a relative disadvantage, and two of them correctly
+cancel — the model term is about *relative* disruption, not about how many new
+coaches are in the game.
+
+**Migration 046 — slot 17 swaps, the vector does not grow.** `d_hc_first_year`
+is replaced by `d_hc_first_year_unproven`; the count stays at 20 and
+`hc_first_year` stays populated in `features.team_week` for downstream
+consumers, it simply no longer enters the fit. The reason is that the flat
+binary averages two different populations. Second-order partial against
+season-S SP+, controlling prior SP+ and `recruiting_points_3yr` (screen runs
+138/139/140):
+
+| subgroup | positives | 2015–2025 | 2015–2020 | 2021–2025 |
+|---|---|---|---|---|
+| unproven hire | 184 | **−0.1844** | −0.1417 | **−0.2257** |
+| proven hire | 80 | +0.0096 | −0.0155 | +0.0368 |
+| flat `hc_first_year` | 266 | −0.1548 | −0.1332 | −0.1738 |
+
+A hire whose previous teams averaged at or above average costs essentially
+nothing in year one; at n=1,322 the standard error is ~0.028, so that is a
+*powered* null, not an underpowered shrug. The finer split (`rookie` −0.1340,
+`prior_below` −0.1345) also cleared the floor but is pooled rather than
+shipped: shipping components alongside their own sum is an exact linear
+dependence, and `prior_below`'s implied 0.86-SD per-hire effect rests on 33
+team-seasons.
+
+**This swap invalidates every stored fit** for the same positional reason
+migration 042 did — see below. Every `train_through_season` vintage is
+retrained in the same deploy.
 
 **Adding these invalidates every stored fit.** `FEATURE_NAMES` is positional
 and `score_fitted.load_fit` builds its coefficient vector by name lookup over
@@ -525,7 +581,28 @@ Per-family assertions the gate runs against the freshly-built `team_week`
   `prior_def_stuff_rate`), all in the `fitted_v1` vector, taking it to 20
   features. Every column cleared the §2.5 screen except `blue_chip_pipeline`,
   which is a recorded override rather than a measurement.
-- **Migration-042 columns are NULL when their source is absent, never 0** —
+- **Migration 046 = `hc_first_year_unproven`, which SWAPS into slot 17** in
+  place of `d_hc_first_year`. The vector stays at 20 and `hc_first_year` stays
+  populated in the table. The first-year penalty is not a penalty for changing
+  coaches: split by the incoming coach's career SP+ it sits entirely on
+  unproven hires (−0.1844), while proven hires screen as a *powered* null
+  (+0.0096, p=0.73, SE ≈ 0.028). Confirmed in both halves of a split-window
+  re-run, and stronger in the portal era than before it.
+- **Migration 047 = `draft_picks_3yr` + `draft_departures`**, two columns
+  rather than one net because the signs are opposite (+0.0834 / −0.0925) and
+  netting them cancels most of both. Both had been *rejected*; those rejections
+  were void, measured while `draft.draft_picks` held 2020–2026 against a
+  configured 2000–2026, so `COALESCE(…,0)` read an unloaded draft as "produced
+  zero picks" on 54.2% of the frame. After backfilling 2000–2019 the same screen
+  on the same frame reverses both findings, and every non-draft candidate
+  reproduces to four decimals.
+- **The draft columns are the documented exception to "NULL, never 0."** They
+  are counts, and a program that sent nobody to the NFL genuinely produced zero
+  — NULLing that discards signal. The zero is written *only where the source
+  drafts exist*, via an `EXISTS` over draft years with **no team predicate**; a
+  team absent from a draft that was loaded is a true zero, and that has to stay
+  distinguishable from a draft nobody loaded.
+- **Migration-042 and -046 columns are NULL when their source is absent, never 0** —
   the §1i rule, restated because these are rates and counts whose zero is a
   fabricated extreme rather than a neutral value.
 - **The trenches thesis is supported on defense only.** Prior-season defensive

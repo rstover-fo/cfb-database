@@ -251,7 +251,7 @@ into `scripts/load_season.py` (`SOURCE_ORDER`/`ESTIMATED_CALLS["metrics_wp"] = 7
 so daily/weekly incremental loads pick up newly-completed games automatically
 -- no workflow-file changes needed. Full 2014+ backfill is ~12,000 API calls
 (one-time; see `deploys/p32-backfill-manifests.md`'s budget-math section),
-comfortably inside the 75,000/month Tier 3 budget alongside the existing
+comfortably inside the 125,000/month Tier 4 budget alongside the existing
 ~22K/month daily-load worst case. New table: `metrics.win_probability`
 (indexed by `src/schemas/migrations/026_win_probability_indexes.sql`),
 exposed as `api.game_win_probability`

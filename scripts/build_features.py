@@ -101,11 +101,22 @@ FEATURE_BUILD_VERSION = "tw_v2"
 CLASS_DECAY = 0.8
 CLASS_WINDOW = 4
 
-# The migration-042 preseason columns, reported individually in FEATURES_GATE.
+# Career-prior boundary separating a "proven" incoming head coach from an
+# unproven one, on the SP+ scale where 0.0 is an average FBS team. Same
+# duplicate-and-test rule as CLASS_DECAY above: it MUST equal the screen's
+# HC_PROVEN_SP_PLUS, because hc_first_year_unproven's -0.1844 partial was
+# measured at exactly this cut.
+HC_PROVEN_SP_PLUS = 0.0
+
+# The migration-042 and -046 preseason columns, reported individually in
+# FEATURES_GATE.
 PRESEASON_042_COLUMNS = (
     "recruiting_points_3yr",
     "blue_chip_pipeline",
     "hc_first_year",
+    "hc_first_year_unproven",
+    "draft_picks_3yr",
+    "draft_departures",
     "prior_def_line_yards",
     "prior_def_stuff_rate",
 )
@@ -334,6 +345,55 @@ coach_tenure AS (
     FROM coach_islands i
     JOIN coach_counts cc ON cc.school = i.school AND cc.year = i.year
 ),
+coach_season AS (
+    -- Raw material for an incoming coach's CAREER PRIOR. MUST match the
+    -- screen's coach_season, which carries the full rationale.
+    --
+    -- Ambiguous school-years are excluded here for attribution rather than
+    -- leak reasons: an interim promoted into a collapse would otherwise
+    -- inherit the whole season's rating. The cost is that a coach whose entire
+    -- prior record is ambiguous reads as having no prior seasons, which
+    -- classifies him as a rookie -- the intended trade, because the
+    -- alternative credits him with somebody else's season.
+    --
+    -- rating is LEFT JOINed, not required: a season with no SP+ row (an FCS
+    -- stop, or older than ratings coverage) is still head-coaching EXPERIENCE
+    -- and must not be confused with having none.
+    SELECT cy.coach_id, cy.school, cy.year,
+           sp.rating::double precision AS rating
+    FROM coach_year cy
+    JOIN coach_counts cc ON cc.school = cy.school AND cc.year = cy.year
+    LEFT JOIN ratings.sp_ratings sp
+           ON sp.team = cy.school AND sp.year = cy.year
+    WHERE cc.n_coaches = 1
+),
+coach_prior AS (
+    -- What the coach listed at (school, year) did in seasons STRICTLY BEFORE
+    -- that year, at any school.
+    --
+    -- LEAK RULE. `prev.year < cy.year` is strict, so season S can never enter.
+    -- S-1 IS included and that is correct: S-1 ended in January of year S and
+    -- its final SP+ is published months before week 1, so the hiring school
+    -- knew it.
+    SELECT cy.school, cy.year,
+           COUNT(prev.year) AS prior_seasons,
+           AVG(prev.rating) AS prior_sp_mean
+    FROM coach_year cy
+    LEFT JOIN coach_season prev
+           ON prev.coach_id = cy.coach_id
+          AND prev.year < cy.year
+    GROUP BY cy.school, cy.year
+),
+draft_out AS (
+    -- Draft picks by (draft year, college team). MUST match the screen's
+    -- draft_out: the partials that justified these columns were measured on
+    -- exactly this aggregation.
+    SELECT dp.year AS season, dp.college_team AS team,
+           COUNT(*)::double precision AS picks
+    FROM draft.draft_picks dp
+    WHERE dp.college_team IS NOT NULL
+    GROUP BY 1, 2
+),
 class_points AS (
     -- The four recruiting classes signed BEFORE season S (design doc 1f).
     SELECT tr.team, tr.year, tr.points::double precision AS points
@@ -489,6 +549,66 @@ SELECT
     CASE WHEN ct.tenure_start IS NULL THEN NULL
          WHEN ct.tenure_start >= s.season THEN 1.0
          ELSE 0.0 END AS hc_first_year,
+    -- The first-year penalty is not a penalty for changing coaches: it lives
+    -- entirely on hires without a record. Screen runs 138/139/140, second-order
+    -- partial vs prior SP+ and recruiting, over 2015-2025:
+    --
+    --     unproven hire  -0.1844   |  proven hire  +0.0096 (p=0.73)
+    --
+    -- and unproven beats the flat binary in BOTH half-windows. See
+    -- scripts/screen_preseason_features.py finding 8.
+    --
+    -- NULL, never 0.0, wherever the classification is genuinely unknown: no
+    -- coach record at all, or a hire whose head-coaching seasons the warehouse
+    -- cannot rate. 0.0 IS a true value for a continuing staff -- there was no
+    -- hire, so the hire was not unproven. Guarding prior_seasons separately
+    -- from prior_sp_mean is what keeps a genuine first-time head coach (a
+    -- rookie, and unproven) apart from one whose record cannot be scored
+    -- (unknown, and NULL).
+    CASE WHEN ct.tenure_start IS NULL OR cpr.prior_seasons IS NULL THEN NULL
+         WHEN ct.tenure_start < s.season THEN 0.0
+         WHEN cpr.prior_seasons = 0 THEN 1.0
+         WHEN cpr.prior_sp_mean IS NULL THEN NULL
+         WHEN cpr.prior_sp_mean < {HC_PROVEN_SP_PLUS} THEN 1.0
+         ELSE 0.0 END AS hc_first_year_unproven,
+    -- MIGRATION 047. Counts, so 0.0 is a REAL value here -- a program that
+    -- sent nobody to the NFL produced zero picks, and NULLing that would throw
+    -- away signal. This is the documented exception to section 1i's blanket
+    -- never-zero rule, and it is safe ONLY because the zero is guarded.
+    --
+    -- The guard is the lesson of this column's own history. Before the
+    -- 2000-2019 backfill, draft.draft_picks held 2020-2026 while years.py
+    -- configured 2000-2026, and a bare COALESCE(...,0) turned "this draft was
+    -- never ingested" into "this program produced zero picks" on 54.2%% of the
+    -- screening frame. Nothing errored and the column screened as a null.
+    --
+    -- So the zero is only written where the SOURCE YEARS EXIST. The EXISTS
+    -- deliberately has NO team predicate: a team absent from a draft that was
+    -- loaded really did produce nothing, and that true zero has to stay
+    -- distinguishable from a draft nobody loaded.
+    --
+    -- ALL THREE YEARS, not any (PR #56 review, P2). A bare EXISTS is satisfied
+    -- by one loaded draft, so a window missing 2012 but holding 2013-2014
+    -- would emit a TWO-year count wearing a three-year column name -- the same
+    -- understatement in softer clothes, and --audit-imputation would not flag
+    -- it because the audit shared the predicate. COUNT(DISTINCT season) = 3 is
+    -- what makes the guard mean what the column name says.
+    CASE WHEN (
+             SELECT COUNT(DISTINCT d.season) FROM draft_out d
+             WHERE d.season BETWEEN s.season - 3 AND s.season - 1
+         ) = 3
+         THEN COALESCE((
+             SELECT SUM(d2.picks) FROM draft_out d2
+             WHERE d2.team = s.team
+               AND d2.season BETWEEN s.season - 3 AND s.season - 1
+         ), 0)
+    END AS draft_picks_3yr,
+    CASE WHEN EXISTS (SELECT 1 FROM draft_out d WHERE d.season = s.season)
+         THEN COALESCE((
+             SELECT d3.picks FROM draft_out d3
+             WHERE d3.team = s.team AND d3.season = s.season
+         ), 0)
+    END AS draft_departures,
     ats."defense__line_yards" AS prior_def_line_yards,
     ats."defense__stuff_rate" AS prior_def_stuff_rate
 FROM spine s
@@ -538,6 +658,7 @@ LEFT JOIN marts.returning_production rp ON rp.season = s.season AND rp.team = s.
 LEFT JOIN ratings.sp_ratings sp ON sp.year = s.season - 1 AND sp.team = s.team
 LEFT JOIN blue_chip_classes bc ON bc.team = s.team
 LEFT JOIN coach_tenure ct ON ct.school = s.team AND ct.year = s.season
+LEFT JOIN coach_prior cpr ON cpr.school = s.team AND cpr.year = s.season
 -- Season S-1 trench performance: complete before S starts, so leak-free.
 LEFT JOIN stats.advanced_team_stats ats
        ON ats.team = s.team AND ats.season = s.season - 1
@@ -579,6 +700,12 @@ _INSERT_COLUMNS = [
     "recruiting_points_3yr",
     "blue_chip_pipeline",
     "hc_first_year",
+    # Migration 046 -- the screened replacement for hc_first_year in the
+    # fitted vector; hc_first_year stays populated for continuity.
+    "hc_first_year_unproven",
+    # Migration 047 -- adjudicated only after the draft backfill.
+    "draft_picks_3yr",
+    "draft_departures",
     "prior_def_line_yards",
     "prior_def_stuff_rate",
     "feature_build_version",
@@ -701,6 +828,9 @@ def build_season_rows(conn, season: int, elo_current: dict[str, tuple[float, int
                 "recruiting_points_3yr": row["recruiting_points_3yr"],
                 "blue_chip_pipeline": row["blue_chip_pipeline"],
                 "hc_first_year": row["hc_first_year"],
+                "hc_first_year_unproven": row["hc_first_year_unproven"],
+                "draft_picks_3yr": row["draft_picks_3yr"],
+                "draft_departures": row["draft_departures"],
                 "prior_def_line_yards": row["prior_def_line_yards"],
                 "prior_def_stuff_rate": row["prior_def_stuff_rate"],
                 "feature_build_version": FEATURE_BUILD_VERSION,

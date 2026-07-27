@@ -92,11 +92,11 @@ class TestConfiguredBudget:
 
         with patch("dlt.config") as mock_config:
             mock_config.get.return_value = None
-            assert _configured_budget() == 75000
+            assert _configured_budget() == 125000
 
     def test_falls_back_to_default_on_error(self):
         from src.pipelines.utils.rate_limiter import _configured_budget
 
         with patch("dlt.config") as mock_config:
             mock_config.get.side_effect = RuntimeError("no config")
-            assert _configured_budget() == 75000
+            assert _configured_budget() == 125000

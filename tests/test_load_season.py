@@ -89,7 +89,7 @@ class TestSeasonIsFinal:
     resolves to `year - 1` until August: every off-season run re-ingested the
     entire, complete, immutable previous season. plays fans out to one
     /plays/stats call PER GAME and rosters to one per team -- roughly 2,000
-    calls a day against a 75,000/month budget, for data that cannot change.
+    calls a day against the then-75,000/month budget, for data that cannot change.
     That is what exhausted the quota behind the 2026-07-25 three-hour run."""
 
     def test_a_completed_season_is_final(self):

@@ -208,9 +208,46 @@ class TestMigration042Columns:
         "recruiting_points_3yr",
         "blue_chip_pipeline",
         "hc_first_year",
+        "hc_first_year_unproven",
         "prior_def_line_yards",
         "prior_def_stuff_rate",
     )
+
+    def test_proven_boundary_matches_the_screen_that_validated_it(self):
+        """hc_first_year_unproven's -0.1844 was measured at exactly this cut.
+        A drift here would populate the column with a quantity the screen never
+        evaluated -- the same failure the decay/window check above prevents."""
+        from scripts.build_features import HC_PROVEN_SP_PLUS
+        from scripts.screen_preseason_features import (
+            HC_PROVEN_SP_PLUS as SCREEN_BOUNDARY,
+        )
+
+        assert HC_PROVEN_SP_PLUS == SCREEN_BOUNDARY
+
+    def test_career_prior_cannot_see_season_s(self):
+        """The career prior averages the coach's PREVIOUS stops. A non-strict
+        bound would fold season S's own SP+ into a feature that claims to be
+        preseason-known, which is the whole reason the column is admissible."""
+        from scripts.build_features import FEATURE_ROWS_QUERY
+
+        assert "prev.year < cy.year" in FEATURE_ROWS_QUERY
+        assert "prev.year <= cy.year" not in FEATURE_ROWS_QUERY
+
+    def test_an_unratable_prior_career_is_null_not_unproven(self):
+        """A coach with prior head-coaching seasons that carry no SP+ row (an
+        FCS stop, or older than ratings coverage) is UNKNOWN, not unproven --
+        but a coach with ZERO prior seasons is a genuine first-timer and IS
+        unproven. The rookie branch must therefore be tested BEFORE the
+        unratable guard, or every first-time head coach falls through to NULL
+        and the column loses its largest subgroup."""
+        from scripts.build_features import FEATURE_ROWS_QUERY
+
+        block = FEATURE_ROWS_QUERY[FEATURE_ROWS_QUERY.index("AS hc_first_year,") :]
+        block = block[: block.index("AS hc_first_year_unproven")]
+        rookie = block.index("cpr.prior_seasons = 0")
+        unratable = block.index("cpr.prior_sp_mean IS NULL")
+        assert rookie < unratable, "the rookie branch must precede the unratable guard"
+        assert "THEN NULL" in block[unratable:], "an unratable career must yield NULL"
 
     def test_recruiting_window_matches_the_screen_that_validated_it(self):
         from scripts.build_features import CLASS_DECAY, CLASS_WINDOW
@@ -239,12 +276,45 @@ class TestMigration042Columns:
         """Design doc section 1i. These are rates and decayed sums whose zero
         is a fabricated extreme, and the teams whose source rows are missing
         skew weak -- so COALESCE(...,0) here would plant the floor value
-        exactly where the outcome is low and manufacture signal."""
+        exactly where the outcome is low and manufacture signal.
+
+        Scoped to end at the migration-047 draft columns, which are the
+        documented exception: they are COUNTS, where a zero is a true
+        measurement, and they get their own guard test below."""
         from scripts.build_features import FEATURE_ROWS_QUERY
 
         block = FEATURE_ROWS_QUERY[FEATURE_ROWS_QUERY.index("recruiting_points_3yr") :]
-        block = block[: block.index("prior_def_stuff_rate")]
+        block = block[: block.index("-- MIGRATION 047")]
         assert "COALESCE" not in block.upper()
+
+    def test_a_draft_zero_is_only_written_where_the_drafts_exist(self):
+        """The exception to 1i, and the reason it is safe.
+
+        A count's zero can be true -- a program that sent nobody to the NFL
+        produced zero picks -- but only if the drafts were LOADED. Before the
+        2000-2019 backfill a bare COALESCE(...,0) read an uningested draft as
+        "produced zero picks" on 54.2%% of the screening frame, and the column
+        screened as a null without anything erroring.
+
+        So each COALESCE must sit behind an EXISTS over the draft years, and
+        that EXISTS must NOT be filtered to the team: a team absent from a
+        draft that was loaded is a real zero, and collapsing the two cases is
+        precisely the defect."""
+        from scripts.build_features import FEATURE_ROWS_QUERY
+
+        block = FEATURE_ROWS_QUERY[FEATURE_ROWS_QUERY.index("-- MIGRATION 047") :]
+        block = block[: block.index("AS draft_departures")]
+        assert "COUNT(DISTINCT d.season)" in block, (
+            "the three-year window needs all three years, not any one"
+        )
+        assert ") = 3" in block, "the source guard must require exactly three drafts"
+        assert block.count("EXISTS (") == 1, "draft_departures is a single year, so EXISTS is exact"
+        assert "d.team" not in block, (
+            "the source-year guard must not be filtered to the team, or a real "
+            "zero and an unloaded draft become indistinguishable again"
+        )
+        # The team predicate belongs on the inner sum, not the guard.
+        assert "d2.team = s.team" in block
 
     def test_coach_tenure_uses_islands(self):
         """A coach returning to a school must not inherit his first stint's
@@ -293,6 +363,20 @@ class TestFittedVectorContract:
 
         for col in list(REJECTED_COLUMNS) + list(UNTESTABLE_COLUMNS):
             assert col not in TEAM_WEEK_SOURCE_COLUMNS, f"{col} failed the screen but is in the fit"
+
+    def test_no_superseded_column_is_still_in_the_vector(self):
+        """SUPERSEDED means "cleared the screen, deliberately held back" -- for
+        these columns that is because a shipped column is a linear combination
+        of them. Leaving one in the fit alongside its replacement would put an
+        exact dependence in the design matrix, which is the thing the bucket
+        exists to prevent."""
+        from scripts.screen_preseason_features import SUPERSEDED_COLUMNS
+        from scripts.train_model import TEAM_WEEK_SOURCE_COLUMNS
+
+        for col in SUPERSEDED_COLUMNS:
+            assert col not in TEAM_WEEK_SOURCE_COLUMNS, (
+                f"{col} was superseded but is still in the fit"
+            )
 
     def test_feature_names_are_unique_and_positional(self):
         from scripts.train_model import DIFF_FEATURE_COLUMNS, FEATURE_NAMES

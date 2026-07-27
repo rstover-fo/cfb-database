@@ -67,7 +67,7 @@ ESTIMATED_CALLS = {
 # --season, so get_current_season() resolves to `year - 1` until August: every
 # off-season run re-ingested the entire, complete, immutable previous season.
 # plays fans out to one /plays/stats call PER GAME (~1,600 for a full season)
-# and rosters to one call per team, against a 75,000/month budget -- roughly
+# and rosters to one call per team, against the then-75,000/month budget -- roughly
 # 2,000 calls a day for data that cannot have changed. That is what exhausted
 # the quota and produced the 2026-07-25 run that spent three hours being
 # rate-limited (see api_client.RateLimitExhausted).

@@ -73,7 +73,7 @@ def mock_state_file(tmp_path: Path) -> Path:
             {
                 "month": "2026-01",
                 "calls_used": 500,
-                "monthly_budget": 75000,
+                "monthly_budget": 125000,
                 "last_updated": "2026-01-15T12:00:00",
             }
         )

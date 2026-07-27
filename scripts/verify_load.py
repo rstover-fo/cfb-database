@@ -350,20 +350,42 @@ def check_backtest_freshness(cur, report: Report) -> None:
     FAIL here, not a skip -- "never backtested" and "backtested last week" are
     different problems, but neither is a working state.
     """
+    # Scope to the CANONICAL configuration, not merely to fitted_v1/fbs
+    # (PR #57 review, P2). api.model_backtest deliberately keys on
+    # (model_version, scope, season_start, season_end, strength_share) because
+    # those are different measurements, so a one-off exploratory run -- a
+    # narrower season range, a swept strength_share -- writes its own row with
+    # today's date. A MAX(run_date) over all FBS rows would then be refreshed
+    # by an experiment while the published row sat a month stale, which is the
+    # same shape of not-quite-the-right-check this gate exists to catch.
+    #
+    # The bounds are IMPORTED, not restated. The daily workflow runs
+    # backtest_preseason.py with no arguments, so the script defaults are the
+    # canonical configuration by construction and the gate cannot drift from
+    # what the workflow actually writes. (Restating them here is how the row
+    # published to cfb-app ended up on --start 2019 against a DEFAULT_START of
+    # 2018 -- a configuration the daily job would never reproduce.)
+    from scripts.backtest_preseason import DEFAULT_END, DEFAULT_START
+    from scripts.simulate_season import DEFAULT_STRENGTH_SHARE
+
     cur.execute(
         """
         SELECT MAX(run_date),
                (SELECT COUNT(*) FROM predictions.model_backtest)
         FROM predictions.model_backtest
         WHERE model_version = 'fitted_v1' AND scope = 'fbs'
-        """
+          AND season_start = %(start)s AND season_end = %(end)s
+          AND strength_share = %(share)s
+        """,
+        {"start": DEFAULT_START, "end": DEFAULT_END, "share": DEFAULT_STRENGTH_SHARE},
     )
     latest, total = cur.fetchone()
     if total == 0 or latest is None:
         report.record(
             FAIL,
             "backtest_freshness",
-            "predictions.model_backtest has no fitted_v1/fbs row -- "
+            f"predictions.model_backtest has no fitted_v1/fbs row for the canonical "
+            f"{DEFAULT_START}-{DEFAULT_END} @ {DEFAULT_STRENGTH_SHARE} configuration -- "
             "api.model_backtest publishes nothing and consumers have no honesty numbers",
         )
         return
@@ -372,7 +394,8 @@ def check_backtest_freshness(cur, report: Report) -> None:
     report.record(
         PASS if age <= MAX_BACKTEST_AGE_DAYS else FAIL,
         "backtest_freshness",
-        f"newest fitted_v1/fbs backtest is {age} day(s) old "
+        f"newest canonical fitted_v1/fbs backtest ({DEFAULT_START}-{DEFAULT_END} "
+        f"@ {DEFAULT_STRENGTH_SHARE}) is {age} day(s) old "
         f"(run_date {latest}, threshold {MAX_BACKTEST_AGE_DAYS})",
     )
 

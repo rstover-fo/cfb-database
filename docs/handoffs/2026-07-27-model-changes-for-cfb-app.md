@@ -2,8 +2,9 @@
 
 **From:** cfb-database
 **Date:** 2026-07-27
-**PR:** rstover-fo/cfb-database#56
+**PR:** rstover-fo/cfb-database#56 — CI green, ready to merge
 **Status:** deployed to prod and verified; contract changes are live
+**Supersedes:** the 2026-07-27 draft sent earlier today
 
 Your eight integration findings are all addressed. Two of them changed our
 numbers rather than just our docs, and one thing you should stop displaying is
@@ -44,6 +45,10 @@ peers, clamped per division.
 Side effect worth knowing: an FBS team at 11 of 12 whose conference modally plays
 12 now correctly reads *incomplete*.
 
+Verified on the case that motivated it — all eight Ivy 2025 teams now read
+complete, including Harvard at 11 games and Yale at 12, which the modal rule
+handles rather than penalising for exceeding their conference's mode.
+
 **`p_bowl_eligible` is NULL outside FBS.** The 6-win threshold was applied to
 every division, so Yale carried `0.888` for a postseason the Ivy League does not
 have. `p_ten_plus` is untouched — 10 wins means the same thing everywhere.
@@ -75,6 +80,12 @@ Four things to get right:
   the ~80% a reader assumes. The band is asymmetric — read both ends.
 - **Filter `scope = 'fbs'`.** `all_divisions` is a different measurement, not a
   superset.
+- **`bowl_brier` and the bowl calibration buckets were wrong under
+  `scope = 'all_divisions'` and are now fixed.** The backtest was computing
+  P(6+ wins) for FCS/DII/DIII teams and folding them in — measuring a
+  probability this same change makes NULL in `api.season_outlook`. If you read
+  bowl numbers from an `all_divisions` row, discard them and re-read. `fbs`
+  scope was never affected.
 - **No row means never backtested.** Render as unmeasured — not as zero error.
 
 `run_date` exists precisely so a cached copy can be checked for staleness.

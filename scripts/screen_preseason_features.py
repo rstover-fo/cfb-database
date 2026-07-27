@@ -605,6 +605,16 @@ CANDIDATE_COLUMNS = [
     "prior_def_line_yards",
     "prior_def_stuff_rate",
     "prior_front_seven_havoc",
+    # SECTION 6 ORACLE PRE-TEST (see _ORACLE_CTE). These are measured with
+    # hindsight and can never ship; they exist to bound what a `draft_prob_v1`
+    # estimator could achieve before one is built. They are screened by the
+    # same code, on the same frame, under the same pre-registered rule as
+    # every other candidate -- an oracle judged by a softer standard would not
+    # bound anything.
+    "oracle_prospects",
+    "oracle_prospects_next",
+    "oracle_prospects_lagged",
+    "oracle_prospects_weighted",
 ]
 
 # What the screen itself ships (deploy run 124; see RESULTS in the module
@@ -767,6 +777,22 @@ SUPERSEDED_COLUMNS = {
     ),
 }
 
+# Measured with HINDSIGHT and therefore never eligible to ship, whatever the
+# number says. A seventh bucket rather than a reuse of one of the six, because
+# none of them says the true thing about an oracle:
+#
+#   REJECTED   would record that the evidence went against the construct.
+#   SUPERSEDED would claim a shipped column is a linear combination of it.
+#   UNTESTABLE would claim it could not be measured.
+#
+# All three would misdescribe a column that WAS measured, may have scored well,
+# and still cannot enter a fit -- because it uses information from three years
+# after the season it predicts. What the number is for is bounding an ESTIMATOR
+# of the same quantity (`draft_prob_v1`, plan section 6.2): an estimator cannot
+# beat the thing it estimates, so this is a ceiling, and a ceiling is a
+# different kind of result from a verdict on a feature.
+ORACLE_COLUMNS: dict[str, str] = {}
+
 # Added to the candidate set but NOT YET SCREENED. A pending entry states what
 # the candidate is for; it must not state what it will score.
 #
@@ -781,7 +807,42 @@ SUPERSEDED_COLUMNS = {
 # UNTESTABLE_COLUMNS or SUPERSEDED_COLUMNS with the number the screen produced,
 # and is deleted here. Emptied by deploy run 138; kept as the mechanism for the
 # next candidate added between runs.
-PENDING_COLUMNS: dict[str, str] = {}
+PENDING_COLUMNS: dict[str, str] = {
+    "oracle_prospects": (
+        "Section 6 oracle pre-test. Counts players on the season-S roster who "
+        "were drafted in any of the S+1..S+3 NFL drafts -- how much NFL talent "
+        "stood on the field in season S, measured with hindsight. It is the "
+        "quantity a `draft_prob_v1` model (plan section 6.2, Tier B) would try "
+        "to estimate, so its partial bounds what that model could achieve and "
+        "decides whether Tier B is worth building at all. Distinct from "
+        "`draft_picks_3yr`, which is backward-looking: picks the program "
+        "PRODUCED in S-1..S-3. Never shippable -- see ORACLE_COLUMNS."
+    ),
+    "oracle_prospects_next": (
+        "The S+1 draft alone -- the half of `oracle_prospects` where reverse "
+        "causality is strongest, since a player drafted the April after season "
+        "S had his stock set largely BY season S. Screened as its own "
+        "candidate so the contamination reading is a measured comparison "
+        "against `oracle_prospects_lagged` rather than an inference from the "
+        "pooled column. Never shippable."
+    ),
+    "oracle_prospects_lagged": (
+        "Variant 1 of the pre-test: the same count restricted to the S+2..S+3 "
+        "drafts, dropping the immediately-following draft where outcome "
+        "contamination is strongest. These players had one or two further "
+        "college seasons to be evaluated on, so what survives here is closer "
+        "to talent that was already present than to season S's own result. "
+        "Never shippable."
+    ),
+    "oracle_prospects_weighted": (
+        "Variant 2 of the pre-test: each future draftee counts his recruiting "
+        "rating rather than 1.0, anchoring the measure to information that "
+        "existed before season S. Attenuated by an unknown amount because "
+        "unlinked players enter at weight 0 -- see the weighted-variant note "
+        "in _ORACLE_CTE and the oracle_weighted_unrated_players audit counter. "
+        "Never shippable."
+    ),
+}
 
 # Recruiting-class decay across the four-year eligibility window: the class
 # entering season S-1 is weighted 1.0, S-2 0.8, and so on. A flat sum would
@@ -790,6 +851,168 @@ PENDING_COLUMNS: dict[str, str] = {}
 # be re-run against if the composite underperforms its components.
 CLASS_DECAY = 0.8
 CLASS_WINDOW = 4
+
+# =============================================================================
+# The section 6 ORACLE pre-test -- hindsight, deliberately.
+# =============================================================================
+#
+# READ THIS BEFORE COPYING ANY OF IT. Every other candidate in this file obeys
+# the LEAK RULE: knowable before week 1 of season S. These four columns BREAK
+# it on purpose, and that is the whole design. They count players on the
+# season-S roster who were drafted in the S+1..S+3 NFL drafts -- information
+# that does not exist until three years after the season they are used to
+# predict. None of them can ever ship into features.team_week; a fit that
+# included one would be predicting the past.
+#
+# What they are for: `draft_prob_v1` (plan section 6.2, Tier B) would be an
+# ESTIMATOR of exactly this quantity -- how much NFL talent is on the current
+# roster. An estimator cannot beat the thing it estimates, so the oracle's
+# partial correlation is the CEILING on Tier B. Measuring the ceiling first is
+# what makes it possible to cancel the most expensive item on the plan without
+# building it.
+#
+# This is NOT a re-run of `draft_picks_3yr`. That column is backward-looking --
+# picks the program PRODUCED in S-1..S-3 -- and it ships at +0.0834. The oracle
+# is forward-looking: NFL talent standing on the field in season S. Conflating
+# the two is the error this pre-test exists to correct.
+#
+# CONTAMINATION, stated before the numbers. The oracle is inflated by reverse
+# causality: a breakout season is part of what MAKES a player a draft prospect,
+# so "future draftees on this roster" partly encodes season S's own outcome.
+# That is why a positive result is a ceiling and not an estimate, and it is why
+# the decomposition below exists rather than a single column:
+#
+#     oracle_prospects = oracle_prospects_next + oracle_prospects_lagged
+#
+# `_next` is the S+1 draft alone, where contamination is strongest -- those
+# players' draft stock was largely set BY season S. `_lagged` is S+2..S+3,
+# where the drafted player still had one or two more college seasons to be
+# evaluated on. If the signal lives entirely in `_next` and dies in `_lagged`,
+# the oracle is measuring the season's own outcome rather than talent, and the
+# ceiling it appears to establish is not real.
+#
+# `_weighted` is the second variant: each future draftee counts his RECRUITING
+# RATING rather than 1.0, which anchors the measure to information that existed
+# before the season. Its known weakness is in the guards below.
+#
+# GUARDS. The failure this file already survived once (see DEFECT FOUND BY THE
+# SPLIT) was a COALESCE to 0 reading an uningested draft as "produced zero
+# picks". The oracle needs the same protection twice over, because it depends
+# on two sources rather than one:
+#
+#   1. DRAFT WINDOW. `oracle_seasons` admits a season only if ALL THREE of the
+#      S+1..S+3 drafts exist in draft.draft_picks. ALL THREE, not any: a window
+#      holding two of its three drafts still yields an understated count, and
+#      that understatement is not noise -- it is a systematic downward bias on
+#      exactly the seasons nearest the end of the window. Seasons that fail the
+#      guard go NULL and drop out of the oracle's complete cases, so the usable
+#      window falls out of the data instead of being asserted. Against drafts
+#      through 2026 that is S <= 2023.
+#   2. ROSTER PRESENCE. A team-season with no core.roster rows at all goes
+#      NULL, not 0. "We never loaded this roster" and "this roster had no
+#      future draftees" are different facts and a zero cannot tell them apart.
+#      On the 2015-2025 spine this drops the `nationalAverages` pseudo-team,
+#      which ratings.sp_ratings carries as a row and which has no roster by
+#      construction.
+#
+# A 0 that survives both guards is a real measurement: the drafts were loaded,
+# the roster was loaded, and none of those players were drafted.
+_ORACLE_CTE = """
+draft_years AS (
+    -- Which NFL drafts exist in the warehouse at all, independent of any team.
+    -- The team-independence is the point (same reasoning as the draft coverage
+    -- counters in AUDIT_QUERY): a team absent from a draft that WAS ingested
+    -- really did produce no picks, while a team absent because the draft was
+    -- never loaded is not a measurement at all.
+    SELECT DISTINCT dp.year AS draft_year
+    FROM draft.draft_picks dp
+),
+oracle_seasons AS (
+    -- Seasons whose ENTIRE S+1..S+3 draft window has been ingested. See guard 1.
+    SELECT g.season
+    FROM generate_series(%(from_season)s, %(to_season)s) AS g(season)
+    WHERE (
+        SELECT COUNT(*) FROM draft_years dy
+        WHERE dy.draft_year BETWEEN g.season + 1 AND g.season + 3
+    ) = 3
+),
+roster_present AS (
+    -- See guard 2. Row count rather than a bare EXISTS so --audit-imputation
+    -- can also report team-seasons whose roster loaded only partially.
+    SELECT r.team, r.year AS season, COUNT(*) AS roster_rows
+    FROM core.roster r
+    GROUP BY 1, 2
+),
+drafted_athlete AS (
+    -- One row per athlete ever drafted, carrying the draft he went in.
+    -- MIN() because an athlete belongs to exactly one draft and a duplicate
+    -- would otherwise multiply him across the join below.
+    --
+    -- `college_athlete_id` is bigint and `core.roster.id` is varchar, so the
+    -- cast is required and is done ONCE here rather than per join.
+    SELECT dp.college_athlete_id::text AS athlete_id,
+           MIN(dp.year) AS draft_year
+    FROM draft.draft_picks dp
+    WHERE dp.college_athlete_id IS NOT NULL
+    GROUP BY 1
+),
+recruit_rating_by_id AS (
+    -- Pre-aggregated to one row per athlete so joining it cannot lengthen the
+    -- roster; a duplicated recruiting row would inflate the weighted count.
+    SELECT rc.athlete_id, MAX(rc.rating) AS rating
+    FROM recruiting.recruits rc
+    WHERE rc.athlete_id IS NOT NULL AND rc.rating IS NOT NULL
+    GROUP BY 1
+),
+recruit_rating_by_name AS (
+    -- Fallback link for the weighted variant. recruiting.recruits carries an
+    -- athlete_id on well under half its rows, so the id link alone leaves ~46%%
+    -- of future draftees unrated; name + committed_to recovers a chunk of that
+    -- (measured 2019: id 54%%, id-or-name 74%%). Also one row per key.
+    SELECT lower(btrim(rc.name)) AS name_key,
+           rc.committed_to AS team,
+           MAX(rc.rating) AS rating
+    FROM recruiting.recruits rc
+    WHERE rc.name IS NOT NULL AND rc.committed_to IS NOT NULL AND rc.rating IS NOT NULL
+    GROUP BY 1, 2
+),
+oracle_counts AS (
+    -- Future draftees standing on each season-S roster. (team, year, id) is
+    -- unique in core.roster (verified on 2015-2023: 177,157 rows, 177,157
+    -- distinct), so COUNT(*) is a headcount and needs no DISTINCT.
+    --
+    -- The join is on ATHLETE ONLY, never on team. A player who was on team T
+    -- in season S and was drafted out of team U two years later was still T's
+    -- talent in season S, which is the quantity being measured.
+    SELECT r.team, r.year AS season,
+           COUNT(*) AS prospects,
+           COUNT(*) FILTER (WHERE da.draft_year = r.year + 1) AS prospects_next,
+           COUNT(*) FILTER (WHERE da.draft_year >= r.year + 2) AS prospects_lagged,
+           -- WEIGHTED VARIANT, and its honest weakness. An unlinked player
+           -- contributes 0, and 0 conflates two different facts: "no recruiting
+           -- service rated him" (a true zero -- a walk-on or unranked JUCO
+           -- really did arrive with no pre-season billing) and "our join
+           -- failed". Roughly a quarter of future draftees link to no
+           -- recruiting row at all, so this column is ATTENUATED toward zero by
+           -- an unknown amount. That makes it safe to read in one direction
+           -- only: if it clears the floor the result stands, and if it falls
+           -- short the shortfall cannot be attributed to contamination rather
+           -- than to link failure. --audit-imputation reports the unlinked
+           -- share so the size of the caveat is on the record with the number.
+           SUM(COALESCE(rid.rating, rnm.rating, 0)) AS prospects_weighted,
+           COUNT(*) FILTER (
+               WHERE rid.rating IS NULL AND rnm.rating IS NULL
+           ) AS prospects_unrated
+    FROM core.roster r
+    JOIN drafted_athlete da
+      ON da.athlete_id = r.id
+     AND da.draft_year BETWEEN r.year + 1 AND r.year + 3
+    LEFT JOIN recruit_rating_by_id rid ON rid.athlete_id = r.id
+    LEFT JOIN recruit_rating_by_name rnm
+           ON rnm.name_key = lower(btrim(r.first_name || ' ' || r.last_name))
+          AND rnm.team = r.team
+    GROUP BY 1, 2
+)"""
 
 # Head-coach tenure start per (school, year), and the incoming coach's career
 # prior (coach_season / coach_prior, appended for the section 6.0b second pass).
@@ -927,6 +1150,7 @@ coach_prior AS (
 
 SCREEN_FRAME_QUERY = f"""
 WITH {_COACH_TENURE_CTE},
+{_ORACLE_CTE},
 class_points AS (
     -- Recruiting class quality per (team, year).
     SELECT tr.team, tr.year, tr.points::double precision AS points
@@ -1137,10 +1361,30 @@ SELECT
     ats.offense__havoc__front_seven AS prior_havoc_allowed_front_seven,
     ats.defense__line_yards AS prior_def_line_yards,
     ats.defense__stuff_rate AS prior_def_stuff_rate,
-    ats.defense__havoc__front_seven AS prior_front_seven_havoc
+    ats.defense__havoc__front_seven AS prior_front_seven_havoc,
+    -- SECTION 6 ORACLE PRE-TEST. Hindsight by design -- see _ORACLE_CTE above
+    -- for what these are, why they break the leak rule, and what the two
+    -- guards below protect against. NEVER SHIPPABLE.
+    --
+    -- The guard is written out per column rather than factored into the spine
+    -- because it has to be READ next to the number it protects. The four share
+    -- one guard deliberately: gating `_next` on its own S+1 draft would screen
+    -- it on 2015-2025 while the others ran on 2015-2023, and the decomposition
+    -- `prospects = next + lagged` is only interpretable on identical rows.
+    CASE WHEN os.season IS NULL OR rpr.roster_rows IS NULL THEN NULL
+         ELSE COALESCE(oc.prospects, 0)::double precision END AS oracle_prospects,
+    CASE WHEN os.season IS NULL OR rpr.roster_rows IS NULL THEN NULL
+         ELSE COALESCE(oc.prospects_next, 0)::double precision END AS oracle_prospects_next,
+    CASE WHEN os.season IS NULL OR rpr.roster_rows IS NULL THEN NULL
+         ELSE COALESCE(oc.prospects_lagged, 0)::double precision END AS oracle_prospects_lagged,
+    CASE WHEN os.season IS NULL OR rpr.roster_rows IS NULL THEN NULL
+         ELSE COALESCE(oc.prospects_weighted, 0)::double precision END AS oracle_prospects_weighted
 FROM spine s
 LEFT JOIN portal_flow pf ON pf.team = s.team AND pf.season = s.season
 LEFT JOIN draft_out dout ON dout.team = s.team AND dout.season = s.season
+LEFT JOIN oracle_seasons os ON os.season = s.season
+LEFT JOIN roster_present rpr ON rpr.team = s.team AND rpr.season = s.season
+LEFT JOIN oracle_counts oc ON oc.team = s.team AND oc.season = s.season
 -- Season S-1: what the trenches DID last year, known before season S starts.
 LEFT JOIN stats.advanced_team_stats ats
        ON ats.team = s.team AND ats.season = s.season - 1
@@ -1153,10 +1397,16 @@ ORDER BY s.season, s.team
 # preflight failure.
 REQUIRED_COLUMNS: list[tuple[str, str, tuple[str, ...]]] = [
     ("recruiting", "team_recruiting", ("team", "year", "points")),
-    ("recruiting", "recruits", ("committed_to", "year", "stars")),
+    # `athlete_id` / `name` / `rating` are the oracle weighted variant's two
+    # links into core.roster and the weight it applies.
+    ("recruiting", "recruits", ("committed_to", "year", "stars", "athlete_id", "name", "rating")),
     ("recruiting", "transfer_portal", ("season", "origin", "destination", "rating")),
-    ("draft", "draft_picks", ("year", "college_team", "round")),
+    ("draft", "draft_picks", ("year", "college_team", "round", "college_athlete_id")),
     ("ratings", "sp_ratings", ("year", "team", "rating")),
+    # Section 6 oracle pre-test. `id` is the varchar the bigint
+    # draft.draft_picks.college_athlete_id is cast to; `year` is the season
+    # column (core.roster has no `season`).
+    ("core", "roster", ("id", "team", "year", "first_name", "last_name")),
     # dlt child table of ref.coaches. `_dlt_parent_id` is the coach identity the
     # tenure and career-prior CTEs group on -- ref.coaches is merged on
     # (first_name, last_name), so one parent row is one coach across every
@@ -1196,6 +1446,7 @@ REQUIRED_COLUMNS: list[tuple[str, str, tuple[str, ...]]] = [
 # the FDR correction.
 AUDIT_QUERY = f"""
 WITH {_COACH_TENURE_CTE},
+{_ORACLE_CTE},
 class_points AS (
     SELECT tr.team, tr.year, tr.points::double precision AS points
     FROM recruiting.team_recruiting tr
@@ -1323,7 +1574,53 @@ SELECT
     -- SP+ really is centred on an average FBS team over this frame.
     COUNT(*) FILTER (
         WHERE s.prior_sp_rating >= {HC_PROVEN_SP_PLUS}
-    ) AS frame_prior_sp_at_or_above_zero
+    ) AS frame_prior_sp_at_or_above_zero,
+    -- SECTION 6 ORACLE COVERAGE. Added for the same reason the draft counters
+    -- above were: the oracle is a COALESCE to 0 on a count, and this file has
+    -- already had four verdicts stand for a month on one of those.
+    --
+    -- The oracle depends on TWO sources, so it gets two counters. Both count
+    -- rows the guards send to NULL rather than to 0 -- they are coverage
+    -- figures, not imputation ones, and the rows are dropped from the oracle's
+    -- complete cases rather than fabricated. A number here is expected and
+    -- fine; what is NOT fine is these reading 0 while the oracle still returns
+    -- values, which would mean a guard stopped guarding.
+    COUNT(*) FILTER (
+        WHERE (
+            SELECT COUNT(*) FROM draft_years dy
+            WHERE dy.draft_year BETWEEN s.season + 1 AND s.season + 3
+        ) < 3
+    ) AS oracle_draft_window_incomplete,
+    COUNT(*) FILTER (
+        WHERE NOT EXISTS (
+            SELECT 1 FROM roster_present rp
+            WHERE rp.team = s.team AND rp.season = s.season
+        )
+    ) AS oracle_roster_absent,
+    -- A roster that loaded, but thinly. Not a guard -- these rows DO enter the
+    -- oracle -- but a spike here would mean the counts are measuring load
+    -- completeness. FBS rosters run ~110-125 players; 40 is well below any
+    -- real one.
+    COUNT(*) FILTER (
+        WHERE EXISTS (
+            SELECT 1 FROM roster_present rp
+            WHERE rp.team = s.team AND rp.season = s.season AND rp.roster_rows < 40
+        )
+    ) AS oracle_roster_thin,
+    -- The weighted variant's attenuation, quantified. Future draftees on a
+    -- screened roster who link to no recruiting rating by either path and so
+    -- enter oracle_prospects_weighted at weight 0. Reported as a count of
+    -- PLAYERS, not team-seasons, unlike every other counter here.
+    COALESCE((
+        SELECT SUM(oc.prospects_unrated) FROM oracle_counts oc
+        JOIN spine sp2 ON sp2.team = oc.team AND sp2.season = oc.season
+        JOIN oracle_seasons os2 ON os2.season = oc.season
+    ), 0) AS oracle_weighted_unrated_players,
+    COALESCE((
+        SELECT SUM(oc.prospects) FROM oracle_counts oc
+        JOIN spine sp2 ON sp2.team = oc.team AND sp2.season = oc.season
+        JOIN oracle_seasons os2 ON os2.season = oc.season
+    ), 0) AS oracle_prospect_players
 FROM spine s
 """
 
@@ -1645,11 +1942,17 @@ def main() -> None:
         if args.audit_imputation:
             audit = audit_imputation(conn, args.from_season, args.to_season)
             total = audit.pop("total_rows")
+            # Every counter is a share of the team-season frame EXCEPT the
+            # oracle weighted variant's, which counts players. Dividing a
+            # player count by a team-season count would print a number that
+            # looks like a share and is not one.
+            prospect_players = audit.pop("oracle_prospect_players", 0)
             for name, imputed in sorted(audit.items()):
-                share = (imputed / total) if total else 0.0
+                denom = prospect_players if name.endswith("_players") else total
+                share = (imputed / denom) if denom else 0.0
                 print(
                     f"IMPUTATION_AUDIT candidate={name} imputed={imputed} "
-                    f"total={total} share={share:.4f}"
+                    f"total={denom} share={share:.4f}"
                 )
             print(
                 f"IMPUTATION_SUMMARY total_rows={total} window={args.from_season}-{args.to_season}"

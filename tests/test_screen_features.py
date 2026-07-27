@@ -467,6 +467,7 @@ class TestRecordedVerdictsAreInternallyConsistent:
         from scripts.screen_preseason_features import (
             AWAITING_SHIP_DECISION,
             CANDIDATE_COLUMNS,
+            ORACLE_COLUMNS,
             PENDING_COLUMNS,
             REJECTED_COLUMNS,
             SHIPPED_BY_DECISION,
@@ -482,6 +483,7 @@ class TestRecordedVerdictsAreInternallyConsistent:
             + list(REJECTED_COLUMNS)
             + list(UNTESTABLE_COLUMNS)
             + list(SUPERSEDED_COLUMNS)
+            + list(ORACLE_COLUMNS)
             + list(PENDING_COLUMNS)
         )
         assert len(recorded) == len(set(recorded)), "a candidate has two verdicts"
@@ -499,6 +501,7 @@ class TestRecordedVerdictsAreInternallyConsistent:
         in the first place."""
         from scripts.screen_preseason_features import (
             AWAITING_SHIP_DECISION,
+            ORACLE_COLUMNS,
             PENDING_COLUMNS,
             REJECTED_COLUMNS,
             SHIPPED_BY_DECISION,
@@ -514,6 +517,7 @@ class TestRecordedVerdictsAreInternallyConsistent:
             | set(REJECTED_COLUMNS)
             | set(UNTESTABLE_COLUMNS)
             | set(SUPERSEDED_COLUMNS)
+            | set(ORACLE_COLUMNS)
         )
         assert not adjudicated & set(PENDING_COLUMNS), (
             "a pending candidate has been given a verdict the screen did not produce"
@@ -1120,3 +1124,155 @@ class TestMidSeasonCoachingChangesAreExcluded:
 
         assert "%(from_season)s" not in _COACH_TENURE_CTE
         assert "BETWEEN" not in _COACH_TENURE_CTE.upper()
+
+
+class TestOraclePreTestIsGuardedAndUnshippable:
+    """The section 6 oracle measures season-S rosters against the S+1..S+3 NFL
+    drafts, which is hindsight by design (see `_ORACLE_CTE`).
+
+    Two things have to stay true about it. It must never leak into a fit --
+    it uses information from three years after the season it predicts, so a
+    coefficient on it would be predicting the past. And its zero has to be a
+    measurement rather than a load state, which is the failure this file
+    already survived once on `draft_picks_3yr`.
+    """
+
+    def test_oracle_columns_are_never_shipped(self):
+        from scripts.screen_preseason_features import (
+            AWAITING_SHIP_DECISION,
+            CANDIDATE_COLUMNS,
+            SHIPPED_BY_DECISION,
+            SHIPPED_COLUMNS,
+        )
+
+        oracle = {c for c in CANDIDATE_COLUMNS if c.startswith("oracle_")}
+        assert oracle, "the oracle candidates have gone missing from the set"
+        shippable = set(SHIPPED_COLUMNS) | set(SHIPPED_BY_DECISION) | set(AWAITING_SHIP_DECISION)
+        assert not oracle & shippable, (
+            "an oracle column has reached a shippable bucket -- it is measured "
+            "with information from three years after the season it predicts, so "
+            "no screen result and no owner override can make it a feature"
+        )
+
+    def test_oracle_columns_never_reach_the_feature_substrate(self):
+        """The other end of the same guarantee: whatever the ledger says, no
+        oracle column may appear in the built feature vector."""
+        from scripts.build_features import FEATURE_ROWS_QUERY
+
+        assert "oracle_" not in FEATURE_ROWS_QUERY
+
+    def test_draft_window_guard_requires_all_three_drafts(self):
+        """ALL THREE, not any. A window holding two of its three drafts still
+        yields an understated count, and the understatement lands
+        systematically on the seasons nearest the end of the window -- exactly
+        where a naive EXISTS check would report full coverage."""
+        from scripts.screen_preseason_features import _ORACLE_CTE
+
+        assert "oracle_seasons AS" in _ORACLE_CTE
+        block = _ORACLE_CTE[_ORACLE_CTE.index("oracle_seasons AS") :]
+        block = block[: block.index("roster_present AS")]
+        assert "BETWEEN g.season + 1 AND g.season + 3" in block
+        assert ") = 3" in block, "the guard must require three drafts, not one"
+
+    def test_draft_window_guard_is_not_filtered_to_the_team(self):
+        """Same distinction the draft coverage counters draw. A team absent
+        from a draft that WAS ingested produced no picks -- a true zero. A team
+        absent because the draft was never loaded is not a measurement.
+        Filtering the year check by team collapses the two."""
+        from scripts.screen_preseason_features import _ORACLE_CTE
+
+        block = _ORACLE_CTE[_ORACLE_CTE.index("draft_years AS") :]
+        block = block[: block.index("roster_present AS")]
+        assert "college_team" not in block
+        assert ".team" not in block
+
+    def test_missing_roster_yields_null_not_zero(self):
+        """`ratings.sp_ratings` carries a `nationalAverages` pseudo-team with no
+        roster, and roster loads have been uneven by year. A team-season with no
+        roster rows must drop out of the oracle's complete cases rather than
+        enter it as a team that produced no NFL players."""
+        from scripts.screen_preseason_features import SCREEN_FRAME_QUERY
+
+        assert "roster_present AS" in SCREEN_FRAME_QUERY
+        for column in (
+            "oracle_prospects",
+            "oracle_prospects_next",
+            "oracle_prospects_lagged",
+            "oracle_prospects_weighted",
+        ):
+            marker = f"END AS {column},"
+            marker = marker if marker in SCREEN_FRAME_QUERY else f"END AS {column}\n"
+            assert marker in SCREEN_FRAME_QUERY, f"{column} is not a guarded CASE"
+        assert SCREEN_FRAME_QUERY.count("os.season IS NULL OR rpr.roster_rows IS NULL") == 4, (
+            "every oracle column needs both guards; one unguarded column is "
+            "enough to put a fabricated zero back in the frame"
+        )
+
+    def test_the_four_oracle_columns_share_one_window(self):
+        """`oracle_prospects = oracle_prospects_next + oracle_prospects_lagged`
+        is the contamination reading, and it is only interpretable if the three
+        are screened on identical rows. Gating `_next` on its own S+1 draft
+        would give it a wider window than the other two."""
+        from scripts.screen_preseason_features import SCREEN_FRAME_QUERY
+
+        assert SCREEN_FRAME_QUERY.count("LEFT JOIN oracle_seasons os") == 1
+
+    def test_the_join_casts_the_bigint_to_text_once(self):
+        """`draft.draft_picks.college_athlete_id` is bigint and
+        `core.roster.id` is varchar. Postgres will not compare them, and doing
+        the cast per join site is how one of them ends up missing it."""
+        from scripts.screen_preseason_features import _ORACLE_CTE
+
+        assert _ORACLE_CTE.count("college_athlete_id::text") == 1
+        assert "da.athlete_id = r.id" in _ORACLE_CTE
+
+    def test_prospects_are_attributed_to_the_season_s_roster_not_the_draft_team(self):
+        """A player on team T in season S who is drafted out of team U two years
+        later was still T's talent in season S. Joining on team as well as
+        athlete would silently drop every transfer."""
+        from scripts.screen_preseason_features import _ORACLE_CTE
+
+        block = _ORACLE_CTE[_ORACLE_CTE.index("oracle_counts AS") :]
+        join = block[block.index("JOIN drafted_athlete da") : block.index("LEFT JOIN")]
+        assert "team" not in join
+
+    def test_audit_counts_both_oracle_sources(self):
+        """The oracle COALESCEs a count to zero off two sources, so it needs a
+        counter for each. `--audit-imputation` had no draft counter at all when
+        the last fabricated-zero defect went undetected for a month."""
+        from scripts.screen_preseason_features import AUDIT_QUERY
+
+        assert "oracle_draft_window_incomplete" in AUDIT_QUERY
+        assert "oracle_roster_absent" in AUDIT_QUERY
+        assert "oracle_weighted_unrated_players" in AUDIT_QUERY
+
+    def test_audit_defines_the_oracle_ctes_it_reads(self):
+        """AUDIT_QUERY is a separate statement from SCREEN_FRAME_QUERY, so a
+        counter referencing a CTE only the screen defines would fail at
+        runtime, and only when --audit-imputation ran."""
+        from scripts.screen_preseason_features import AUDIT_QUERY
+
+        for cte in ("draft_years AS", "roster_present AS", "oracle_counts AS"):
+            assert cte in AUDIT_QUERY
+            assert AUDIT_QUERY.index(cte) < AUDIT_QUERY.index("oracle_draft_window_incomplete")
+
+    def test_oracle_history_is_not_year_filtered_beyond_the_window_probe(self):
+        """The only place the screened window may appear in the oracle CTE is
+        `oracle_seasons`, which asks which seasons are testable. Clipping the
+        roster or the draft history to the window would truncate the S+1..S+3
+        lookahead at the window's last year and turn real prospects into
+        zeros."""
+        from scripts.screen_preseason_features import _ORACLE_CTE
+
+        assert _ORACLE_CTE.count("%(from_season)s") == 1
+        assert _ORACLE_CTE.count("%(to_season)s") == 1
+        probe = _ORACLE_CTE[_ORACLE_CTE.index("oracle_seasons AS") :]
+        assert "%(from_season)s" in probe[: probe.index("roster_present AS")]
+
+    def test_every_oracle_verdict_records_its_ceiling_reading(self):
+        """ORACLE_COLUMNS is a verdict bucket like the others: an entry is only
+        written from a run, and it has to say what the number means."""
+        from scripts.screen_preseason_features import ORACLE_COLUMNS
+
+        for column, rationale in ORACLE_COLUMNS.items():
+            assert len(rationale) > 40, f"{column} records a ceiling without stating it"

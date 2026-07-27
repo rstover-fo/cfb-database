@@ -231,6 +231,115 @@ against 2020-2026 data it can only run for S in 2019-2023 -- five seasons, not
 the 2015-2022 the plan assumes. Backfill first or the pre-test inherits this
 same defect.
 
+THE SECTION 6 ORACLE PRE-TEST -- runs 165/166, n = 1,161
+---------------------------------------------------------
+One decisive experiment, run to decide whether Phase 6 Tier B (`draft_prob_v1`,
+the single most expensive item on the plan) gets built at all.
+
+The 2026-07-26 screen rejected BACKWARD-looking draft production -- picks a
+program produced in S-1..S-3 -- as nearly redundant with recruiting. That
+result was then read as closing a different question, which it does not touch:
+how much NFL talent is standing on the CURRENT roster. "This team has 12
+draftable players and that one has 2" is a claim about season S, not about what
+the program graduated three years ago. The pre-test measures the second
+construct with hindsight and screens it under the same pre-registered rule:
+
+    oracle_prospects(S, team) = players on the season-S roster who were
+                                drafted in any of the S+1..S+3 NFL drafts
+
+Run 166, on the canonical 2015-2025 window. The oracle rows are the 1,161 the
+GUARDS admit -- 2015-2023, every team-season whose S+1..S+3 drafts are all
+ingested and whose roster loaded -- so the comparison rows below are the
+recorded ones and are directly comparable to the table at the top of this
+docstring, which run 166 reproduces to four decimals on all 23 pre-existing
+candidates.
+
+    candidate                      n     cov   vs prior   +recr        q
+    oracle_prospects            1161   0.807    +0.4393  +0.3437  <1e-5
+    oracle_prospects_next       1161   0.807    +0.3971  +0.3138  <1e-5
+    oracle_prospects_lagged     1161   0.807    +0.3719  +0.2589  <1e-5
+    oracle_prospects_weighted   1161   0.807    +0.3518  +0.2319  <1e-5
+    recruiting_points_3yr       1439   1.000    +0.2642   (ctrl)  <1e-5
+    draft_picks_3yr             1439   1.000    +0.2342  +0.0834  0.003
+
+Run 165 screened the same candidates on an EXPLICIT `--from 2015 --to 2023`
+and returned all four oracle partials identical to four decimals on the same
+n=1,161. That is the check that the WINDOW GUARD selects the seasons, not the
+CLI flag: had the flag been doing the work, restricting it would have changed
+the complete cases. It also means the oracle numbers are not an artifact of
+which window was asked for.
+
+What it establishes:
+
+1. **The ceiling is high, and Tier B is NOT cancelled.** +0.3437 is 4.3x the
+   effect floor and larger than the recruiting control's own +0.2642. An
+   estimator cannot beat what it estimates, so this bounds `draft_prob_v1`
+   from above -- but the bound leaves a great deal of room.
+
+2. **The two draft constructs are genuinely different, and conflating them was
+   the error.** Backward-looking `draft_picks_3yr` scores +0.0834 and
+   forward-looking `oracle_prospects` scores +0.3437 -- a factor of four, off
+   the same draft table. The recorded finding that "draft production is
+   redundant with recruiting" is correct about picks PRODUCED and says nothing
+   about talent PRESENT. Both are read here as second-order partials against
+   the same control, so the gap is not an artifact of what each is measured
+   against.
+
+3. **The signal survives the contamination test.** The pre-registered failure
+   mode was that the oracle works only through the S+1 draft -- where a
+   breakout season is part of what MAKES a player a prospect -- and dies once
+   that draft is dropped. Measured: `_next` (S+1 alone) is the stronger half at
+   +0.3138, exactly where reverse causality was predicted to show up, but
+   `_lagged` (S+2..S+3) retains +0.2589, three quarters of the pooled column
+   and 3.2x the floor. The contamination is real and is roughly the gap between
+   those two numbers; it is not the whole effect.
+
+4. **Anchoring to pre-season information does not kill it either.** Weighting
+   each future draftee by his recruiting rating still scores +0.2319, despite
+   29.9% of prospects (1,880 of 6,286) linking to no recruiting row and so
+   entering at weight 0. That attenuation is one-directional, so this is a
+   LOWER bound on the weighted construct.
+
+What it does NOT establish. `_lagged` is not contamination-free: a breakout in
+season S also lifts a player's S+2 draft stock, just less directly. And the
+oracle knows which players were drafted; `draft_prob_v1` would have to estimate
+that from a roster in July, which is a strictly harder problem than any number
+here measures. Expect materially less than +0.3437 -- the honest planning
+figure is the contamination-discounted +0.2589, further discounted by estimator
+error of unknown size.
+
+Guards, because this file has already had four verdicts stand for a month on a
+fabricated zero. `--audit-imputation` on 2015-2025 reports
+`oracle_draft_window_incomplete=269` (2024-25, whose S+1..S+3 windows are not
+fully ingested -- the ALL-THREE rule, not any) and `oracle_roster_absent=11`
+(the `nationalAverages` pseudo-team in ratings.sp_ratings, all eleven seasons).
+Both go NULL and drop out of the oracle's complete cases, which is how the
+usable window fell out of the data rather than being asserted. The draft
+source-year counters remain at 0.
+
+Two measurement caveats on the record, both found while building this and both
+running AGAINST the result rather than for it -- the oracle is attenuated, not
+flattered, by each:
+
+  * The draft-to-roster join is 99.6-100% for drafts 2020-2026 but 94.9-95.6%
+    for 2016-2019 (FBS picks only; the unmatched are overwhelmingly FCS and
+    Ivy players, whom core.roster does not carry). Seasons 2015-2018 therefore
+    undercount their prospects by roughly a twentieth. Mean prospects per FBS
+    roster: 5.02 in 2015 against 5.45-5.57 from 2018 on.
+  * One team-season in the screened window has a roster of fewer than 40
+    players and still enters the oracle (`oracle_roster_thin=1`).
+
+NOT re-adjudicated by either run. No existing bucket moved. Run 166 reproduces
+every recorded 2015-2025 partial exactly, so nothing about the pre-existing
+verdicts changed; run 165's other figures are 2015-2023 numbers and are not
+comparable to them (`talent_stock` +0.0871, `pipeline_index` +0.0896,
+`blue_chip_pipeline` +0.0722 on the shorter window). As the amendment below
+warns, q-values are a property of the SET, and adding four very strong
+candidates moved every q in the table -- all of them downward here, since the
+oracle columns outrank the existing ones and so raise their BH rank
+denominators. No verdict turns on a q in this file; every rejection failed on
+the effect floor.
+
 AMENDMENT -- the regime-scoped coaching variants (screened, run 138)
 --------------------------------------------------------------------
 Five candidates were added AFTER run 124 and are now adjudicated by run 138;
@@ -791,7 +900,50 @@ SUPERSEDED_COLUMNS = {
 # of the same quantity (`draft_prob_v1`, plan section 6.2): an estimator cannot
 # beat the thing it estimates, so this is a ceiling, and a ceiling is a
 # different kind of result from a verdict on a feature.
-ORACLE_COLUMNS: dict[str, str] = {}
+ORACLE_COLUMNS = {
+    "oracle_prospects": (
+        "+0.3437 (n=1,161, q<1e-5, deploy runs 165 and 166, seasons "
+        "2015-2023 by the window guard). The CEILING on Phase 6 Tier B, and it "
+        "is a high one: 4.3x the effect floor, and larger than "
+        "`recruiting_points_3yr`'s own +0.2642. Roster draft potential is not "
+        "redundant with recruiting the way BACKWARD-looking draft production "
+        "is -- `draft_picks_3yr` scores +0.0834 off the same draft table, a "
+        "quarter of this. The two constructs were conflated on 2026-07-26 and "
+        "this separates them. Inflated by reverse causality (see "
+        "oracle_prospects_next), so it bounds `draft_prob_v1` rather than "
+        "predicting it."
+    ),
+    "oracle_prospects_next": (
+        "+0.3138 (n=1,161, q<1e-5) -- the S+1 draft alone, on 1.81 players per "
+        "roster. The most contaminated half, and it is indeed the stronger "
+        "half, which is the reverse causality showing up exactly where it was "
+        "predicted to. Read against oracle_prospects_lagged rather than alone: "
+        "the gap between them (+0.3138 vs +0.2589) is the size of the "
+        "contamination, not the size of the signal."
+    ),
+    "oracle_prospects_lagged": (
+        "+0.2589 (n=1,161, q<1e-5) -- VARIANT 1, and the number the Tier B "
+        "decision actually rests on. Restricted to the S+2..S+3 drafts, "
+        "dropping the immediately-following draft where outcome contamination "
+        "is strongest, the signal retains 75% of the pooled column and still "
+        "runs at 3.2x the floor -- statistically indistinguishable from the "
+        "recruiting control's +0.2642. The pre-registered failure mode was "
+        "'signal works only via S+1 and dies here'; it did not happen. Not "
+        "contamination-free -- a breakout in season S also lifts a player's "
+        "S+2 stock -- but the mechanism is one or two further college seasons "
+        "removed."
+    ),
+    "oracle_prospects_weighted": (
+        "+0.2319 (n=1,161, q<1e-5) -- VARIANT 2, weighting each future draftee "
+        "by his recruiting rating instead of 1.0. Survives at 2.9x the floor "
+        "despite 29.9% of prospects (1,880 of 6,286, --audit-imputation) "
+        "linking to no recruiting row and so entering at weight 0. That "
+        "attenuation makes this a LOWER BOUND: it can be read as confirming "
+        "the signal, never as measuring how much of it is pre-season "
+        "knowable. Sitting below the raw count is the expected direction and "
+        "cannot be attributed to contamination rather than to link failure."
+    ),
+}
 
 # Added to the candidate set but NOT YET SCREENED. A pending entry states what
 # the candidate is for; it must not state what it will score.
@@ -807,42 +959,7 @@ ORACLE_COLUMNS: dict[str, str] = {}
 # UNTESTABLE_COLUMNS or SUPERSEDED_COLUMNS with the number the screen produced,
 # and is deleted here. Emptied by deploy run 138; kept as the mechanism for the
 # next candidate added between runs.
-PENDING_COLUMNS: dict[str, str] = {
-    "oracle_prospects": (
-        "Section 6 oracle pre-test. Counts players on the season-S roster who "
-        "were drafted in any of the S+1..S+3 NFL drafts -- how much NFL talent "
-        "stood on the field in season S, measured with hindsight. It is the "
-        "quantity a `draft_prob_v1` model (plan section 6.2, Tier B) would try "
-        "to estimate, so its partial bounds what that model could achieve and "
-        "decides whether Tier B is worth building at all. Distinct from "
-        "`draft_picks_3yr`, which is backward-looking: picks the program "
-        "PRODUCED in S-1..S-3. Never shippable -- see ORACLE_COLUMNS."
-    ),
-    "oracle_prospects_next": (
-        "The S+1 draft alone -- the half of `oracle_prospects` where reverse "
-        "causality is strongest, since a player drafted the April after season "
-        "S had his stock set largely BY season S. Screened as its own "
-        "candidate so the contamination reading is a measured comparison "
-        "against `oracle_prospects_lagged` rather than an inference from the "
-        "pooled column. Never shippable."
-    ),
-    "oracle_prospects_lagged": (
-        "Variant 1 of the pre-test: the same count restricted to the S+2..S+3 "
-        "drafts, dropping the immediately-following draft where outcome "
-        "contamination is strongest. These players had one or two further "
-        "college seasons to be evaluated on, so what survives here is closer "
-        "to talent that was already present than to season S's own result. "
-        "Never shippable."
-    ),
-    "oracle_prospects_weighted": (
-        "Variant 2 of the pre-test: each future draftee counts his recruiting "
-        "rating rather than 1.0, anchoring the measure to information that "
-        "existed before season S. Attenuated by an unknown amount because "
-        "unlinked players enter at weight 0 -- see the weighted-variant note "
-        "in _ORACLE_CTE and the oracle_weighted_unrated_players audit counter. "
-        "Never shippable."
-    ),
-}
+PENDING_COLUMNS: dict[str, str] = {}
 
 # Recruiting-class decay across the four-year eligibility window: the class
 # entering season S-1 is weighted 1.0, S-2 0.8, and so on. A flat sum would

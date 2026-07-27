@@ -586,10 +586,17 @@ SELECT
     -- deliberately has NO team predicate: a team absent from a draft that was
     -- loaded really did produce nothing, and that true zero has to stay
     -- distinguishable from a draft nobody loaded.
-    CASE WHEN EXISTS (
-             SELECT 1 FROM draft_out d
+    --
+    -- ALL THREE YEARS, not any (PR #56 review, P2). A bare EXISTS is satisfied
+    -- by one loaded draft, so a window missing 2012 but holding 2013-2014
+    -- would emit a TWO-year count wearing a three-year column name -- the same
+    -- understatement in softer clothes, and --audit-imputation would not flag
+    -- it because the audit shared the predicate. COUNT(DISTINCT season) = 3 is
+    -- what makes the guard mean what the column name says.
+    CASE WHEN (
+             SELECT COUNT(DISTINCT d.season) FROM draft_out d
              WHERE d.season BETWEEN s.season - 3 AND s.season - 1
-         )
+         ) = 3
          THEN COALESCE((
              SELECT SUM(d2.picks) FROM draft_out d2
              WHERE d2.team = s.team

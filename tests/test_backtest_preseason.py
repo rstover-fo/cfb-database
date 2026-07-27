@@ -609,3 +609,48 @@ class TestStoredPrecision:
         from decimal import Decimal
 
         assert self._numeric(0.1637, 6, 5) == Decimal("0.16370")
+
+
+class TestBowlCalibrationStaysFBS:
+    """PR #56 review, P2.
+
+    api.season_outlook publishes p_bowl_eligible as NULL outside FBS -- there
+    is no bowl system below it. But the backtest called summarize() bare, so
+    bowl_eligible defaulted True and an --all-divisions run folded P(6+ wins)
+    for every DIII team into bowl_brier and the calibration buckets. The
+    backtest was then measuring a probability the surface does not publish.
+
+    The population filter (`fbs`, None under --all-divisions) and the
+    bowl-eligibility set are different questions, which is why the fix is a
+    second lookup rather than a reuse of the first."""
+
+    def test_bowl_eligibility_is_passed_per_team(self):
+        import inspect
+
+        from scripts.backtest_preseason import _simulate_pass
+
+        src = inspect.getsource(_simulate_pass)
+        assert "bowl_eligible=team in bowl_teams" in src, (
+            "summarize() must be told per team, or non-FBS rows enter bowl_brier"
+        )
+
+    def test_the_bowl_set_is_fetched_regardless_of_scope(self):
+        """`fbs` is None under --all-divisions, so reusing it would silently
+        restore the default-True behaviour for exactly the run that needs the
+        guard most."""
+        import inspect
+
+        import scripts.backtest_preseason as bp
+
+        src = inspect.getsource(bp)
+        assert '"bowl_teams": fetch_fbs_teams(conn, season),' in src
+        assert '"fbs": fetch_fbs_teams(conn, season) if fbs_only else None,' in src
+
+    def test_summarize_can_suppress_the_bowl_probability(self):
+        import numpy as np
+
+        from scripts.simulate_season import summarize
+
+        wins = np.array([7, 8, 6, 9])
+        assert summarize(wins, 12)["p_bowl_eligible"] is not None
+        assert summarize(wins, 12, bowl_eligible=False)["p_bowl_eligible"] is None

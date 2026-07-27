@@ -304,7 +304,11 @@ class TestMigration042Columns:
 
         block = FEATURE_ROWS_QUERY[FEATURE_ROWS_QUERY.index("-- MIGRATION 047") :]
         block = block[: block.index("AS draft_departures")]
-        assert block.count("EXISTS (") == 2, "each draft column needs its own source guard"
+        assert "COUNT(DISTINCT d.season)" in block, (
+            "the three-year window needs all three years, not any one"
+        )
+        assert ") = 3" in block, "the source guard must require exactly three drafts"
+        assert block.count("EXISTS (") == 1, "draft_departures is a single year, so EXISTS is exact"
         assert "d.team" not in block, (
             "the source-year guard must not be filtered to the team, or a real "
             "zero and an unloaded draft become indistinguishable again"

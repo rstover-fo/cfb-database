@@ -732,12 +732,50 @@ def fetch_refit_state(conn) -> tuple[int | None, list[int]]:
         row = cur.fetchone()[0]
         latest_finished = int(row) if row is not None else None
 
+        # A fit counts as EXISTING only if it was written under the CURRENT
+        # feature contract (PR #56 review, P1).
+        #
+        # Season recency alone is not staleness. Changing DIFF_FEATURE_COLUMNS
+        # invalidates every stored fit -- score_fitted.load_fit builds its
+        # coefficient vector by name lookup, so a fit written before a column
+        # was added raises KeyError rather than degrading. But a fit for the
+        # latest finished season already EXISTS by season, so --refit-if-stale
+        # returned [] and the daily workflow no-opped straight into that
+        # KeyError. Predictions and season simulation both stop, and the
+        # staleness check can never recover on its own because the season key
+        # is present.
+        #
+        # This file's own header says "there is no partial-rollout path", and
+        # until now that invariant was enforced by whoever remembered to run
+        # the retrain by hand. Comparing the frozen feature_means key set to
+        # TEAM_WEEK_SOURCE_COLUMNS makes it self-enforcing: a vector change
+        # drops every mismatched fit out of `existing`, so stale_score_seasons
+        # rebuilds the whole walk-forward ladder.
+        #
+        # Set EQUALITY, not containment -- migration 046 REMOVED hc_first_year
+        # from the vector, and a fit carrying a column the model no longer uses
+        # is just as wrong as one missing a column it does.
         cur.execute(
-            "SELECT DISTINCT train_through_season FROM features.model_metadata "
+            "SELECT train_through_season, feature_means FROM features.model_metadata "
             "WHERE model_version = %s",
             (MODEL_VERSION,),
         )
-        existing = [int(r[0]) for r in cur.fetchall()]
+        expected = set(TEAM_WEEK_SOURCE_COLUMNS)
+        existing = []
+        stale_by_contract = []
+        for season, means in cur.fetchall():
+            if isinstance(means, dict) and set(means) == expected:
+                existing.append(int(season))
+            else:
+                stale_by_contract.append(int(season))
+        if stale_by_contract:
+            logger.warning(
+                "%d stored fit(s) predate the current %d-feature contract and will be "
+                "retrained: train_through=%s",
+                len(stale_by_contract),
+                len(TEAM_WEEK_SOURCE_COLUMNS),
+                sorted(stale_by_contract),
+            )
     return latest_finished, existing
 
 

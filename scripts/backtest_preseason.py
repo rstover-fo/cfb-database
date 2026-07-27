@@ -764,6 +764,14 @@ def run_backtest(
                 "prior": dict(prior_actuals.get(season - 1, {})),
                 "scheduled": fetch_scheduled_counts(conn, season),
                 "fbs": fetch_fbs_teams(conn, season) if fbs_only else None,
+                # ALWAYS fetched, independent of scope (PR #56 review, P2).
+                # `fbs` above is the POPULATION filter and is None under
+                # --all-divisions; this is the BOWL-ELIGIBILITY set, which is a
+                # different question. Without it an --all-divisions run scored
+                # P(6+ wins) for every DIII team into bowl_brier and the bowl
+                # calibration buckets -- measuring a probability that
+                # api.season_outlook deliberately publishes as NULL outside FBS.
+                "bowl_teams": fetch_fbs_teams(conn, season),
             }
         )
         prior_residuals.extend(g["actual_margin"] - g["expected_home_margin"] for g in games)
@@ -851,6 +859,7 @@ def _simulate_pass(scored, n_sims: int, seed: int, strength_share: float) -> dic
             games, n_sims=n_sims, sigma=sigma, seed=seed, strength_share=strength_share
         )
         truth, scheduled, fbs = s["truth"], s["scheduled"], s["fbs"]
+        bowl_teams = s["bowl_teams"]
 
         rows = []
         for team, team_wins in sim["wins"].items():
@@ -859,7 +868,7 @@ def _simulate_pass(scored, n_sims: int, seed: int, strength_share: float) -> dic
                 continue
             if fbs is not None and team not in fbs:
                 continue
-            summ = summarize(team_wins, gs)
+            summ = summarize(team_wins, gs, bowl_eligible=team in bowl_teams)
             actual = truth["wins"].get(team, 0)
             prior = s["prior"]
             rows.append(

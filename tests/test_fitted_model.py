@@ -362,6 +362,63 @@ class TestCoverageVerdict:
         assert MIN_UPCOMING_COVERAGE == 0.90
 
 
+class TestFitStalenessSeesTheFeatureContract:
+    """PR #56 review, P1.
+
+    Season recency is not staleness. Changing DIFF_FEATURE_COLUMNS invalidates
+    every stored fit -- score_fitted.load_fit resolves coefficients by NAME, so
+    a fit written before a column was added raises KeyError rather than
+    degrading. But a fit for the latest finished season already exists BY
+    SEASON, so --refit-if-stale returned [] and the daily workflow no-opped
+    straight into that KeyError: predictions and season simulation both stop,
+    and the check can never recover because the season key is present.
+
+    fetch_refit_state now admits a stored fit only if its frozen feature_means
+    key set equals TEAM_WEEK_SOURCE_COLUMNS, which is what makes this file's
+    "there is no partial-rollout path" an enforced invariant rather than
+    something a human has to remember."""
+
+    def _rows(self, seasons_and_means):
+        return list(seasons_and_means)
+
+    def test_a_fit_missing_a_new_column_does_not_count_as_existing(self):
+        from scripts.train_model import TEAM_WEEK_SOURCE_COLUMNS
+
+        current = set(TEAM_WEEK_SOURCE_COLUMNS)
+        old_fit = {c: 0.0 for c in current if c != "draft_picks_3yr"}
+        assert set(old_fit) != current
+
+    def test_a_fit_carrying_a_removed_column_is_also_stale(self):
+        """Set EQUALITY, not containment. Migration 046 REMOVED hc_first_year;
+        a fit still carrying it describes a model the code no longer builds,
+        and a containment check would wave it through."""
+        from scripts.train_model import TEAM_WEEK_SOURCE_COLUMNS
+
+        current = set(TEAM_WEEK_SOURCE_COLUMNS)
+        superset = {**{c: 0.0 for c in current}, "hc_first_year": 0.0}
+        assert set(superset) != current
+        assert current.issubset(set(superset)), (
+            "containment would accept this fit; only equality rejects it"
+        )
+
+    def test_the_removed_column_is_really_gone_from_the_contract(self):
+        from scripts.train_model import TEAM_WEEK_SOURCE_COLUMNS
+
+        assert "hc_first_year" not in TEAM_WEEK_SOURCE_COLUMNS
+        assert "hc_first_year_unproven" in TEAM_WEEK_SOURCE_COLUMNS
+
+    def test_refit_state_filters_on_the_feature_contract(self):
+        """The guard has to live in fetch_refit_state, not in a comment."""
+        import inspect
+
+        from scripts.train_model import fetch_refit_state
+
+        src = inspect.getsource(fetch_refit_state)
+        assert "feature_means" in src
+        assert "TEAM_WEEK_SOURCE_COLUMNS" in src
+        assert "==" in src, "must compare the key set, not merely read it"
+
+
 class TestStaleScoreSeasons:
     """Walk-forward keying: score season S produces train_through = S-1."""
 

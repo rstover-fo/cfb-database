@@ -1274,11 +1274,15 @@ SELECT
     -- of whether this particular team appears in them. A zero-fill share is
     -- fine; a structural-absence share above a percent or two means the column
     -- is measuring the load state of the warehouse rather than football.
+    -- ALL THREE, not any (PR #56 review, P2): a window holding two of its
+    -- three drafts still yields an understated count, and an EXISTS-based
+    -- counter would report full coverage over it. Mirrors the same predicate
+    -- in build_features.py.
     COUNT(*) FILTER (
-        WHERE NOT EXISTS (
-            SELECT 1 FROM draft_out d
+        WHERE (
+            SELECT COUNT(DISTINCT d.season) FROM draft_out d
             WHERE d.season BETWEEN s.season - 3 AND s.season - 1
-        )
+        ) < 3
     ) AS draft_picks_3yr_no_source_year,
     COUNT(*) FILTER (
         WHERE NOT EXISTS (SELECT 1 FROM draft_out d WHERE d.season = s.season)

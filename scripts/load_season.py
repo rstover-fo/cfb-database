@@ -206,6 +206,39 @@ PRESEASON_ESTIMATED_CALLS = len(PRESEASON_STATS_RESOURCES) + 5 + 5
 # of magnitude (play_stats is per game, the rest are per year).
 RESOURCE_FILTERABLE = frozenset({"stats"})
 
+# Table/mart names that are easy to reach for but are not the dlt resource
+# name. `returning_production` is the MART; the resource behind it is
+# `player_returning`. Mapping the near-miss beats failing an operator who
+# asked for exactly the right data under the name the warehouse shows them.
+RESOURCE_ALIASES = {"stats": {"returning_production": "player_returning"}}
+
+
+def resolve_resource_names(source: str, names: list[str]) -> list[str]:
+    """Map warehouse-facing aliases onto dlt resource names."""
+    aliases = RESOURCE_ALIASES.get(source, {})
+    return [aliases.get(name, name) for name in names]
+
+
+def validate_resource_filters(filters: dict[str, list[str]]) -> None:
+    """Reject unknown resource names BEFORE any source runs.
+
+    The check already existed inside stats_source, but it fired mid-run: a
+    2026-07-28 backfill got through ratings and recruiting before failing on
+    `stats:returning_production` (the mart name, not the resource name), and
+    the valid-names hint was buried under dlt's load logs. Failing at parse
+    time puts it on the first line of output instead.
+    """
+    from src.pipelines.sources.stats import stats_source
+
+    known = {"stats": {r.name for r in stats_source(years=[2000]).resources.values()}}
+    for source, names in filters.items():
+        unknown = [n for n in names if n not in known.get(source, set())]
+        if unknown:
+            raise ValueError(
+                f"Unknown {source} resource(s): {unknown}. "
+                f"Valid: {sorted(known.get(source, set()))}"
+            )
+
 
 def parse_source_specs(specs: list[str]) -> tuple[list[str], dict[str, list[str]]]:
     """Split "source[:res+res]" specs into source names and resource filters.
@@ -227,7 +260,7 @@ def parse_source_specs(specs: list[str]) -> tuple[list[str], dict[str, list[str]
                 f"Source {name!r} does not support a resource filter "
                 f"(filterable: {sorted(RESOURCE_FILTERABLE)})"
             )
-        filters[name] = [r for r in resources.split("+") if r]
+        filters[name] = resolve_resource_names(name, [r for r in resources.split("+") if r])
     return names, filters
 
 
@@ -287,6 +320,12 @@ def load_season(
     # resources with "source:res+res" -- see parse_source_spec.
     requested = sources if sources else [s for s in SOURCE_ORDER if s != "rosters"]
     active_sources, resource_filters = parse_source_specs(requested)
+    if resource_filters:
+        try:
+            validate_resource_filters(resource_filters)
+        except ValueError as e:
+            logger.error(str(e))
+            return {"error": str(e)}
 
     # Validate sources
     valid = set(SOURCE_ORDER)

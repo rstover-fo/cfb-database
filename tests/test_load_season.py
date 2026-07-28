@@ -16,6 +16,7 @@ from scripts.load_season import (
     season_is_final,
     sources_to_skip,
     upcoming_schedule_season,
+    validate_resource_filters,
 )
 
 
@@ -316,3 +317,32 @@ class TestWinProbabilityBacklogIsBounded:
         body = inspect.getsource(run_metrics_wp_pipeline)
         assert '"missing": total_missing' in body
         assert '"loaded_this_run"' in body
+
+
+class TestResourceFilterValidation:
+    """A 2026-07-28 backfill passed `stats:returning_production` -- the MART
+    name -- and got through ratings and recruiting before stats failed, with
+    the valid-names hint buried under dlt's load logs."""
+
+    def test_the_mart_name_resolves_to_the_resource(self):
+        _, filters = parse_source_specs(["stats:returning_production"])
+        assert filters["stats"] == ["player_returning"]
+
+    def test_a_real_typo_still_fails(self):
+        with pytest.raises(ValueError, match="Unknown stats resource"):
+            validate_resource_filters({"stats": ["player_retuning"]})
+
+    def test_valid_names_are_listed_in_the_error(self):
+        """The whole point: the fix has to be readable off the error."""
+        with pytest.raises(ValueError, match="player_returning"):
+            validate_resource_filters({"stats": ["nope"]})
+
+    def test_known_resources_pass(self):
+        validate_resource_filters({"stats": ["player_returning", "play_stats"]})
+
+    def test_load_season_rejects_before_running_anything(self):
+        """It must fail at parse time, not after other sources have run."""
+        summary = load_season(season=2026, sources=["stats:nope"], dry_run=True)
+
+        assert "error" in summary
+        assert "Unknown stats resource" in summary["error"]

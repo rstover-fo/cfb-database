@@ -612,3 +612,43 @@ Per-family assertions the gate runs against the freshly-built `team_week`
   front-seven havoc splits remain untestable at 17.4% coverage.
 - **Feature vector size:** 15 features + unpenalized intercept; `market_*`
   excluded so `edge` stays meaningful.
+- **2026-07-28 in-season screen = all six drive/trajectory candidates REJECTED;
+  no migration shipped.** Pre-registered in `scripts/screen_week_features.py`
+  (run once, 2015–2025, n≈8k completed FBS-involved games): |partial_r| ≥ 0.08
+  AND BH-FDR q ≤ 0.10 against home margin, controlling home-minus-away
+  `elo_pregame` and `adj_epa_net` diffs. Candidates and results — `off_ppd`
+  +0.0700 (p=3.6e-10), `def_ppd_allowed` −0.0583 (p=1.8e-07), `off_field_pos`
+  −0.0547 (p=9.8e-07), `def_field_pos_allowed` +0.0469 (p=2.7e-05),
+  `form_net_epa_last4` +0.0163 (p=0.21, n=5,804), `vol_net_epa` −0.0058
+  (p=0.63, n=7,203). The four drive candidates are significant but all below
+  the pre-registered floor: drive efficiency is real signal the vector already
+  absorbs through Elo and adjusted EPA. The two trajectory candidates are
+  nulls — recent form and volatility add nothing to margin once
+  opponent-adjusted ratings are controlled. Consequence: `features.team_week`
+  gains no drive or trajectory columns; the planned volatility-modulated
+  calibration experiment was dropped with its substrate; do not re-test these
+  six without a new pre-registration that changes the frame or controls
+  (source plan: `docs/plans/2026-07-28-001-feat-starter-pack-model-features-plan.md`).
+  Disclosed deviation (cross-model review): the screen operationalized
+  trajectory maturity as week-row gates (>= 4 prior weeks for form, >= 2 for
+  volatility) rather than the substrate's `MIN_TEAM_PLAYS = 150` play-count
+  gate. For form the week gate is effectively stricter (4 games is ~260+
+  offensive plays); for volatility it admits some 2-game teams the substrate
+  would NULL. Not verdict-relevant — both trajectory partials sit an order of
+  magnitude below the 0.08 floor — but a future re-registration should carry
+  play counts through the weekly aggregates and gate on them.
+  **v2 amendment (pre-registered 2026-07-28, before any v2 run, in response
+  to the PR #59 Codex review):** the v1 controls (Elo + `adj_epa_net` diffs)
+  under-implement the plan's stated "current model's expected margin," and
+  omitted-control suppression means a sub-floor v1 candidate could in
+  principle clear the floor once the full prediction is held constant
+  (`off_ppd` sits at 0.070 vs the 0.08 floor). v2: same floor and BH-FDR,
+  run once, first-order partial correlation controlling for fitted_v1's
+  frozen walk-forward expected margin rebuilt from stored vintages
+  (`train_through_season == season - 1`), window auto-restricted to seasons
+  with a stored prior vintage (`--control-mode model-margin`). Final
+  retirement of the six candidates is keyed to the v2 confirmation run
+  (post-merge, via the model-experiments workflow): if every candidate stays
+  below the floor, the v1 rejections stand as final; if any clears it, that
+  candidate's rejection is void and re-enters the plan's evaluation path
+  (refit + no-regression gate) — a v2 pass alone does not ship a column.

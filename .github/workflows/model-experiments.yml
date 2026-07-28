@@ -1,0 +1,68 @@
+name: Model Feature Experiments
+
+# Manual runner for model-substrate work that needs warehouse credentials
+# (CI holds the session-pooler secret; local checkouts may not).
+#
+# History: the 2026-07-28 starter-pack candidate screen ran here (via a
+# temporary PR-label trigger, since removed) and rejected all six
+# drive/trajectory candidates — verdicts recorded in
+# docs/brainstorms/2026-07-21-team-week-feature-design.md ("Decisions made").
+# The screen is pre-registered run-once: do not re-run it against the same
+# frame without a new pre-registration.
+#
+# workflow_dispatch only: no PR-event trigger, so unmerged branch code never
+# runs with the database secret.
+#
+# Requires repo secret:
+#   SUPABASE_DB_URL - Supabase SESSION pooler URL
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "Which step to run"
+        required: true
+        type: choice
+        options:
+          - screen            # pre-registered candidate screen v1 (already run; see header)
+          - screen-v2         # v2 amendment: control = frozen walk-forward model margin (run-once)
+          - backfill          # full features.team_week rebuild (2015+)
+
+concurrency:
+  group: model-experiments
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+jobs:
+  run:
+    name: Run ${{ inputs.task }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[compute]"
+      - name: Set dlt destination credentials
+        # dlt requires the postgres:// scheme (see .dlt/secrets.toml.example)
+        run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
+
+      - name: Screen candidates (read-only)
+        if: inputs.task == 'screen'
+        run: python scripts/screen_week_features.py
+
+      - name: Screen candidates v2 — model-margin control (read-only)
+        if: inputs.task == 'screen-v2'
+        run: python scripts/screen_week_features.py --control-mode model-margin
+
+      - name: Full feature substrate rebuild
+        if: inputs.task == 'backfill'
+        run: python scripts/build_features.py --from 2015

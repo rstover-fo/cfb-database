@@ -16,9 +16,14 @@ import math
 import sys
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
+from statistics import pstdev
 from typing import Any
 
-from scripts.build_features import compute_week_index, leak_free_week_index
+from scripts.build_features import (
+    POSTSEASON_WEEK_OFFSET,
+    compute_week_index,
+    leak_free_week_index,
+)
 from scripts.screen_preseason_features import (
     FDR_ALPHA,
     MIN_PARTIAL_R,
@@ -66,13 +71,14 @@ ELO_SOURCE_COLUMN = _diff_source_column("d_elo")
 # still writes the exact net column, so use that confirmed warehouse name and
 # retain this mismatch as an explicit module-level fact rather than silently
 # selecting one of the two component columns.
-_ADJ_EPA_NET_ENTRIES = [
-    column
-    for name, column in DIFF_FEATURE_COLUMNS
-    if name in {"d_adj_epa_net", "adj_epa_net"} or column == "adj_epa_net"
-]
-ADJ_EPA_NET_SOURCE_COLUMN = _ADJ_EPA_NET_ENTRIES[0] if _ADJ_EPA_NET_ENTRIES else "adj_epa_net"
-ADJ_EPA_NET_ENTRY_MISSING_FROM_DIFF_CONTRACT = not bool(_ADJ_EPA_NET_ENTRIES)
+ADJ_EPA_NET_SOURCE_COLUMN = next(
+    (
+        column
+        for name, column in DIFF_FEATURE_COLUMNS
+        if name in {"d_adj_epa_net", "adj_epa_net"} or column == "adj_epa_net"
+    ),
+    "adj_epa_net",
+)
 
 
 def _finite(value: Any) -> bool:
@@ -97,26 +103,17 @@ def drive_points(drive: Mapping[str, Any]) -> float | None:
 def _prior_rows(
     rows: Iterable[Mapping[str, Any]],
     as_of_week_index: int,
-    season: int | None = None,
-    sorted_by_week_index: bool = False,
 ) -> list[Mapping[str, Any]]:
-    """Filter rows to the same season and strict pregame as-of boundary.
-
-    Grouped buckets are sorted, so they can stop at the first current/future
-    row. Raw helper callers leave the flag false and are scanned completely.
-    """
+    """Filter a sorted team bucket to the strict pregame as-of boundary."""
     prior: list[Mapping[str, Any]] = []
     for row in rows:
         week_index = row.get("week_index")
         if week_index is None:
             continue
         week_index = int(week_index)
-        if sorted_by_week_index and not leak_free_week_index(week_index, as_of_week_index):
+        if not leak_free_week_index(week_index, as_of_week_index):
             break
-        if season is not None and row.get("season") != season:
-            continue
-        if leak_free_week_index(week_index, as_of_week_index):
-            prior.append(row)
+        prior.append(row)
     return prior
 
 
@@ -198,29 +195,9 @@ def aggregate_bucketed_drive_features(
 ) -> dict[str, float | None]:
     """Aggregate only the two pre-grouped drive buckets for one team."""
     return _aggregate_drive_sides(
-        _prior_rows(offense_drives, as_of_week_index, sorted_by_week_index=True),
-        _prior_rows(defense_drives, as_of_week_index, sorted_by_week_index=True),
+        _prior_rows(offense_drives, as_of_week_index),
+        _prior_rows(defense_drives, as_of_week_index),
     )
-
-
-def aggregate_drive_features(
-    team: str,
-    as_of_week_index: int,
-    drives: Iterable[Mapping[str, Any]],
-    season: int | None = None,
-) -> dict[str, float | None]:
-    """Aggregate the four drive candidates for one team before a week.
-
-    The same drive can contribute to the offense and defense aggregates, but
-    each side is counted only once in its corresponding points-per-drive and
-    field-position mean. Missing score or field-position values are omitted
-    from that metric; if the team has no prior drive rows, all four values are
-    ``None`` as required by the maturity rule.
-    """
-    prior = _prior_rows(drives, as_of_week_index, season=season)
-    offense_drives = [row for row in prior if row.get("offense") == team]
-    defense_drives = [row for row in prior if row.get("defense") == team]
-    return _aggregate_drive_sides(offense_drives, defense_drives)
 
 
 def _form_and_volatility_from_prior(
@@ -235,27 +212,9 @@ def _form_and_volatility_from_prior(
 
     volatility = None
     if len(values) >= 2:
-        mean = sum(values) / len(values)
-        volatility = math.sqrt(sum((value - mean) ** 2 for value in values) / len(values))
+        volatility = pstdev(values)
 
     return form, volatility
-
-
-def compute_form_and_volatility(
-    weekly_net_epa: Iterable[Mapping[str, Any]],
-    as_of_week_index: int,
-) -> tuple[float | None, float | None]:
-    """Return last-four-minus-season-mean form and population volatility.
-
-    The input is already at ``(team, season, week_index)`` grain. The strict
-    ``week_index < as_of_week_index`` filter is applied here as a second line
-    of defense so callers cannot accidentally include the current game.
-    """
-    prior = [
-        row for row in _prior_rows(weekly_net_epa, as_of_week_index) if _finite(row.get("net_epa"))
-    ]
-    prior.sort(key=lambda row: int(row["week_index"]))
-    return _form_and_volatility_from_prior(prior)
 
 
 def compute_bucketed_form_and_volatility(
@@ -264,33 +223,9 @@ def compute_bucketed_form_and_volatility(
 ) -> tuple[float | None, float | None]:
     """Calculate EPA candidates from a sorted, team-specific bucket."""
     prior = [
-        row
-        for row in _prior_rows(
-            weekly_net_epa,
-            as_of_week_index,
-            sorted_by_week_index=True,
-        )
-        if _finite(row.get("net_epa"))
+        row for row in _prior_rows(weekly_net_epa, as_of_week_index) if _finite(row.get("net_epa"))
     ]
     return _form_and_volatility_from_prior(prior)
-
-
-def compute_as_of_features(
-    team: str,
-    as_of_week_index: int,
-    drives: Iterable[Mapping[str, Any]],
-    weekly_net_epa: Iterable[Mapping[str, Any]],
-    season: int | None = None,
-) -> dict[str, float | None]:
-    """Build all six candidate values for one team-week as-of row."""
-    result = aggregate_drive_features(team, as_of_week_index, drives, season=season)
-    form, volatility = compute_form_and_volatility(
-        [row for row in weekly_net_epa if season is None or row.get("season") == season],
-        as_of_week_index,
-    )
-    result["form_net_epa_last4"] = form
-    result["vol_net_epa"] = volatility
-    return result
 
 
 def compute_bucketed_as_of_features(
@@ -440,7 +375,7 @@ GAMES_QUERY = f"""
 
 DRIVES_QUERY = f"""
     SELECT g.season, d.game_id, d.offense, d.defense,
-           CASE WHEN g.season_type = 'postseason' THEN 100 + g.week ELSE g.week END
+           CASE WHEN g.season_type = 'postseason' THEN {POSTSEASON_WEEK_OFFSET} + g.week ELSE g.week END
                AS week_index,
            d.start_yards_to_goal, d.start_offense_score, d.end_offense_score
     FROM core.drives d
@@ -455,7 +390,7 @@ DRIVES_QUERY = f"""
 EPA_QUERY = f"""
     WITH plays_wi AS (
         SELECT g.season, pe.offense, pe.defense, pe.epa,
-               CASE WHEN g.season_type = 'postseason' THEN 100 + g.week ELSE g.week END
+               CASE WHEN g.season_type = 'postseason' THEN {POSTSEASON_WEEK_OFFSET} + g.week ELSE g.week END
                    AS week_index
         FROM marts.play_epa pe
         JOIN core.games g ON g.id = pe.game_id

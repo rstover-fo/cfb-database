@@ -6,9 +6,10 @@ import pytest
 
 from scripts.screen_week_features import (
     CANDIDATE_COLUMNS,
+    aggregate_bucketed_drive_features,
     apply_verdicts,
-    compute_as_of_features,
-    compute_form_and_volatility,
+    compute_bucketed_as_of_features,
+    compute_bucketed_form_and_volatility,
     drive_points,
     group_screen_inputs,
 )
@@ -18,7 +19,7 @@ class TestFormAndVolatility:
     def test_matches_hand_computed_population_values(self):
         weekly_net_epa = [{"week_index": week, "net_epa": float(week)} for week in range(1, 7)]
 
-        form, volatility = compute_form_and_volatility(weekly_net_epa, as_of_week_index=7)
+        form, volatility = compute_bucketed_form_and_volatility(weekly_net_epa, as_of_week_index=7)
 
         # Season mean = 3.5; last-four mean = 4.5; population variance = 35/12.
         assert form == pytest.approx(1.0)
@@ -50,7 +51,7 @@ class TestAsOfBoundaries:
             {"week_index": 2, "net_epa": 9.0},
         ]
 
-        features = compute_as_of_features("A", 2, drives, weekly_net_epa)
+        features = compute_bucketed_as_of_features(2, drives, [], weekly_net_epa)
 
         assert features["off_ppd"] == pytest.approx(7.0)
         assert features["off_field_pos"] == pytest.approx(80.0)
@@ -61,11 +62,11 @@ class TestAsOfBoundaries:
         three_prior_weeks = [{"week_index": week, "net_epa": float(week)} for week in range(1, 4)]
         one_prior_week = [{"week_index": 1, "net_epa": 2.0}]
 
-        form, volatility = compute_form_and_volatility(three_prior_weeks, 4)
+        form, volatility = compute_bucketed_form_and_volatility(three_prior_weeks, 4)
         assert form is None
         assert volatility == pytest.approx(0.8164965809)
 
-        form, volatility = compute_form_and_volatility(one_prior_week, 2)
+        form, volatility = compute_bucketed_form_and_volatility(one_prior_week, 2)
         assert form is None
         assert volatility is None
 
@@ -122,6 +123,7 @@ class TestDrivePoints:
                 "week_index": 1,
                 "offense": "A",
                 "defense": "B",
+                "drive_result": "Defensive Touchdown",
                 "start_offense_score": 20,
                 "end_offense_score": 26,
                 "start_yards_to_goal": 70,
@@ -136,7 +138,7 @@ class TestDrivePoints:
             },
         ]
 
-        features = compute_as_of_features("A", 2, drives, [])
+        features = aggregate_bucketed_drive_features(2, drives, [])
 
         assert features["off_ppd"] == pytest.approx(4.5)
         assert features["off_field_pos"] == pytest.approx(60.0)

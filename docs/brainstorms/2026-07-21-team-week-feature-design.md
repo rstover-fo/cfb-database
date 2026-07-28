@@ -652,3 +652,19 @@ Per-family assertions the gate runs against the freshly-built `team_week`
   below the floor, the v1 rejections stand as final; if any clears it, that
   candidate's rejection is void and re-enters the plan's evaluation path
   (refit + no-regression gate) — a v2 pass alone does not ship a column.
+- **2026-07-28 v2 confirmation run (workflow run 30409267925, window
+  2018-2025, model-margin control): FIVE rejections final, `off_ppd` SHIP.**
+  Results — `off_ppd` **+0.0901** (p=5.7e-12, BH pass, floor pass → SHIP),
+  `def_ppd_allowed` −0.0729 (p=2.6e-08, below floor), `off_field_pos`
+  −0.0272 (p=0.039), `def_field_pos_allowed` +0.0208 (p=0.11),
+  `form_net_epa_last4` −0.0041 (p=0.79, n=4,184), `vol_net_epa` +0.0013
+  (p=0.92, n=5,205). The v1→v2 movement on `off_ppd` (0.070 → 0.090) is the
+  suppression case the v2 amendment anticipated: holding the full frozen
+  prediction constant sharpens the drive-efficiency signal. Consequence:
+  `def_ppd_allowed`, `off_field_pos`, `def_field_pos_allowed`,
+  `form_net_epa_last4`, and `vol_net_epa` are **retired — do not re-test
+  without a new pre-registration**. `off_ppd` is **screened-and-shipped into
+  the evaluation path only**: it earns a `team_week` column and a
+  walk-forward refit comparison under the source plan's strict no-regression
+  gate (held-out MAE improves, Brier and ATS hold); it enters the fitted_v1
+  vector only if that gate passes.

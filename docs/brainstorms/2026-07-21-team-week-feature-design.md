@@ -629,3 +629,11 @@ Per-family assertions the gate runs against the freshly-built `team_week`
   calibration experiment was dropped with its substrate; do not re-test these
   six without a new pre-registration that changes the frame or controls
   (source plan: `docs/plans/2026-07-28-001-feat-starter-pack-model-features-plan.md`).
+  Disclosed deviation (cross-model review): the screen operationalized
+  trajectory maturity as week-row gates (>= 4 prior weeks for form, >= 2 for
+  volatility) rather than the substrate's `MIN_TEAM_PLAYS = 150` play-count
+  gate. For form the week gate is effectively stricter (4 games is ~260+
+  offensive plays); for volatility it admits some 2-game teams the substrate
+  would NULL. Not verdict-relevant — both trajectory partials sit an order of
+  magnitude below the 0.08 floor — but a future re-registration should carry
+  play counts through the weekly aggregates and gate on them.

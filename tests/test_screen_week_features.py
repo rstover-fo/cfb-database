@@ -6,12 +6,17 @@ import pytest
 
 from scripts.screen_week_features import (
     CANDIDATE_COLUMNS,
+    CONTROL_ADJ_EPA_NET,
+    CONTROL_ELO,
     aggregate_bucketed_drive_features,
     apply_verdicts,
+    assert_screen_coverage,
+    build_screen_frame,
     compute_bucketed_as_of_features,
     compute_bucketed_form_and_volatility,
     drive_points,
     group_screen_inputs,
+    screen_frame,
 )
 
 
@@ -179,3 +184,120 @@ class TestVerdicts:
         assert by_name["bh_fail"]["floor_pass"] is True
         assert by_name["bh_fail"]["bh_pass"] is False
         assert by_name["bh_fail"]["verdict"] == "REJECT"
+
+    def test_ship_verdict_when_floor_and_bh_both_pass(self):
+        raw_results = [
+            {
+                "candidate": "strong",
+                "n_games": 1000,
+                "partial_r": 0.20,
+                "p_value": 1e-9,
+            },
+            {
+                "candidate": "weak",
+                "n_games": 1000,
+                "partial_r": 0.01,
+                "p_value": 0.90,
+            },
+        ]
+
+        by_name = {row["candidate"]: row for row in apply_verdicts(raw_results)}
+
+        assert by_name["strong"]["floor_pass"] is True
+        assert by_name["strong"]["bh_pass"] is True
+        assert by_name["strong"]["verdict"] == "SHIP"
+        assert by_name["weak"]["verdict"] == "REJECT"
+
+
+def _game(game_id, home, away, week, home_points=28, away_points=21):
+    return {
+        "game_id": game_id,
+        "season": 2024,
+        "season_type": "regular",
+        "week": week,
+        "home_team": home,
+        "away_team": away,
+        "home_points": home_points,
+        "away_points": away_points,
+        "completed": True,
+        "home_elo_pregame": 1600.0,
+        "away_elo_pregame": 1500.0,
+        "home_adj_epa_net": 0.20,
+        "away_adj_epa_net": 0.05,
+    }
+
+
+class TestBuildScreenFrame:
+    def test_wires_margin_controls_and_candidate_diffs(self):
+        games = [_game(1, "A", "B", week=2)]
+        drives = [
+            {
+                "season": 2024,
+                "week_index": 1,
+                "offense": "A",
+                "defense": "B",
+                "start_offense_score": 0,
+                "end_offense_score": 7,
+                "start_yards_to_goal": 80,
+            },
+            {
+                "season": 2024,
+                "week_index": 1,
+                "offense": "B",
+                "defense": "A",
+                "start_offense_score": 0,
+                "end_offense_score": 3,
+                "start_yards_to_goal": 60,
+            },
+        ]
+
+        frame = build_screen_frame(games, drives, [])
+
+        assert len(frame) == 1
+        row = frame[0]
+        assert row["home_margin"] == pytest.approx(7.0)
+        assert row[CONTROL_ELO] == pytest.approx(100.0)
+        assert row[CONTROL_ADJ_EPA_NET] == pytest.approx(0.15)
+        # Home offense scored 7/drive, away offense 3/drive.
+        assert row["off_ppd"] == pytest.approx(4.0)
+        # Home defense allowed 3/drive, away defense allowed 7/drive.
+        assert row["def_ppd_allowed"] == pytest.approx(-4.0)
+        # No weekly EPA rows: trajectory diffs stay None.
+        assert row["form_net_epa_last4"] is None
+        assert row["vol_net_epa"] is None
+
+    def test_excludes_incomplete_and_scoreless_games(self):
+        games = [
+            _game(1, "A", "B", week=2) | {"completed": False},
+            _game(2, "A", "B", week=3, home_points=None),
+        ]
+
+        assert build_screen_frame(games, [], []) == []
+
+
+class TestScreenFrame:
+    def test_small_sample_rejects_without_p_value(self):
+        games = [_game(1, "A", "B", week=2)]
+        results = screen_frame(build_screen_frame(games, [], []))
+
+        by_name = {row["candidate"]: row for row in results}
+        assert set(by_name) == set(CANDIDATE_COLUMNS)
+        for row in results:
+            assert row["p_value"] is None
+            assert row["partial_r"] == pytest.approx(0.0)
+            assert row["verdict"] == "REJECT"
+
+
+class TestCoverageFloors:
+    def test_empty_frame_is_untestable_not_rejected(self):
+        with pytest.raises(RuntimeError, match="UNTESTABLE"):
+            assert_screen_coverage([], screen_frame([]))
+
+    def test_thin_candidate_sample_is_untestable(self):
+        frame = [{"home_margin": 1.0}] * 2000
+        results = [
+            {"candidate": name, "n_games": 0, "partial_r": 0.0, "p_value": None}
+            for name in CANDIDATE_COLUMNS
+        ]
+        with pytest.raises(RuntimeError, match="UNTESTABLE"):
+            assert_screen_coverage(frame, results)

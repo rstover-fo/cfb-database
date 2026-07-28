@@ -3,11 +3,15 @@ name: Model Feature Experiments
 # Manual runner for model-substrate work that needs warehouse credentials
 # (CI holds the session-pooler secret; local checkouts may not).
 #
-# History: the 2026-07-28 starter-pack candidate screen ran here and rejected
-# all six drive/trajectory candidates — verdicts recorded in
+# History: the 2026-07-28 starter-pack candidate screen ran here (via a
+# temporary PR-label trigger, since removed) and rejected all six
+# drive/trajectory candidates — verdicts recorded in
 # docs/brainstorms/2026-07-21-team-week-feature-design.md ("Decisions made").
 # The screen is pre-registered run-once: do not re-run it against the same
 # frame without a new pre-registration.
+#
+# workflow_dispatch only: no PR-event trigger, so unmerged branch code never
+# runs with the database secret.
 #
 # Requires repo secret:
 #   SUPABASE_DB_URL - Supabase SESSION pooler URL
@@ -21,11 +25,7 @@ on:
         type: choice
         options:
           - screen            # pre-registered candidate screen (run-once; see header)
-          - backfill          # full features.team_week rebuild
-  # workflow_dispatch only resolves on the default branch; while this file
-  # lives on a feature branch, trigger via PR labels run-screen / run-backfill.
-  pull_request:
-    types: [labeled]
+          - backfill          # full features.team_week rebuild (2015+)
 
 concurrency:
   group: model-experiments
@@ -37,16 +37,10 @@ permissions:
 env:
   PYTHON_VERSION: "3.11"
   SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-  TASK: >-
-    ${{ inputs.task
-        || (github.event.label.name == 'run-screen' && 'screen')
-        || (github.event.label.name == 'run-backfill' && 'backfill')
-        || '' }}
 
 jobs:
   run:
-    name: Run experiment step
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.label.name, 'run-')
+    name: Run ${{ inputs.task }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -61,9 +55,9 @@ jobs:
         run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
 
       - name: Screen candidates (read-only)
-        if: env.TASK == 'screen'
+        if: inputs.task == 'screen'
         run: python scripts/screen_week_features.py
 
       - name: Full feature substrate rebuild
-        if: env.TASK == 'backfill'
-        run: python scripts/build_features.py
+        if: inputs.task == 'backfill'
+        run: python scripts/build_features.py --from 2015

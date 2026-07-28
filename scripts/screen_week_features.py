@@ -1,14 +1,27 @@
 #!/usr/bin/env python3
-# ruff: noqa: E501
 """Screen candidate in-season features for ``features.team_week``.
 
-Pre-registration: decision rule is |partial_r| >= 0.08 AND Benjamini-Hochberg FDR q = 0.10 across the six candidates, run once; outcome variable is home margin (home points minus away points); controls are the model's two dominant existing features as home-minus-away diffs — Elo pregame and adjusted-EPA net — read from features.team_week (resolve the exact column names from DIFF_FEATURE_COLUMNS in scripts/train_model.py: the elo entry and the adjusted-EPA net entry).
+Pre-registration: decision rule is |partial_r| >= 0.08 AND Benjamini-Hochberg
+FDR q = 0.10 across the six candidates, run once; outcome variable is home
+margin (home points minus away points); controls are the model's two dominant
+existing features as home-minus-away diffs — Elo pregame (resolved from the
+``d_elo`` entry in ``DIFF_FEATURE_COLUMNS``) and the substrate's
+``adj_epa_net`` column read directly from ``features.team_week`` (the deployed
+model carries adjusted EPA as separate off/def diffs, so the net column has no
+``DIFF_FEATURE_COLUMNS`` entry).
+
+Trajectory maturity is operationalized as week-row gates (>= 4 prior weeks for
+form, >= 2 for volatility), not the substrate's ``MIN_TEAM_PLAYS`` play-count
+gate — see the 2026-07-28 entry in the team-week design doc for the disclosed
+difference.
 
 The screen is read-only. Candidate values are computed from completed FBS-
 involved games and are strictly as-of: a team-week keyed at ``week_index=W``
 can use only rows with ``week_index < W`` in the same season. The SQL query
 does the warehouse scans and week bucketing; the pure helpers below keep the
 leak boundary and the small-sample rules directly testable without a database.
+A run whose frame or per-candidate sample falls below the coverage floors
+fails loudly as UNTESTABLE rather than reporting rejections.
 """
 
 import argparse
@@ -65,20 +78,12 @@ def _diff_source_column(feature_name: str) -> str:
 
 ELO_SOURCE_COLUMN = _diff_source_column("d_elo")
 
-# The current train_model.py intentionally excludes adj_epa_net from
-# DIFF_FEATURE_COLUMNS because the deployed model uses adj_epa_off and
-# adj_epa_def separately. The feature-table contract in build_features.py
-# still writes the exact net column, so use that confirmed warehouse name and
-# retain this mismatch as an explicit module-level fact rather than silently
-# selecting one of the two component columns.
-ADJ_EPA_NET_SOURCE_COLUMN = next(
-    (
-        column
-        for name, column in DIFF_FEATURE_COLUMNS
-        if name in {"d_adj_epa_net", "adj_epa_net"} or column == "adj_epa_net"
-    ),
-    "adj_epa_net",
-)
+# train_model.py intentionally has no adj_epa_net entry in
+# DIFF_FEATURE_COLUMNS: the deployed model carries adjusted EPA as separate
+# adj_epa_off/adj_epa_def diffs. The feature-table contract in
+# build_features.py still writes the exact net column, so the control reads
+# that warehouse column by its literal name.
+ADJ_EPA_NET_SOURCE_COLUMN = "adj_epa_net"
 
 
 def _finite(value: Any) -> bool:
@@ -375,7 +380,8 @@ GAMES_QUERY = f"""
 
 DRIVES_QUERY = f"""
     SELECT g.season, d.game_id, d.offense, d.defense,
-           CASE WHEN g.season_type = 'postseason' THEN {POSTSEASON_WEEK_OFFSET} + g.week ELSE g.week END
+           CASE WHEN g.season_type = 'postseason'
+                    THEN {POSTSEASON_WEEK_OFFSET} + g.week ELSE g.week END
                AS week_index,
            d.start_yards_to_goal, d.start_offense_score, d.end_offense_score
     FROM core.drives d
@@ -390,7 +396,8 @@ DRIVES_QUERY = f"""
 EPA_QUERY = f"""
     WITH plays_wi AS (
         SELECT g.season, pe.offense, pe.defense, pe.epa,
-               CASE WHEN g.season_type = 'postseason' THEN {POSTSEASON_WEEK_OFFSET} + g.week ELSE g.week END
+               CASE WHEN g.season_type = 'postseason'
+                    THEN {POSTSEASON_WEEK_OFFSET} + g.week ELSE g.week END
                    AS week_index
         FROM marts.play_epa pe
         JOIN core.games g ON g.id = pe.game_id
@@ -482,6 +489,30 @@ def report(results: Iterable[Mapping[str, Any]]) -> None:
         )
 
 
+# Coverage floors: below these, a run is UNTESTABLE, never a rejection. A
+# missing or partially built features.team_week would otherwise drain the
+# frame and let six hollow REJECT verdicts print on a green exit.
+MIN_FRAME_GAMES = 1000
+MIN_CANDIDATE_GAMES = 500
+
+
+def assert_screen_coverage(frame: list[dict[str, Any]], results: list[dict[str, Any]]) -> None:
+    """Fail loudly when the frame or any candidate sample is too thin to screen."""
+    if len(frame) < MIN_FRAME_GAMES:
+        raise RuntimeError(
+            f"UNTESTABLE: screen frame has {len(frame)} games "
+            f"(< {MIN_FRAME_GAMES}); check features.team_week and core.games "
+            "coverage before trusting any verdict"
+        )
+    thin = [r for r in results if r["n_games"] < MIN_CANDIDATE_GAMES]
+    if thin:
+        names = ", ".join(f"{r['candidate']} (n={r['n_games']})" for r in thin)
+        raise RuntimeError(
+            f"UNTESTABLE: candidate sample(s) below {MIN_CANDIDATE_GAMES} games: {names}; "
+            "verdicts withheld"
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Screen in-season team-week features")
     parser.add_argument("--start-season", type=int, default=DEFAULT_START_SEASON)
@@ -498,7 +529,9 @@ def main() -> None:
             conn, args.start_season, args.end_season
         )
         frame = build_screen_frame(games, drives, weekly_net_epa)
-        report(screen_frame(frame))
+        results = screen_frame(frame)
+        assert_screen_coverage(frame, results)
+        report(results)
     finally:
         conn.close()
 

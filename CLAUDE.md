@@ -83,14 +83,34 @@ open/update a rolling GitHub issue.
 `load_season.py` skips sources whose data cannot change once a season is complete
 (`IMMUTABLE_ONCE_FINAL` -- plays, game_stats, ratings, recruiting, draft, ...).
 Before this, every off-season run re-ingested the entire finished previous season
--- `get_current_season()` returns `year - 1` until August -- and `plays` fans out
-to one `/plays/stats` call **per game**, roughly 2,000 calls a day against the
-then-75,000/month budget for immutable data. That is what exhausted the quota behind
-the 2026-07-25 three-hour rate-limited run. `reference` and `metrics_wp` are
-never skipped (cheap / already self-limiting), and the upcoming-schedule refresh
-is unaffected. An explicit `--season` or `--sources` disables the skip entirely,
-so a backfill is never silently turned into a no-op; `--no-skip-final` forces it
-off on the daily path.
+-- `get_current_season()` returns `year - 1` until August -- roughly 2,000 calls a
+day against the then-75,000/month budget for immutable data. That is what exhausted
+the quota behind the 2026-07-25 three-hour rate-limited run. `reference` and
+`metrics_wp` are never skipped (cheap / already self-limiting), and the
+upcoming-schedule refresh is unaffected. An explicit `--season` or `--sources`
+disables the skip entirely, so a backfill is never silently turned into a no-op;
+`--no-skip-final` forces it off on the daily path.
+
+**Where the per-game fan-out actually lives:** `stats`, not `plays`. `plays` is
+year+week (16 calls/season). The `stats` source's `play_stats` resource issues one
+`/plays/stats` call **per game** (~1,640/season) and `rosters` one per team, which
+is the cost that exhausted the quota. Because the source is not uniformly priced --
+its other seven resources are one call per year -- anything running daily must name
+resources rather than take the whole source: `--sources stats:player_returning`
+(one call), and `PRESEASON_STATS_RESOURCES` in `load_season.py` for the automated
+path.
+
+**Upcoming-season preseason inputs:** off-season the daily run targets `year - 1`,
+so the finished-season skip drops every immutable source for it -- correct, but it
+left the *upcoming* season with no ingest beyond the games/betting schedule refresh.
+Returning production, preseason SP+, talent and team recruiting are published
+progressively through spring/summer and were never requested at all (2026 had a
+schedule loaded since spring and zero rows in all four on 2026-07-28). The
+upcoming-season block now also refreshes `PRESEASON_INPUT_SOURCES` (~11 calls/day);
+an unpublished endpoint returns empty and merges nothing, so it self-heals as each
+lands. `rosters` stays out (one call per team, and it firms up in August).
+`scripts/probe_offseason_availability.py` distinguishes "never asked" from "CFBD
+has not published it yet".
 
 **Season targeting:** the compute chain's `--incremental` resolves target seasons from
 `core.games` via `get_projection_seasons()` -- the most recent season with completed games

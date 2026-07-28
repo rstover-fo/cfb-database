@@ -7,6 +7,7 @@ Usage:
     python scripts/load_season.py                                   # Load current season
     python scripts/load_season.py --season 2025                     # Load everything for 2025
     python scripts/load_season.py --season 2025 --sources games,stats  # Load specific sources
+    python scripts/load_season.py --season 2026 --sources stats:player_returning  # One resource
     python scripts/load_season.py --season 2025 --dry-run           # Show what would run
     python scripts/load_season.py --season 2025 --skip-refresh      # Load data, skip mart refresh
     python scripts/load_season.py --season 2025 --weekly            # game_stats week-by-week
@@ -200,6 +201,36 @@ PRESEASON_INPUT_SOURCES = ("stats", "ratings", "recruiting")
 PRESEASON_ESTIMATED_CALLS = len(PRESEASON_STATS_RESOURCES) + 5 + 5
 
 
+# Sources whose runner accepts a resource filter. Only `stats` needs one so
+# far -- it is the one source whose resources differ in cost by three orders
+# of magnitude (play_stats is per game, the rest are per year).
+RESOURCE_FILTERABLE = frozenset({"stats"})
+
+
+def parse_source_specs(specs: list[str]) -> tuple[list[str], dict[str, list[str]]]:
+    """Split "source[:res+res]" specs into source names and resource filters.
+
+    `--sources stats:player_returning` loads returning production for a season
+    without paying for play_stats' one-request-per-game fan-out -- the
+    difference between ~1 call and ~1,640 for a season with a full schedule.
+    Pure, so the parse is testable without a DB or an API key.
+    """
+    names: list[str] = []
+    filters: dict[str, list[str]] = {}
+    for spec in specs:
+        name, _, resources = spec.partition(":")
+        names.append(name)
+        if not resources:
+            continue
+        if name not in RESOURCE_FILTERABLE:
+            raise ValueError(
+                f"Source {name!r} does not support a resource filter "
+                f"(filterable: {sorted(RESOURCE_FILTERABLE)})"
+            )
+        filters[name] = [r for r in resources.split("+") if r]
+    return names, filters
+
+
 def upcoming_schedule_season(season: int, month: int) -> int | None:
     """Return the next season to schedule-refresh during the off-season.
 
@@ -252,8 +283,10 @@ def load_season(
     )
     from src.pipelines.utils.rate_limiter import get_rate_limiter
 
-    # Determine which sources to run
-    active_sources = sources if sources else [s for s in SOURCE_ORDER if s != "rosters"]
+    # Determine which sources to run. A source may be narrowed to specific
+    # resources with "source:res+res" -- see parse_source_spec.
+    requested = sources if sources else [s for s in SOURCE_ORDER if s != "rosters"]
+    active_sources, resource_filters = parse_source_specs(requested)
 
     # Validate sources
     valid = set(SOURCE_ORDER)
@@ -293,8 +326,13 @@ def load_season(
         elif final:
             logger.info("Season %d is finished but no immutable source was selected", season)
 
-    # Estimate API calls
-    total_est = sum(ESTIMATED_CALLS.get(s, 50) for s in active_sources)
+    # Estimate API calls. A resource-filtered source costs a call per named
+    # resource per season, not the whole source's per-game fan-out.
+    def estimate(src: str) -> int:
+        named = resource_filters.get(src)
+        return len(named) if named else ESTIMATED_CALLS.get(src, 50)
+
+    total_est = sum(estimate(s) for s in active_sources)
 
     # Check rate limit budget
     rate_limiter = get_rate_limiter()
@@ -314,8 +352,9 @@ def load_season(
     if dry_run:
         print(f"\n[DRY RUN] Would load {len(active_sources)} sources for season {season}")
         for src in active_sources:
-            est = ESTIMATED_CALLS.get(src, 50)
-            print(f"  {src:15s}  ~{est:,} API calls")
+            named = resource_filters.get(src)
+            label = f"{src}:{'+'.join(named)}" if named else src
+            print(f"  {label:32s}  ~{estimate(src):,} API calls")
         print(f"\n  Total estimated:  ~{total_est:,} calls")
         print(f"  Budget remaining: {remaining:,} calls")
         if upcoming_schedule:
@@ -344,7 +383,7 @@ def load_season(
         "games": lambda: run_games_pipeline(years=[season]),
         "game_stats": game_stats_runner,
         "plays": lambda: run_plays_pipeline(years=[season]),
-        "stats": lambda: run_stats_pipeline(years=[season]),
+        "stats": lambda: run_stats_pipeline(years=[season], only=resource_filters.get("stats")),
         "ratings": lambda: run_ratings_pipeline(years=[season]),
         "rankings": lambda: run_rankings_pipeline(years=[season]),
         "recruiting": lambda: run_recruiting_pipeline(years=[season]),
@@ -468,7 +507,10 @@ def main() -> None:
         "--sources",
         type=str,
         default=None,
-        help="Comma-separated list of sources to load (default: all)",
+        help="Comma-separated sources to load (default: all). A source may be "
+        "narrowed to specific resources with source:res+res, e.g. "
+        "stats:player_returning -- which loads returning production without "
+        "play_stats' one-request-per-game fan-out.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Show plan without executing")
     parser.add_argument(

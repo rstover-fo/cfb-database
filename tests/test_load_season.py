@@ -1,5 +1,7 @@
 """Unit tests for load_season's season-selection helpers (no DB, no API)."""
 
+import pytest
+
 from scripts.load_season import (
     ESTIMATED_CALLS,
     IMMUTABLE_ONCE_FINAL,
@@ -10,6 +12,7 @@ from scripts.load_season import (
     SEASON_COMPLETE_THRESHOLD,
     SOURCE_ORDER,
     load_season,
+    parse_source_specs,
     season_is_final,
     sources_to_skip,
     upcoming_schedule_season,
@@ -27,6 +30,31 @@ class TestUpcomingScheduleSeason:
     def test_in_season_months_skip(self):
         for month in (8, 9, 10, 11, 12):
             assert upcoming_schedule_season(2026, month) is None
+
+
+class TestParseSourceSpecs:
+    """`--sources stats` costs ~1,640 calls for a season with a full schedule
+    because play_stats is one request per game. A one-off load of returning
+    production should not have to pay that."""
+
+    def test_plain_sources_have_no_filter(self):
+        assert parse_source_specs(["games", "stats"]) == (["games", "stats"], {})
+
+    def test_a_resource_filter_is_split_out(self):
+        names, filters = parse_source_specs(["stats:player_returning"])
+        assert names == ["stats"]
+        assert filters == {"stats": ["player_returning"]}
+
+    def test_multiple_resources_use_plus(self):
+        """Comma already separates sources, so it cannot separate resources."""
+        _, filters = parse_source_specs(["stats:player_returning+player_usage"])
+        assert filters["stats"] == ["player_returning", "player_usage"]
+
+    def test_filtering_an_unfilterable_source_is_an_error(self):
+        """Silently ignoring the filter would load the whole source at full
+        price while the operator believed they had narrowed it."""
+        with pytest.raises(ValueError, match="does not support a resource filter"):
+            parse_source_specs(["games:schedule"])
 
 
 class TestPreseasonInputRefresh:

@@ -7,6 +7,7 @@ Usage:
     python scripts/load_season.py                                   # Load current season
     python scripts/load_season.py --season 2025                     # Load everything for 2025
     python scripts/load_season.py --season 2025 --sources games,stats  # Load specific sources
+    python scripts/load_season.py --season 2026 --sources stats:player_returning  # One resource
     python scripts/load_season.py --season 2025 --dry-run           # Show what would run
     python scripts/load_season.py --season 2025 --skip-refresh      # Load data, skip mart refresh
     python scripts/load_season.py --season 2025 --weekly            # game_stats week-by-week
@@ -43,7 +44,12 @@ ESTIMATED_CALLS = {
     "games": 15,
     "game_stats": 200,
     "plays": 400,
-    "stats": 20,
+    # NOT 20. Seven of the stats source's eight resources are one call per
+    # year, but play_stats issues one /plays/stats request PER GAME, so the
+    # source tracks the season's schedule (~1,640 games) rather than its
+    # resource count. The old estimate understated a daily run by ~80x and hid
+    # this source behind "plays" in every budget projection.
+    "stats": 1_650,
     "ratings": 10,
     "rankings": 20,
     "recruiting": 15,
@@ -153,6 +159,111 @@ def sources_to_skip(active_sources, season_final: bool, allow_skip: bool):
     return [s for s in active_sources if s in IMMUTABLE_ONCE_FINAL]
 
 
+# Sources that carry the UPCOMING season's preseason inputs, refreshed
+# off-season alongside the schedule.
+#
+# WHY THIS EXISTS. Off-season the unattended path resolves `season` to
+# `get_current_season()` = `year - 1`, and that season is finished, so every
+# source in IMMUTABLE_ONCE_FINAL is skipped -- correctly, its data cannot
+# change. But the skip left the upcoming season with no ingest at all beyond
+# the games/betting schedule refresh below. CFBD publishes returning
+# production (/player/returning), preseason SP+ (/ratings/sp), talent and
+# team recruiting for a season during the spring and summer, and nothing in
+# the daily path ever asked for them: on 2026-07-28, with the 2026 schedule
+# loaded since spring, stats.player_returning, ratings.sp_ratings,
+# recruiting.team_talent and recruiting.team_recruiting all had zero 2026
+# rows, so marts.returning_production could not answer "returning production
+# for 2026" and features.team_week had no preseason-known substrate.
+#
+# This refresh runs EVERY off-season day, so it is defined at resource grain,
+# not source grain. The `stats` source is not uniformly priced: play_stats
+# issues one /plays/stats request PER GAME (~1,640 for a season's schedule)
+# while player_returning is a single call per year. Running the whole source
+# daily would cost ~1,640 calls a day -- the exact fan-out that exhausted the
+# quota on 2026-07-25 -- so only the resources that carry preseason inputs are
+# named here. `ratings` and `recruiting` are flat: five single-call-per-year
+# resources each, so they run whole.
+#
+# Total ~11 calls/day. An endpoint CFBD has not published yet returns an empty
+# list or a 400 the source modules already log and skip, so this merges
+# nothing rather than failing, and self-heals the day each one lands.
+# `rosters` is deliberately NOT here -- one call per team (~150/day) and it
+# does not firm up until August, when the normal in-season path picks it up.
+#
+# scripts/probe_offseason_availability.py reports, per endpoint, whether CFBD
+# has published a given season yet; use it to tell "loader is broken" from
+# "CFBD is merely early".
+PRESEASON_STATS_RESOURCES = ("player_returning",)
+PRESEASON_INPUT_SOURCES = ("stats", "ratings", "recruiting")
+
+# What the off-season refresh above actually costs per day, as opposed to what
+# ESTIMATED_CALLS says a full source-grain run of the same names would cost.
+PRESEASON_ESTIMATED_CALLS = len(PRESEASON_STATS_RESOURCES) + 5 + 5
+
+
+# Sources whose runner accepts a resource filter. Only `stats` needs one so
+# far -- it is the one source whose resources differ in cost by three orders
+# of magnitude (play_stats is per game, the rest are per year).
+RESOURCE_FILTERABLE = frozenset({"stats"})
+
+# Table/mart names that are easy to reach for but are not the dlt resource
+# name. `returning_production` is the MART; the resource behind it is
+# `player_returning`. Mapping the near-miss beats failing an operator who
+# asked for exactly the right data under the name the warehouse shows them.
+RESOURCE_ALIASES = {"stats": {"returning_production": "player_returning"}}
+
+
+def resolve_resource_names(source: str, names: list[str]) -> list[str]:
+    """Map warehouse-facing aliases onto dlt resource names."""
+    aliases = RESOURCE_ALIASES.get(source, {})
+    return [aliases.get(name, name) for name in names]
+
+
+def validate_resource_filters(filters: dict[str, list[str]]) -> None:
+    """Reject unknown resource names BEFORE any source runs.
+
+    The check already existed inside stats_source, but it fired mid-run: a
+    2026-07-28 backfill got through ratings and recruiting before failing on
+    `stats:returning_production` (the mart name, not the resource name), and
+    the valid-names hint was buried under dlt's load logs. Failing at parse
+    time puts it on the first line of output instead.
+    """
+    from src.pipelines.sources.stats import stats_source
+
+    known = {"stats": {r.name for r in stats_source(years=[2000]).resources.values()}}
+    for source, names in filters.items():
+        unknown = [n for n in names if n not in known.get(source, set())]
+        if unknown:
+            raise ValueError(
+                f"Unknown {source} resource(s): {unknown}. "
+                f"Valid: {sorted(known.get(source, set()))}"
+            )
+
+
+def parse_source_specs(specs: list[str]) -> tuple[list[str], dict[str, list[str]]]:
+    """Split "source[:res+res]" specs into source names and resource filters.
+
+    `--sources stats:player_returning` loads returning production for a season
+    without paying for play_stats' one-request-per-game fan-out -- the
+    difference between ~1 call and ~1,640 for a season with a full schedule.
+    Pure, so the parse is testable without a DB or an API key.
+    """
+    names: list[str] = []
+    filters: dict[str, list[str]] = {}
+    for spec in specs:
+        name, _, resources = spec.partition(":")
+        names.append(name)
+        if not resources:
+            continue
+        if name not in RESOURCE_FILTERABLE:
+            raise ValueError(
+                f"Source {name!r} does not support a resource filter "
+                f"(filterable: {sorted(RESOURCE_FILTERABLE)})"
+            )
+        filters[name] = resolve_resource_names(name, [r for r in resources.split("+") if r])
+    return names, filters
+
+
 def upcoming_schedule_season(season: int, month: int) -> int | None:
     """Return the next season to schedule-refresh during the off-season.
 
@@ -181,8 +292,9 @@ def load_season(
         dry_run: If True, show plan without executing
         skip_refresh: If True, skip mart refresh after loading
         weekly: If True, load game_stats week-by-week (~35K rows per merge)
-        upcoming_schedule: If set, also refresh this season's schedule tables
-            (games source only) after the main load
+        upcoming_schedule: If set, also refresh this season's schedule and
+            betting lines plus its preseason inputs (PRESEASON_INPUT_SOURCES)
+            after the main load
 
     Returns:
         Summary dict with timing and row counts
@@ -204,8 +316,16 @@ def load_season(
     )
     from src.pipelines.utils.rate_limiter import get_rate_limiter
 
-    # Determine which sources to run
-    active_sources = sources if sources else [s for s in SOURCE_ORDER if s != "rosters"]
+    # Determine which sources to run. A source may be narrowed to specific
+    # resources with "source:res+res" -- see parse_source_spec.
+    requested = sources if sources else [s for s in SOURCE_ORDER if s != "rosters"]
+    active_sources, resource_filters = parse_source_specs(requested)
+    if resource_filters:
+        try:
+            validate_resource_filters(resource_filters)
+        except ValueError as e:
+            logger.error(str(e))
+            return {"error": str(e)}
 
     # Validate sources
     valid = set(SOURCE_ORDER)
@@ -245,8 +365,13 @@ def load_season(
         elif final:
             logger.info("Season %d is finished but no immutable source was selected", season)
 
-    # Estimate API calls
-    total_est = sum(ESTIMATED_CALLS.get(s, 50) for s in active_sources)
+    # Estimate API calls. A resource-filtered source costs a call per named
+    # resource per season, not the whole source's per-game fan-out.
+    def estimate(src: str) -> int:
+        named = resource_filters.get(src)
+        return len(named) if named else ESTIMATED_CALLS.get(src, 50)
+
+    total_est = sum(estimate(s) for s in active_sources)
 
     # Check rate limit budget
     rate_limiter = get_rate_limiter()
@@ -266,14 +391,21 @@ def load_season(
     if dry_run:
         print(f"\n[DRY RUN] Would load {len(active_sources)} sources for season {season}")
         for src in active_sources:
-            est = ESTIMATED_CALLS.get(src, 50)
-            print(f"  {src:15s}  ~{est:,} API calls")
+            named = resource_filters.get(src)
+            label = f"{src}:{'+'.join(named)}" if named else src
+            print(f"  {label:32s}  ~{estimate(src):,} API calls")
         print(f"\n  Total estimated:  ~{total_est:,} calls")
         print(f"  Budget remaining: {remaining:,} calls")
         if upcoming_schedule:
             print(
                 f"  + Refresh {upcoming_schedule} schedule + betting lines "
                 "(games + betting sources, ~20 calls)"
+            )
+            print(
+                f"  + Refresh {upcoming_schedule} preseason inputs "
+                f"({', '.join(PRESEASON_INPUT_SOURCES)}; stats limited to "
+                f"{', '.join(PRESEASON_STATS_RESOURCES)}, "
+                f"~{PRESEASON_ESTIMATED_CALLS:,} calls)"
             )
         if not skip_refresh:
             print("  + Refresh all materialized views after loading")
@@ -290,7 +422,7 @@ def load_season(
         "games": lambda: run_games_pipeline(years=[season]),
         "game_stats": game_stats_runner,
         "plays": lambda: run_plays_pipeline(years=[season]),
-        "stats": lambda: run_stats_pipeline(years=[season]),
+        "stats": lambda: run_stats_pipeline(years=[season], only=resource_filters.get("stats")),
         "ratings": lambda: run_ratings_pipeline(years=[season]),
         "rankings": lambda: run_rankings_pipeline(years=[season]),
         "recruiting": lambda: run_recruiting_pipeline(years=[season]),
@@ -327,9 +459,22 @@ def load_season(
     # skipping it would lose exactly the preseason line-movement history the
     # append-only snapshot feature exists to capture.
     if upcoming_schedule:
+        preseason_runners = {
+            # Resource-level: the full stats source would fan out one
+            # /plays/stats call per scheduled game, every day.
+            "stats": lambda: run_stats_pipeline(
+                years=[upcoming_schedule], only=list(PRESEASON_STATS_RESOURCES)
+            ),
+            "ratings": lambda: run_ratings_pipeline(years=[upcoming_schedule]),
+            "recruiting": lambda: run_recruiting_pipeline(years=[upcoming_schedule]),
+        }
         upcoming_runners = {
             "games_upcoming": lambda: run_games_pipeline(years=[upcoming_schedule]),
             "betting_upcoming": lambda: run_betting_pipeline(years=[upcoming_schedule]),
+            # Preseason inputs (returning production, SP+, talent, recruiting):
+            # published progressively through the spring/summer, so ask daily
+            # and let an unpublished endpoint no-op.
+            **{f"{src}_upcoming": preseason_runners[src] for src in PRESEASON_INPUT_SOURCES},
         }
         for name, runner in upcoming_runners.items():
             logger.info(f"Refreshing upcoming season {upcoming_schedule}: {name}...")
@@ -401,7 +546,10 @@ def main() -> None:
         "--sources",
         type=str,
         default=None,
-        help="Comma-separated list of sources to load (default: all)",
+        help="Comma-separated sources to load (default: all). A source may be "
+        "narrowed to specific resources with source:res+res, e.g. "
+        "stats:player_returning -- which loads returning production without "
+        "play_stats' one-request-per-game fan-out.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Show plan without executing")
     parser.add_argument(

@@ -5,7 +5,14 @@ description = "Read-only MCP server (stdio) for the cfb-database Supabase wareho
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp>=1.6.0",
+    # Upper bound is load-bearing, not caution. mcp 2.0.0 removed
+    # mcp.server.fastmcp (the package's server subpackage is now mcpserver),
+    # so the unpinned floor started resolving to a release that cannot import
+    # server.py at all -- every mcp/tests module failed at collection with
+    # ModuleNotFoundError, on any branch, without a line of this repo
+    # changing. Porting cfb_mcp off FastMCP is its own piece of work; until
+    # then, hold 1.x.
+    "mcp>=1.6.0,<2",
     "httpx>=0.27.0",
 ]
 

@@ -1,15 +1,22 @@
 """Unit tests for load_season's season-selection helpers (no DB, no API)."""
 
+import pytest
+
 from scripts.load_season import (
     ESTIMATED_CALLS,
     IMMUTABLE_ONCE_FINAL,
     MIN_GAMES_FOR_FINISHED_SEASON,
+    PRESEASON_ESTIMATED_CALLS,
+    PRESEASON_INPUT_SOURCES,
+    PRESEASON_STATS_RESOURCES,
     SEASON_COMPLETE_THRESHOLD,
     SOURCE_ORDER,
     load_season,
+    parse_source_specs,
     season_is_final,
     sources_to_skip,
     upcoming_schedule_season,
+    validate_resource_filters,
 )
 
 
@@ -24,6 +31,88 @@ class TestUpcomingScheduleSeason:
     def test_in_season_months_skip(self):
         for month in (8, 9, 10, 11, 12):
             assert upcoming_schedule_season(2026, month) is None
+
+
+class TestParseSourceSpecs:
+    """`--sources stats` costs ~1,640 calls for a season with a full schedule
+    because play_stats is one request per game. A one-off load of returning
+    production should not have to pay that."""
+
+    def test_plain_sources_have_no_filter(self):
+        assert parse_source_specs(["games", "stats"]) == (["games", "stats"], {})
+
+    def test_a_resource_filter_is_split_out(self):
+        names, filters = parse_source_specs(["stats:player_returning"])
+        assert names == ["stats"]
+        assert filters == {"stats": ["player_returning"]}
+
+    def test_multiple_resources_use_plus(self):
+        """Comma already separates sources, so it cannot separate resources."""
+        _, filters = parse_source_specs(["stats:player_returning+player_usage"])
+        assert filters["stats"] == ["player_returning", "player_usage"]
+
+    def test_filtering_an_unfilterable_source_is_an_error(self):
+        """Silently ignoring the filter would load the whole source at full
+        price while the operator believed they had narrowed it."""
+        with pytest.raises(ValueError, match="does not support a resource filter"):
+            parse_source_specs(["games:schedule"])
+
+
+class TestPreseasonInputRefresh:
+    """The upcoming season's preseason inputs had no ingest path at all.
+
+    Off-season the unattended run targets `year - 1`, which is finished, so
+    every IMMUTABLE_ONCE_FINAL source is skipped -- and only games/betting
+    were refreshed for the upcoming season. On 2026-07-28 the 2026 schedule
+    had been loaded for months while stats.player_returning,
+    ratings.sp_ratings, recruiting.team_talent and recruiting.team_recruiting
+    all had zero 2026 rows, so 2026 returning production could not be
+    answered at all.
+    """
+
+    def test_preseason_sources_are_real_sources(self):
+        assert set(PRESEASON_INPUT_SOURCES) <= set(SOURCE_ORDER)
+
+    def test_returning_production_source_is_covered(self):
+        """stats carries /player/returning -> stats.player_returning ->
+        marts.returning_production, the table that was empty for 2026."""
+        assert "stats" in PRESEASON_INPUT_SOURCES
+
+    def test_rosters_is_not_a_preseason_input(self):
+        """One call per team (~150/day) and it does not firm up until August,
+        when the normal in-season path picks it up anyway."""
+        assert "rosters" not in PRESEASON_INPUT_SOURCES
+
+    def test_the_refresh_is_cheap(self):
+        """It runs every off-season day, so it has to stay far away from the
+        per-game fan-out that exhausted the quota in the first place."""
+        assert PRESEASON_ESTIMATED_CALLS <= 100
+
+    def test_stats_is_restricted_to_named_resources(self):
+        """The trap this class exists to avoid. The stats source is not
+        uniformly priced: play_stats is one /plays/stats request PER GAME, so
+        a source-grain daily refresh of `stats` for the upcoming season costs
+        ~1,640 calls a day -- the same fan-out that exhausted the quota. Only
+        the resources carrying preseason inputs may run."""
+        assert "play_stats" not in PRESEASON_STATS_RESOURCES
+        assert "player_returning" in PRESEASON_STATS_RESOURCES
+        assert PRESEASON_ESTIMATED_CALLS < ESTIMATED_CALLS["stats"] / 10
+
+    def test_named_stats_resources_exist(self):
+        """A typo would raise at load time, inside the daily workflow."""
+        from src.pipelines.sources.stats import stats_source
+
+        source = stats_source(years=[2026], only=list(PRESEASON_STATS_RESOURCES))
+        assert {r.name for r in source.resources.values()} == set(PRESEASON_STATS_RESOURCES)
+
+    def test_dry_run_reports_the_preseason_refresh(self, capsys):
+        load_season(season=2025, sources=["games"], dry_run=True, upcoming_schedule=2026)
+
+        out = capsys.readouterr().out
+        assert "2026 preseason inputs" in out
+        for src in PRESEASON_INPUT_SOURCES:
+            assert src in out
+        assert "player_returning" in out
 
 
 class TestMetricsWpWiring:
@@ -228,3 +317,32 @@ class TestWinProbabilityBacklogIsBounded:
         body = inspect.getsource(run_metrics_wp_pipeline)
         assert '"missing": total_missing' in body
         assert '"loaded_this_run"' in body
+
+
+class TestResourceFilterValidation:
+    """A 2026-07-28 backfill passed `stats:returning_production` -- the MART
+    name -- and got through ratings and recruiting before stats failed, with
+    the valid-names hint buried under dlt's load logs."""
+
+    def test_the_mart_name_resolves_to_the_resource(self):
+        _, filters = parse_source_specs(["stats:returning_production"])
+        assert filters["stats"] == ["player_returning"]
+
+    def test_a_real_typo_still_fails(self):
+        with pytest.raises(ValueError, match="Unknown stats resource"):
+            validate_resource_filters({"stats": ["player_retuning"]})
+
+    def test_valid_names_are_listed_in_the_error(self):
+        """The whole point: the fix has to be readable off the error."""
+        with pytest.raises(ValueError, match="player_returning"):
+            validate_resource_filters({"stats": ["nope"]})
+
+    def test_known_resources_pass(self):
+        validate_resource_filters({"stats": ["player_returning", "play_stats"]})
+
+    def test_load_season_rejects_before_running_anything(self):
+        """It must fail at parse time, not after other sources have run."""
+        summary = load_season(season=2026, sources=["stats:nope"], dry_run=True)
+
+        assert "error" in summary
+        assert "Unknown stats resource" in summary["error"]

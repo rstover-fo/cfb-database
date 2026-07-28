@@ -21,12 +21,18 @@ logger = logging.getLogger(__name__)
 def stats_source(
     years: list[int] | None = None,
     mode: str = "incremental",
+    only: list[str] | None = None,
 ) -> DltSource:
     """Source for team and player statistics.
 
     Args:
         years: Specific years to load. If None, uses mode to determine years.
         mode: "incremental" loads current season, "backfill" loads all historical.
+        only: Resource names to run (default: all). The source is NOT uniformly
+            priced -- play_stats issues one /plays/stats request PER GAME
+            (~1,640 for a full season) while every other resource here is a
+            single call per year. Anything that runs daily should name the
+            resources it needs instead of paying for the whole source.
     """
     if years is None:
         if mode == "incremental":
@@ -34,7 +40,7 @@ def stats_source(
         else:  # backfill
             years = YEAR_RANGES["stats"].to_list()
 
-    return [
+    resources = [
         team_season_stats_resource(years),
         player_season_stats_resource(years),
         advanced_team_stats_resource(years),
@@ -44,6 +50,15 @@ def stats_source(
         play_stats_resource(years),
         game_havoc_resource(years),
     ]
+
+    if only is None:
+        return resources
+
+    by_name = {r.name: r for r in resources}
+    unknown = [name for name in only if name not in by_name]
+    if unknown:
+        raise ValueError(f"Unknown stats resource(s): {unknown}. Valid: {sorted(by_name)}")
+    return [by_name[name] for name in only]
 
 
 @dlt.resource(

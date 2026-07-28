@@ -337,10 +337,19 @@ def run_plays_pipeline(years: list[int] | None = None, mode: str = "incremental"
     return info
 
 
-def run_stats_pipeline(years: list[int] | None = None, mode: str = "incremental"):
-    """Run the stats data pipeline."""
+def run_stats_pipeline(
+    years: list[int] | None = None,
+    mode: str = "incremental",
+    only: list[str] | None = None,
+):
+    """Run the stats data pipeline.
+
+    `only` restricts the run to named resources -- see stats_source: the
+    source's cost is dominated by play_stats, which is one request per game.
+    """
     years_str = f"years={years}" if years else f"mode={mode}"
-    print(f"\n=== Loading Stats Data ({years_str}) ===\n")
+    only_str = f", only={only}" if only else ""
+    print(f"\n=== Loading Stats Data ({years_str}{only_str}) ===\n")
 
     pipeline = dlt.pipeline(
         pipeline_name="cfbd_stats",
@@ -348,7 +357,7 @@ def run_stats_pipeline(years: list[int] | None = None, mode: str = "incremental"
         dataset_name="stats",
     )
 
-    source = stats_source(years=years, mode=mode)
+    source = stats_source(years=years, mode=mode, only=only)
     info = pipeline.run(source)
 
     print(f"\nLoad info: {info}")

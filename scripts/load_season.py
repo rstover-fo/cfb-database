@@ -43,7 +43,12 @@ ESTIMATED_CALLS = {
     "games": 15,
     "game_stats": 200,
     "plays": 400,
-    "stats": 20,
+    # NOT 20. Seven of the stats source's eight resources are one call per
+    # year, but play_stats issues one /plays/stats request PER GAME, so the
+    # source tracks the season's schedule (~1,640 games) rather than its
+    # resource count. The old estimate understated a daily run by ~80x and hid
+    # this source behind "plays" in every budget projection.
+    "stats": 1_650,
     "ratings": 10,
     "rankings": 20,
     "recruiting": 15,
@@ -169,18 +174,30 @@ def sources_to_skip(active_sources, season_final: bool, allow_skip: bool):
 # rows, so marts.returning_production could not answer "returning production
 # for 2026" and features.team_week had no preseason-known substrate.
 #
-# These are the cheap, season-grain sources (~45 calls total, versus ~2,000
-# for plays/rosters), so running them daily through the off-season costs
-# roughly nothing and self-heals the moment CFBD publishes each one: an
-# unpublished endpoint returns an empty list or a 400 that the source modules
-# already log and skip, which merges nothing rather than failing. `rosters` is
-# deliberately NOT here -- it is one call per team (~150/day) and does not
-# firm up until August, when the normal in-season path picks it up.
+# This refresh runs EVERY off-season day, so it is defined at resource grain,
+# not source grain. The `stats` source is not uniformly priced: play_stats
+# issues one /plays/stats request PER GAME (~1,640 for a season's schedule)
+# while player_returning is a single call per year. Running the whole source
+# daily would cost ~1,640 calls a day -- the exact fan-out that exhausted the
+# quota on 2026-07-25 -- so only the resources that carry preseason inputs are
+# named here. `ratings` and `recruiting` are flat: five single-call-per-year
+# resources each, so they run whole.
+#
+# Total ~11 calls/day. An endpoint CFBD has not published yet returns an empty
+# list or a 400 the source modules already log and skip, so this merges
+# nothing rather than failing, and self-heals the day each one lands.
+# `rosters` is deliberately NOT here -- one call per team (~150/day) and it
+# does not firm up until August, when the normal in-season path picks it up.
 #
 # scripts/probe_offseason_availability.py reports, per endpoint, whether CFBD
 # has published a given season yet; use it to tell "loader is broken" from
 # "CFBD is merely early".
+PRESEASON_STATS_RESOURCES = ("player_returning",)
 PRESEASON_INPUT_SOURCES = ("stats", "ratings", "recruiting")
+
+# What the off-season refresh above actually costs per day, as opposed to what
+# ESTIMATED_CALLS says a full source-grain run of the same names would cost.
+PRESEASON_ESTIMATED_CALLS = len(PRESEASON_STATS_RESOURCES) + 5 + 5
 
 
 def upcoming_schedule_season(season: int, month: int) -> int | None:
@@ -302,14 +319,15 @@ def load_season(
         print(f"\n  Total estimated:  ~{total_est:,} calls")
         print(f"  Budget remaining: {remaining:,} calls")
         if upcoming_schedule:
-            preseason_est = sum(ESTIMATED_CALLS.get(s, 50) for s in PRESEASON_INPUT_SOURCES)
             print(
                 f"  + Refresh {upcoming_schedule} schedule + betting lines "
                 "(games + betting sources, ~20 calls)"
             )
             print(
                 f"  + Refresh {upcoming_schedule} preseason inputs "
-                f"({', '.join(PRESEASON_INPUT_SOURCES)}, ~{preseason_est:,} calls)"
+                f"({', '.join(PRESEASON_INPUT_SOURCES)}; stats limited to "
+                f"{', '.join(PRESEASON_STATS_RESOURCES)}, "
+                f"~{PRESEASON_ESTIMATED_CALLS:,} calls)"
             )
         if not skip_refresh:
             print("  + Refresh all materialized views after loading")
@@ -364,7 +382,11 @@ def load_season(
     # append-only snapshot feature exists to capture.
     if upcoming_schedule:
         preseason_runners = {
-            "stats": lambda: run_stats_pipeline(years=[upcoming_schedule]),
+            # Resource-level: the full stats source would fan out one
+            # /plays/stats call per scheduled game, every day.
+            "stats": lambda: run_stats_pipeline(
+                years=[upcoming_schedule], only=list(PRESEASON_STATS_RESOURCES)
+            ),
             "ratings": lambda: run_ratings_pipeline(years=[upcoming_schedule]),
             "recruiting": lambda: run_recruiting_pipeline(years=[upcoming_schedule]),
         }

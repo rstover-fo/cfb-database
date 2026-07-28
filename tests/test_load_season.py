@@ -4,7 +4,9 @@ from scripts.load_season import (
     ESTIMATED_CALLS,
     IMMUTABLE_ONCE_FINAL,
     MIN_GAMES_FOR_FINISHED_SEASON,
+    PRESEASON_ESTIMATED_CALLS,
     PRESEASON_INPUT_SOURCES,
+    PRESEASON_STATS_RESOURCES,
     SEASON_COMPLETE_THRESHOLD,
     SOURCE_ORDER,
     load_season,
@@ -54,9 +56,25 @@ class TestPreseasonInputRefresh:
 
     def test_the_refresh_is_cheap(self):
         """It runs every off-season day, so it has to stay far away from the
-        plays/rosters fan-out that exhausted the quota in the first place."""
-        est = sum(ESTIMATED_CALLS.get(s, 50) for s in PRESEASON_INPUT_SOURCES)
-        assert est <= 100, f"preseason refresh costs ~{est} calls/day"
+        per-game fan-out that exhausted the quota in the first place."""
+        assert PRESEASON_ESTIMATED_CALLS <= 100
+
+    def test_stats_is_restricted_to_named_resources(self):
+        """The trap this class exists to avoid. The stats source is not
+        uniformly priced: play_stats is one /plays/stats request PER GAME, so
+        a source-grain daily refresh of `stats` for the upcoming season costs
+        ~1,640 calls a day -- the same fan-out that exhausted the quota. Only
+        the resources carrying preseason inputs may run."""
+        assert "play_stats" not in PRESEASON_STATS_RESOURCES
+        assert "player_returning" in PRESEASON_STATS_RESOURCES
+        assert PRESEASON_ESTIMATED_CALLS < ESTIMATED_CALLS["stats"] / 10
+
+    def test_named_stats_resources_exist(self):
+        """A typo would raise at load time, inside the daily workflow."""
+        from src.pipelines.sources.stats import stats_source
+
+        source = stats_source(years=[2026], only=list(PRESEASON_STATS_RESOURCES))
+        assert {r.name for r in source.resources.values()} == set(PRESEASON_STATS_RESOURCES)
 
     def test_dry_run_reports_the_preseason_refresh(self, capsys):
         load_season(season=2025, sources=["games"], dry_run=True, upcoming_schedule=2026)
@@ -65,6 +83,7 @@ class TestPreseasonInputRefresh:
         assert "2026 preseason inputs" in out
         for src in PRESEASON_INPUT_SOURCES:
             assert src in out
+        assert "player_returning" in out
 
 
 class TestMetricsWpWiring:

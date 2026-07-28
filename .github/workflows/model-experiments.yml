@@ -1,9 +1,13 @@
 name: Model Feature Experiments
 
-# Manual runner for the starter-pack feature-candidate experiment chain
-# (docs/plans/2026-07-28-001-feat-starter-pack-model-features-plan.md).
-# Each task is an explicit, bounded step; run from the feature branch via
-# workflow_dispatch. Uses the same session-pooler secret as daily-load.yml.
+# Manual runner for model-substrate work that needs warehouse credentials
+# (CI holds the session-pooler secret; local checkouts may not).
+#
+# History: the 2026-07-28 starter-pack candidate screen ran here and rejected
+# all six drive/trajectory candidates — verdicts recorded in
+# docs/brainstorms/2026-07-21-team-week-feature-design.md ("Decisions made").
+# The screen is pre-registered run-once: do not re-run it against the same
+# frame without a new pre-registration.
 #
 # Requires repo secret:
 #   SUPABASE_DB_URL - Supabase SESSION pooler URL
@@ -12,17 +16,14 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: "Which experiment step to run"
+        description: "Which step to run"
         required: true
         type: choice
         options:
-          - screen            # U1: read-only candidate screen, prints verdict table
-          - migrate-048       # U2: apply migration 048 (idempotent)
-          - backfill          # U3: full features.team_week rebuild (2015+)
-          - evaluate          # U4: no-write candidate evaluation vs production baseline
-  # workflow_dispatch only resolves on the default branch, so while this file
-  # lives on a feature branch each step is triggered by applying the matching
-  # PR label (run-screen, run-migrate-048, run-backfill, run-evaluate).
+          - screen            # pre-registered candidate screen (run-once; see header)
+          - backfill          # full features.team_week rebuild
+  # workflow_dispatch only resolves on the default branch; while this file
+  # lives on a feature branch, trigger via PR labels run-screen / run-backfill.
   pull_request:
     types: [labeled]
 
@@ -39,9 +40,7 @@ env:
   TASK: >-
     ${{ inputs.task
         || (github.event.label.name == 'run-screen' && 'screen')
-        || (github.event.label.name == 'run-migrate-048' && 'migrate-048')
         || (github.event.label.name == 'run-backfill' && 'backfill')
-        || (github.event.label.name == 'run-evaluate' && 'evaluate')
         || '' }}
 
 jobs:
@@ -65,14 +64,6 @@ jobs:
         if: env.TASK == 'screen'
         run: python scripts/screen_week_features.py
 
-      - name: Apply migration 048
-        if: env.TASK == 'migrate-048'
-        run: python scripts/run_migrations.py --file src/schemas/migrations/048_team_week_drive_trajectory.sql
-
       - name: Full feature substrate rebuild
         if: env.TASK == 'backfill'
         run: python scripts/build_features.py
-
-      - name: Evaluate candidates (no-write)
-        if: env.TASK == 'evaluate'
-        run: python scripts/train_model.py --evaluate-candidates

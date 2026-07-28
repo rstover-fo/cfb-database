@@ -637,3 +637,18 @@ Per-family assertions the gate runs against the freshly-built `team_week`
   would NULL. Not verdict-relevant — both trajectory partials sit an order of
   magnitude below the 0.08 floor — but a future re-registration should carry
   play counts through the weekly aggregates and gate on them.
+  **v2 amendment (pre-registered 2026-07-28, before any v2 run, in response
+  to the PR #59 Codex review):** the v1 controls (Elo + `adj_epa_net` diffs)
+  under-implement the plan's stated "current model's expected margin," and
+  omitted-control suppression means a sub-floor v1 candidate could in
+  principle clear the floor once the full prediction is held constant
+  (`off_ppd` sits at 0.070 vs the 0.08 floor). v2: same floor and BH-FDR,
+  run once, first-order partial correlation controlling for fitted_v1's
+  frozen walk-forward expected margin rebuilt from stored vintages
+  (`train_through_season == season - 1`), window auto-restricted to seasons
+  with a stored prior vintage (`--control-mode model-margin`). Final
+  retirement of the six candidates is keyed to the v2 confirmation run
+  (post-merge, via the model-experiments workflow): if every candidate stays
+  below the floor, the v1 rejections stand as final; if any clears it, that
+  candidate's rejection is void and re-enters the plan's evaluation path
+  (refit + no-regression gate) — a v2 pass alone does not ship a column.

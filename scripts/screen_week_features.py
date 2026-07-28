@@ -22,13 +22,24 @@ does the warehouse scans and week bucketing; the pure helpers below keep the
 leak boundary and the small-sample rules directly testable without a database.
 A run whose frame or per-candidate sample falls below the coverage floors
 fails loudly as UNTESTABLE rather than reporting rejections.
+
+Control modes:
+  - v1 = the pre-registered 2026-07-28 run: Elo + adj_epa_net controls over
+    2015-2025.
+  - v2 amendment = the same |partial_r| >= 0.08 floor and the same
+    Benjamini-Hochberg FDR q=0.10, run once, using a first-order partial
+    correlation controlling for fitted_v1's frozen walk-forward expected
+    margin; its window is restricted to seasons with a stored prior vintage.
+
+The v2 amendment was pre-registered 2026-07-28 in response to the PR #59
+review before any v2 run.
 """
 
 import argparse
 import math
 import sys
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from statistics import pstdev
 from typing import Any
 
@@ -37,16 +48,22 @@ from scripts.build_features import (
     compute_week_index,
     leak_free_week_index,
 )
+from scripts.score_fitted import (
+    fetch_available_train_through,
+    load_fit,
+    score_game,
+)
 from scripts.screen_preseason_features import (
     FDR_ALPHA,
     MIN_PARTIAL_R,
     benjamini_hochberg,
     complete_cases,
     partial_corr_pvalue,
+    partial_correlation,
     screen_verdict,
     second_order_partial_correlation,
 )
-from scripts.train_model import DIFF_FEATURE_COLUMNS
+from scripts.train_model import DIFF_FEATURE_COLUMNS, TEAM_WEEK_SOURCE_COLUMNS
 
 DEFAULT_START_SEASON = 2015
 DEFAULT_END_SEASON = 2025
@@ -62,7 +79,11 @@ CANDIDATE_COLUMNS = (
 
 CONTROL_ELO = "elo_diff"
 CONTROL_ADJ_EPA_NET = "adj_epa_net_diff"
+CONTROL_MODEL_MARGIN = "model_margin"
 SCREEN_CONTROLS = (CONTROL_ELO, CONTROL_ADJ_EPA_NET)
+CONTROL_MODE_FEATURES = "features"
+CONTROL_MODE_MODEL_MARGIN = "model-margin"
+CONTROL_MODES = (CONTROL_MODE_FEATURES, CONTROL_MODE_MODEL_MARGIN)
 
 
 def _diff_source_column(feature_name: str) -> str:
@@ -303,9 +324,36 @@ def build_screen_frame(
                 for candidate in CANDIDATE_COLUMNS
             }
         )
+        if CONTROL_MODEL_MARGIN in game:
+            row[CONTROL_MODEL_MARGIN] = game[CONTROL_MODEL_MARGIN]
         frame.append(row)
 
     return frame
+
+
+def build_model_margin_frame(
+    games: Iterable[Mapping[str, Any]],
+    drives: Iterable[Mapping[str, Any]],
+    weekly_net_epa: Iterable[Mapping[str, Any]],
+    fits_by_train_through: Mapping[int, Mapping[str, Any]],
+    scorer: Callable[[dict[str, Any], Mapping[str, Any]], tuple[float, float]] = score_game,
+) -> list[dict[str, Any]]:
+    """Build the v2 frame using each season's frozen prior fitted margin.
+
+    A game is omitted when ``season - 1`` has no stored vintage. ``scorer`` is
+    injectable solely to keep this filtering/wiring path pure in unit tests;
+    production passes the imported ``score_fitted.score_game`` function.
+    """
+    scored_games: list[dict[str, Any]] = []
+    for game in games:
+        train_through = int(game["season"]) - 1
+        fit = fits_by_train_through.get(train_through)
+        if fit is None:
+            continue
+        scored_game = dict(game)
+        scored_game[CONTROL_MODEL_MARGIN] = float(scorer(scored_game, fit)[0])
+        scored_games.append(scored_game)
+    return build_screen_frame(scored_games, drives, weekly_net_epa)
 
 
 def apply_verdicts(results: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -327,12 +375,17 @@ def apply_verdicts(results: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]
     return rows
 
 
-def screen_frame(frame: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def screen_frame(
+    frame: list[dict[str, Any]], control_mode: str = CONTROL_MODE_FEATURES
+) -> list[dict[str, Any]]:
     """Screen each candidate on its own complete-case game sample."""
+    if control_mode not in CONTROL_MODES:
+        raise ValueError(f"unknown control mode {control_mode!r}")
+
+    controls = SCREEN_CONTROLS if control_mode == CONTROL_MODE_FEATURES else (CONTROL_MODEL_MARGIN,)
     raw_results: list[dict[str, Any]] = []
-    needed_controls = list(SCREEN_CONTROLS)
     for candidate in CANDIDATE_COLUMNS:
-        rows = complete_cases(frame, ["home_margin", *needed_controls, candidate])
+        rows = complete_cases(frame, ["home_margin", *controls, candidate])
         n_games = len(rows)
         if n_games < 3:
             partial_r = 0.0
@@ -340,10 +393,16 @@ def screen_frame(frame: list[dict[str, Any]]) -> list[dict[str, Any]]:
         else:
             x = [float(row[candidate]) for row in rows]
             y = [float(row["home_margin"]) for row in rows]
-            elo = [float(row[CONTROL_ELO]) for row in rows]
-            adj_epa_net = [float(row[CONTROL_ADJ_EPA_NET]) for row in rows]
-            partial_r = second_order_partial_correlation(x, y, elo, adj_epa_net)
-            p_value = partial_corr_pvalue(partial_r, n_games, n_controls=2)
+            if control_mode == CONTROL_MODE_FEATURES:
+                elo = [float(row[CONTROL_ELO]) for row in rows]
+                adj_epa_net = [float(row[CONTROL_ADJ_EPA_NET]) for row in rows]
+                partial_r = second_order_partial_correlation(x, y, elo, adj_epa_net)
+                n_controls = 2
+            else:
+                model_margin = [float(row[CONTROL_MODEL_MARGIN]) for row in rows]
+                partial_r = partial_correlation(x, y, model_margin)
+                n_controls = 1
+            p_value = partial_corr_pvalue(partial_r, n_games, n_controls=n_controls)
         raw_results.append(
             {
                 "candidate": candidate,
@@ -356,15 +415,22 @@ def screen_frame(frame: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 FBS_INVOLVED = "(g.home_classification = 'fbs' OR g.away_classification = 'fbs')"
+_HOME_TEAM_WEEK_COLUMNS = ",\n           ".join(
+    f"h.{column} AS home_{column}" for column in TEAM_WEEK_SOURCE_COLUMNS
+)
+_AWAY_TEAM_WEEK_COLUMNS = ",\n           ".join(
+    f"a.{column} AS away_{column}" for column in TEAM_WEEK_SOURCE_COLUMNS
+)
 
 GAMES_QUERY = f"""
     SELECT g.id AS game_id, g.season, g.season_type, g.week,
            g.home_team, g.away_team, g.home_points, g.away_points,
+           g.neutral_site,
            COALESCE(g.completed, false) AS completed,
-           h.{ELO_SOURCE_COLUMN} AS home_elo_pregame,
-           a.{ELO_SOURCE_COLUMN} AS away_elo_pregame,
            h.{ADJ_EPA_NET_SOURCE_COLUMN} AS home_adj_epa_net,
-           a.{ADJ_EPA_NET_SOURCE_COLUMN} AS away_adj_epa_net
+           a.{ADJ_EPA_NET_SOURCE_COLUMN} AS away_adj_epa_net,
+           {_HOME_TEAM_WEEK_COLUMNS},
+           {_AWAY_TEAM_WEEK_COLUMNS}
     FROM core.games g
     JOIN features.team_week h
       ON h.game_id = g.id AND h.team = g.home_team
@@ -455,6 +521,17 @@ def get_db_url() -> str:
     return url
 
 
+def _rows_to_screen_games(raw: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Add the nested team-week shape expected by score_fitted.score_game."""
+    games: list[dict[str, Any]] = []
+    for source in raw:
+        row = dict(source)
+        row["home_tw"] = {column: row[f"home_{column}"] for column in TEAM_WEEK_SOURCE_COLUMNS}
+        row["away_tw"] = {column: row[f"away_{column}"] for column in TEAM_WEEK_SOURCE_COLUMNS}
+        games.append(row)
+    return games
+
+
 def fetch_screen_inputs(
     conn: Any, start_season: int, end_season: int
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
@@ -464,7 +541,7 @@ def fetch_screen_inputs(
     params = {"start_season": start_season, "end_season": end_season}
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(GAMES_QUERY, params)
-        games = [dict(row) for row in cur.fetchall()]
+        games = _rows_to_screen_games(cur.fetchall())
         cur.execute(DRIVES_QUERY, params)
         drives = [dict(row) for row in cur.fetchall()]
         cur.execute(EPA_QUERY, params)
@@ -472,8 +549,18 @@ def fetch_screen_inputs(
     return games, drives, weekly_net_epa
 
 
-def report(results: Iterable[Mapping[str, Any]]) -> None:
-    """Print every candidate, including rejected candidates and their numbers."""
+def report(
+    results: Iterable[Mapping[str, Any]],
+    control_mode: str = CONTROL_MODE_FEATURES,
+    effective_seasons: Iterable[int] = (),
+) -> None:
+    """Print mode/window metadata and every candidate, including rejections."""
+    seasons = sorted(set(effective_seasons))
+    effective_window = f"{seasons[0]}-{seasons[-1]}" if seasons else "none"
+    print(
+        f"CONTROL_MODE mode={control_mode} effective_window={effective_window} "
+        f"seasons={','.join(str(season) for season in seasons) or 'none'}"
+    )
     print(
         "candidate                 n_games   partial_r   p_value     bh_q  "
         "bh_pass floor_pass verdict"
@@ -487,6 +574,19 @@ def report(results: Iterable[Mapping[str, Any]]) -> None:
             f"{p_value:>10} {bh_q:>8} {str(row['bh_pass']):>8} "
             f"{str(row['floor_pass']):>10} {row['verdict']:>7}"
         )
+
+
+def load_model_margin_fits(
+    conn: Any, start_season: int, end_season: int
+) -> dict[int, dict[str, Any]]:
+    """Load the frozen prior vintage needed by each requested game season."""
+    available = fetch_available_train_through(conn)
+    train_through_seasons = sorted(
+        train_through
+        for train_through in available
+        if start_season - 1 <= train_through <= end_season - 1
+    )
+    return {train_through: load_fit(conn, train_through) for train_through in train_through_seasons}
 
 
 # Coverage floors: below these, a run is UNTESTABLE, never a rejection. A
@@ -513,10 +613,22 @@ def assert_screen_coverage(frame: list[dict[str, Any]], results: list[dict[str, 
         )
 
 
-def main() -> None:
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser separately so its defaults stay unit-testable."""
     parser = argparse.ArgumentParser(description="Screen in-season team-week features")
     parser.add_argument("--start-season", type=int, default=DEFAULT_START_SEASON)
     parser.add_argument("--end-season", type=int, default=DEFAULT_END_SEASON)
+    parser.add_argument(
+        "--control-mode",
+        choices=CONTROL_MODES,
+        default=CONTROL_MODE_FEATURES,
+        help="features=pre-registered Elo/EPA controls; model-margin=v2 frozen margin control",
+    )
+    return parser
+
+
+def main() -> None:
+    parser = build_arg_parser()
     args = parser.parse_args()
     if args.start_season > args.end_season:
         parser.error("--start-season cannot be after --end-season")
@@ -528,10 +640,14 @@ def main() -> None:
         games, drives, weekly_net_epa = fetch_screen_inputs(
             conn, args.start_season, args.end_season
         )
-        frame = build_screen_frame(games, drives, weekly_net_epa)
-        results = screen_frame(frame)
+        if args.control_mode == CONTROL_MODE_MODEL_MARGIN:
+            fits = load_model_margin_fits(conn, args.start_season, args.end_season)
+            frame = build_model_margin_frame(games, drives, weekly_net_epa, fits)
+        else:
+            frame = build_screen_frame(games, drives, weekly_net_epa)
+        results = screen_frame(frame, args.control_mode)
         assert_screen_coverage(frame, results)
-        report(results)
+        report(results, args.control_mode, (row["season"] for row in frame))
     finally:
         conn.close()
 

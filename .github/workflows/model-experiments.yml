@@ -24,7 +24,8 @@ on:
         required: true
         type: choice
         options:
-          - screen            # pre-registered candidate screen (run-once; see header)
+          - screen            # pre-registered candidate screen v1 (already run; see header)
+          - screen-v2         # v2 amendment: control = frozen walk-forward model margin (run-once)
           - backfill          # full features.team_week rebuild (2015+)
 
 concurrency:
@@ -57,6 +58,10 @@ jobs:
       - name: Screen candidates (read-only)
         if: inputs.task == 'screen'
         run: python scripts/screen_week_features.py
+
+      - name: Screen candidates v2 — model-margin control (read-only)
+        if: inputs.task == 'screen-v2'
+        run: python scripts/screen_week_features.py --control-mode model-margin
 
       - name: Full feature substrate rebuild
         if: inputs.task == 'backfill'

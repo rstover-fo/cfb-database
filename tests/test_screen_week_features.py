@@ -1,16 +1,22 @@
 """Pure unit tests for the in-season team-week feature screen."""
 
 import math
+import random
 
 import pytest
 
+import scripts.screen_week_features as screen_week_features
 from scripts.screen_week_features import (
     CANDIDATE_COLUMNS,
     CONTROL_ADJ_EPA_NET,
     CONTROL_ELO,
+    CONTROL_MODE_FEATURES,
+    CONTROL_MODE_MODEL_MARGIN,
     aggregate_bucketed_drive_features,
     apply_verdicts,
     assert_screen_coverage,
+    build_arg_parser,
+    build_model_margin_frame,
     build_screen_frame,
     compute_bucketed_as_of_features,
     compute_bucketed_form_and_volatility,
@@ -286,6 +292,84 @@ class TestScreenFrame:
             assert row["p_value"] is None
             assert row["partial_r"] == pytest.approx(0.0)
             assert row["verdict"] == "REJECT"
+
+
+def _model_frame(n=250, candidate_values=None):
+    rng = random.Random(19)
+    control = [rng.gauss(0.0, 1.0) for _ in range(n)]
+    if candidate_values is None:
+        candidate_values = [rng.gauss(0.0, 1.0) for _ in range(n)]
+    margin = [0.8 * x + 0.3 * z + rng.gauss(0.0, 0.2) for x, z in zip(candidate_values, control)]
+    rows = []
+    for i, (z, x, y) in enumerate(zip(control, candidate_values, margin)):
+        row = {
+            "home_margin": y,
+            "model_margin": z,
+        }
+        row.update(
+            {name: (x if name == "off_ppd" else float(i % 11)) for name in CANDIDATE_COLUMNS}
+        )
+        rows.append(row)
+    return rows
+
+
+class TestModelMarginControl:
+    def test_cli_defaults_to_v1_features_mode(self):
+        assert build_arg_parser().parse_args([]).control_mode == CONTROL_MODE_FEATURES
+
+    def test_exact_function_of_frozen_margin_control_has_no_incremental_signal(self):
+        frame = _model_frame()
+        for i, row in enumerate(frame):
+            row["off_ppd"] = 2.0 * row["model_margin"]
+            row["home_margin"] = 0.8 * row["model_margin"] + float(i % 7)
+
+        result = next(
+            row
+            for row in screen_frame(frame, CONTROL_MODE_MODEL_MARGIN)
+            if row["candidate"] == "off_ppd"
+        )
+
+        assert result["partial_r"] == pytest.approx(0.0)
+
+    def test_orthogonal_candidate_tracks_margin_residual(self):
+        frame = _model_frame()
+
+        result = next(
+            row
+            for row in screen_frame(frame, CONTROL_MODE_MODEL_MARGIN)
+            if row["candidate"] == "off_ppd"
+        )
+
+        assert result["partial_r"] > 0.7
+
+    def test_model_margin_p_value_uses_one_control(self, monkeypatch):
+        calls = []
+
+        def fake_pvalue(partial_r, n, n_controls=1):
+            calls.append(n_controls)
+            return 0.01
+
+        monkeypatch.setattr(screen_week_features, "partial_corr_pvalue", fake_pvalue)
+        screen_frame(_model_frame(), CONTROL_MODE_MODEL_MARGIN)
+
+        assert calls == [1] * len(CANDIDATE_COLUMNS)
+
+    def test_games_without_prior_vintage_drop_from_model_margin_frame(self):
+        games = [
+            _game(1, "A", "B", week=2) | {"season": 2017},
+            _game(2, "A", "B", week=2) | {"season": 2018},
+        ]
+
+        frame = build_model_margin_frame(
+            games,
+            [],
+            [],
+            {2017: object()},
+            scorer=lambda game, fit: (12.5, 0.5),
+        )
+
+        assert [row["game_id"] for row in frame] == [2]
+        assert frame[0]["model_margin"] == pytest.approx(12.5)
 
 
 class TestCoverageFloors:

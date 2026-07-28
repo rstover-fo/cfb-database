@@ -20,6 +20,11 @@ on:
           - migrate-048       # U2: apply migration 048 (idempotent)
           - backfill          # U3: full features.team_week rebuild (2015+)
           - evaluate          # U4: no-write candidate evaluation vs production baseline
+  # workflow_dispatch only resolves on the default branch, so while this file
+  # lives on a feature branch each step is triggered by applying the matching
+  # PR label (run-screen, run-migrate-048, run-backfill, run-evaluate).
+  pull_request:
+    types: [labeled]
 
 concurrency:
   group: model-experiments
@@ -31,10 +36,18 @@ permissions:
 env:
   PYTHON_VERSION: "3.11"
   SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+  TASK: >-
+    ${{ inputs.task
+        || (github.event.label.name == 'run-screen' && 'screen')
+        || (github.event.label.name == 'run-migrate-048' && 'migrate-048')
+        || (github.event.label.name == 'run-backfill' && 'backfill')
+        || (github.event.label.name == 'run-evaluate' && 'evaluate')
+        || '' }}
 
 jobs:
   run:
-    name: Run ${{ inputs.task }}
+    name: Run experiment step
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.label.name, 'run-')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -49,17 +62,17 @@ jobs:
         run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
 
       - name: Screen candidates (read-only)
-        if: inputs.task == 'screen'
+        if: env.TASK == 'screen'
         run: python scripts/screen_week_features.py
 
       - name: Apply migration 048
-        if: inputs.task == 'migrate-048'
+        if: env.TASK == 'migrate-048'
         run: python scripts/run_migrations.py --file src/schemas/migrations/048_team_week_drive_trajectory.sql
 
       - name: Full feature substrate rebuild
-        if: inputs.task == 'backfill'
+        if: env.TASK == 'backfill'
         run: python scripts/build_features.py
 
       - name: Evaluate candidates (no-write)
-        if: inputs.task == 'evaluate'
+        if: env.TASK == 'evaluate'
         run: python scripts/train_model.py --evaluate-candidates

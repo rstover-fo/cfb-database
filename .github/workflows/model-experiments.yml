@@ -1,0 +1,65 @@
+name: Model Feature Experiments
+
+# Manual runner for the starter-pack feature-candidate experiment chain
+# (docs/plans/2026-07-28-001-feat-starter-pack-model-features-plan.md).
+# Each task is an explicit, bounded step; run from the feature branch via
+# workflow_dispatch. Uses the same session-pooler secret as daily-load.yml.
+#
+# Requires repo secret:
+#   SUPABASE_DB_URL - Supabase SESSION pooler URL
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "Which experiment step to run"
+        required: true
+        type: choice
+        options:
+          - screen            # U1: read-only candidate screen, prints verdict table
+          - migrate-048       # U2: apply migration 048 (idempotent)
+          - backfill          # U3: full features.team_week rebuild (2015+)
+          - evaluate          # U4: no-write candidate evaluation vs production baseline
+
+concurrency:
+  group: model-experiments
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+jobs:
+  run:
+    name: Run ${{ inputs.task }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[compute]"
+      - name: Set dlt destination credentials
+        # dlt requires the postgres:// scheme (see .dlt/secrets.toml.example)
+        run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
+
+      - name: Screen candidates (read-only)
+        if: inputs.task == 'screen'
+        run: python scripts/screen_week_features.py
+
+      - name: Apply migration 048
+        if: inputs.task == 'migrate-048'
+        run: python scripts/run_migrations.py --file src/schemas/migrations/048_team_week_drive_trajectory.sql
+
+      - name: Full feature substrate rebuild
+        if: inputs.task == 'backfill'
+        run: python scripts/build_features.py
+
+      - name: Evaluate candidates (no-write)
+        if: inputs.task == 'evaluate'
+        run: python scripts/train_model.py --evaluate-candidates

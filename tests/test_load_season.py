@@ -4,6 +4,7 @@ from scripts.load_season import (
     ESTIMATED_CALLS,
     IMMUTABLE_ONCE_FINAL,
     MIN_GAMES_FOR_FINISHED_SEASON,
+    PRESEASON_INPUT_SOURCES,
     SEASON_COMPLETE_THRESHOLD,
     SOURCE_ORDER,
     load_season,
@@ -24,6 +25,46 @@ class TestUpcomingScheduleSeason:
     def test_in_season_months_skip(self):
         for month in (8, 9, 10, 11, 12):
             assert upcoming_schedule_season(2026, month) is None
+
+
+class TestPreseasonInputRefresh:
+    """The upcoming season's preseason inputs had no ingest path at all.
+
+    Off-season the unattended run targets `year - 1`, which is finished, so
+    every IMMUTABLE_ONCE_FINAL source is skipped -- and only games/betting
+    were refreshed for the upcoming season. On 2026-07-28 the 2026 schedule
+    had been loaded for months while stats.player_returning,
+    ratings.sp_ratings, recruiting.team_talent and recruiting.team_recruiting
+    all had zero 2026 rows, so 2026 returning production could not be
+    answered at all.
+    """
+
+    def test_preseason_sources_are_real_sources(self):
+        assert set(PRESEASON_INPUT_SOURCES) <= set(SOURCE_ORDER)
+
+    def test_returning_production_source_is_covered(self):
+        """stats carries /player/returning -> stats.player_returning ->
+        marts.returning_production, the table that was empty for 2026."""
+        assert "stats" in PRESEASON_INPUT_SOURCES
+
+    def test_rosters_is_not_a_preseason_input(self):
+        """One call per team (~150/day) and it does not firm up until August,
+        when the normal in-season path picks it up anyway."""
+        assert "rosters" not in PRESEASON_INPUT_SOURCES
+
+    def test_the_refresh_is_cheap(self):
+        """It runs every off-season day, so it has to stay far away from the
+        plays/rosters fan-out that exhausted the quota in the first place."""
+        est = sum(ESTIMATED_CALLS.get(s, 50) for s in PRESEASON_INPUT_SOURCES)
+        assert est <= 100, f"preseason refresh costs ~{est} calls/day"
+
+    def test_dry_run_reports_the_preseason_refresh(self, capsys):
+        load_season(season=2025, sources=["games"], dry_run=True, upcoming_schedule=2026)
+
+        out = capsys.readouterr().out
+        assert "2026 preseason inputs" in out
+        for src in PRESEASON_INPUT_SOURCES:
+            assert src in out
 
 
 class TestMetricsWpWiring:

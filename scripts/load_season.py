@@ -153,6 +153,36 @@ def sources_to_skip(active_sources, season_final: bool, allow_skip: bool):
     return [s for s in active_sources if s in IMMUTABLE_ONCE_FINAL]
 
 
+# Sources that carry the UPCOMING season's preseason inputs, refreshed
+# off-season alongside the schedule.
+#
+# WHY THIS EXISTS. Off-season the unattended path resolves `season` to
+# `get_current_season()` = `year - 1`, and that season is finished, so every
+# source in IMMUTABLE_ONCE_FINAL is skipped -- correctly, its data cannot
+# change. But the skip left the upcoming season with no ingest at all beyond
+# the games/betting schedule refresh below. CFBD publishes returning
+# production (/player/returning), preseason SP+ (/ratings/sp), talent and
+# team recruiting for a season during the spring and summer, and nothing in
+# the daily path ever asked for them: on 2026-07-28, with the 2026 schedule
+# loaded since spring, stats.player_returning, ratings.sp_ratings,
+# recruiting.team_talent and recruiting.team_recruiting all had zero 2026
+# rows, so marts.returning_production could not answer "returning production
+# for 2026" and features.team_week had no preseason-known substrate.
+#
+# These are the cheap, season-grain sources (~45 calls total, versus ~2,000
+# for plays/rosters), so running them daily through the off-season costs
+# roughly nothing and self-heals the moment CFBD publishes each one: an
+# unpublished endpoint returns an empty list or a 400 that the source modules
+# already log and skip, which merges nothing rather than failing. `rosters` is
+# deliberately NOT here -- it is one call per team (~150/day) and does not
+# firm up until August, when the normal in-season path picks it up.
+#
+# scripts/probe_offseason_availability.py reports, per endpoint, whether CFBD
+# has published a given season yet; use it to tell "loader is broken" from
+# "CFBD is merely early".
+PRESEASON_INPUT_SOURCES = ("stats", "ratings", "recruiting")
+
+
 def upcoming_schedule_season(season: int, month: int) -> int | None:
     """Return the next season to schedule-refresh during the off-season.
 
@@ -181,8 +211,9 @@ def load_season(
         dry_run: If True, show plan without executing
         skip_refresh: If True, skip mart refresh after loading
         weekly: If True, load game_stats week-by-week (~35K rows per merge)
-        upcoming_schedule: If set, also refresh this season's schedule tables
-            (games source only) after the main load
+        upcoming_schedule: If set, also refresh this season's schedule and
+            betting lines plus its preseason inputs (PRESEASON_INPUT_SOURCES)
+            after the main load
 
     Returns:
         Summary dict with timing and row counts
@@ -271,9 +302,14 @@ def load_season(
         print(f"\n  Total estimated:  ~{total_est:,} calls")
         print(f"  Budget remaining: {remaining:,} calls")
         if upcoming_schedule:
+            preseason_est = sum(ESTIMATED_CALLS.get(s, 50) for s in PRESEASON_INPUT_SOURCES)
             print(
                 f"  + Refresh {upcoming_schedule} schedule + betting lines "
                 "(games + betting sources, ~20 calls)"
+            )
+            print(
+                f"  + Refresh {upcoming_schedule} preseason inputs "
+                f"({', '.join(PRESEASON_INPUT_SOURCES)}, ~{preseason_est:,} calls)"
             )
         if not skip_refresh:
             print("  + Refresh all materialized views after loading")
@@ -327,9 +363,18 @@ def load_season(
     # skipping it would lose exactly the preseason line-movement history the
     # append-only snapshot feature exists to capture.
     if upcoming_schedule:
+        preseason_runners = {
+            "stats": lambda: run_stats_pipeline(years=[upcoming_schedule]),
+            "ratings": lambda: run_ratings_pipeline(years=[upcoming_schedule]),
+            "recruiting": lambda: run_recruiting_pipeline(years=[upcoming_schedule]),
+        }
         upcoming_runners = {
             "games_upcoming": lambda: run_games_pipeline(years=[upcoming_schedule]),
             "betting_upcoming": lambda: run_betting_pipeline(years=[upcoming_schedule]),
+            # Preseason inputs (returning production, SP+, talent, recruiting):
+            # published progressively through the spring/summer, so ask daily
+            # and let an unpublished endpoint no-op.
+            **{f"{src}_upcoming": preseason_runners[src] for src in PRESEASON_INPUT_SOURCES},
         }
         for name, runner in upcoming_runners.items():
             logger.info(f"Refreshing upcoming season {upcoming_schedule}: {name}...")

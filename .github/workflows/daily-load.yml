@@ -13,8 +13,11 @@ name: Daily Season Load
 #                       (scripts/generate_recaps.py)
 #
 # The rate limiter's JSON state resets every run (ephemeral runner). That is
-# accepted: a full daily season load is ~730 estimated calls, ~22K/month worst
-# case against the 125K monthly budget (Tier 4; see .dlt/config.toml).
+# accepted for now (see docs/solutions/best-practices/2026-07-28-cfbd-api-usage-audit.md
+# F1). Estimated daily cost against the 125K/month Tier 4 budget
+# (.dlt/config.toml): off-season ~730 calls/day (~22K/month, immutable-season
+# skip active); in-season worst case ~2,430 calls/day (~73K/month), dominated
+# by the per-game /plays/stats fan-out (audit F2).
 
 on:
   schedule:

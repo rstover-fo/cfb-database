@@ -207,8 +207,9 @@ cfb-database/
 In-repo skills (`.claude/skills/`): `cfbd-api` (API conventions and traps), `schema-migrations` (migration workflow, grants/RLS lessons, refresh chains, column contracts), `dlt-pipelines` (source conventions, budget discipline, test patterns). In-repo agents (`.claude/agents/`): `pipeline-engineer` (builds sources), `modeling-scientist` (feature/model work with leak-free and pre-registration guardrails, plus output plausibility review), `schema-architect` (read-only schema-diff reviewer). Cloud and local sessions both see these; `~/.claude/skills/cfbd-api` is a symlink to the main checkout's copy for sibling-repo sessions.
 
 ### Postgres Best Practices (Supabase)
+Location: `.claude/skills/supabase-postgres-best-practices/` (Supabase's official skill, vendored via `npx skills add supabase/agent-skills`; pinned in `skills-lock.json` — re-run the install to upgrade)
 
-Apply these guidelines when designing schema and writing queries:
+The skill carries the full rules catalog with examples and query-plan analysis. The floor that always applies when designing schema and writing queries:
 
 **CRITICAL priority:**
 - Add indexes on WHERE and JOIN columns

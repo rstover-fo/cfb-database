@@ -121,6 +121,11 @@ PRESEASON_042_COLUMNS = (
     "prior_def_stuff_rate",
 )
 
+# Migration 048. Sourced from core.drives, a different table than off_std's
+# marts.play_epa, so its NULL count can diverge independently -- reported on
+# its own rather than folded into null_std.
+DRIVE_048_COLUMNS = ("off_ppd",)
+
 
 # =============================================================================
 # Pure helpers -- no I/O, no DB, unit-tested directly (tests/test_build_features.py).
@@ -445,6 +450,31 @@ def_week_agg AS (
     FROM plays_wi
     GROUP BY defense, week_index
 ),
+-- Migration 048 (starter-pack plan U3, KTD6): exact per-drive points from
+-- core.drives' score delta, not the TD=7/FG=3 estimate marts.scoring_opportunities
+-- uses. Same week-bucket-then-LATERAL-sum pattern as off_week_agg/def_week_agg
+-- above -- pre-aggregate to (team, week_index) once, then sum over
+-- week_index < s.week_index per row.
+drives_wi AS (
+    SELECT
+        d.offense AS team,
+        d.start_offense_score,
+        d.end_offense_score,
+        CASE WHEN g.season_type = 'postseason' THEN 100 + g.week ELSE g.week END AS week_index
+    FROM core.drives d
+    JOIN core.games g ON g.id = d.game_id
+    WHERE g.season = %(season)s
+),
+off_drive_week_agg AS (
+    SELECT
+        team,
+        week_index,
+        SUM(end_offense_score - start_offense_score) AS sum_points,
+        COUNT(*) AS n_drives
+    FROM drives_wi
+    WHERE start_offense_score IS NOT NULL AND end_offense_score IS NOT NULL
+    GROUP BY team, week_index
+),
 -- stats.game_havoc, joined by game_id for the week_index window (design doc
 -- section 1e). defense__* = havoc that team's DEFENSE generated;
 -- offense__* = havoc generated AGAINST that team's OFFENSE (havoc allowed).
@@ -523,6 +553,10 @@ SELECT
     stdd.def_epa_per_play_allowed,
     stdd.def_success_rate_allowed,
     stdd.def_explosiveness_rate_allowed,
+    -- Migration 048: season-to-date offensive points per drive, same NULL
+    -- rule as the off_epa_per_play family above (NULL, not 0, before the
+    -- team's first qualifying prior drive).
+    ROUND((odwa.sum_points / NULLIF(odwa.n_drives, 0))::numeric, 5) AS off_ppd,
     ROUND((hv.def_havoc_events / NULLIF(hv.def_plays, 0))::numeric, 5) AS havoc_rate_defense,
     ROUND((hv.off_havoc_events_allowed / NULLIF(hv.off_plays_allowed, 0))::numeric, 5)
         AS havoc_rate_offense_allowed,
@@ -645,6 +679,13 @@ LEFT JOIN LATERAL (
 ) stdd ON true
 LEFT JOIN LATERAL (
     SELECT
+        SUM(odwa.sum_points) AS sum_points,
+        SUM(odwa.n_drives) AS n_drives
+    FROM off_drive_week_agg odwa
+    WHERE odwa.team = s.team AND odwa.week_index < s.week_index
+) odwa ON true
+LEFT JOIN LATERAL (
+    SELECT
         SUM(hwa.def_havoc_events) AS def_havoc_events,
         SUM(hwa.def_plays) AS def_plays,
         SUM(hwa.off_havoc_events_allowed) AS off_havoc_events_allowed,
@@ -687,6 +728,8 @@ _INSERT_COLUMNS = [
     "def_epa_per_play_allowed",
     "def_success_rate_allowed",
     "def_explosiveness_rate_allowed",
+    # Migration 048 -- screened (KTD4/KTD6), not yet in the fitted_v1 vector.
+    "off_ppd",
     "havoc_rate_defense",
     "havoc_rate_offense_allowed",
     "returning_ppa_pct",
@@ -816,6 +859,7 @@ def build_season_rows(conn, season: int, elo_current: dict[str, tuple[float, int
                 "def_epa_per_play_allowed": row["def_epa_per_play_allowed"],
                 "def_success_rate_allowed": row["def_success_rate_allowed"],
                 "def_explosiveness_rate_allowed": row["def_explosiveness_rate_allowed"],
+                "off_ppd": row["off_ppd"],
                 "havoc_rate_defense": row["havoc_rate_defense"],
                 "havoc_rate_offense_allowed": row["havoc_rate_offense_allowed"],
                 "returning_ppa_pct": row["returning_ppa_pct"],
@@ -876,12 +920,15 @@ def summarize(rows: list[dict]) -> dict:
         # number on this line looks healthy. A broken join and genuinely sparse
         # data are indistinguishable without the count.
         **{f"null_{col}": sum(1 for r in rows if r[col] is None) for col in PRESEASON_042_COLUMNS},
+        **{f"null_{col}": sum(1 for r in rows if r[col] is None) for col in DRIVE_048_COLUMNS},
     }
 
 
 def print_gate(season: int, rows: list[dict]) -> None:
     s = summarize(rows)
-    extra = " ".join(f"null_{col}={s[f'null_{col}']}" for col in PRESEASON_042_COLUMNS)
+    extra = " ".join(
+        f"null_{col}={s[f'null_{col}']}" for col in (*PRESEASON_042_COLUMNS, *DRIVE_048_COLUMNS)
+    )
     print(
         f"FEATURES_GATE season={season} rows={s['rows']} null_elo={s['null_elo']} "
         f"null_adj_epa={s['null_adj_epa']} adj_src_week={s['adj_src_week']} "

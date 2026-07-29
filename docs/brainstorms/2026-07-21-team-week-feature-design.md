@@ -147,6 +147,16 @@ family filters `pe.defense = team`. `success = (epa>0)`, `explosive =
 | `def_epa_per_play_allowed` | NUMERIC(8,5) | `AVG(pe.epa)` where `defense=team` | `week_index<WI` |
 | `def_success_rate_allowed` | NUMERIC(8,5) | `AVG(pe.success)` where `defense=team` | `week_index<WI` |
 | `def_explosiveness_rate_allowed` | NUMERIC(8,5) | `AVG(pe.explosive)` where `defense=team` | `week_index<WI` |
+| `off_ppd` | NUMERIC(8,5) | `AVG(d.end_offense_score - d.start_offense_score)` over `core.drives d` (joined to `core.games` for `week_index`) where `d.offense=team` -- exact score-delta points per drive (KTD6), not a TD=7/FG=3 estimate | `week_index<WI` |
+
+**Migration 048 (2026-07-29).** `off_ppd` is the sole survivor of the six
+Starter Pack drive-efficiency/weekly-trajectory candidates
+(`docs/plans/2026-07-28-001-feat-starter-pack-model-features-plan.md` U1-U2;
+see the 2026-07-28 screen entries below for the other five candidates' final
+numbers). It is populated here as a season-to-date column, same family and
+NULL rule as `off_epa_per_play`, but has **not** yet entered the `fitted_v1`
+vector (§2a) -- it earns a vector slot only if U4's isolated walk-forward
+gate passes.
 
 ### 1e. Havoc (season-to-date, sourced from `stats.game_havoc`)
 
@@ -237,12 +247,13 @@ comment; a true-preseason snapshot loader is a follow-up.
 | `computed_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | write time |
 | `feature_build_version` | VARCHAR | `build_features.py` version tag (audit) |
 
-**Column count: 39** (8 identity + 1 Elo + 5 adj-EPA + 7 season-to-date + 2
-havoc + **15** preseason + 2 bookkeeping). Was 31 before migration 042 added
+**Column count: 40** (8 identity + 1 Elo + 5 adj-EPA + **8** season-to-date + 2
+havoc + 15 preseason + 2 bookkeeping). Was 31 before migration 042 added
 five screened preseason columns, 36 before migration 046 added
-`hc_first_year_unproven`, and 37 before migration 047 added the draft pair.
-The fitted vector is 22: 046 SWAPPED slot 17 rather than extending, 047 adds
-two (§2a).
+`hc_first_year_unproven`, 37 before migration 047 added the draft pair, and 39
+before migration 048 added `off_ppd`. The fitted vector is still 22 (§2a):
+046 SWAPPED slot 17 rather than extending, 047 adds two, and 048's `off_ppd`
+is populated but not yet in the vector -- it enters only if U4's gate passes.
 
 ### 1h. Explicitly EXCLUDED
 
@@ -668,3 +679,12 @@ Per-family assertions the gate runs against the freshly-built `team_week`
   walk-forward refit comparison under the source plan's strict no-regression
   gate (held-out MAE improves, Brier and ATS hold); it enters the fitted_v1
   vector only if that gate passes.
+- **Migration 048 (U2) = `off_ppd`, populated but not in the fitted_v1
+  vector.** Season-to-date offensive points per drive, same family and NULL
+  rule as `off_epa_per_play` (§1d). This is the only substrate change U2
+  makes -- the other five 2026-07-28 candidates were rejected by the screen
+  (in-memory only, U1) and never reach a migration, per KTD3's substrate-only
+  disposition for anything that ships a column without clearing the model
+  gate. `off_ppd` itself is in exactly that state until U4 resolves it: a
+  populated, screened, transparency-only column, one gate away from the
+  vector or from staying substrate-only for good.

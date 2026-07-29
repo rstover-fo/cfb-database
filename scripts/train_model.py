@@ -122,16 +122,29 @@ DIFF_FEATURE_COLUMNS: list[tuple[str, str]] = [
     ("d_prior_def_stuff_rate", "prior_def_stuff_rate"),
 ]
 
+
+def feature_names_for(diff_feature_columns: list[tuple[str, str]]) -> list[str]:
+    """``[intercept, neutral_site, *diff names]`` for an arbitrary diff-column
+    list. Factored out so the U4 candidate-evaluation harness
+    (``evaluate_candidate_diff_columns``) can build the same positional
+    contract for a feature list that differs from the production
+    ``DIFF_FEATURE_COLUMNS``, without duplicating this line."""
+    return [INTERCEPT, NEUTRAL_SITE] + [name for name, _ in diff_feature_columns]
+
+
 # Fixed design-matrix column order (index = position): intercept, neutral_site,
-# then the 18 diffs. 20 features + unpenalized intercept (was 15 before
-# migration 042).
+# then the 20 diffs. 22 features + unpenalized intercept (was 15 before
+# migration 042, 20 before 047; migration 048's off_ppd is populated in
+# features.team_week but not in DIFF_FEATURE_COLUMNS -- it is evaluated
+# in-memory via CANDIDATE_DIFF_FEATURE_COLUMNS (U4) and enters this list only
+# on a gate pass, see docs/brainstorms/2026-07-21-team-week-feature-design.md).
 #
 # CHANGING THIS LIST INVALIDATES EVERY STORED FIT. score_fitted.load_fit builds
 # its coefficient vector by name lookup over FEATURE_NAMES, so a fit written
 # before a column was added raises KeyError rather than degrading gracefully.
 # Every train_through_season vintage has to be retrained in the same deploy that
 # ships the column -- there is no partial-rollout path.
-FEATURE_NAMES: list[str] = [INTERCEPT, NEUTRAL_SITE] + [name for name, _ in DIFF_FEATURE_COLUMNS]
+FEATURE_NAMES: list[str] = feature_names_for(DIFF_FEATURE_COLUMNS)
 
 INTERCEPT_IDX = 0
 NEUTRAL_SITE_IDX = 1
@@ -142,11 +155,14 @@ NEUTRAL_SITE_IDX = 1
 TEAM_WEEK_SOURCE_COLUMNS: list[str] = [col for _, col in DIFF_FEATURE_COLUMNS]
 
 
-def penalty_mask() -> np.ndarray:
-    """Ridge penalty mask over FEATURE_NAMES: 1.0 for every penalized column,
-    0.0 for the unpenalized intercept (design section 2a). ``neutral_site`` IS
-    penalized (only the intercept is exempt)."""
-    mask = np.ones(len(FEATURE_NAMES), dtype=np.float64)
+def penalty_mask(feature_names: list[str] | None = None) -> np.ndarray:
+    """Ridge penalty mask over ``feature_names`` (default ``FEATURE_NAMES``):
+    1.0 for every penalized column, 0.0 for the unpenalized intercept (design
+    section 2a). ``neutral_site`` IS penalized (only the intercept is exempt).
+    ``INTERCEPT_IDX`` (0) is a fixed positional constant regardless of the diff
+    list, so this holds for any candidate feature-name list too (U4)."""
+    names = FEATURE_NAMES if feature_names is None else feature_names
+    mask = np.ones(len(names), dtype=np.float64)
     mask[INTERCEPT_IDX] = 0.0
     return mask
 
@@ -181,7 +197,11 @@ def _impute_value(value, mean_c) -> float:
 
 
 def build_feature_vector(
-    game_row: dict, home_tw: dict, away_tw: dict, feature_means: dict
+    game_row: dict,
+    home_tw: dict,
+    away_tw: dict,
+    feature_means: dict,
+    diff_feature_columns: list[tuple[str, str]] | None = None,
 ) -> np.ndarray:
     """Raw (pre-standardization) design row for one game, in FEATURE_NAMES order.
 
@@ -189,14 +209,19 @@ def build_feature_vector(
     are the home/away ``features.team_week`` source-column dicts. ``feature_means``
     is ``{team_week_column: mean_c}`` (design section 2b): a NULL home- or away-
     side value is imputed to ``mean_c`` **before** differencing, i.e. the missing
-    side is treated as a league-average team. Returns a length-``len(FEATURE_NAMES)``
-    numpy array; standardization (section 2c) is applied separately by
-    ``standardize`` so the imputation/diff step stays inspectable on its own.
+    side is treated as a league-average team. ``diff_feature_columns`` defaults to
+    the production ``DIFF_FEATURE_COLUMNS``; the U4 candidate-evaluation harness
+    passes a candidate list so the same vectorization runs for a feature set that
+    is not yet (or never) in the shipped vector. Returns a length-``2 +
+    len(diff_feature_columns)`` numpy array; standardization (section 2c) is
+    applied separately by ``standardize`` so the imputation/diff step stays
+    inspectable on its own.
     """
-    x = np.empty(len(FEATURE_NAMES), dtype=np.float64)
+    columns = DIFF_FEATURE_COLUMNS if diff_feature_columns is None else diff_feature_columns
+    x = np.empty(2 + len(columns), dtype=np.float64)
     x[INTERCEPT_IDX] = 1.0
     x[NEUTRAL_SITE_IDX] = 1.0 if game_row.get("neutral_site") else 0.0
-    for offset, (_feat_name, col) in enumerate(DIFF_FEATURE_COLUMNS):
+    for offset, (_feat_name, col) in enumerate(columns):
         mean_c = feature_means.get(col)
         home_val = _impute_value(home_tw.get(col), mean_c)
         away_val = _impute_value(away_tw.get(col), mean_c)
@@ -204,17 +229,25 @@ def build_feature_vector(
     return x
 
 
-def standardize(X: np.ndarray, diff_means: dict, diff_stds: dict) -> np.ndarray:
+def standardize(
+    X: np.ndarray,
+    diff_means: dict,
+    diff_stds: dict,
+    feature_names: list[str] | None = None,
+) -> np.ndarray:
     """Z-score the standardized diff features of ``X`` using frozen train-window
     stats (design section 2c). ``intercept`` and ``neutral_site`` pass through
     unchanged. A zero (or missing) std maps that column to 0.0 -- a constant
     feature carries no signal. Accepts a single row (1-D) or a design matrix
     (2-D) and returns the same shape; the input is never mutated.
+    ``feature_names`` defaults to ``FEATURE_NAMES`` (U4 passes a candidate name
+    list built by ``feature_names_for``).
     """
+    names = FEATURE_NAMES if feature_names is None else feature_names
     arr = np.asarray(X, dtype=np.float64)
     single = arr.ndim == 1
     Z = np.atleast_2d(arr).astype(np.float64, copy=True)
-    for i, feat_name in enumerate(FEATURE_NAMES):
+    for i, feat_name in enumerate(names):
         if feat_name in (INTERCEPT, NEUTRAL_SITE):
             continue
         mean = float(diff_means[feat_name])
@@ -226,28 +259,37 @@ def standardize(X: np.ndarray, diff_means: dict, diff_stds: dict) -> np.ndarray:
     return Z[0] if single else Z
 
 
-def compute_feature_means(team_week_rows: list[dict]) -> dict:
+def compute_feature_means(
+    team_week_rows: list[dict], source_columns: list[str] | None = None
+) -> dict:
     """Frozen imputation means (design section 2b step 1): the mean of each
-    ``TEAM_WEEK_SOURCE_COLUMNS`` value over the given team-week rows (both home
-    and away sides of the TRAIN games), ignoring NULLs. A column that is NULL in
-    every row maps to None (``_impute_value`` then falls back to 0.0)."""
+    source column's value over the given team-week rows (both home and away
+    sides of the TRAIN games), ignoring NULLs. A column that is NULL in every
+    row maps to None (``_impute_value`` then falls back to 0.0).
+    ``source_columns`` defaults to ``TEAM_WEEK_SOURCE_COLUMNS`` (U4 passes a
+    candidate source-column list)."""
+    columns = TEAM_WEEK_SOURCE_COLUMNS if source_columns is None else source_columns
     means: dict = {}
-    for col in TEAM_WEEK_SOURCE_COLUMNS:
+    for col in columns:
         vals = [float(r[col]) for r in team_week_rows if r.get(col) is not None]
         means[col] = (sum(vals) / len(vals)) if vals else None
     return means
 
 
-def compute_diff_stats(X_raw: np.ndarray) -> tuple[dict, dict]:
+def compute_diff_stats(
+    X_raw: np.ndarray, feature_names: list[str] | None = None
+) -> tuple[dict, dict]:
     """Per-column mean/std over the imputed (pre-standardization) TRAIN design
     matrix, for the standardized diff features only (design section 2c). Uses
     population std (ddof=0), so re-standardizing this same matrix reproduces
     unit variance exactly. Returns ``(diff_means, diff_stds)`` keyed by
-    ``feature_name``."""
+    ``feature_name``. ``feature_names`` defaults to ``FEATURE_NAMES`` (U4 passes
+    a candidate name list)."""
+    names = FEATURE_NAMES if feature_names is None else feature_names
     X_raw = np.asarray(X_raw, dtype=np.float64)
     diff_means: dict = {}
     diff_stds: dict = {}
-    for i, feat_name in enumerate(FEATURE_NAMES):
+    for i, feat_name in enumerate(names):
         if feat_name in (INTERCEPT, NEUTRAL_SITE):
             continue
         col = X_raw[:, i]
@@ -360,19 +402,25 @@ def platt_fit(logits: np.ndarray, y: np.ndarray) -> tuple[float, float]:
 
 
 def build_design(
-    games: list[dict], feature_means: dict
+    games: list[dict],
+    feature_means: dict,
+    diff_feature_columns: list[tuple[str, str]] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Vectorize game dicts into ``(X_raw, y_margin, y_win)`` (pre-standardization).
 
     Each game dict needs ``neutral_site``, ``home_points``, ``away_points`` and
     the ``home_tw`` / ``away_tw`` team-week source-column dicts. Pure (numpy +
     dicts only), so the whole train/score path is testable without a DB.
+    ``diff_feature_columns`` defaults to the production ``DIFF_FEATURE_COLUMNS``
+    (U4 passes a candidate list through to ``build_feature_vector``).
     """
     x_rows = []
     y_margin = []
     y_win = []
     for g in games:
-        x_rows.append(build_feature_vector(g, g["home_tw"], g["away_tw"], feature_means))
+        x_rows.append(
+            build_feature_vector(g, g["home_tw"], g["away_tw"], feature_means, diff_feature_columns)
+        )
         margin = float(g["home_points"] - g["away_points"])
         y_margin.append(margin)
         y_win.append(1.0 if g["home_points"] > g["away_points"] else 0.0)
@@ -433,12 +481,15 @@ def get_db_url() -> str:
     return url
 
 
-def _train_games_query() -> str:
+def _train_games_query(source_columns: list[str] | None = None) -> str:
     """SELECT completed games in the given seasons joined to both team-week
-    sides. Column list is built from TEAM_WEEK_SOURCE_COLUMNS so it never drifts
-    from the feature contract."""
-    home_cols = ",\n           ".join(f"h.{c} AS home_{c}" for c in TEAM_WEEK_SOURCE_COLUMNS)
-    away_cols = ",\n           ".join(f"a.{c} AS away_{c}" for c in TEAM_WEEK_SOURCE_COLUMNS)
+    sides. Column list is built from ``source_columns`` (default
+    ``TEAM_WEEK_SOURCE_COLUMNS``) so it never drifts from the feature contract;
+    U4 passes a candidate source-column list to pull an extra team_week column
+    the production query does not need."""
+    columns = TEAM_WEEK_SOURCE_COLUMNS if source_columns is None else source_columns
+    home_cols = ",\n           ".join(f"h.{c} AS home_{c}" for c in columns)
+    away_cols = ",\n           ".join(f"a.{c} AS away_{c}" for c in columns)
     return f"""
         SELECT g.id AS game_id, g.season, g.season_type, g.week,
                g.neutral_site, g.home_points, g.away_points,
@@ -457,13 +508,16 @@ def _train_games_query() -> str:
     """
 
 
-def fetch_games(conn, seasons: list[int]) -> list[dict]:
+def fetch_games(conn, seasons: list[int], source_columns: list[str] | None = None) -> list[dict]:
     """Completed games for the seasons, each with both team-week source-column
-    dicts split out into ``home_tw`` / ``away_tw`` (design section 3 step 2)."""
+    dicts split out into ``home_tw`` / ``away_tw`` (design section 3 step 2).
+    ``source_columns`` defaults to ``TEAM_WEEK_SOURCE_COLUMNS`` (U4 passes a
+    candidate source-column list so the query pulls the extra column)."""
     import psycopg2.extras
 
+    columns = TEAM_WEEK_SOURCE_COLUMNS if source_columns is None else source_columns
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(_train_games_query(), (list(seasons),))
+        cur.execute(_train_games_query(columns), (list(seasons),))
         raw = cur.fetchall()
 
     games: list[dict] = []
@@ -477,8 +531,8 @@ def fetch_games(conn, seasons: list[int]) -> list[dict]:
                 "neutral_site": r["neutral_site"],
                 "home_points": r["home_points"],
                 "away_points": r["away_points"],
-                "home_tw": {c: r[f"home_{c}"] for c in TEAM_WEEK_SOURCE_COLUMNS},
-                "away_tw": {c: r[f"away_{c}"] for c in TEAM_WEEK_SOURCE_COLUMNS},
+                "home_tw": {c: r[f"home_{c}"] for c in columns},
+                "away_tw": {c: r[f"away_{c}"] for c in columns},
             }
         )
     return games
@@ -779,6 +833,308 @@ def fetch_refit_state(conn) -> tuple[int | None, list[int]]:
     return latest_finished, existing
 
 
+# =============================================================================
+# U4 -- isolated walk-forward candidate evaluation (starter-pack plan,
+# docs/plans/2026-07-28-001-feat-starter-pack-model-features-plan.md, KTD2).
+#
+# Reuses every fitting function above with a CANDIDATE diff-feature list in
+# place of the production DIFF_FEATURE_COLUMNS -- a mode, not a duplicate
+# fitting harness. The candidate fit is held ENTIRELY in memory: it is never
+# passed to persist_fit, so features.model_coefficients / model_metadata are
+# untouched and every stored production fit stays exactly as it was.
+# =============================================================================
+
+# The sole U1/U2 survivor (screened-and-shipped-to-evaluation per the design
+# doc's 2026-07-28 v2 confirmation entry): off_ppd, offensive points per drive.
+# The other five 2026-07-28 candidates were rejected by the screen and never
+# reach this evaluation step.
+OFF_PPD_FEATURE = ("d_off_ppd", "off_ppd")
+CANDIDATE_DIFF_FEATURE_COLUMNS: list[tuple[str, str]] = [*DIFF_FEATURE_COLUMNS, OFF_PPD_FEATURE]
+
+
+def fit_candidate(
+    conn,
+    train_through: int,
+    train_seasons: list[int],
+    diff_feature_columns: list[tuple[str, str]],
+) -> dict | None:
+    """In-memory walk-forward fit for a candidate diff-feature list -- mirrors
+    ``fit_one`` step for step (impute, vectorize, scale, ridge, IRLS, Platt)
+    but returns the frozen fit as a dict instead of persisting it. Returns
+    None when there are no completed games with team_week rows for
+    ``train_seasons`` (mirrors ``fit_one``'s warning-and-skip)."""
+    source_columns = [col for _, col in diff_feature_columns]
+    games = fetch_games(conn, train_seasons, source_columns)
+    if not games:
+        return None
+
+    feature_means = compute_feature_means(collect_team_week_rows(games), source_columns)
+    X_raw, y_margin, y_win = build_design(games, feature_means, diff_feature_columns)
+
+    feature_names = feature_names_for(diff_feature_columns)
+    diff_means, diff_stds = compute_diff_stats(X_raw, feature_names)
+    X_std = standardize(X_raw, diff_means, diff_stds, feature_names)
+
+    mask = penalty_mask(feature_names)
+    beta_margin = ridge_fit(X_std, y_margin, RIDGE_ALPHA, mask)
+    beta_winprob = irls_logistic(X_std, y_win, WINPROB_ALPHA, mask)
+    platt_a, platt_b = platt_fit(X_std @ beta_winprob, y_win)
+
+    return {
+        "train_through": train_through,
+        "n_train": len(games),
+        "feature_means": feature_means,
+        "diff_means": diff_means,
+        "diff_stds": diff_stds,
+        "beta_margin": beta_margin,
+        "beta_winprob": beta_winprob,
+        "platt_a": platt_a,
+        "platt_b": platt_b,
+    }
+
+
+def score_candidate_game(
+    game: dict, fit: dict, diff_feature_columns: list[tuple[str, str]]
+) -> tuple[float, float]:
+    """Frozen-candidate-fit prediction for one game: ``(expected_home_margin,
+    home_win_prob)``. Same math as ``score_fitted.score_game``, generalized to
+    an arbitrary diff-feature list; kept here rather than in score_fitted.py so
+    the evaluation harness never imports the production scoring/write path."""
+    feature_names = feature_names_for(diff_feature_columns)
+    x_raw = build_feature_vector(
+        game, game["home_tw"], game["away_tw"], fit["feature_means"], diff_feature_columns
+    )
+    x_std = standardize(x_raw, fit["diff_means"], fit["diff_stds"], feature_names)
+    expected_margin = float(x_std @ fit["beta_margin"])
+    logit = float(x_std @ fit["beta_winprob"])
+    win_prob = platt_transform(logit, fit["platt_a"], fit["platt_b"])
+    return expected_margin, win_prob
+
+
+def evaluate_candidate_diff_columns(
+    conn,
+    diff_feature_columns: list[tuple[str, str]],
+    score_start: int = DEFAULT_SCORE_START,
+    score_end: int = DEFAULT_SCORE_END,
+) -> list[dict]:
+    """Walk-forward isolated evaluation (U4): for each score season S in
+    ``score_start..score_end``, fit a candidate feature list in-memory on
+    ``TRAIN_START_SEASON..S-1`` and score S's completed games with THAT
+    season's own frozen candidate fit -- never the production fit, and never
+    persisted (KTD2). Returns one dict per scored game; the caller aggregates
+    and compares against the production baseline (see
+    ``aggregate_candidate_metrics`` / ``fetch_production_baseline`` /
+    ``evaluate_gate``).
+    """
+    source_columns = [col for _, col in diff_feature_columns]
+    scored: list[dict] = []
+    for score_season in range(score_start, score_end + 1):
+        train_through = score_season - 1
+        train_seasons = list(range(TRAIN_START_SEASON, score_season))
+        if len(train_seasons) < MIN_TRAIN_SEASONS:
+            continue
+        fit = fit_candidate(conn, train_through, train_seasons, diff_feature_columns)
+        if fit is None:
+            logger.warning(
+                "evaluate_candidate_diff_columns: no train games for train_through=%d; "
+                "skipping score season %d",
+                train_through,
+                score_season,
+            )
+            continue
+
+        test_games = fetch_games(conn, [score_season], source_columns)
+        for g in test_games:
+            expected_margin, win_prob = score_candidate_game(g, fit, diff_feature_columns)
+            scored.append(
+                {
+                    "game_id": g["game_id"],
+                    "season": score_season,
+                    "actual_margin": float(g["home_points"] - g["away_points"]),
+                    "actual_win": 1.0 if g["home_points"] > g["away_points"] else 0.0,
+                    "expected_margin": expected_margin,
+                    "win_prob": win_prob,
+                }
+            )
+    return scored
+
+
+def aggregate_candidate_metrics(scored_games: list[dict], market_by_game: dict[int, dict]) -> dict:
+    """Margin MAE / Brier / ATS hit rate over a scored-game list, matching
+    ``check_backtest.py``'s ``edge_threshold=0`` convention: MAE and Brier are
+    computed over every scored game; ATS is computed only over games with a
+    market spread (pushes excluded from the hit-rate denominator, exactly like
+    the mart). Pure -- ``market_by_game`` is ``{game_id: {"spread": float |
+    None}}`` (the shape ``compute_predictions.fetch_market_from_lines``
+    returns), so this is testable without a DB.
+    """
+    from scripts.compute_predictions import compute_edge
+
+    n = len(scored_games)
+    if n == 0:
+        return {
+            "n_games": 0,
+            "margin_mae": None,
+            "brier": None,
+            "ats_wins": 0,
+            "ats_losses": 0,
+            "ats_pushes": 0,
+            "ats_hit_rate": None,
+        }
+
+    margin_mae = sum(abs(g["expected_margin"] - g["actual_margin"]) for g in scored_games) / n
+    brier = sum((g["win_prob"] - g["actual_win"]) ** 2 for g in scored_games) / n
+
+    wins = losses = pushes = 0
+    for g in scored_games:
+        market = market_by_game.get(g["game_id"]) or {}
+        spread = market.get("spread")
+        _edge, edge_pick = compute_edge(g["expected_margin"], spread)
+        if edge_pick is None:
+            continue
+        actual_cover = g["actual_margin"] + spread
+        if actual_cover == 0:
+            pushes += 1
+        elif (edge_pick == "home" and actual_cover > 0) or (
+            edge_pick == "away" and actual_cover < 0
+        ):
+            wins += 1
+        else:
+            losses += 1
+
+    return {
+        "n_games": n,
+        "margin_mae": margin_mae,
+        "brier": brier,
+        "ats_wins": wins,
+        "ats_losses": losses,
+        "ats_pushes": pushes,
+        "ats_hit_rate": (wins / (wins + losses)) if (wins + losses) else None,
+    }
+
+
+# Production baseline aggregate: the same n-weighted formulas
+# check_backtest.py's AGGREGATE_QUERY uses, restricted to edge_threshold=0 (the
+# unconditional "every scored game" row) and to the candidate's own scored
+# season range, so the two sides of the comparison cover identical games.
+_BASELINE_QUERY = """
+    SELECT
+        SUM(n_games) AS n_games,
+        SUM(ats_wins) AS ats_wins,
+        SUM(ats_losses) AS ats_losses,
+        SUM(margin_mae * n_games) / NULLIF(SUM(n_games), 0) AS margin_mae,
+        SUM(n_scored_win_prob) AS n_scored_win_prob,
+        SUM(brier * n_scored_win_prob) / NULLIF(SUM(n_scored_win_prob), 0) AS brier
+    FROM marts.prediction_accuracy
+    WHERE model_version = %(model_version)s AND edge_threshold = 0
+      AND season BETWEEN %(start)s AND %(end)s
+"""
+
+
+def fetch_production_baseline(conn, score_start: int, score_end: int) -> dict:
+    """The production ``fitted_v1`` per-game accuracy aggregate over the same
+    season range a candidate was scored on, read from
+    ``marts.prediction_accuracy`` (the same surface ``check_backtest.py``
+    reports). Hard error if the mart has no rows for the range -- the gate
+    must never compare a candidate against an empty baseline."""
+    with conn.cursor() as cur:
+        cur.execute(
+            _BASELINE_QUERY,
+            {"model_version": MODEL_VERSION, "start": score_start, "end": score_end},
+        )
+        row = cur.fetchone()
+    if row is None or row[0] is None:
+        raise RuntimeError(
+            f"No marts.prediction_accuracy rows for model_version={MODEL_VERSION!r} "
+            f"edge_threshold=0 seasons {score_start}-{score_end}; run "
+            "scripts/score_fitted.py --backfill and refresh the mart before evaluating"
+        )
+    n_games, ats_wins, ats_losses, margin_mae, n_scored_win_prob, brier = row
+    ats_wins = int(ats_wins or 0)
+    ats_losses = int(ats_losses or 0)
+    return {
+        "n_games": int(n_games),
+        "margin_mae": float(margin_mae) if margin_mae is not None else None,
+        "brier": float(brier) if brier is not None else None,
+        "ats_wins": ats_wins,
+        "ats_losses": ats_losses,
+        "ats_hit_rate": (ats_wins / (ats_wins + ats_losses)) if (ats_wins + ats_losses) else None,
+    }
+
+
+def evaluate_gate(candidate: dict, baseline: dict) -> dict:
+    """The R5 adoption rule (KTD5), stated mechanically over a candidate vs.
+    baseline metrics dict: held-out MAE must IMPROVE (strictly lower) and
+    neither Brier nor ATS hit rate may DEGRADE (candidate at least as good).
+    This is the decision rule the printed report states explicitly -- the gate
+    itself stays a human call applied to that report, exactly like
+    ``check_backtest.py`` never fails on its own numbers.
+    """
+    mae_delta = candidate["margin_mae"] - baseline["margin_mae"]
+    brier_delta = candidate["brier"] - baseline["brier"]
+    ats_delta = candidate["ats_hit_rate"] - baseline["ats_hit_rate"]
+    mae_improves = mae_delta < 0.0
+    brier_holds = brier_delta <= 0.0
+    ats_holds = ats_delta >= 0.0
+    return {
+        "mae_delta": mae_delta,
+        "brier_delta": brier_delta,
+        "ats_delta": ats_delta,
+        "mae_improves": mae_improves,
+        "brier_holds": brier_holds,
+        "ats_holds": ats_holds,
+        "verdict": "PASS" if (mae_improves and brier_holds and ats_holds) else "FAIL",
+    }
+
+
+def run_candidate_evaluation(
+    conn, score_start: int = DEFAULT_SCORE_START, score_end: int = DEFAULT_SCORE_END
+) -> dict:
+    """Drive U4 end to end: fit+score the candidate walk-forward, aggregate its
+    metrics, fetch the production baseline over the identical season range,
+    apply the gate, and print the comparison report. Never writes
+    features.model_coefficients / features.model_metadata. Returns the full
+    report dict for callers that want it (e.g. tests, or a future --json mode)."""
+    from scripts.compute_predictions import fetch_market_from_lines
+
+    scored = evaluate_candidate_diff_columns(
+        conn, CANDIDATE_DIFF_FEATURE_COLUMNS, score_start, score_end
+    )
+    game_ids = [g["game_id"] for g in scored]
+    market_by_game = fetch_market_from_lines(conn, game_ids)
+    candidate_metrics = aggregate_candidate_metrics(scored, market_by_game)
+    baseline_metrics = fetch_production_baseline(conn, score_start, score_end)
+    gate = evaluate_gate(candidate_metrics, baseline_metrics)
+
+    print(
+        f"CANDIDATE_EVAL_GATE candidates={','.join(name for name, _ in (OFF_PPD_FEATURE,))} "
+        f"seasons={score_start}-{score_end} "
+        f"n_candidate={candidate_metrics['n_games']} n_baseline={baseline_metrics['n_games']}"
+    )
+    print(
+        f"  margin_mae candidate={candidate_metrics['margin_mae']:.4f} "
+        f"baseline={baseline_metrics['margin_mae']:.4f} "
+        f"delta={gate['mae_delta']:+.4f} improves={gate['mae_improves']}"
+    )
+    print(
+        f"  brier      candidate={candidate_metrics['brier']:.6f} "
+        f"baseline={baseline_metrics['brier']:.6f} "
+        f"delta={gate['brier_delta']:+.6f} holds={gate['brier_holds']}"
+    )
+    print(
+        f"  ats_hit_rate candidate={candidate_metrics['ats_hit_rate']:.4f} "
+        f"baseline={baseline_metrics['ats_hit_rate']:.4f} "
+        f"delta={gate['ats_delta']:+.4f} holds={gate['ats_holds']}"
+    )
+    print(f"CANDIDATE_EVAL_VERDICT {gate['verdict']}")
+
+    return {
+        "candidate_metrics": candidate_metrics,
+        "baseline_metrics": baseline_metrics,
+        "gate": gate,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Train fitted_v1 walk-forward ridge-margin + IRLS/Platt win-prob "
@@ -801,6 +1157,15 @@ def main() -> None:
         "then exit. A clean no-op when the newest fit is already current -- safe "
         "to run daily. What the daily workflow runs.",
     )
+    parser.add_argument(
+        "--evaluate-candidates",
+        action="store_true",
+        help="U4 (starter-pack plan): isolated walk-forward evaluation of "
+        "CANDIDATE_DIFF_FEATURE_COLUMNS (currently off_ppd) against the production "
+        "fitted_v1 baseline in marts.prediction_accuracy. Never writes "
+        "features.model_coefficients / features.model_metadata; prints the "
+        "MAE/Brier/ATS comparison and the R5 gate verdict, then exits.",
+    )
     args = parser.parse_args()
     start, end = args.seasons
     if start > end:
@@ -811,6 +1176,10 @@ def main() -> None:
 
     conn = psycopg2.connect(get_db_url())
     try:
+        if args.evaluate_candidates:
+            run_candidate_evaluation(conn, start, end)
+            return
+
         if args.refit_if_stale:
             latest_finished, existing = fetch_refit_state(conn)
             if latest_finished is None:

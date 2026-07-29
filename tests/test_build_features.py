@@ -406,13 +406,15 @@ class TestOffPpd:
         assert s["null_off_ppd"] == 1
         assert s["null_std"] == 0
 
-    def test_not_yet_in_the_fitted_v1_vector(self):
-        """U3 populates the column but adoption (U5) is gated on U4's isolated
-        walk-forward comparison -- off_ppd must not appear in the production
-        feature list until that gate passes."""
-        from scripts.train_model import TEAM_WEEK_SOURCE_COLUMNS
+    def test_adopted_into_the_fitted_v1_vector(self):
+        """U4's isolated walk-forward gate passed (workflow run 30413381476:
+        margin_mae 14.6600 vs 14.9078, brier 0.173669 vs 0.180879, ats_hit_rate
+        0.5029 vs 0.4899 -- all improve), so U5 adopts off_ppd into the
+        production feature list."""
+        from scripts.train_model import DIFF_FEATURE_COLUMNS, TEAM_WEEK_SOURCE_COLUMNS
 
-        assert "off_ppd" not in TEAM_WEEK_SOURCE_COLUMNS
+        assert "off_ppd" in TEAM_WEEK_SOURCE_COLUMNS
+        assert ("d_off_ppd", "off_ppd") in DIFF_FEATURE_COLUMNS
 
 
 class TestFittedVectorContract:

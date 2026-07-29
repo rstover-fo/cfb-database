@@ -8,9 +8,12 @@ name: Model Feature Experiments
 # drive/trajectory candidates — verdicts recorded in
 # docs/brainstorms/2026-07-21-team-week-feature-design.md ("Decisions made").
 # The screen is pre-registered run-once: do not re-run it against the same
-# frame without a new pre-registration. off_ppd survived (screen v2) and now
-# runs the U4 isolated walk-forward evaluation via the evaluate-candidates
-# task below.
+# frame without a new pre-registration. off_ppd survived (screen v2), then
+# passed the U4 isolated walk-forward gate here (run 30413381476) and is now
+# adopted into DIFF_FEATURE_COLUMNS -- see the design doc for the gate
+# numbers. The evaluate-candidates task that ran it has been retired: with
+# off_ppd already in production, re-running it would double-count the column.
+# A future candidate would re-add an evaluate-candidates-shaped task here.
 #
 # workflow_dispatch only: no PR-event trigger, so unmerged branch code never
 # runs with the database secret.
@@ -26,10 +29,9 @@ on:
         required: true
         type: choice
         options:
-          - screen                # pre-registered candidate screen v1 (already run; see header)
-          - screen-v2             # v2 amendment: control = frozen walk-forward model margin (run-once)
-          - backfill              # full features.team_week rebuild (2015+)
-          - evaluate-candidates   # U4: isolated walk-forward off_ppd gate (never writes model tables)
+          - screen            # pre-registered candidate screen v1 (already run; see header)
+          - screen-v2         # v2 amendment: control = frozen walk-forward model margin (run-once)
+          - backfill          # full features.team_week rebuild (2015+)
 
 concurrency:
   group: model-experiments
@@ -69,7 +71,3 @@ jobs:
       - name: Full feature substrate rebuild
         if: inputs.task == 'backfill'
         run: python scripts/build_features.py --from 2015
-
-      - name: Evaluate off_ppd candidate — isolated walk-forward gate (read-only)
-        if: inputs.task == 'evaluate-candidates'
-        run: python scripts/train_model.py --evaluate-candidates

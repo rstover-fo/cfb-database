@@ -18,7 +18,7 @@ config: RESTAPIConfig = {
         "base_url": "https://api.collegefootballdata.com/",
         "auth": {
             "type": "bearer",
-            "token": dlt.secrets["cfbd_api_key"],
+            "token": dlt.secrets["sources.cfbd.api_key"],
         },
     },
     "resource_defaults": {

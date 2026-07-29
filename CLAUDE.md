@@ -230,7 +230,7 @@ Apply these guidelines when designing schema and writing queries:
 - Use partial indexes for filtered queries (e.g., active season only)
 
 ### CFBD API Skill
-Location: `~/.claude/skills/cfbd-api/`
+Location: `.claude/skills/cfbd-api/` (canonical, in-repo — available to cloud/CI sessions). `~/.claude/skills/cfbd-api` is a symlink to the main checkout's copy so local cfb-app/cfb-scout sessions get it too.
 
 Use this skill when building or debugging anything that calls the CFBD API:
 

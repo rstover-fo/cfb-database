@@ -120,11 +120,25 @@ DIFF_FEATURE_COLUMNS: list[tuple[str, str]] = [
     ("d_draft_departures", "draft_departures"),
     ("d_prior_def_line_yards", "prior_def_line_yards"),
     ("d_prior_def_stuff_rate", "prior_def_stuff_rate"),
+    # Migration 048 -- starter-pack plan U1-U4 (screened, then gated). Season-
+    # to-date offensive points per drive, the sole survivor of the six
+    # 2026-07-28 drive/trajectory candidates: v1 screen +0.0700 (below the 0.08
+    # floor), v2 model-margin-control screen +0.0901 (p=5.7e-12, floor pass).
+    # U4's isolated walk-forward gate (workflow run 30413381476, 2018-2025,
+    # n=21,815 held-out games) then PASSED against the production baseline:
+    # margin_mae 14.6600 vs 14.9078 (improves), brier 0.173669 vs 0.180879
+    # (improves), ats_hit_rate 0.5029 vs 0.4899 (improves). Adopted per KTD2 --
+    # every train_through_season vintage is retrained by the next
+    # --refit-if-stale run.
+    ("d_off_ppd", "off_ppd"),
 ]
 
+
 # Fixed design-matrix column order (index = position): intercept, neutral_site,
-# then the 18 diffs. 20 features + unpenalized intercept (was 15 before
-# migration 042).
+# then the 21 diffs. 23 features + unpenalized intercept (was 15 before
+# migration 042, 20 before 047, 21 before 048's off_ppd -- see
+# docs/brainstorms/2026-07-21-team-week-feature-design.md for the full
+# migration history and each column's screened/gated numbers).
 #
 # CHANGING THIS LIST INVALIDATES EVERY STORED FIT. score_fitted.load_fit builds
 # its coefficient vector by name lookup over FEATURE_NAMES, so a fit written

@@ -147,6 +147,16 @@ family filters `pe.defense = team`. `success = (epa>0)`, `explosive =
 | `def_epa_per_play_allowed` | NUMERIC(8,5) | `AVG(pe.epa)` where `defense=team` | `week_index<WI` |
 | `def_success_rate_allowed` | NUMERIC(8,5) | `AVG(pe.success)` where `defense=team` | `week_index<WI` |
 | `def_explosiveness_rate_allowed` | NUMERIC(8,5) | `AVG(pe.explosive)` where `defense=team` | `week_index<WI` |
+| `off_ppd` | NUMERIC(8,5) | `AVG(d.end_offense_score - d.start_offense_score)` over `core.drives d` (joined to `core.games` for `week_index`) where `d.offense=team` -- exact score-delta points per drive (KTD6), not a TD=7/FG=3 estimate | `week_index<WI` |
+
+**Migration 048 (2026-07-29).** `off_ppd` is the sole survivor of the six
+Starter Pack drive-efficiency/weekly-trajectory candidates
+(`docs/plans/2026-07-28-001-feat-starter-pack-model-features-plan.md` U1-U2;
+see the 2026-07-28 screen entries below for the other five candidates' final
+numbers). It is populated here as a season-to-date column, same family and
+NULL rule as `off_epa_per_play`, but has **not** yet entered the `fitted_v1`
+vector (§2a) -- it earns a vector slot only if U4's isolated walk-forward
+gate passes.
 
 ### 1e. Havoc (season-to-date, sourced from `stats.game_havoc`)
 
@@ -237,12 +247,13 @@ comment; a true-preseason snapshot loader is a follow-up.
 | `computed_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | write time |
 | `feature_build_version` | VARCHAR | `build_features.py` version tag (audit) |
 
-**Column count: 39** (8 identity + 1 Elo + 5 adj-EPA + 7 season-to-date + 2
-havoc + **15** preseason + 2 bookkeeping). Was 31 before migration 042 added
+**Column count: 40** (8 identity + 1 Elo + 5 adj-EPA + **8** season-to-date + 2
+havoc + 15 preseason + 2 bookkeeping). Was 31 before migration 042 added
 five screened preseason columns, 36 before migration 046 added
-`hc_first_year_unproven`, and 37 before migration 047 added the draft pair.
-The fitted vector is 22: 046 SWAPPED slot 17 rather than extending, 047 adds
-two (§2a).
+`hc_first_year_unproven`, 37 before migration 047 added the draft pair, and 39
+before migration 048 added `off_ppd`. The fitted vector is still 22 (§2a):
+046 SWAPPED slot 17 rather than extending, 047 adds two, and 048's `off_ppd`
+is populated but not yet in the vector -- it enters only if U4's gate passes.
 
 ### 1h. Explicitly EXCLUDED
 
@@ -348,9 +359,23 @@ All non-game-level features are **home-minus-away diffs** of a single
 | 19 | `d_draft_departures` | diff | `draft_departures` | yes | yes |
 | 20 | `d_prior_def_line_yards` | diff | `prior_def_line_yards` | yes | yes |
 | 21 | `d_prior_def_stuff_rate` | diff | `prior_def_stuff_rate` | yes | yes |
+| 22 | `d_off_ppd` | diff | `off_ppd` | yes | yes |
 
-**22 features + intercept** (was 15 before migration 042, 20 before 047). Same vector feeds
-both the ridge-margin and the IRLS-logistic fit.
+**23 features + intercept** (was 15 before migration 042, 20 before 047, 22 before 048).
+Same vector feeds both the ridge-margin and the IRLS-logistic fit.
+
+**Migration 048 — `d_off_ppd` is an addition, not a swap; the vector grows to
+23.** Starter-pack plan U1–U5
+(`docs/plans/2026-07-28-001-feat-starter-pack-model-features-plan.md`): the
+sole survivor of the six 2026-07-28 drive/trajectory candidates, screened at
++0.0901 (v2, model-margin control, p=5.7e-12), then adopted after U4's
+isolated walk-forward gate PASSED — held-out 2018–2025 (n=21,815 games,
+GitHub Actions run 30413381476): `margin_mae` 14.6600 vs. the production
+baseline's 14.9078 (improves), `brier` 0.173669 vs. 0.180879 (improves),
+`ats_hit_rate` 0.5029 vs. 0.4899 (improves). All three of R5's criteria
+improved rather than merely held, clearing the strict no-regression bar with
+room to spare. Every `train_through_season` vintage is retrained by the next
+`--refit-if-stale` run under the new 23-feature contract.
 
 **Why these five are diffed like everything else.** They are team properties,
 so home-minus-away is the same construction used throughout.
@@ -668,3 +693,65 @@ Per-family assertions the gate runs against the freshly-built `team_week`
   walk-forward refit comparison under the source plan's strict no-regression
   gate (held-out MAE improves, Brier and ATS hold); it enters the fitted_v1
   vector only if that gate passes.
+- **Migration 048 (U2) = `off_ppd`, populated but not in the fitted_v1
+  vector.** Season-to-date offensive points per drive, same family and NULL
+  rule as `off_epa_per_play` (§1d). This is the only substrate change U2
+  makes -- the other five 2026-07-28 candidates were rejected by the screen
+  (in-memory only, U1) and never reach a migration, per KTD3's substrate-only
+  disposition for anything that ships a column without clearing the model
+  gate. `off_ppd` itself is in exactly that state until U4 resolves it: a
+  populated, screened, transparency-only column, one gate away from the
+  vector or from staying substrate-only for good.
+- **U4 isolated walk-forward gate: PASS (2026-07-29, GitHub Actions run
+  30409267925 → 30413381476, `evaluate-candidates` task on
+  `model-experiments.yml`).** Candidate `d_off_ppd` fit walk-forward in
+  memory (never touching `features.model_coefficients` / `model_metadata`)
+  and scored held-out 2018-2025 (n=21,815 games) against the production
+  `fitted_v1` baseline read from `marts.prediction_accuracy`:
+
+  | metric | candidate | baseline | delta | R5 requires |
+  |---|---|---|---|---|
+  | `margin_mae` | 14.6600 | 14.9078 | −0.2478 | improves |
+  | `brier` | 0.173669 | 0.180879 | −0.007210 | holds |
+  | `ats_hit_rate` | 0.5029 | 0.4899 | +0.0131 | holds |
+
+  All three moved in the favorable direction -- MAE improved and neither
+  Brier nor ATS merely held, both improved too. The R5 gate (KTD5, a human
+  decision over the printed report, per the source plan) reads this as a
+  clear PASS.
+- **U5 adoption: `off_ppd` merged into `DIFF_FEATURE_COLUMNS` /
+  `FEATURE_NAMES` as `d_off_ppd` (position 22), taking the fitted_v1 vector
+  from 22 to 23 features (§2a).** Unlike migration 046 (a swap), this is a
+  pure addition -- nothing is superseded. Per KTD2, adoption rides the
+  self-healing refit: `train_model.py --refit-if-stale` detects the
+  `TEAM_WEEK_SOURCE_COLUMNS` set-mismatch against every stored fit's frozen
+  `feature_means` keys and retrains every `train_through_season` vintage on
+  its next run; there is no partial-rollout path. `MODEL_VERSION` stays
+  `fitted_v1`, matching the 15→20→22 precedent.
+- **The U4 evaluation harness (`fit_candidate`, `score_candidate_game`,
+  `evaluate_candidate_diff_columns`, `aggregate_candidate_metrics`,
+  `fetch_production_baseline`, `evaluate_gate`, `run_candidate_evaluation`,
+  `OFF_PPD_FEATURE`, `CANDIDATE_DIFF_FEATURE_COLUMNS`, the
+  `--evaluate-candidates` CLI mode, and the workflow's `evaluate-candidates`
+  task) was retired from `scripts/train_model.py` /
+  `.github/workflows/model-experiments.yml` once `off_ppd` adopted.** With
+  `off_ppd` already live in `DIFF_FEATURE_COLUMNS`, re-running that harness
+  unchanged would silently double-count the column (it appended
+  `OFF_PPD_FEATURE` onto whatever `DIFF_FEATURE_COLUMNS` currently is) --
+  a latent bug, not inert history, so it was removed rather than left
+  disabled-by-comment. This run's numbers are preserved here and in the CI
+  logs (run 30413381476) as the permanent record; a future candidate would
+  reintroduce an evaluate-candidates-shaped mode following this same
+  pattern. The parametrized-signature refactor of `build_feature_vector` /
+  `standardize` / `compute_feature_means` / `compute_diff_stats` /
+  `build_design` / `penalty_mask` / `fetch_games` that the harness needed
+  was reverted alongside it -- with no remaining caller for the optional
+  arguments, keeping them was unused generality rather than reusable
+  infrastructure.
+- **Starter-pack plan closed.** U1-U5 (`docs/plans/2026-07-28-001-feat-starter-pack-model-features-plan.md`)
+  are complete: one of six candidates survived screening and evaluation and
+  shipped (`off_ppd`); five were rejected and are documented above as
+  retired, not to be re-tested without a new pre-registration. U6 (the
+  optional volatility-modulated calibration experiment) was dropped with its
+  substrate when `vol_net_epa` was rejected in the 2026-07-28 screen -- see
+  that entry above -- so the plan's Definition of Done is met without it.

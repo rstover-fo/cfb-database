@@ -347,6 +347,76 @@ class TestMigration042Columns:
         FEATURE_ROWS_QUERY % {"season": 2026}
 
 
+class TestOffPpd:
+    """Migration 048 (starter-pack plan U3, KTD6): season-to-date offensive
+    points per drive from core.drives' exact score delta, same season-to-date
+    family and leak rule as off_epa_per_play (design doc section 1d)."""
+
+    def test_column_is_selected_and_written(self):
+        from scripts.build_features import _INSERT_COLUMNS, FEATURE_ROWS_QUERY
+
+        assert "off_ppd" in _INSERT_COLUMNS
+        assert "AS off_ppd" in FEATURE_ROWS_QUERY
+
+    def test_points_are_the_exact_score_delta_not_an_estimate(self):
+        """KTD6: end_offense_score - start_offense_score, not a TD=7/FG=3
+        estimate like marts.scoring_opportunities uses."""
+        from scripts.build_features import FEATURE_ROWS_QUERY
+
+        assert "end_offense_score - start_offense_score" in FEATURE_ROWS_QUERY
+
+    def test_aggregation_is_as_of_leak_free(self):
+        """The off_ppd LATERAL sums only week_index < s.week_index, the same
+        predicate off_week_agg/def_week_agg use for the sibling season-to-date
+        columns."""
+        from scripts.build_features import FEATURE_ROWS_QUERY
+
+        block = FEATURE_ROWS_QUERY[FEATURE_ROWS_QUERY.index("off_drive_week_agg odwa") :]
+        block = block[: block.index(") odwa ON true")]
+        assert "odwa.week_index < s.week_index" in block
+
+    def test_drive_source_is_core_drives_joined_to_games_for_the_season(self):
+        from scripts.build_features import FEATURE_ROWS_QUERY
+
+        block = FEATURE_ROWS_QUERY[FEATURE_ROWS_QUERY.index("drives_wi AS") :]
+        block = block[: block.index("off_drive_week_agg AS")]
+        assert "core.drives d" in block
+        assert "JOIN core.games g ON g.id = d.game_id" in block
+        assert "g.season = %(season)s" in block
+
+    def test_null_gate_reports_off_ppd_separately_from_null_std(self):
+        """Sourced from a different table (core.drives) than off_epa_per_play
+        (marts.play_epa), so a broken drives join must not hide behind a
+        healthy null_std count."""
+        from scripts.build_features import DRIVE_048_COLUMNS, PRESEASON_042_COLUMNS, summarize
+
+        assert DRIVE_048_COLUMNS == ("off_ppd",)
+        rows = [
+            {
+                "elo_pregame": 1500.0,
+                "adj_epa_off": 0.0,
+                "adj_epa_source": "week",
+                "off_epa_per_play": 0.05,
+                "off_ppd": None,
+                "games_played_to_date": 1,
+                **{col: 0.0 for col in PRESEASON_042_COLUMNS},
+            }
+        ]
+        s = summarize(rows)
+        assert s["null_off_ppd"] == 1
+        assert s["null_std"] == 0
+
+    def test_adopted_into_the_fitted_v1_vector(self):
+        """U4's isolated walk-forward gate passed (workflow run 30413381476:
+        margin_mae 14.6600 vs 14.9078, brier 0.173669 vs 0.180879, ats_hit_rate
+        0.5029 vs 0.4899 -- all improve), so U5 adopts off_ppd into the
+        production feature list."""
+        from scripts.train_model import DIFF_FEATURE_COLUMNS, TEAM_WEEK_SOURCE_COLUMNS
+
+        assert "off_ppd" in TEAM_WEEK_SOURCE_COLUMNS
+        assert ("d_off_ppd", "off_ppd") in DIFF_FEATURE_COLUMNS
+
+
 class TestFittedVectorContract:
     def test_every_shipped_screen_column_is_a_model_feature(self):
         from scripts.screen_preseason_features import SHIPPED_BY_DECISION, SHIPPED_COLUMNS

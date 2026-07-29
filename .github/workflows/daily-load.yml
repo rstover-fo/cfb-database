@@ -14,7 +14,7 @@ name: Daily Season Load
 #
 # The rate limiter's JSON state resets every run (ephemeral runner). That is
 # accepted: a full daily season load is ~730 estimated calls, ~22K/month worst
-# case against the 75K monthly budget.
+# case against the 125K monthly budget (Tier 4; see .dlt/config.toml).
 
 on:
   schedule:

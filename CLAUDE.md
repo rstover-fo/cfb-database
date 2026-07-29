@@ -204,6 +204,8 @@ cfb-database/
 
 ## Skills & Guidelines
 
+In-repo skills (`.claude/skills/`): `cfbd-api` (API conventions and traps), `schema-migrations` (migration workflow, grants/RLS lessons, refresh chains, column contracts), `dlt-pipelines` (source conventions, budget discipline, test patterns). In-repo agents (`.claude/agents/`): `pipeline-engineer` (builds sources), `modeling-scientist` (feature/model work with leak-free and pre-registration guardrails, plus output plausibility review), `schema-architect` (read-only schema-diff reviewer). Cloud and local sessions both see these; `~/.claude/skills/cfbd-api` is a symlink to the main checkout's copy for sibling-repo sessions.
+
 ### Postgres Best Practices (Supabase)
 
 Apply these guidelines when designing schema and writing queries:
@@ -335,4 +337,4 @@ Historical depth varies by endpoint:
 
 - `pyproject.toml` -- project metadata, dependencies, CLI entry point (`cfb-pipeline`), ruff config (line-length 100, py311), pytest config
 - `.dlt/config.toml` -- runtime config: worker count, file chunking, monthly API budget (125,000). Year ranges live in `src/pipelines/config/years.py`
-- Supabase MCP server enabled in `.claude/settings.local.json` for interactive SQL during development
+- Supabase MCP server defined in `.mcp.json` (project-scoped, committed; token via `SUPABASE_ACCESS_TOKEN` env var — never committed) and enabled per-machine in `.claude/settings.local.json`

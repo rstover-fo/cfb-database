@@ -94,7 +94,14 @@ disables the skip entirely, so a backfill is never silently turned into a no-op;
 **Where the per-game fan-out actually lives:** `stats`, not `plays`. `plays` is
 year+week (16 calls/season). The `stats` source's `play_stats` resource issues one
 `/plays/stats` call **per game** (~1,640/season) and `rosters` one per team, which
-is the cost that exhausted the quota. Because the source is not uniformly priced --
+is the cost that exhausted the quota. `play_stats` now requests **completed games
+only** -- an unplayed game has no play stats, and from 2026-08-01 (when
+`get_current_season()` rolled to 2026, a season that is not final, so nothing was
+skipped) the daily load walked all 1,638 *scheduled* 2026 games every day, was
+429'd partway through, and failed the whole `stats` extract package -- discarding
+`player_returning`'s already-fetched payload and burst-blocking `ratings` and
+`game_stats` behind it. Note that failure mode: a resource that dies inside a
+source takes every sibling resource's data with it. Because the source is not uniformly priced --
 its other seven resources are one call per year -- anything running daily must name
 resources rather than take the whole source: `--sources stats:player_returning`
 (one call), and `PRESEASON_STATS_RESOURCES` in `load_season.py` for the automated

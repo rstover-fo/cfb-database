@@ -330,8 +330,25 @@ def play_stats_resource(
                     )
                     games.extend(postseason)
 
-                    game_ids_for_year = [g["id"] for g in games if g.get("id")]
-                    logger.info(f"  Found {len(game_ids_for_year)} games for {year}")
+                    # Only COMPLETED games. An unplayed game has no play stats,
+                    # so requesting one spends a call to receive nothing --
+                    # and this resource spends one call per game. From
+                    # 2026-08-01 `get_current_season()` returned 2026, the
+                    # season was not final so nothing was skipped, and the
+                    # daily load walked all 1,638 *scheduled* 2026 games every
+                    # day. It got ~370 in before CFBD started answering 429,
+                    # which failed the whole `stats` extract package (taking
+                    # player_returning's already-fetched payload down with it)
+                    # and burst-blocked `ratings` and `game_stats` behind it.
+                    # Three consecutive red daily loads, 2026-08-04 onward.
+                    scheduled = [g for g in games if g.get("id")]
+                    completed = [g for g in scheduled if g.get("completed")]
+                    game_ids_for_year = [g["id"] for g in completed]
+                    logger.info(
+                        f"  Found {len(scheduled)} games for {year}, "
+                        f"{len(game_ids_for_year)} completed "
+                        f"({len(scheduled) - len(game_ids_for_year)} unplayed, skipped)"
+                    )
 
                     year_total = 0
                     for i, game_id in enumerate(game_ids_for_year):

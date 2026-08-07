@@ -103,6 +103,39 @@ class TestScheduledTeamResolution:
         assert "away_team" in _SCHEDULED_TEAMS_QUERY
         assert "UNION" in _SCHEDULED_TEAMS_QUERY.upper()
 
+    def test_an_unloaded_schedule_fails_loudly(self):
+        """load_season reports a returning runner as [OK]. An empty team list
+        would therefore print a successful roster load that made zero /roster
+        requests -- the same silent no-op that left core.roster with no 2026
+        rows to begin with."""
+        from unittest.mock import patch
+
+        import pytest
+
+        from src.pipelines.run import run_rosters_pipeline
+
+        with (
+            patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://x"),
+            patch("psycopg2.connect", return_value=FakeConn([])),
+            pytest.raises(RuntimeError, match="No teams with scheduled games"),
+        ):
+            run_rosters_pipeline(teams=None, years=[2027])
+
+    def test_the_failure_names_the_fix(self):
+        """An operator hitting this needs to know to load the schedule."""
+        from unittest.mock import patch
+
+        import pytest
+
+        from src.pipelines.run import run_rosters_pipeline
+
+        with (
+            patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://x"),
+            patch("psycopg2.connect", return_value=FakeConn([])),
+            pytest.raises(RuntimeError, match=r"--sources games --season 2027"),
+        ):
+            run_rosters_pipeline(teams=None, years=[2027])
+
     def test_rosters_without_teams_or_years_is_an_error(self):
         """Refuse rather than guess: with no years there is no schedule to
         resolve against, and mode-derived years would silently load the wrong
@@ -138,3 +171,11 @@ class FakeConn:
 
     def cursor(self):
         return FakeCursor(self._rows)
+
+    def close(self):
+        pass
+
+
+def test_fakeconn_close_is_a_noop():
+    """run_rosters_pipeline closes the connection in a finally block."""
+    FakeConn([]).close()

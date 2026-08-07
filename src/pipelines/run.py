@@ -758,8 +758,19 @@ def run_rosters_pipeline(
         finally:
             conn.close()
         if not teams:
-            print(f"No scheduled teams found for {years}; nothing to load.")
-            return None
+            # Never return quietly here. load_season records a returning
+            # runner as [OK], so an empty resolution would report a
+            # successful roster load that made zero /roster requests -- the
+            # same silent-no-op shape as the finished-season skip turning a
+            # backfill into nothing, and as `--sources rosters` logging "No
+            # runner for source" and exiting 0, which is why core.roster had
+            # no 2026 rows in the first place.
+            raise RuntimeError(
+                f"No teams with scheduled games in {years}: core.games has no rows for "
+                f"{'that season' if len(years) == 1 else 'those seasons'}. /roster is "
+                "requested per team, so there is nothing to ask for. Load the schedule "
+                f"first (--sources games --season {years[0]}), or pass an explicit team list."
+            )
         print(f"Resolved {len(teams)} teams with {years} games from core.games")
 
     years_str = f"years={years}" if years else f"mode={mode}"

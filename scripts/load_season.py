@@ -338,6 +338,14 @@ def load_season(
         logger.error(f"Unknown sources: {invalid}. Valid: {sorted(valid)}")
         return {"error": f"Unknown sources: {invalid}"}
 
+    # Run in SOURCE_ORDER regardless of how the caller typed them. That list
+    # is dependency order, not presentation order: `--sources rosters,games`
+    # would otherwise resolve roster teams from core.games BEFORE loading the
+    # schedule that populates it, failing the roster load and then loading the
+    # games it needed. Sorting here rather than at parse time keeps the
+    # unknown-source error reporting the operator's own spelling.
+    active_sources = sorted(active_sources, key=SOURCE_ORDER.index)
+
     # Drop immutable sources for a finished season before estimating, so the
     # dry-run figure and the budget check reflect what will actually be
     # fetched rather than what would have been.

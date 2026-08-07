@@ -714,14 +714,56 @@ def run_rankings_pipeline(years: list[int] | None = None, mode: str = "increment
     return info
 
 
+_SCHEDULED_TEAMS_QUERY = """
+    SELECT home_team AS team FROM core.games WHERE season = ANY(%s)
+    UNION
+    SELECT away_team FROM core.games WHERE season = ANY(%s)
+    ORDER BY team
+"""
+
+
+def scheduled_teams(conn, years: list[int]) -> list[str]:
+    """Every team with a scheduled game in `years`.
+
+    /roster is one request per team, so the team list is the whole cost of a
+    roster load. Deriving it from the schedule asks for exactly the teams the
+    warehouse has games for -- 350 for 2026, FCS opponents included -- instead
+    of a hand-maintained list that silently rots, or ref.teams' 1,922 rows of
+    which most never play an FBS opponent.
+    """
+    with conn.cursor() as cur:
+        cur.execute(_SCHEDULED_TEAMS_QUERY, (years, years))
+        return [row[0] for row in cur.fetchall() if row[0]]
+
+
 def run_rosters_pipeline(
-    teams: list[str],
+    teams: list[str] | None = None,
     years: list[int] | None = None,
     mode: str = "incremental",
 ):
-    """Run the rosters data pipeline."""
+    """Run the rosters data pipeline.
+
+    `teams=None` resolves the list from the schedule (see scheduled_teams), so
+    an orchestrated load can request a season's rosters without carrying a
+    team list. Passing `teams` explicitly still wins.
+    """
+    if teams is None:
+        if not years:
+            raise ValueError("rosters needs either an explicit team list or years to resolve one")
+        import psycopg2
+
+        conn = psycopg2.connect(_metrics_wp_db_url())
+        try:
+            teams = scheduled_teams(conn, years)
+        finally:
+            conn.close()
+        if not teams:
+            print(f"No scheduled teams found for {years}; nothing to load.")
+            return None
+        print(f"Resolved {len(teams)} teams with {years} games from core.games")
+
     years_str = f"years={years}" if years else f"mode={mode}"
-    print(f"\n=== Loading Rosters Data ({years_str}, teams={teams}) ===\n")
+    print(f"\n=== Loading Rosters Data ({years_str}, {len(teams)} teams) ===\n")
 
     pipeline = dlt.pipeline(
         pipeline_name="cfbd_rosters",

@@ -75,3 +75,66 @@ def test_rosters_source_returns_resource():
 
         # Source should return a list containing the resource
         assert source is not None
+
+
+class TestScheduledTeamResolution:
+    """/roster is one request per team, so the team list IS the cost of a
+    roster load. load_season's `--sources rosters` has no --teams to pass, so
+    the list resolves from the season's schedule."""
+
+    def test_teams_come_from_both_sides_of_the_schedule(self):
+        """An FCS visitor plays exactly one FBS game; missing it would leave a
+        hole in every roster-derived feature for that matchup."""
+        from src.pipelines.run import scheduled_teams
+
+        conn = FakeConn([("Alabama",), ("Chattanooga",), ("Oklahoma",)])
+        assert scheduled_teams(conn, [2026]) == ["Alabama", "Chattanooga", "Oklahoma"]
+
+    def test_null_team_names_are_dropped(self):
+        """A NULL team would become /roster?team=None -- a wasted call."""
+        from src.pipelines.run import scheduled_teams
+
+        assert scheduled_teams(FakeConn([("Alabama",), (None,)]), [2026]) == ["Alabama"]
+
+    def test_query_covers_home_and_away(self):
+        from src.pipelines.run import _SCHEDULED_TEAMS_QUERY
+
+        assert "home_team" in _SCHEDULED_TEAMS_QUERY
+        assert "away_team" in _SCHEDULED_TEAMS_QUERY
+        assert "UNION" in _SCHEDULED_TEAMS_QUERY.upper()
+
+    def test_rosters_without_teams_or_years_is_an_error(self):
+        """Refuse rather than guess: with no years there is no schedule to
+        resolve against, and mode-derived years would silently load the wrong
+        season."""
+        import pytest
+
+        from src.pipelines.run import run_rosters_pipeline
+
+        with pytest.raises(ValueError, match="either an explicit team list or years"):
+            run_rosters_pipeline(teams=None, years=None)
+
+
+class FakeCursor:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, *a, **k):
+        pass
+
+    def fetchall(self):
+        return self._rows
+
+
+class FakeConn:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def cursor(self):
+        return FakeCursor(self._rows)

@@ -714,14 +714,67 @@ def run_rankings_pipeline(years: list[int] | None = None, mode: str = "increment
     return info
 
 
+_SCHEDULED_TEAMS_QUERY = """
+    SELECT home_team AS team FROM core.games WHERE season = ANY(%s)
+    UNION
+    SELECT away_team FROM core.games WHERE season = ANY(%s)
+    ORDER BY team
+"""
+
+
+def scheduled_teams(conn, years: list[int]) -> list[str]:
+    """Every team with a scheduled game in `years`.
+
+    /roster is one request per team, so the team list is the whole cost of a
+    roster load. Deriving it from the schedule asks for exactly the teams the
+    warehouse has games for -- 350 for 2026, FCS opponents included -- instead
+    of a hand-maintained list that silently rots, or ref.teams' 1,922 rows of
+    which most never play an FBS opponent.
+    """
+    with conn.cursor() as cur:
+        cur.execute(_SCHEDULED_TEAMS_QUERY, (years, years))
+        return [row[0] for row in cur.fetchall() if row[0]]
+
+
 def run_rosters_pipeline(
-    teams: list[str],
+    teams: list[str] | None = None,
     years: list[int] | None = None,
     mode: str = "incremental",
 ):
-    """Run the rosters data pipeline."""
+    """Run the rosters data pipeline.
+
+    `teams=None` resolves the list from the schedule (see scheduled_teams), so
+    an orchestrated load can request a season's rosters without carrying a
+    team list. Passing `teams` explicitly still wins.
+    """
+    if teams is None:
+        if not years:
+            raise ValueError("rosters needs either an explicit team list or years to resolve one")
+        import psycopg2
+
+        conn = psycopg2.connect(_metrics_wp_db_url())
+        try:
+            teams = scheduled_teams(conn, years)
+        finally:
+            conn.close()
+        if not teams:
+            # Never return quietly here. load_season records a returning
+            # runner as [OK], so an empty resolution would report a
+            # successful roster load that made zero /roster requests -- the
+            # same silent-no-op shape as the finished-season skip turning a
+            # backfill into nothing, and as `--sources rosters` logging "No
+            # runner for source" and exiting 0, which is why core.roster had
+            # no 2026 rows in the first place.
+            raise RuntimeError(
+                f"No teams with scheduled games in {years}: core.games has no rows for "
+                f"{'that season' if len(years) == 1 else 'those seasons'}. /roster is "
+                "requested per team, so there is nothing to ask for. Load the schedule "
+                f"first (--sources games --season {years[0]}), or pass an explicit team list."
+            )
+        print(f"Resolved {len(teams)} teams with {years} games from core.games")
+
     years_str = f"years={years}" if years else f"mode={mode}"
-    print(f"\n=== Loading Rosters Data ({years_str}, teams={teams}) ===\n")
+    print(f"\n=== Loading Rosters Data ({years_str}, {len(teams)} teams) ===\n")
 
     pipeline = dlt.pipeline(
         pipeline_name="cfbd_rosters",
@@ -831,13 +884,24 @@ def main() -> NoReturn:
     }
 
     if args.source == "all":
-        # Run all pipelines
+        # Run all pipelines. Continuing past a failure is deliberate -- one
+        # broken source should not cost the other twelve their data -- but the
+        # exit code has to carry it, or a scheduled `--source all` reports a
+        # clean load while a source failed. Roster resolution now RAISES on an
+        # unloaded schedule precisely so it cannot no-op silently; swallowing
+        # that here would put the silence straight back.
+        failed = []
         for name, runner in source_runners.items():
             try:
                 runner()
             except Exception as e:
                 print(f"ERROR in {name}: {e}")
+                failed.append(name)
                 continue
+        if failed:
+            show_status()
+            print(f"\n{len(failed)} of {len(source_runners)} sources failed: {', '.join(failed)}")
+            sys.exit(1)
     else:
         runner = source_runners.get(args.source)
         if runner:

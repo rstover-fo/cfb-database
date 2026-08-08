@@ -346,3 +346,33 @@ class TestResourceFilterValidation:
 
         assert "error" in summary
         assert "Unknown stats resource" in summary["error"]
+
+
+class TestDependencyOrdering:
+    """SOURCE_ORDER is dependency order -- "Source loading order matters:
+    dependencies first" -- so the run order cannot be whatever the operator
+    happened to type."""
+
+    def test_sources_run_in_source_order_not_caller_order(self, capsys):
+        """`--sources rosters,games` must load the schedule first: roster
+        teams resolve FROM core.games, so the reverse order fails the roster
+        load and then loads the games it needed."""
+        load_season(season=2026, sources=["rosters", "games"], dry_run=True)
+
+        out = capsys.readouterr().out
+        assert out.index("games") < out.index("rosters")
+
+    def test_ordering_survives_resource_filters(self, capsys):
+        """A "source:res" spec still has to sort by its source name."""
+        load_season(season=2026, sources=["stats:player_returning", "games"], dry_run=True)
+
+        out = capsys.readouterr().out
+        assert out.index("games") < out.index("stats:player_returning")
+
+    def test_unknown_sources_are_reported_before_sorting(self):
+        """SOURCE_ORDER.index would raise on an unknown name; the operator
+        should get the named error instead of a ValueError."""
+        summary = load_season(season=2026, sources=["games", "nonsense"], dry_run=True)
+
+        assert "Unknown sources" in summary["error"]
+        assert "nonsense" in summary["error"]

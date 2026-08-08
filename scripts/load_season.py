@@ -62,7 +62,10 @@ ESTIMATED_CALLS = {
     # backfill run resolves far more missing games and costs proportionally
     # more -- this estimate is for the dry-run printout, not a hard cap.
     "metrics_wp": 70,
-    "rosters": 150,
+    # One call per team, and the team list is the season's schedule -- both
+    # sides, so FCS visitors count. 350 for 2026, not the 150 this said when
+    # it meant "FBS only".
+    "rosters": 350,
 }
 
 
@@ -312,6 +315,7 @@ def load_season(
         run_ratings_pipeline,
         run_recruiting_pipeline,
         run_reference_pipeline,
+        run_rosters_pipeline,
         run_stats_pipeline,
     )
     from src.pipelines.utils.rate_limiter import get_rate_limiter
@@ -333,6 +337,14 @@ def load_season(
     if invalid:
         logger.error(f"Unknown sources: {invalid}. Valid: {sorted(valid)}")
         return {"error": f"Unknown sources: {invalid}"}
+
+    # Run in SOURCE_ORDER regardless of how the caller typed them. That list
+    # is dependency order, not presentation order: `--sources rosters,games`
+    # would otherwise resolve roster teams from core.games BEFORE loading the
+    # schedule that populates it, failing the roster load and then loading the
+    # games it needed. Sorting here rather than at parse time keeps the
+    # unknown-source error reporting the operator's own spelling.
+    active_sources = sorted(active_sources, key=SOURCE_ORDER.index)
 
     # Drop immutable sources for a finished season before estimating, so the
     # dry-run figure and the budget check reflect what will actually be
@@ -430,6 +442,11 @@ def load_season(
         "draft": lambda: run_draft_pipeline(years=[season]),
         "metrics": lambda: run_metrics_pipeline(years=[season]),
         "metrics_wp": lambda: run_metrics_wp_pipeline(seasons=[season]),
+        # Excluded from the default active set above (one call per team), so
+        # this only runs when an operator asks for it by name:
+        # --sources rosters. The team list resolves from the season's
+        # schedule -- no --teams required, unlike the `cfb-pipeline` CLI.
+        "rosters": lambda: run_rosters_pipeline(years=[season]),
     }
 
     results = {}

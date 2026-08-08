@@ -661,6 +661,14 @@ DRIVE_PAIRS_QUERY = """
         lead(CASE WHEN start_period <= 2 THEN 1 ELSE 2 END) OVER w AS next_half
       FROM core.drives
       WHERE season BETWEEN %(start)s AND %(end)s
+        -- Regulation only, filtered BEFORE lead() (PR #71 review, P2):
+        -- "period >= 3 means half 2" sweeps OT periods 5+ in, and OT
+        -- possessions start at the prescribed 25-yard-line spot (zone 3)
+        -- by RULE, not as the physical consequence of the preceding punt/
+        -- turnover -- polluting exactly the zone-3 handoff mass. Filtering
+        -- the CTE source means the last regulation drive's lead() is NULL,
+        -- so regulation->OT pairs drop out entirely.
+        AND start_period BETWEEN 1 AND 4
       WINDOW w AS (PARTITION BY game_id ORDER BY drive_number)
     )
     SELECT dr,
@@ -788,10 +796,11 @@ def run_era(conn, era: str, alpha: float, do_bootstrap: bool, do_validate: bool)
     handoffs = build_handoffs(pairs)
     ep_net = solve_net_ep(shrunk, handoffs)
 
-    se = bootstrap_se(per_game, alpha) if do_bootstrap else {}
-
-    write_era(conn, era, transitions, shrunk, ep, ep_net, absorb_probs, se)
-
+    # Gates run BEFORE the write (PR #71 review, P1): write_era commits, so
+    # validating afterwards published implausible values through
+    # api.expected_points and merely exited nonzero -- the failed 2014-2020
+    # zone-gate run of deploy 31257283280 did exactly that. A gated failure
+    # now leaves the previously-published era untouched.
     if do_validate:
         vz = check_monotone_zone(ep)
         vd = check_monotone_down(ep)
@@ -815,7 +824,15 @@ def run_era(conn, era: str, alpha: float, do_bootstrap: bool, do_validate: bool)
             f"calib_mae_td={mae:.4f}"
         )
         if vz or vd or vnz or not net_sane:
+            logger.error(
+                "Era %s: validation gate failed -- NOT writing; the previously "
+                "published era is untouched",
+                era,
+            )
             return 1
+
+    se = bootstrap_se(per_game, alpha) if do_bootstrap else {}
+    write_era(conn, era, transitions, shrunk, ep, ep_net, absorb_probs, se)
     return 0
 
 

@@ -477,3 +477,42 @@ class TestBuildHandoffs:
 
         h = build_handoffs({("TD", 3, 8): 100})
         assert "TD" not in h
+
+
+class TestGatesBeforeWrite:
+    """PR #71 review, P1: write_era commits, so validating after it published
+    implausible values through api.expected_points and merely exited nonzero
+    (the failed 2014-2020 zone-gate run of deploy 31257283280 did exactly
+    that). The gates must run first; a gated failure must not write."""
+
+    def test_write_era_comes_after_the_gates(self):
+        import inspect
+
+        from scripts.compute_drive_chain import run_era
+
+        body = inspect.getsource(run_era)
+        assert body.index("check_monotone_zone") < body.index("write_era(")
+        assert "NOT writing" in body
+
+    def test_bootstrap_is_not_wasted_on_a_gated_failure(self):
+        """The bootstrap is the expensive step (~200 chain solves); a run
+        that will not publish must not pay for it."""
+        import inspect
+
+        from scripts.compute_drive_chain import run_era
+
+        body = inspect.getsource(run_era)
+        assert body.index("check_monotone_zone") < body.index("bootstrap_se(")
+
+
+class TestHandoffQueryExcludesOvertime:
+    """PR #71 review, P2: OT possessions start at the prescribed spot (zone
+    3) by rule, not as the consequence of the preceding punt/turnover --
+    'period >= 3 is half 2' would sweep periods 5+ into the handoff mass."""
+
+    def test_regulation_filter_precedes_the_window(self):
+        from scripts.compute_drive_chain import DRIVE_PAIRS_QUERY
+
+        q = DRIVE_PAIRS_QUERY.upper()
+        assert "START_PERIOD BETWEEN 1 AND 4" in q
+        assert q.index("START_PERIOD BETWEEN 1 AND 4") < q.index("WINDOW W AS")

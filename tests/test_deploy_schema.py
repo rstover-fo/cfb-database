@@ -32,6 +32,8 @@ class TestComputeScripts:
             # TEMPORARY (P3.2 Lane B) -- see deploy_schema.py's comment.
             "probe_metrics_wp",
             "compute_adjusted_epa_week",
+            # Drive-chain EP model P1 (2026-08-08 plan).
+            "compute_drive_chain",
             "build_features",
             "train_model",
             "score_fitted",

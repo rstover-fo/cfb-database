@@ -73,6 +73,9 @@ COMPUTE_SCRIPTS = {
     # everything else instead of a one-off workflow.
     "probe_metrics_wp",
     "compute_adjusted_epa_week",
+    # Drive-chain EP model (docs/plans/2026-08-08-drive-chain-ep-model-plan.md,
+    # P1): league transition matrices + Goldner-basis EP per era.
+    "compute_drive_chain",
     "build_features",
     "train_model",
     "score_fitted",

@@ -115,13 +115,18 @@ class PostgrestClient:
         *,
         profile: str = "api",
         limit: int = DEFAULT_ROW_CAP,
+        max_rows: int = DEFAULT_ROW_CAP,
     ) -> list[dict[str, Any]]:
         """GET rows from a PostgREST view (Accept-Profile: <profile>).
 
         The row cap is enforced here, not left to the caller: ``limit`` is
-        clamped to ``DEFAULT_ROW_CAP`` even if a larger value is passed in.
+        clamped to ``max_rows`` even if a larger value is passed in.
+        ``max_rows`` defaults to ``DEFAULT_ROW_CAP``; a tool raises it only
+        for a BOUNDED result space it can name (get_expected_points passes
+        its ~170-state era grid's cap -- PR #70 review: the generic cap
+        silently truncated an unfiltered era lookup).
         """
-        capped_limit = min(limit, DEFAULT_ROW_CAP) if limit else DEFAULT_ROW_CAP
+        capped_limit = min(limit, max_rows) if limit else max_rows
         query: dict[str, Any] = dict(params or {})
         query["limit"] = str(capped_limit)
 

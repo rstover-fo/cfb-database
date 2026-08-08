@@ -80,3 +80,20 @@ async def test_docstring_carries_the_interpretation_caveats():
     assert "NOT comparable to CFBD" in doc
     assert "GO-FOR-IT-CONDITIONAL" in doc
     assert "se_boot" in doc
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_default_limit_fits_a_full_era():
+    """PR #70 review, P1: an era's state space is ~160-170 rows, so the
+    generic 100-row cap silently truncated an unfiltered era lookup with no
+    signal to the caller. The default limit must exceed one era's full grid."""
+    route = respx.get(f"{TEST_BASE_URL}/rest/v1/expected_points").mock(
+        return_value=httpx.Response(200, json=[{"state": f"s{i}"} for i in range(170)])
+    )
+
+    result = json.loads(await get_expected_points())
+
+    assert result["count"] == 170
+    assert respx.calls.last.request.url.params["limit"] == "200"
+    assert route.called

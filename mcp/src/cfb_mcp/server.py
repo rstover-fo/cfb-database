@@ -681,6 +681,13 @@ async def get_data_freshness() -> str:
 # ---------------------------------------------------------------------
 
 
+# One era's full state space is ~160-170 rows -- larger than DEFAULT_ROW_CAP,
+# so a cap of 100 silently truncates an unfiltered era lookup with no signal
+# to the caller (PR #70 review, P1). The space is bounded (the state grid is
+# fixed by construction), so the fix is a cap that always fits one era.
+EP_ROW_CAP = 200
+
+
 class EpEra(StrEnum):
     """Rules-era curves for `get_expected_points` -- see api.expected_points.
 
@@ -732,9 +739,7 @@ async def get_expected_points(
             "Historical questions must use the era the game was played in.",
         ),
     ] = EpEra.MODERN,
-    limit: Annotated[
-        int, Field(default=DEFAULT_ROW_CAP, ge=1, le=DEFAULT_ROW_CAP)
-    ] = DEFAULT_ROW_CAP,
+    limit: Annotated[int, Field(default=EP_ROW_CAP, ge=1, le=EP_ROW_CAP)] = EP_ROW_CAP,
 ) -> str:
     """Get house expected points for drive states (down / distance / field position).
 
@@ -773,7 +778,9 @@ async def get_expected_points(
 
     try:
         client = PostgrestClient()
-        rows = await client.select("expected_points", params, profile="api", limit=limit)
+        rows = await client.select(
+            "expected_points", params, profile="api", limit=limit, max_rows=EP_ROW_CAP
+        )
     except PostgrestError as e:
         return e.message
 

@@ -1,6 +1,6 @@
 # CFBD API Endpoints Reference
 
-**Total: 61 endpoints across 15 API categories**
+**Total: 62 endpoints across 15 API categories**
 
 Base URL: `https://api.collegefootballdata.com`
 Auth: API Key required (Bearer token)
@@ -90,7 +90,7 @@ Docs: https://api.collegefootballdata.com/
 |--------|----------|-------------|
 | GET | `/rankings` | Poll rankings (AP, Coaches, CFP) |
 
-### RatingsApi (5 endpoints)
+### RatingsApi (6 endpoints)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/ratings/sp` | SP+ ratings |
@@ -98,6 +98,7 @@ Docs: https://api.collegefootballdata.com/
 | GET | `/ratings/srs` | Simple Rating System |
 | GET | `/ratings/elo` | Elo ratings |
 | GET | `/ratings/fpi` | ESPN FPI ratings |
+| GET | `/ratings/core` | CORE (Context & Opponent-Relative Efficiency) ratings, 2016+ |
 
 ### RecruitingApi (3 endpoints)
 | Method | Endpoint | Description |

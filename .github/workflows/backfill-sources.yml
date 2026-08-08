@@ -1,0 +1,63 @@
+name: Backfill Sources
+
+# Manually dispatched, source-scoped season backfills -- e.g. loading
+# historical seasons for a newly added endpoint without re-ingesting
+# everything else. An explicit --sources scope keeps the per-game fan-outs
+# (stats, plays, rosters) out of the run unless deliberately named; each
+# season costs only what the named sources cost (ratings: ~6 calls/season).
+# Marts refresh once at the end rather than once per season.
+#
+# Requires repo secrets:
+#   CFBD_API_KEY    - collegefootballdata.com API key
+#   SUPABASE_DB_URL - Supabase SESSION pooler URL (see daily-load.yml)
+
+on:
+  workflow_dispatch:
+    inputs:
+      seasons:
+        description: "Season years, space-separated (e.g. 2016 2017 2018)"
+        required: true
+        type: string
+      sources:
+        description: "Comma-separated sources for load_season.py --sources (e.g. ratings, or stats:player_returning)"
+        required: true
+        type: string
+
+# Shares the daily load's concurrency group so a backfill never merges into
+# the same tables while the scheduled load is mid-run; it queues instead.
+concurrency:
+  group: daily-season-load
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  SOURCES__CFBD__API_KEY: ${{ secrets.CFBD_API_KEY }}
+  SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+jobs:
+  backfill:
+    name: Backfill ${{ inputs.sources }} for ${{ inputs.seasons }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[compute]"
+      - name: Set dlt destination credentials
+        # dlt requires the postgres:// scheme (see .dlt/secrets.toml.example)
+        run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
+      - name: Load seasons
+        run: |
+          for season in ${{ inputs.seasons }}; do
+            echo "::group::Season $season"
+            python scripts/load_season.py --season "$season" --sources "${{ inputs.sources }}" --skip-refresh
+            echo "::endgroup::"
+          done
+      - name: Refresh marts
+        run: python scripts/refresh_marts.py

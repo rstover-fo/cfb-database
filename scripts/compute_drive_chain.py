@@ -311,12 +311,12 @@ def shrink(transitions: Counter, alpha: float = DEFAULT_ALPHA) -> dict[tuple, fl
     return shrunk
 
 
-def solve_ep(probs: dict[tuple, float]) -> tuple[dict[str, float], dict[tuple, float]]:
-    """Solve the absorbing chain: EP per transient state + absorption probs.
+def _chain_matrices(probs: dict[tuple, float]):
+    """Shared chain assembly: transient ordering, N = (I-Q)^-1, and R.
 
-    EP = (I - Q)^-1 R v with Q transient->transient, R transient->absorbing,
-    v the ABSORB_VALUES vector. Returns (ep by state, absorption probability
-    by (state, absorbing)).
+    (I - Q) is invertible because every state reaches an absorbing outcome
+    (every drive ends). A target that is neither transient nor absorbing
+    cannot occur: shrink() only emits observed/parent targets.
     """
     transient = sorted({a for (a, _) in probs})
     t_index = {s: i for i, s in enumerate(transient)}
@@ -330,13 +330,19 @@ def solve_ep(probs: dict[tuple, float]) -> tuple[dict[str, float], dict[tuple, f
             Q[t_index[a], t_index[b]] = p
         elif b in a_index:
             R[t_index[a], a_index[b]] = p
-        # A target that is neither transient nor absorbing cannot occur:
-        # shrink() only emits observed/parent targets, all of which are one
-        # of the two.
 
-    # Fundamental matrix; (I - Q) is invertible because every state reaches
-    # an absorbing outcome (every drive ends).
     N = np.linalg.solve(np.eye(nt) - Q, np.eye(nt))
+    return transient, t_index, a_index, N, R
+
+
+def solve_ep(probs: dict[tuple, float]) -> tuple[dict[str, float], dict[tuple, float]]:
+    """Solve the absorbing chain: EP per transient state + absorption probs.
+
+    EP = (I - Q)^-1 R v with Q transient->transient, R transient->absorbing,
+    v the ABSORB_VALUES vector. Returns (ep by state, absorption probability
+    by (state, absorbing)).
+    """
+    transient, t_index, a_index, N, R = _chain_matrices(probs)
     B = N @ R  # absorption probabilities
     v = np.array([ABSORB_VALUES.get(s, 0.0) for s in ABSORBING])
     ep = B @ v
@@ -375,6 +381,128 @@ def bootstrap_se(
         for s, val in ep.items():
             samples[s].append(val)
     return {s: float(np.std(vals, ddof=1)) for s, vals in samples.items() if len(vals) > 1}
+
+
+# =============================================================================
+# Net next-score EP (P2) -- design doc section 6, v1.5.
+# =============================================================================
+
+# Absorbing outcomes that hand possession over WITHOUT a score: the
+# next-score recursion continues through these (worth minus the opponent's
+# net EP at their observed starting field position). Scoring outcomes and
+# END_OF_HALF terminate the recursion -- the next score has happened, or
+# there is none.
+HANDOFF_ABSORBING = ("PUNT", "TURNOVER", "DOWNS", "MISSED_FG")
+
+# Laplace strength pulling a starved exit zone's handoff distribution toward
+# the outcome's marginal (punts from inside the opponent 30 are rare and
+# weird -- 11/33/85 observations in zones 1-3 for 2021+ -- while zones 4-10
+# carry 2k-15k each).
+HANDOFF_ALPHA = 20.0
+
+
+def handoff_state(zone: int) -> str:
+    """The opponent's first-and-10 state for a possession starting in `zone`.
+
+    Zone 1 is inside the 10, where every first down is goal-to-go, so
+    d1|standard|z1 does not exist in the grid; the handoff lands on
+    d1|goal|z1 instead.
+    """
+    return "d1|goal|z1" if zone == 1 else f"d1|standard|z{zone}"
+
+
+def build_handoffs(
+    pair_counts: dict[tuple, int], alpha: float = HANDOFF_ALPHA
+) -> dict[str, dict[int, dict[int, float]]]:
+    """Empirical handoff distributions from consecutive drive pairs.
+
+    `pair_counts` maps (absorb_class, exit_zone, opp_start_zone) -> n,
+    observed from core.drives: a drive ending in `absorb_class`, whose last
+    scrimmage play was snapped in `exit_zone` (the PRE-snap zone -- the same
+    convention as the chain's transient exit state, which is where
+    solve_net_ep looks these rows up), was followed (same game, same half,
+    offense flipped) by an opponent drive starting at `opp_start_zone`. ONE estimator covers punts,
+    turnovers, downs and missed FGs at once -- net punt distance, return
+    yards, and spot-of-kick rules are all baked into what actually happened
+    next, per era. Rows are Laplace-smoothed toward the outcome's marginal
+    start distribution so starved exit zones inherit it.
+    """
+    by_class: dict[str, Counter] = defaultdict(Counter)
+    marginals: dict[str, Counter] = defaultdict(Counter)
+    for (cls, exit_zone, opp_zone), n in pair_counts.items():
+        if cls not in HANDOFF_ABSORBING:
+            continue
+        by_class[cls][(exit_zone, opp_zone)] += n
+        marginals[cls][opp_zone] += n
+
+    handoffs: dict[str, dict[int, dict[int, float]]] = {}
+    for cls in HANDOFF_ABSORBING:
+        marg_total = sum(marginals[cls].values())
+        marg = {z: (marginals[cls][z] / marg_total if marg_total else 0.1) for z in range(1, 11)}
+        handoffs[cls] = {}
+        for exit_zone in range(1, 11):
+            row_n = {z: by_class[cls][(exit_zone, z)] for z in range(1, 11)}
+            total = sum(row_n.values())
+            handoffs[cls][exit_zone] = {
+                z: (row_n[z] + alpha * marg[z]) / (total + alpha) for z in range(1, 11)
+            }
+    return handoffs
+
+
+def zone_of(state: str) -> int:
+    return int(state.rsplit("z", 1)[1])
+
+
+def solve_net_ep(
+    probs: dict[tuple, float], handoffs: dict[str, dict[int, dict[int, float]]]
+) -> dict[str, float]:
+    """Next-score expected points per transient state (the CFBD-comparable
+    basis: value of the NEXT scoring event in the half, sign = this offense).
+
+    Exit-state-aware absorption: P(exit at transient t, absorb a | start s)
+    = N[s,t] * R[t,a], so a punt from midfield and a punt from the shadow of
+    the goalposts hand the opponent different field position. The recursion
+        ep_net(s) = C(s) - sum_z D(s,z) * ep_net(handoff_state(z))
+    (C = scoring/half-end terms, D = handoff mass landing the opponent in
+    zone z) closes over only the 10 first-and-10 handoff states, so it is a
+    10x10 LINEAR system, solved exactly -- no fixed-point iteration. It is a
+    proper contraction because every drive leaks probability to scoring or
+    END_OF_HALF outcomes; a zero-leak chain (pure punt alternation) is
+    singular and cannot occur in real data.
+    """
+    transient, t_index, a_index, N, R = _chain_matrices(probs)
+    nt = len(transient)
+    zones = np.array([zone_of(s) for s in transient])
+
+    # C[s]: terminal contributions. D[s, z]: handoff mass into opponent zone z.
+    v_term = np.array([ABSORB_VALUES.get(a, 0.0) for a in ABSORBING])
+    is_term = np.array([a not in HANDOFF_ABSORBING for a in ABSORBING])
+    C = N @ (R[:, is_term] @ v_term[is_term])
+
+    D = np.zeros((nt, 10))
+    for cls in HANDOFF_ABSORBING:
+        r_cls = R[:, a_index[cls]]  # P(absorb via cls | exit t)
+        # mass(s, t) = N[s, t] * r_cls[t]; spread over opponent zones by the
+        # exit zone's handoff row.
+        H = np.zeros((nt, 10))
+        for ti in range(nt):
+            row = handoffs[cls][int(zones[ti])]
+            for z in range(1, 11):
+                H[ti, z - 1] = row[z]
+        D += (N * r_cls[np.newaxis, :]) @ H
+
+    # Restrict to the 10 handoff states and solve (I + D_h) x = C_h.
+    h_states = [handoff_state(z) for z in range(1, 11)]
+    missing = [h for h in h_states if h not in t_index]
+    if missing:
+        raise ValueError(f"handoff states absent from the chain: {missing}")
+    h_idx = [t_index[h] for h in h_states]
+    D_h = D[h_idx, :]
+    C_h = C[h_idx]
+    x = np.linalg.solve(np.eye(10) + D_h, C_h)
+
+    ep_net = C - D @ x
+    return {s: float(ep_net[i]) for s, i in t_index.items()}
 
 
 # --- Validation gates (pure; consume engine outputs) -------------------------
@@ -519,6 +647,95 @@ def get_db_url() -> str:
     return url.replace("postgres://", "postgresql://", 1)
 
 
+# Consecutive-drive pairs: the empirical handoff estimator (design doc
+# section 7, reworked in P2). For a drive ending in a handoff outcome, where
+# did the opponent's SAME-HALF next drive actually start? Net punt distance,
+# return yardage, and spot-of-kick rules are all baked into the observed next
+# start. The PAIR itself (which drives count, where the next one started) is
+# not garbage-time filtered: field-position physics do not change with the
+# score.
+#
+# exit_zone keying (PR #71 review, P1 x2): the solver looks a handoff row up
+# by the ZONE OF THE TRANSIENT STATE the chain absorbed from -- the PRE-snap
+# yards_to_goal of the drive's last CHAIN-ELIGIBLE scrimmage play (punt/FG
+# rows are not scrimmage types, so a punting drive exits from its 3rd-down
+# snapshot). Two earlier revisions keyed rows differently and both diverged
+# from the lookup: (a) core.drives.end_yards_to_goal, the POST-play drive-end
+# spot (same-zone rate only 73-86% on 2021+); (b) the physical last scrimmage
+# snap WITHOUT the garbage-time predicate -- but PLAYS_QUERY excludes
+# garbage-time plays, so on a garbage-time drive the chain's exit state is
+# the last NON-garbage snap, not the last snap. last_snap therefore applies
+# PLAYS_QUERY's row filter IN FULL, garbage time included; a drive whose
+# every play is garbage time gets no key and drops out, matching the chain,
+# which never absorbs from it either.
+DRIVE_PAIRS_QUERY = f"""
+    WITH last_snap AS (
+      SELECT DISTINCT ON (p.game_id, p.drive_id)
+        p.game_id, p.drive_id, p.yards_to_goal AS exit_ytg
+      FROM core.plays p
+      WHERE p.season BETWEEN %(start)s AND %(end)s
+        AND p.play_type = ANY(%(types)s)
+        AND p.down BETWEEN 1 AND 4
+        AND p.distance BETWEEN 1 AND 45
+        AND p.yards_to_goal BETWEEN 1 AND 99
+        AND NOT {GARBAGE_TIME_SQL}
+      ORDER BY p.game_id, p.drive_id, p.play_number DESC
+    ),
+    seq AS (
+      SELECT d.game_id, d.drive_number, d.offense, upper(d.drive_result) AS dr,
+        ls.exit_ytg,
+        CASE WHEN d.start_period <= 2 THEN 1 ELSE 2 END AS half,
+        lead(d.offense) OVER w AS next_offense,
+        lead(d.start_yards_to_goal) OVER w AS next_start_ytg,
+        lead(CASE WHEN d.start_period <= 2 THEN 1 ELSE 2 END) OVER w AS next_half
+      -- LEFT JOIN, filtered in the outer query: every drive must stay in
+      -- seq so lead() pairs each drive with its true successor even when
+      -- the CURRENT drive has no qualifying scrimmage play.
+      FROM core.drives d
+      LEFT JOIN last_snap ls ON ls.game_id = d.game_id AND ls.drive_id = d.id
+      WHERE d.season BETWEEN %(start)s AND %(end)s
+        -- Regulation only, filtered BEFORE lead() (PR #71 review, P2):
+        -- "period >= 3 means half 2" sweeps OT periods 5+ in, and OT
+        -- possessions start at the prescribed 25-yard-line spot (zone 3)
+        -- by RULE, not as the physical consequence of the preceding punt/
+        -- turnover -- polluting exactly the zone-3 handoff mass. Filtering
+        -- the CTE source means the last regulation drive's lead() is NULL,
+        -- so regulation->OT pairs drop out entirely.
+        AND d.start_period BETWEEN 1 AND 4
+      WINDOW w AS (PARTITION BY d.game_id ORDER BY d.drive_number)
+    )
+    SELECT dr,
+           LEAST(10, GREATEST(1, (exit_ytg + 9) / 10)) AS exit_zone,
+           LEAST(10, GREATEST(1, (next_start_ytg + 9) / 10)) AS opp_zone,
+           count(*) AS n
+    FROM seq
+    WHERE next_offense IS NOT NULL AND next_offense <> offense
+      AND next_half = half
+      AND exit_ytg IS NOT NULL
+      AND next_start_ytg BETWEEN 1 AND 99
+    GROUP BY 1, 2, 3
+"""
+
+
+def fetch_drive_pairs(conn, start: int, end: int) -> dict[tuple, int]:
+    """(absorb_class, exit_zone, opp_zone) -> n, drive_result mapped through
+    ABSORB_MAP; unmapped results simply don't contribute handoff mass."""
+    with conn.cursor() as cur:
+        cur.execute(
+            DRIVE_PAIRS_QUERY,
+            {"start": start, "end": end, "types": list(SCRIMMAGE_TYPES)},
+        )
+        rows = cur.fetchall()
+    pairs: dict[tuple, int] = {}
+    for dr, exit_zone, opp_zone, n in rows:
+        cls = ABSORB_MAP.get(dr)
+        if cls is None:
+            continue
+        key = (cls, int(exit_zone), int(opp_zone))
+        pairs[key] = pairs.get(key, 0) + int(n)
+    return pairs
+
+
 def fetch_plays(conn, start: int, end: int) -> list[dict]:
     from psycopg2.extras import RealDictCursor
 
@@ -533,6 +750,7 @@ def write_era(
     transitions: Counter,
     shrunk: dict[tuple, float],
     ep: dict[str, float],
+    ep_net: dict[str, float],
     absorb_probs: dict[tuple, float],
     se: dict[str, float],
 ) -> None:
@@ -552,6 +770,7 @@ def write_era(
             s,
             row_totals[s],
             ep[s],
+            ep_net.get(s),
             absorb_probs[(s, "TD")],
             absorb_probs[(s, "FG")],
             absorb_probs[(s, "PUNT")],
@@ -573,7 +792,8 @@ def write_era(
         execute_values(
             cur,
             "INSERT INTO analytics.ep_states "
-            "(era, state, n_obs, ep_drive, p_td, p_fg, p_punt, p_turnover, se_boot) VALUES %s",
+            "(era, state, n_obs, ep_drive, ep_net, p_td, p_fg, p_punt, p_turnover, se_boot) "
+            "VALUES %s",
             state_rows,
         )
     conn.commit()
@@ -606,24 +826,49 @@ def run_era(conn, era: str, alpha: float, do_bootstrap: bool, do_validate: bool)
 
     shrunk = shrink(transitions, alpha)
     ep, absorb_probs = solve_ep(shrunk)
-    se = bootstrap_se(per_game, alpha) if do_bootstrap else {}
 
-    write_era(conn, era, transitions, shrunk, ep, absorb_probs, se)
+    end_season = ERAS[era][1] if ERAS[era][1] is not None else 9999
+    pairs = fetch_drive_pairs(conn, ERAS[era][0], end_season)
+    handoffs = build_handoffs(pairs)
+    ep_net = solve_net_ep(shrunk, handoffs)
 
+    # Gates run BEFORE the write (PR #71 review, P1): write_era commits, so
+    # validating afterwards published implausible values through
+    # api.expected_points and merely exited nonzero -- the failed 2014-2020
+    # zone-gate run of deploy 31257283280 did exactly that. A gated failure
+    # now leaves the previously-published era untouched.
     if do_validate:
         vz = check_monotone_zone(ep)
         vd = check_monotone_down(ep)
+        vnz = check_monotone_zone(ep_net)
         mae = calibration_mae(absorb_probs, drive_outcomes)
         for v in vz + vd:
             logger.warning("Era %s monotonicity: %s", era, v)
+        for v in vnz:
+            logger.warning("Era %s NET monotonicity: %s", era, v)
+        net_own25 = ep_net.get("d1|standard|z8", float("nan"))
+        # Net gate: from your own 25, the next score should favor the offense
+        # but be worth far less than the drive basis (the opponent's counter-
+        # value is netted out). Published CFB next-score EP sits ~0.3-1.2.
+        net_sane = 0.0 < net_own25 < ep["d1|standard|z8"]
         print(
             f"EP_VALIDATION era={era} states={len(ep)} "
             f"monotone_zone={'pass' if not vz else 'FAIL'} "
             f"monotone_down={'pass' if not vd else 'FAIL'} "
+            f"monotone_net={'pass' if not vnz else 'FAIL'} "
+            f"net_own25={net_own25:.2f} net_sane={'pass' if net_sane else 'FAIL'} "
             f"calib_mae_td={mae:.4f}"
         )
-        if vz or vd:
+        if vz or vd or vnz or not net_sane:
+            logger.error(
+                "Era %s: validation gate failed -- NOT writing; the previously "
+                "published era is untouched",
+                era,
+            )
             return 1
+
+    se = bootstrap_se(per_game, alpha) if do_bootstrap else {}
+    write_era(conn, era, transitions, shrunk, ep, ep_net, absorb_probs, se)
     return 0
 
 

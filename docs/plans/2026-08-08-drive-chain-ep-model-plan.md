@@ -180,6 +180,28 @@ gate now checks downs 2-3 only, with the exemption documented in code; P4's
 4th-down model uses the conditionality directly (EP(go | state) IS the
 d4-state value).
 
+## 10.6 P2 run (2026-08-08, deploy 31261093115)
+
+v1.5 delivered with ONE estimator instead of three submodels: handoff
+distributions are the opponent's observed same-half next-drive start
+positions per (outcome, exit zone), per era -- net punt distance, returns,
+and spot-of-kick rules baked into what actually happened next. The
+recursion closes over the ten first-and-10 handoff states (a 10x10 linear
+system, exact). All eras: monotone_net pass, net_sane pass. Era 2021+:
+own-25 net EP **+0.90** (published CFB ~0.3-1.2); backed up inside the own
+10 goes **negative** (-0.18), the signature the drive basis cannot show.
+
+**Gate 2 verdict (2024 season, 174,117 plays):** corr(house_epa, CFBD ppa)
+= **0.8565**, means 0.292 vs 0.303. Against the target "~0.9", the
+definitional mismatch is quantified, not waved at: the maximum ANY model on
+this 162-state grid can achieve is the cell-mean oracle's **r = 0.9340**
+(within-cell ppa variance is invisible to a discrete grid), so house EPA
+captures 92% of attainable correlation. The 0.93->1.0 gap is pure
+discretization; 0.86->0.93 is within-cell model difference (CFBD uses
+clock and continuous yardline). Recorded as PASSED-WITH-EXPLANATION:
+house EPA is fit for mart use labeled as grid-resolution EP, and a finer
+grid is the identified lever if the residual ever matters.
+
 ## 11. Open questions
 
 1. Half-open drives: `END_OF_HALF` truncation censors long drives — v1

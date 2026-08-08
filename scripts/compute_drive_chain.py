@@ -417,9 +417,11 @@ def build_handoffs(
     """Empirical handoff distributions from consecutive drive pairs.
 
     `pair_counts` maps (absorb_class, exit_zone, opp_start_zone) -> n,
-    observed from core.drives: a drive ending in `absorb_class` at
-    `exit_zone` was followed (same game, same half, offense flipped) by an
-    opponent drive starting at `opp_start_zone`. ONE estimator covers punts,
+    observed from core.drives: a drive ending in `absorb_class`, whose last
+    scrimmage play was snapped in `exit_zone` (the PRE-snap zone -- the same
+    convention as the chain's transient exit state, which is where
+    solve_net_ep looks these rows up), was followed (same game, same half,
+    offense flipped) by an opponent drive starting at `opp_start_zone`. ONE estimator covers punts,
     turnovers, downs and missed FGs at once -- net punt distance, return
     yards, and spot-of-kick rules are all baked into what actually happened
     next, per era. Rows are Laplace-smoothed toward the outcome's marginal
@@ -651,16 +653,42 @@ def get_db_url() -> str:
 # return yardage, and spot-of-kick rules are all baked into the observed next
 # start. Deliberately NOT garbage-time filtered: field-position physics do
 # not change with the score, and drive grain has no play-level filter anyway.
+#
+# exit_zone keying (PR #71 review, P1): the solver looks a handoff row up by
+# the ZONE OF THE TRANSIENT STATE the chain absorbed from -- the PRE-snap
+# yards_to_goal of the drive's last scrimmage play (punt/FG rows are not
+# scrimmage types, so a punting drive exits from its 3rd-down snapshot). An
+# earlier revision keyed rows by core.drives.end_yards_to_goal -- the POST-
+# play drive-end spot, which differs by the last play's yardage (or an INT
+# return): measured on 2021+, only 73-86% of handoff drives land in the same
+# zone under both conventions. Training and lookup must condition on the
+# same zone, so the last_snap CTE recovers the pre-snap spot with PLAYS_QUERY's
+# play-shape filters (garbage time excepted, per the note above).
 DRIVE_PAIRS_QUERY = """
-    WITH seq AS (
-      SELECT game_id, drive_number, offense, upper(drive_result) AS dr,
-        end_yards_to_goal,
-        CASE WHEN start_period <= 2 THEN 1 ELSE 2 END AS half,
-        lead(offense) OVER w AS next_offense,
-        lead(start_yards_to_goal) OVER w AS next_start_ytg,
-        lead(CASE WHEN start_period <= 2 THEN 1 ELSE 2 END) OVER w AS next_half
-      FROM core.drives
+    WITH last_snap AS (
+      SELECT DISTINCT ON (game_id, drive_id)
+        game_id, drive_id, yards_to_goal AS exit_ytg
+      FROM core.plays
       WHERE season BETWEEN %(start)s AND %(end)s
+        AND play_type = ANY(%(types)s)
+        AND down BETWEEN 1 AND 4
+        AND distance BETWEEN 1 AND 45
+        AND yards_to_goal BETWEEN 1 AND 99
+      ORDER BY game_id, drive_id, play_number DESC
+    ),
+    seq AS (
+      SELECT d.game_id, d.drive_number, d.offense, upper(d.drive_result) AS dr,
+        ls.exit_ytg,
+        CASE WHEN d.start_period <= 2 THEN 1 ELSE 2 END AS half,
+        lead(d.offense) OVER w AS next_offense,
+        lead(d.start_yards_to_goal) OVER w AS next_start_ytg,
+        lead(CASE WHEN d.start_period <= 2 THEN 1 ELSE 2 END) OVER w AS next_half
+      -- LEFT JOIN, filtered in the outer query: every drive must stay in
+      -- seq so lead() pairs each drive with its true successor even when
+      -- the CURRENT drive has no qualifying scrimmage play.
+      FROM core.drives d
+      LEFT JOIN last_snap ls ON ls.game_id = d.game_id AND ls.drive_id = d.id
+      WHERE d.season BETWEEN %(start)s AND %(end)s
         -- Regulation only, filtered BEFORE lead() (PR #71 review, P2):
         -- "period >= 3 means half 2" sweeps OT periods 5+ in, and OT
         -- possessions start at the prescribed 25-yard-line spot (zone 3)
@@ -668,17 +696,17 @@ DRIVE_PAIRS_QUERY = """
         -- turnover -- polluting exactly the zone-3 handoff mass. Filtering
         -- the CTE source means the last regulation drive's lead() is NULL,
         -- so regulation->OT pairs drop out entirely.
-        AND start_period BETWEEN 1 AND 4
-      WINDOW w AS (PARTITION BY game_id ORDER BY drive_number)
+        AND d.start_period BETWEEN 1 AND 4
+      WINDOW w AS (PARTITION BY d.game_id ORDER BY d.drive_number)
     )
     SELECT dr,
-           LEAST(10, GREATEST(1, (end_yards_to_goal + 9) / 10)) AS exit_zone,
+           LEAST(10, GREATEST(1, (exit_ytg + 9) / 10)) AS exit_zone,
            LEAST(10, GREATEST(1, (next_start_ytg + 9) / 10)) AS opp_zone,
            count(*) AS n
     FROM seq
     WHERE next_offense IS NOT NULL AND next_offense <> offense
       AND next_half = half
-      AND end_yards_to_goal BETWEEN 1 AND 99
+      AND exit_ytg IS NOT NULL
       AND next_start_ytg BETWEEN 1 AND 99
     GROUP BY 1, 2, 3
 """
@@ -688,7 +716,10 @@ def fetch_drive_pairs(conn, start: int, end: int) -> dict[tuple, int]:
     """(absorb_class, exit_zone, opp_zone) -> n, drive_result mapped through
     ABSORB_MAP; unmapped results simply don't contribute handoff mass."""
     with conn.cursor() as cur:
-        cur.execute(DRIVE_PAIRS_QUERY, {"start": start, "end": end})
+        cur.execute(
+            DRIVE_PAIRS_QUERY,
+            {"start": start, "end": end, "types": list(SCRIMMAGE_TYPES)},
+        )
         rows = cur.fetchall()
     pairs: dict[tuple, int] = {}
     for dr, exit_zone, opp_zone, n in rows:

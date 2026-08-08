@@ -516,3 +516,37 @@ class TestHandoffQueryExcludesOvertime:
         q = DRIVE_PAIRS_QUERY.upper()
         assert "START_PERIOD BETWEEN 1 AND 4" in q
         assert q.index("START_PERIOD BETWEEN 1 AND 4") < q.index("WINDOW W AS")
+
+
+class TestHandoffExitZoneConvention:
+    """PR #71 review, P1: solve_net_ep looks a handoff row up by the zone of
+    the transient state the chain absorbed from -- the PRE-snap yards_to_goal
+    of the drive's last scrimmage play. Keying training rows by the POST-play
+    drive-end spot (core.drives.end_yards_to_goal) conditions the estimator
+    on a different zone than the lookup (same-zone rate only 73-86% on 2021+),
+    so mismatched rows fall toward the class marginal at solve time."""
+
+    def test_exit_zone_comes_from_the_last_scrimmage_presnap_spot(self):
+        from scripts.compute_drive_chain import DRIVE_PAIRS_QUERY
+
+        assert "end_yards_to_goal" not in DRIVE_PAIRS_QUERY
+        assert "yards_to_goal AS exit_ytg" in DRIVE_PAIRS_QUERY
+        # Last scrimmage play per drive: scrimmage-typed, latest play_number.
+        assert "play_type = ANY(%(types)s)" in DRIVE_PAIRS_QUERY
+        assert "play_number DESC" in DRIVE_PAIRS_QUERY
+
+    def test_every_drive_stays_in_seq_for_lead(self):
+        """The last-snap join must not drop drives from the window source:
+        lead() must pair each drive with its true successor even when the
+        current drive has no qualifying scrimmage play."""
+        from scripts.compute_drive_chain import DRIVE_PAIRS_QUERY
+
+        assert "LEFT JOIN last_snap" in DRIVE_PAIRS_QUERY
+        assert "exit_ytg IS NOT NULL" in DRIVE_PAIRS_QUERY
+
+    def test_fetch_passes_the_scrimmage_vocabulary(self):
+        import inspect
+
+        from scripts.compute_drive_chain import fetch_drive_pairs
+
+        assert "SCRIMMAGE_TYPES" in inspect.getsource(fetch_drive_pairs)

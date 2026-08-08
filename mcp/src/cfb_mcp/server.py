@@ -756,7 +756,8 @@ async def get_expected_points(
         "given they go for it" when quoting d4 numbers.
       - Quote intervals: se_boot is the bootstrap SE of ep_drive, so
         ep_drive +/- 2*se_boot is the honest form, and check n_obs before
-        leaning on a thin state.
+        leaning on a thin state. se_boot can be NULL (a no-bootstrap
+        recompute): say "interval unavailable", never treat it as +/-0.
 
     Returns: JSON {"_source": "api.expected_points", "count": int, "rows": [...]},
     rows ordered by down, then field zone.

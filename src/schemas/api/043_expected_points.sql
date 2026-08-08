@@ -46,10 +46,15 @@ FROM analytics.ep_states;
 COMMENT ON VIEW api.expected_points IS 'House expected points per drive state and era (Goldner-basis drive EP from the play-by-play Markov chain, with game-cluster bootstrap SEs). ep_net NULL until the net next-score basis lands (P2). down=4 rows are go-for-it-conditional. Backed by analytics.ep_states; see docs/handoffs/2026-08-08-expected-points-handoff.md.';
 
 -- Grants are part of the definition (021 convention: no ALTER DEFAULT
--- PRIVILEGES in this database). The underlying analytics tables were created
--- AFTER grant_read_access_for_security_invoker's blanket GRANT SELECT ON ALL
--- TABLES ran, so the SECURITY INVOKER view needs these explicit table grants
--- or anon reads fail even though the schema USAGE grant exists.
-GRANT SELECT ON analytics.ep_states TO anon, authenticated;
-GRANT SELECT ON analytics.drive_chain_transitions TO anon, authenticated;
+-- PRIVILEGES in this database). Only the VIEW grant is needed: api.* views
+-- run with OWNER rights -- measured 2026-08-08 against pg_class, 0 of 44
+-- api views set security_invoker, unlike public.* where all 13 do (that is
+-- the layer grant_read_access_for_security_invoker exists for). Granting the
+-- underlying analytics tables here would let direct-connection anon/
+-- authenticated callers bypass the contract surface and read tables the
+-- handoff declares internal (PR #70 review). The REVOKEs undo the grants an
+-- earlier revision of this file applied; both are idempotent no-ops on a
+-- fresh database.
+REVOKE SELECT ON analytics.ep_states FROM anon, authenticated;
+REVOKE SELECT ON analytics.drive_chain_transitions FROM anon, authenticated;
 GRANT SELECT ON api.expected_points TO anon, authenticated;

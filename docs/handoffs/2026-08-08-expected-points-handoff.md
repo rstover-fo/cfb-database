@@ -40,10 +40,13 @@ GET /rest/v1/expected_points?era=eq.2021%2B&down=eq.1&distance_bucket=eq.standar
    they go", which is exactly what a 4th-down decision UI wants and exactly
    what a naive down-ladder display gets wrong (d4 can price above d3; both
    production eras show it). Keep d4 out of d1–d3 ladders or caveat it.
-4. **Show intervals.** `se_boot` is the game-cluster bootstrap SE of
-   `ep_drive`. Anything user-facing should render `ep_drive ± 2·se_boot` or
+4. **Show intervals — and handle their absence.** `se_boot` is the
+   game-cluster bootstrap SE of `ep_drive`; render `ep_drive ± 2·se_boot` or
    equivalent — the Brill/Yurko/Wyner "intervals, not verdicts" rule is part
-   of this contract's spirit, especially for thin states (check `n_obs`).
+   of this contract's spirit, especially for thin states (check `n_obs`:
+   `d4|short|z10` ships with se_boot 0.219, ~10× the healthy states).
+   `se_boot` is **nullable**: a `--no-bootstrap` recompute writes NULL SEs.
+   Render NULL as "interval unavailable", never as ±0.
 
 ## Column reference
 
@@ -59,7 +62,7 @@ GET /rest/v1/expected_points?era=eq.2021%2B&down=eq.1&distance_bucket=eq.standar
 | `ep_drive` | drive-basis expected points (rule 1) |
 | `ep_net` | NULL until P2; the future CFBD-comparable basis |
 | `p_td` … `p_turnover` | drive-outcome absorption probabilities from this state (`p_turnover` includes defensive-TD turnovers) |
-| `se_boot` | bootstrap SE of ep_drive, game-cluster resampled |
+| `se_boot` | bootstrap SE of ep_drive, game-cluster resampled; NULLABLE (NULL after a `--no-bootstrap` recompute — no interval, not ±0) |
 | `computed_at` | staleness check; rewritten by each compute run |
 
 Not exposed (contract-internal): `analytics.ep_states`,

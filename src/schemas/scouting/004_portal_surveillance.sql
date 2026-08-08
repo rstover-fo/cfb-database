@@ -20,8 +20,9 @@
 -- Revival TODO (PR #68 review): the moving 24h window is not tied to the last
 -- successful run -- a delayed run misses events created earlier, so before
 -- scheduling this, replace the window with a durable watermark (last successful
--- run timestamp or processed transfer_event ids). Re-fire duplication within the
--- window is already prevented by the alert_history guard below.
+-- run timestamp). Duplicate firing is already prevented exactly: alert_history
+-- rows are keyed by transfer_event_id in trigger_data and the insert is guarded
+-- per event, so retries and overlapping runs are safe.
 --
 -- Applied via: python scripts/run_migrations.py --file src/schemas/scouting/004_portal_surveillance.sql
 
@@ -42,9 +43,11 @@ DECLARE
     v_alert_id int;
     v_threshold decimal := 80.0;
 BEGIN
-    -- Iterate through players who entered in the last 24h
+    -- Iterate through portal entries in the last 24h -- one row per transfer
+    -- event (not per player), so a re-entry keeps its own identity/context.
     FOR entry IN
-        SELECT DISTINCT p.id, p.name, p.composite_grade, te.from_team
+        SELECT p.id, p.name, p.composite_grade, te.from_team,
+               te.id AS transfer_event_id
         FROM scouting.players p
         JOIN scouting.transfer_events te ON p.id = te.player_id
         WHERE te.event_type = 'entered'
@@ -73,17 +76,20 @@ BEGIN
             ON CONFLICT (user_id, name) DO UPDATE SET last_checked_at = now()
             RETURNING id INTO v_alert_id;
 
-            -- Idempotency guard: a retry while the portal event is still inside
-            -- the 24h window must not double-fire the alert (PR #68 review).
+            -- Idempotency guard, keyed on the transfer event itself: a retry
+            -- never double-fires, while a genuinely new portal entry by the
+            -- same player (enter -> withdraw -> re-enter) still fires with its
+            -- own from_team context (PR #68 review).
             IF NOT EXISTS (
                 SELECT 1 FROM scouting.alert_history ah
                 WHERE ah.alert_id = v_alert_id
-                  AND ah.fired_at >= now() - interval '24 hours'
+                  AND (ah.trigger_data->>'transfer_event_id')::int = entry.transfer_event_id
             ) THEN
                 INSERT INTO scouting.alert_history (alert_id, trigger_data, message)
                 VALUES (
                     v_alert_id,
                     jsonb_build_object(
+                        'transfer_event_id', entry.transfer_event_id,
                         'score', v_score,
                         'composite', entry.composite_grade,
                         'from_team', entry.from_team

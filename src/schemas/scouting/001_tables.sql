@@ -145,6 +145,8 @@ CREATE TABLE IF NOT EXISTS scouting.alert_history (
 
 CREATE INDEX IF NOT EXISTS idx_alert_history_alert ON scouting.alert_history (alert_id);
 CREATE INDEX IF NOT EXISTS idx_alert_history_unread ON scouting.alert_history (is_read) WHERE is_read = false;
+-- idx_alert_history_alert_event (unique, per transfer event) is defined in
+-- 004_portal_surveillance.sql next to the function whose idempotency it backs.
 
 -- Named player watch lists.
 CREATE TABLE IF NOT EXISTS scouting.watch_lists (

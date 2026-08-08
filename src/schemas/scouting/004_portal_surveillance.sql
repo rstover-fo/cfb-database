@@ -26,6 +26,13 @@
 --
 -- Applied via: python scripts/run_migrations.py --file src/schemas/scouting/004_portal_surveillance.sql
 
+-- Database-level backing for the function's per-event idempotency: without it
+-- the guard is check-then-insert and two concurrent invocations could both
+-- commit a history row for the same transfer event (PR #68 review). Rows whose
+-- trigger_data lacks a transfer_event_id index as NULL and never collide.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_history_alert_event
+    ON scouting.alert_history (alert_id, ((trigger_data->>'transfer_event_id')::int));
+
 CREATE OR REPLACE FUNCTION scouting.fn_evaluate_portal_value()
 RETURNS TABLE (
     player_id int,
@@ -41,6 +48,7 @@ DECLARE
     entry record;
     v_score decimal;
     v_alert_id int;
+    v_history_id int;
     v_threshold decimal := 80.0;
 BEGIN
     -- Iterate through portal entries in the last 24h -- one row per transfer
@@ -76,27 +84,28 @@ BEGIN
             ON CONFLICT (user_id, name) DO UPDATE SET last_checked_at = now()
             RETURNING id INTO v_alert_id;
 
-            -- Idempotency guard, keyed on the transfer event itself: a retry
-            -- never double-fires, while a genuinely new portal entry by the
-            -- same player (enter -> withdraw -> re-enter) still fires with its
-            -- own from_team context (PR #68 review).
-            IF NOT EXISTS (
-                SELECT 1 FROM scouting.alert_history ah
-                WHERE ah.alert_id = v_alert_id
-                  AND (ah.trigger_data->>'transfer_event_id')::int = entry.transfer_event_id
-            ) THEN
-                INSERT INTO scouting.alert_history (alert_id, trigger_data, message)
-                VALUES (
-                    v_alert_id,
-                    jsonb_build_object(
-                        'transfer_event_id', entry.transfer_event_id,
-                        'score', v_score,
-                        'composite', entry.composite_grade,
-                        'from_team', entry.from_team
-                    ),
-                    'High-value portal entrant: ' || entry.name || ' (Score: ' || v_score || ')'
-                );
+            -- Idempotency, keyed on the transfer event itself and enforced by
+            -- idx_alert_history_alert_event: a retry or CONCURRENT invocation
+            -- never double-fires (the conflict makes the insert a no-op), while
+            -- a genuinely new portal entry by the same player (enter ->
+            -- withdraw -> re-enter) still fires with its own from_team context
+            -- (PR #68 review). v_history_id is NULL when the insert was a
+            -- conflict no-op, so only the winning invocation reports the fire.
+            INSERT INTO scouting.alert_history (alert_id, trigger_data, message)
+            VALUES (
+                v_alert_id,
+                jsonb_build_object(
+                    'transfer_event_id', entry.transfer_event_id,
+                    'score', v_score,
+                    'composite', entry.composite_grade,
+                    'from_team', entry.from_team
+                ),
+                'High-value portal entrant: ' || entry.name || ' (Score: ' || v_score || ')'
+            )
+            ON CONFLICT (alert_id, ((trigger_data->>'transfer_event_id')::int)) DO NOTHING
+            RETURNING id INTO v_history_id;
 
+            IF v_history_id IS NOT NULL THEN
                 player_id := entry.id;
                 player_name := entry.name;
                 value_score := v_score;

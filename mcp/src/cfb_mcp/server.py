@@ -752,9 +752,11 @@ async def get_expected_points(
 
     Caveats (repeat these when answering -- they change interpretation):
       - ep_drive is the DRIVE basis: points this possession is worth (TD 6.97,
-        FG 3). It is NOT comparable to CFBD PPA/EPA numbers; the comparable
-        ep_net column is NULL until the net next-score model lands. Never
-        read a NULL ep_net as zero.
+        FG 3), never negative. It is NOT comparable to CFBD PPA/EPA numbers.
+        ep_net IS the comparable next-score basis and CAN be negative (backed
+        up deep, the next score is more likely the opponent's) -- quote
+        ep_net when the question is "what is this situation worth" in the
+        EPA sense. Never read a NULL ep_net as zero.
       - down=4 rows are GO-FOR-IT-CONDITIONAL: the chain only sees a 4th-down
         snapshot when the offense lined up to go (punts/FGs exit at 3rd
         down), so 4th-down EP can legitimately exceed 3rd-down EP. Say

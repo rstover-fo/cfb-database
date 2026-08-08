@@ -15,6 +15,18 @@ Last updated: 2026-08-08
 
 ## Recent Contract Changes
 
+- **2026-08-08 — `api.expected_points.ep_net` is now populated** (P2, same
+  day as the surface shipped). `ep_net` is the **next-score basis** -- the
+  one comparable to CFBD PPA, nflfastR EP, and every "expected points"
+  number in the literature -- solved from empirical drive-handoff
+  distributions per era. It can be negative (own-5 in the modern era is
+  -0.18: the next score is more likely the opponent's), which `ep_drive`
+  never is; consumers rendering both must not clamp or abs() it. Benchmark:
+  play-level EPA deltas built from `ep_net` correlate 0.8565 with CFBD
+  `ppa` (2024, n=174k) against a grid ceiling of 0.9340 -- 92% of what the
+  162-state resolution permits. `ep_net` may still be NULL after a partial
+  or failed recompute; NULL remains "not computed", never zero.
+
 - **2026-08-08 — House expected points: `api.expected_points` added.** First
   contract surface for the drive-state Markov chain (PRs #66/#69): drive EP,
   drive-outcome probabilities, and bootstrap SEs per (era, state), with the
@@ -542,7 +554,7 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.matchup` | **Deployed** | 11,975 | Head-to-head matchup history and current season comparison. Columns: team1, team2, total_games, team1_wins, team2_wins, ties, first_meeting, last_meeting, recent_results (JSONB array), team1/team2 current season stats |
 | `api.leaderboard_teams` | **Deployed** | 3,667 | Team leaderboard with rankings, ratings, EPA. Columns: team, conference, season, classification, wins, losses, win_pct, ppg, opp_ppg, sp_rank, epa_per_play, epa_tier, wins_rank, ppg_rank, defense_ppg_rank, epa_rank. Rank columns are scoped `PARTITION BY season, classification` (see 2026-07-22 changelog entry) -- all rows still returned, no `WHERE fbs` filter. |
 | `api.roster_lookup` | **Deployed** | 340,855 | Stable roster view for player matching |
-| `api.expected_points` | **Deployed** | 483 | House drive EP per (era, state): era, state, down, distance_bucket, field_zone, yards_to_goal_min/max, n_obs, ep_drive, ep_net (NULL until P2), p_td, p_fg, p_punt, p_turnover, se_boot (nullable: NULL after a --no-bootstrap recompute, render as no-interval not +/-0), computed_at. Drive basis, era-scoped, d4 go-conditional — see 2026-08-08 changelog entry. |
+| `api.expected_points` | **Deployed** | 483 | House drive EP per (era, state): era, state, down, distance_bucket, field_zone, yards_to_goal_min/max, n_obs, ep_drive, ep_net (populated 2026-08-08: next-score basis, CAN be negative), p_td, p_fg, p_punt, p_turnover, se_boot (nullable: NULL after a --no-bootstrap recompute, render as no-interval not +/-0), computed_at. Drive basis, era-scoped, d4 go-conditional — see 2026-08-08 changelog entry. |
 | `api.penalty_log` | **Deployed** | ~250K | Play-derived penalty events (2004+), best-effort parsed from play_text. Columns: play_id, game_id, season, week, season_type, period, down, distance, offense, defense, play_type, is_penalty_play_type, penalized_team, benefiting_team, infraction, penalty_yards, declined, offsetting, no_play, multi_penalty, yards_gained, ppa, play_text, parse_ok. 'Unknown'/NULL = unclassified, not absent (see 2026-07-23 changelog). |
 | `api.team_penalties` | **Deployed** | ~42K | Official box-score penalty counts per (game, team) from totalPenaltiesYards. Columns: game_id, season, week, season_type, team, opponent, home_away, penalties, penalty_yards, opponent_penalties, opponent_penalty_yards. |
 | `api.recruit_lookup` | **Deployed** | 67,179 | Stable recruiting view for recruit data |

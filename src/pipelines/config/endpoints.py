@@ -270,6 +270,13 @@ RATINGS_ENDPOINTS = {
         schema="ratings",
         write_disposition="merge",
     ),
+    "core_ratings": EndpointConfig(
+        path="/ratings/core",
+        table_name="core_ratings",
+        primary_key=["year", "team"],
+        schema="ratings",
+        write_disposition="merge",
+    ),
     "sp_conferences": EndpointConfig(
         path="/ratings/sp/conferences",
         table_name="sp_conference_ratings",

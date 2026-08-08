@@ -116,6 +116,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 28 | `/ratings/fpi` | ratings.fpi_ratings | ratings.py | fpi_ratings_resource | YES | merge | year, team | 2015-2026 | WORKING |
 | 29 | `/ratings/srs` | ratings.srs_ratings | ratings.py | srs_ratings_resource | YES | merge | year, team | 2015-2026 | WORKING |
 | 30 | `/ratings/sp/conferences` | ratings.sp_conference_ratings | ratings.py | sp_conference_ratings_resource | YES | merge | year, conference | 2015-2026 | WORKING |
+| 30a | `/ratings/core` | ratings.core_ratings | ratings.py | core_ratings_resource | YES | merge | year, team | 2016-2026 | WORKING |
 
 ### Recruiting Data (merge disposition)
 

@@ -5,7 +5,7 @@
 College Football Database -- a complete data warehouse for the CFBD (College Football Data) API, powered by Supabase Postgres and dlthub pipelines.
 
 **Goals:**
-- Ingest all 61 CFBD API endpoints into a well-designed Postgres schema
+- Ingest all 62 CFBD API endpoints into a well-designed Postgres schema
 - Support both analytics (read-heavy, denormalized) and application (normalized, transactional) use cases
 - Maintain working pipelines for ongoing 2026 season data
 - Full historical data (no storage constraints -- will upgrade Supabase tier if needed)
@@ -264,7 +264,7 @@ Consult when building or modifying dlt pipelines: `RESTAPIConfig` structure, bea
 | Games & Schedules | 9 | Incremental by year |
 | Plays & Drives | 6 | Incremental by year (largest data) |
 | Stats (player/team) | 6 | Incremental by year |
-| Ratings (SP+, Elo, FPI) | 5 | Incremental by year |
+| Ratings (SP+, Elo, FPI, CORE) | 6 | Incremental by year |
 | Recruiting | 3 | Incremental by year |
 | Betting Lines | 1 | Incremental by year |
 | Metrics (PPA, win prob) | 8 | Incremental by year |

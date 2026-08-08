@@ -28,7 +28,7 @@ SOURCE_ORDER = [
     "game_stats",  # Team and player box scores
     "plays",  # Play-by-play (largest dataset)
     "stats",  # Aggregated season stats
-    "ratings",  # SP+, Elo, FPI, SRS
+    "ratings",  # SP+, Elo, FPI, SRS, CORE
     "rankings",  # AP, Coaches polls
     "recruiting",  # Recruits, team composites
     "betting",  # Betting lines
@@ -50,7 +50,7 @@ ESTIMATED_CALLS = {
     # resource count. The old estimate understated a daily run by ~80x and hid
     # this source behind "plays" in every budget projection.
     "stats": 1_650,
-    "ratings": 10,
+    "ratings": 12,
     "rankings": 20,
     "recruiting": 15,
     "betting": 5,
@@ -184,10 +184,10 @@ def sources_to_skip(active_sources, season_final: bool, allow_skip: bool):
 # while player_returning is a single call per year. Running the whole source
 # daily would cost ~1,640 calls a day -- the exact fan-out that exhausted the
 # quota on 2026-07-25 -- so only the resources that carry preseason inputs are
-# named here. `ratings` and `recruiting` are flat: five single-call-per-year
-# resources each, so they run whole.
+# named here. `ratings` and `recruiting` are flat single-call-per-year
+# resources (six and five respectively), so they run whole.
 #
-# Total ~11 calls/day. An endpoint CFBD has not published yet returns an empty
+# Total ~12 calls/day. An endpoint CFBD has not published yet returns an empty
 # list or a 400 the source modules already log and skip, so this merges
 # nothing rather than failing, and self-heals the day each one lands.
 # `rosters` is deliberately NOT here -- one call per team (~150/day) and it
@@ -201,7 +201,7 @@ PRESEASON_INPUT_SOURCES = ("stats", "ratings", "recruiting")
 
 # What the off-season refresh above actually costs per day, as opposed to what
 # ESTIMATED_CALLS says a full source-grain run of the same names would cost.
-PRESEASON_ESTIMATED_CALLS = len(PRESEASON_STATS_RESOURCES) + 5 + 5
+PRESEASON_ESTIMATED_CALLS = len(PRESEASON_STATS_RESOURCES) + 6 + 5
 
 
 # Sources whose runner accepts a resource filter. Only `stats` needs one so

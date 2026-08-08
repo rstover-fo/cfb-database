@@ -550,3 +550,19 @@ class TestHandoffExitZoneConvention:
         from scripts.compute_drive_chain import fetch_drive_pairs
 
         assert "SCRIMMAGE_TYPES" in inspect.getsource(fetch_drive_pairs)
+
+    def test_last_snap_applies_the_garbage_time_predicate(self):
+        """PR #71 review, P1 follow-up: PLAYS_QUERY excludes garbage-time
+        plays, so on a garbage-time drive the chain's exit state is the last
+        NON-garbage snap. A last_snap CTE without the same predicate keys a
+        normal-snap-then-garbage-snap drive under the later (garbage) snap's
+        zone -- a row the solver never looks up for that state. The predicate
+        must sit inside last_snap (before its ORDER BY), keyed to the same
+        alias, so all-garbage drives drop out exactly as they never enter
+        the chain."""
+        from scripts.compute_drive_chain import DRIVE_PAIRS_QUERY, GARBAGE_TIME_SQL
+
+        assert GARBAGE_TIME_SQL in DRIVE_PAIRS_QUERY
+        assert DRIVE_PAIRS_QUERY.index(GARBAGE_TIME_SQL) < DRIVE_PAIRS_QUERY.index(
+            "play_number DESC"
+        )

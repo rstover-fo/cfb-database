@@ -651,30 +651,35 @@ def get_db_url() -> str:
 # section 7, reworked in P2). For a drive ending in a handoff outcome, where
 # did the opponent's SAME-HALF next drive actually start? Net punt distance,
 # return yardage, and spot-of-kick rules are all baked into the observed next
-# start. Deliberately NOT garbage-time filtered: field-position physics do
-# not change with the score, and drive grain has no play-level filter anyway.
+# start. The PAIR itself (which drives count, where the next one started) is
+# not garbage-time filtered: field-position physics do not change with the
+# score.
 #
-# exit_zone keying (PR #71 review, P1): the solver looks a handoff row up by
-# the ZONE OF THE TRANSIENT STATE the chain absorbed from -- the PRE-snap
-# yards_to_goal of the drive's last scrimmage play (punt/FG rows are not
-# scrimmage types, so a punting drive exits from its 3rd-down snapshot). An
-# earlier revision keyed rows by core.drives.end_yards_to_goal -- the POST-
-# play drive-end spot, which differs by the last play's yardage (or an INT
-# return): measured on 2021+, only 73-86% of handoff drives land in the same
-# zone under both conventions. Training and lookup must condition on the
-# same zone, so the last_snap CTE recovers the pre-snap spot with PLAYS_QUERY's
-# play-shape filters (garbage time excepted, per the note above).
-DRIVE_PAIRS_QUERY = """
+# exit_zone keying (PR #71 review, P1 x2): the solver looks a handoff row up
+# by the ZONE OF THE TRANSIENT STATE the chain absorbed from -- the PRE-snap
+# yards_to_goal of the drive's last CHAIN-ELIGIBLE scrimmage play (punt/FG
+# rows are not scrimmage types, so a punting drive exits from its 3rd-down
+# snapshot). Two earlier revisions keyed rows differently and both diverged
+# from the lookup: (a) core.drives.end_yards_to_goal, the POST-play drive-end
+# spot (same-zone rate only 73-86% on 2021+); (b) the physical last scrimmage
+# snap WITHOUT the garbage-time predicate -- but PLAYS_QUERY excludes
+# garbage-time plays, so on a garbage-time drive the chain's exit state is
+# the last NON-garbage snap, not the last snap. last_snap therefore applies
+# PLAYS_QUERY's row filter IN FULL, garbage time included; a drive whose
+# every play is garbage time gets no key and drops out, matching the chain,
+# which never absorbs from it either.
+DRIVE_PAIRS_QUERY = f"""
     WITH last_snap AS (
-      SELECT DISTINCT ON (game_id, drive_id)
-        game_id, drive_id, yards_to_goal AS exit_ytg
-      FROM core.plays
-      WHERE season BETWEEN %(start)s AND %(end)s
-        AND play_type = ANY(%(types)s)
-        AND down BETWEEN 1 AND 4
-        AND distance BETWEEN 1 AND 45
-        AND yards_to_goal BETWEEN 1 AND 99
-      ORDER BY game_id, drive_id, play_number DESC
+      SELECT DISTINCT ON (p.game_id, p.drive_id)
+        p.game_id, p.drive_id, p.yards_to_goal AS exit_ytg
+      FROM core.plays p
+      WHERE p.season BETWEEN %(start)s AND %(end)s
+        AND p.play_type = ANY(%(types)s)
+        AND p.down BETWEEN 1 AND 4
+        AND p.distance BETWEEN 1 AND 45
+        AND p.yards_to_goal BETWEEN 1 AND 99
+        AND NOT {GARBAGE_TIME_SQL}
+      ORDER BY p.game_id, p.drive_id, p.play_number DESC
     ),
     seq AS (
       SELECT d.game_id, d.drive_number, d.offense, upper(d.drive_result) AS dr,

@@ -295,3 +295,53 @@ class TestMonotoneGates:
             ep[f"d3|med|z{z}"] = 2.5
             ep[f"d4|med|z{z}"] = 2.6  # above d3: allowed
         assert check_monotone_down(ep) == []
+
+
+class TestLegacyVocabulary:
+    """First full-era run (deploy 31257283280): 2004-2013 spoke a different
+    drive_result dialect and 18.24% of its drives went unmapped."""
+
+    def test_legacy_synonyms_are_mapped(self):
+        for legacy, absorb in [
+            ("FG GOOD", "FG"),
+            ("MADE FG", "FG"),
+            ("FG MISSED", "MISSED_FG"),
+            ("TURNOVER ON DOWNS", "DOWNS"),
+            ("POSS. ON DOWNS", "DOWNS"),
+            ("INT RETURN TOUCH", "TURNOVER_TD"),
+            ("PUNT RETURN TD TD", "TURNOVER_TD"),
+        ]:
+            assert ABSORB_MAP.get(legacy) == absorb, legacy
+
+    def test_ambiguous_legacy_results_stay_unmapped(self):
+        """KICKOFF / last-play labels are verified non-scoring but their
+        outcomes are unrecoverable -- dropping them is deliberate, mapping
+        them to a guess would fabricate outcomes."""
+        for ambiguous in ("KICKOFF", "RUSH", "SACK", "PASS COMPLETE", "INCOMPLETE"):
+            assert ambiguous not in ABSORB_MAP
+
+    def test_legacy_era_guard_is_looser_but_bounded(self):
+        from scripts.compute_drive_chain import MAX_UNMAPPED_SHARE, MAX_UNMAPPED_SHARE_BY_ERA
+
+        assert MAX_UNMAPPED_SHARE_BY_ERA["2004-2013"] == 0.05
+        assert MAX_UNMAPPED_SHARE_BY_ERA["2004-2013"] > MAX_UNMAPPED_SHARE
+        assert set(MAX_UNMAPPED_SHARE_BY_ERA) == {"2004-2013"}, (
+            "modern eras must stay on the tight guard"
+        )
+
+
+class TestZoneGateFourthDownExemption:
+    def test_d4_rising_zone_curve_does_not_fail(self):
+        """2014-2020 era run: d4|short rose z9->z10 (0.68->1.02) -- selection
+        of who goes for it at their own goal line, not estimation failure.
+        Same go-conditional exemption as the down gate."""
+        ep = {f"d1|standard|z{z}": 6.0 - 0.5 * z for z in range(1, 11)}
+        ep.update({f"d3|short|z{z}": 4.0 - 0.3 * z for z in range(1, 11)})
+        ep["d4|short|z9"] = 0.68
+        ep["d4|short|z10"] = 1.02  # rises: allowed, d4 is exempt
+        assert check_monotone_zone(ep) == []
+
+    def test_d3_short_is_now_checked_instead(self):
+        ep = {f"d3|short|z{z}": 4.0 - 0.3 * z for z in range(1, 11)}
+        ep["d3|short|z7"] = ep["d3|short|z6"] + 1.0
+        assert check_monotone_zone(ep)

@@ -15,6 +15,22 @@ Last updated: 2026-08-08
 
 ## Recent Contract Changes
 
+- **2026-08-08 — CFBD CORE ratings surfaced: `api.core_ratings` added;
+  `api.team_detail`/`api.team_history` gain `core_overall`/`core_offense`/
+  `core_defense` (additive).** CORE (Context & Opponent-Relative Efficiency)
+  is CFBD's situation- and opponent-adjusted team rating, ingested into
+  `ratings.core_ratings` (internal) and exposed via `marts.core_ratings` →
+  `api.core_ratings` (full column set incl. `through_week` as-of markers and
+  in-season ranks) plus three embedded columns on the team-page views. Three
+  things consumers must get right: (1) coverage is **2016+ only** — NULL/absent
+  for earlier seasons means not-rated, never zero; (2) **`defense` is
+  lower-better** — "best defense" is `defense_rank ASC` (already ranked
+  ascending), never `ORDER BY defense DESC`; (3) in-season rows are snapshots
+  through `through_week`, advanced in place by the daily load — not final
+  ratings until the season completes. `overall = offense - defense`. Also:
+  `ratings.core_ratings` joined the `get_data_freshness()` tracked set (now
+  24 tables). Handoff: `docs/handoffs/2026-08-08-core-ratings-for-cfb-app.md`.
+
 - **2026-08-08 — `api.expected_points.ep_net` is now populated** (P2, same
   day as the surface shipped). `ep_net` is the **next-score basis** -- the
   one comparable to CFBD PPA, nflfastR EP, and every "expected points"
@@ -558,8 +574,9 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 
 | View | Status | Rows | Description |
 |------|--------|------|-------------|
-| `api.team_detail` | **Deployed** | 136 | Single team page: current season stats, ratings, EPA. Columns: school, mascot, abbreviation, color, alternate_color, logo_url, conference, classification, current_season, games, wins, losses, conf_wins, conf_losses, ppg, opp_ppg, avg_margin, sp_rating, sp_rank, sp_offense, sp_defense, elo, fpi, epa_per_play, epa_tier, success_rate, explosiveness, recruiting_rank, recruiting_points |
-| `api.team_history` | **Deployed** | 3,667 | Multi-season team history with records, ratings, EPA trends. Columns: team, season, conference, games, wins, losses, conf_wins, conf_losses, ppg, opp_ppg, avg_margin, sp_rating, sp_rank, sp_offense, sp_defense, elo, fpi, epa_per_play, epa_tier, success_rate, explosiveness, total_plays, recruiting_rank, recruiting_points (sp_offense/sp_defense added 2026-07-23) |
+| `api.team_detail` | **Deployed** | 136 | Single team page: current season stats, ratings, EPA. Columns: school, mascot, abbreviation, color, alternate_color, logo_url, conference, classification, current_season, games, wins, losses, conf_wins, conf_losses, ppg, opp_ppg, avg_margin, sp_rating, sp_rank, sp_offense, sp_defense, elo, fpi, core_overall, core_offense, core_defense, epa_per_play, epa_tier, success_rate, explosiveness, recruiting_rank, recruiting_points (core_* added 2026-08-08; 2016+ only, NULL = not-rated, core_defense lower-better) |
+| `api.team_history` | **Deployed** | 3,667 | Multi-season team history with records, ratings, EPA trends. Columns: team, season, conference, games, wins, losses, conf_wins, conf_losses, ppg, opp_ppg, avg_margin, sp_rating, sp_rank, sp_offense, sp_defense, elo, fpi, core_overall, core_offense, core_defense, epa_per_play, epa_tier, success_rate, explosiveness, total_plays, recruiting_rank, recruiting_points (sp_offense/sp_defense added 2026-07-23; core_* added 2026-08-08, 2016+ only, NULL = not-rated, core_defense lower-better) |
+| `api.core_ratings` | **Deployed** | ~1,400 | CFBD CORE ratings by team-season, 2016+ only. Columns: season, team, conference, overall, offense, defense, offense_plays, defense_plays, through_week, through_season_type, model_version, overall_rank, offense_rank, defense_rank. `defense` is LOWER-better (`defense_rank` is ranked ascending accordingly); `overall = offense - defense`; in-season rows are snapshots through `through_week`. Backed by `marts.core_ratings`. |
 | `api.game_detail` | **Deployed** | 45,897 | Single game: teams, scores, betting lines, EPA, venue. Columns: game_id, season, week, season_type, start_date, completed, home_team, away_team, home_points, away_points, winner, point_diff, home_spread, over_under, spread_result, ou_result, home_epa, away_epa, pregame_home_win_prob, venue, attendance, excitement_index |
 | `api.matchup` | **Deployed** | 11,975 | Head-to-head matchup history and current season comparison. Columns: team1, team2, total_games, team1_wins, team2_wins, ties, first_meeting, last_meeting, recent_results (JSONB array), team1/team2 current season stats |
 | `api.leaderboard_teams` | **Deployed** | 3,667 | Team leaderboard with rankings, ratings, EPA. Columns: team, conference, season, classification, wins, losses, win_pct, ppg, opp_ppg, sp_rank, epa_per_play, epa_tier, wins_rank, ppg_rank, defense_ppg_rank, epa_rank. Rank columns are scoped `PARTITION BY season, classification` (see 2026-07-22 changelog entry) -- all rows still returned, no `WHERE fbs` filter. |
@@ -657,7 +674,8 @@ cfb-app for advanced features.
 
 | Materialized View | Status | Description |
 |-------------------|--------|-------------|
-| `marts.team_season_summary` | Deployed | One row per team/season: wins, losses, ratings, recruiting |
+| `marts.team_season_summary` | Deployed | One row per team/season: wins, losses, ratings (incl. core_overall/core_offense/core_defense, 2016+), recruiting |
+| `marts.core_ratings` | Deployed | CFBD CORE ratings passthrough of `ratings.core_ratings` (2016+). Grain/unique key: (team, season). In-season rank columns; defense ranked ascending (lower is better). |
 | `marts.team_epa_season` | Deployed | Season-level EPA metrics per team |
 | `marts._game_epa_calc` | Deployed | Per-game EPA calculations (internal building block for api.game_detail) |
 | `marts.team_style_profile` | Deployed | Offensive/defensive style characterization |
@@ -683,7 +701,7 @@ cfb-app for advanced features.
 | `marts.transfer_portal_impact` | Deployed | Portal activity correlated with team performance changes. Portal era only (2021+). 1,374 rows. |
 | `marts.conference_comparison` | Deployed | Per-conference per-season aggregates with PERCENT_RANK percentiles. 347 rows. |
 | `marts.conference_head_to_head` | Deployed | Conference vs conference records by season. Alphabetical ordering to avoid duplicate pairs. 4,818 rows. |
-| `marts.data_freshness` | Deployed | Data freshness tracking for 23 key tables. Row counts, last activity, staleness detection. |
+| `marts.data_freshness` | Deployed | Data freshness tracking for 24 key tables. Row counts, last activity, staleness detection. |
 | `marts.team_wepa_season` | Deployed | Opponent-adjusted EPA (WEPA) by team-season, passthrough of `metrics.wepa_team_season`. Grain: `(team, season)`. Unique key: `(team, season)`. |
 | `marts.player_wepa_season` | Deployed | Player WEPA (passing/rushing) and kicker PAAR, tall union of `metrics.wepa_players_*`. Grain: `(season, athlete_id, category)`. Unique key: `(season, athlete_id, category)`. |
 | `marts.returning_production` | Deployed | Returning production by team-season (PPA and usage returning from prior season), passthrough of `stats.player_returning`. Grain: `(season, team)`. Unique key: `(team, season)`. |
@@ -756,7 +774,7 @@ These reference tables are stable enough for direct access.
 |----------|--------|-------------|
 | `ref.get_era` | `ref` | Returns era code/name for a given year |
 | `analytics.refresh_all_views` | `analytics` | Refreshes all analytics materialized views (admin use) |
-| `marts.refresh_all` | `marts` | Refreshes all 39 mart materialized views in dependency order (7 layers). Returns (view_name, duration_ms, status). |
+| `marts.refresh_all` | `marts` | Refreshes all 42 mart materialized views in dependency order (7 layers). Returns (view_name, duration_ms, status). |
 
 ---
 
@@ -818,7 +836,7 @@ These objects are implementation details. Do not depend on them from downstream 
 |--------|--------|
 | `core` | `games`, `drives`, `plays` (partitioned: `plays_y2004`..`plays_y2026`), `roster`, `roster__recruit_ids`, `records`, `rankings`, `game_media`, `game_weather`, `game_player_stats` (+ nested `__teams`, `__categories`, `__types`, `__athletes`), `game_team_stats` (+ nested `__teams`, `__stats`), `games__home_line_scores`, `games__away_line_scores` |
 | `stats` | `team_season_stats`, `player_season_stats`, `advanced_team_stats`, `advanced_game_stats`, `game_havoc`, `play_stats`, `player_usage`, `player_returning` |
-| `ratings` | `sp_ratings`, `sp_conference_ratings`, `elo_ratings`, `fpi_ratings`, `srs_ratings` |
+| `ratings` | `sp_ratings`, `sp_conference_ratings`, `elo_ratings`, `fpi_ratings`, `srs_ratings`, `core_ratings` |
 | `recruiting` | `recruits`, `team_recruiting`, `team_talent`, `transfer_portal`, `recruiting_groups` |
 | `betting` | `lines`, `team_ats`, `line_snapshots` (append-only line movement snapshots, no PK, `captured_at` stamped per run) |
 | `draft` | `draft_picks` |

@@ -1,0 +1,21 @@
+{
+  "action": "apply",
+  "files": [
+    "src/schemas/marts/001_team_season_summary.sql",
+    "src/schemas/marts/013_team_season_trajectory.sql",
+    "src/schemas/marts/023_coaching_tenure.sql",
+    "src/schemas/marts/024_recruiting_roi.sql",
+    "src/schemas/marts/025_transfer_portal_impact.sql",
+    "src/schemas/marts/026_conference_comparison.sql",
+    "src/schemas/api/001_team_detail.sql",
+    "src/schemas/api/002_team_history.sql",
+    "src/schemas/api/004_matchup.sql",
+    "src/schemas/api/005_leaderboard_teams.sql",
+    "src/schemas/api/015_coaching_history.sql",
+    "src/schemas/api/016_recruiting_roi.sql",
+    "src/schemas/api/017_transfer_portal_impact.sql",
+    "src/schemas/api/018_conference_comparison.sql",
+    "src/schemas/public/002_marts_views.sql",
+    "src/schemas/api/validation_core_ratings.sql"
+  ]
+}

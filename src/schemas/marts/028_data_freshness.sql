@@ -23,6 +23,7 @@ WITH tracked_tables AS (
         ('ratings', 'elo_ratings', 'weekly'),
         ('ratings', 'fpi_ratings', 'seasonal'),
         ('ratings', 'srs_ratings', 'seasonal'),
+        ('ratings', 'core_ratings', 'weekly'),
         ('recruiting', 'recruits', 'seasonal'),
         ('recruiting', 'team_recruiting', 'seasonal'),
         ('recruiting', 'transfer_portal', 'seasonal'),
@@ -72,3 +73,12 @@ ORDER BY tt.schema_name, tt.table_name;
 
 -- Required for REFRESH CONCURRENTLY
 CREATE UNIQUE INDEX ON marts.data_freshness (schema_name, table_name);
+
+-- Re-grant on every apply: this file DROPs the matview, which discards its
+-- grants (no ALTER DEFAULT PRIVILEGES for the PostgREST roles in marts), and
+-- public.get_data_freshness() is a plain SQL function executing as the CALLER,
+-- so anon/authenticated need direct SELECT here for the RPC to work. Do NOT
+-- fix a lost grant by re-running migrations/grant_read_access_for_security_invoker.sql
+-- -- its blanket GRANT ... ALL TABLES IN SCHEMA analytics would re-grant
+-- analytics.ep_states, undoing the deliberate revoke in api/043_expected_points.sql.
+GRANT SELECT ON marts.data_freshness TO anon, authenticated;

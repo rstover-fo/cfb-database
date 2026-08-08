@@ -128,6 +128,16 @@ BEGIN
                 END IF;
             END LOOP;
         END LOOP;
+        -- Trajectory chain: the 013 rebuild must carry the rank/alias columns
+        -- public/002 and get_trajectory_averages() select (the 2026-08-08
+        -- drift), and they must be populated, not just present.
+        SELECT COUNT(*) INTO total
+        FROM public.team_season_trajectory
+        WHERE season = 2024 AND off_epa_rank IS NOT NULL AND def_epa_rank IS NOT NULL;
+        IF total < 100 THEN
+            RAISE EXCEPTION 'public.team_season_trajectory: only % 2024 rows with EPA ranks -- trajectory rebuild is broken', total;
+        END IF;
+
         RAISE NOTICE 'stage-2 embed validation passed';
     ELSE
         RAISE NOTICE 'stage-2 embed not applied yet -- skipped (d)';

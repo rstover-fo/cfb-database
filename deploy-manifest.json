@@ -1,0 +1,4 @@
+{
+  "action": "apply",
+  "files": ["src/schemas/api/043_expected_points.sql"]
+}

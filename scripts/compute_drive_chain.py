@@ -198,12 +198,19 @@ def build_transitions(plays: list[dict]) -> tuple[Counter, Counter, int]:
 
     Returns (transition counts keyed (from_state, to_state),
              per-game counts keyed (game_id, from_state, to_state) -- the
-             bootstrap resampling unit, and the count of drives dropped for
-             an unmapped drive_result).
+             bootstrap resampling unit,
+             drive_outcomes keyed (first_play_state, absorbing) -- the
+             realized-outcome sample the calibration gate compares against,
+             n_mapped drives, and the count of drives dropped for an
+             unmapped drive_result). Drive counts are exact (PR #66 review,
+             P2): the unmapped-share guard must divide by drives, not by
+             game-state pairs.
     """
     transitions: Counter = Counter()
     per_game: Counter = Counter()
+    drive_outcomes: Counter = Counter()
     unmapped_drives = 0
+    n_mapped = 0
 
     by_drive: dict[tuple, list[dict]] = defaultdict(list)
     for row in plays:
@@ -216,14 +223,16 @@ def build_transitions(plays: list[dict]) -> tuple[Counter, Counter, int]:
         if absorb is None:
             unmapped_drives += 1
             continue
+        n_mapped += 1
         states = [state_key(r["down"], r["distance"], r["yards_to_goal"]) for r in rows]
         for a, b in zip(states, states[1:]):
             transitions[(a, b)] += 1
             per_game[(game_id, a, b)] += 1
         transitions[(states[-1], absorb)] += 1
         per_game[(game_id, states[-1], absorb)] += 1
+        drive_outcomes[(states[0], absorb)] += 1
 
-    return transitions, per_game, unmapped_drives
+    return transitions, per_game, drive_outcomes, n_mapped, unmapped_drives
 
 
 def shrink(transitions: Counter, alpha: float = DEFAULT_ALPHA) -> dict[tuple, float]:
@@ -257,16 +266,24 @@ def shrink(transitions: Counter, alpha: float = DEFAULT_ALPHA) -> dict[tuple, fl
         return num / den if den else 0.0
 
     # Candidate targets per from-state: observed targets plus every target the
-    # parent has seen (a starved state must be able to reach outcomes it never
-    # personally observed).
+    # parent OR grandparent has seen. The grandparent union is load-bearing
+    # (PR #66 review, P1): p_parent() mixes grandparent probability into every
+    # target, so a target observed only elsewhere in the same down would carry
+    # positive probability that the row never emits -- the row would sum to
+    # less than 1 and solve_ep() would leak that mass out of the chain,
+    # biasing every absorption probability.
     targets_by_state: dict[str, set] = defaultdict(set)
     parent_targets: dict[str, set] = defaultdict(set)
+    grand_targets: dict[str, set] = defaultdict(set)
     for pk, b in parent_counts:
         parent_targets[pk].add(b)
+    for gk, b in grand_counts:
+        grand_targets[gk].add(b)
     for a, b in transitions:
         targets_by_state[a].add(b)
     for a in row_totals:
         targets_by_state[a] |= parent_targets[parent_key(a)]
+        targets_by_state[a] |= grand_targets[grandparent_key(a)]
 
     shrunk: dict[tuple, float] = {}
     for a in row_totals:
@@ -385,28 +402,31 @@ def check_monotone_down(ep: dict[str, float]) -> list[str]:
 
 
 def calibration_mae(
-    absorb_probs: dict[tuple, float], transitions: Counter, outcome: str = "TD"
+    absorb_probs: dict[tuple, float], drive_outcomes: Counter, outcome: str = "TD"
 ) -> float:
-    """Gate 3: mean |model absorption prob - empirical drive outcome rate|
-    over states, weighted by support. Empirical rate for a state uses drives
-    whose FIRST play was in that state (the chain should reproduce these)."""
-    # Empirical: among transitions, we don't retain drive starts here; the
-    # caller passes first-play transitions separately when available. This
-    # function instead compares model vs empirical one-step-consistent
-    # absorption via the raw matrix -- solving the raw (unshrunk) chain and
-    # comparing to the shrunk one. Deviations flag shrinkage distortion.
-    raw_totals: Counter = Counter()
-    for (a, _), n in transitions.items():
-        raw_totals[a] += n
-    p_raw = {(a, b): n / raw_totals[a] for (a, b), n in transitions.items()}
-    ep_raw, absorb_raw = solve_ep({k: v for k, v in p_raw.items()})
+    """Gate 3: support-weighted mean |model absorption prob - REALIZED drive
+    outcome rate| over drive-start states.
+
+    Realized, not model-vs-model (PR #66 review, P2): the empirical rate for
+    a state is the fraction of drives whose FIRST play was in that state that
+    actually ended in `outcome`. Drive starts are held-out-in-spirit
+    observations of the whole chain: a large MAE flags either miscalibration
+    or a Markov violation, which is exactly what this gate exists to catch.
+    """
+    starts_total: Counter = Counter()
+    starts_outcome: Counter = Counter()
+    for (s, abs_s), n in drive_outcomes.items():
+        starts_total[s] += n
+        if abs_s == outcome:
+            starts_outcome[s] += n
+
     num, den = 0.0, 0
-    for (s, abs_s), p in absorb_probs.items():
-        if abs_s != outcome or (s, abs_s) not in absorb_raw:
+    for s, n in starts_total.items():
+        if (s, outcome) not in absorb_probs or n < 50:  # skip unsupported starts
             continue
-        w = raw_totals[s]
-        num += w * abs(p - absorb_raw[(s, abs_s)])
-        den += w
+        empirical = starts_outcome[s] / n
+        num += n * abs(absorb_probs[(s, outcome)] - empirical)
+        den += n
     return num / den if den else float("nan")
 
 
@@ -414,7 +434,19 @@ def calibration_mae(
 # --- I/O layer ---------------------------------------------------------------
 # =============================================================================
 
-PLAYS_QUERY = """
+# Garbage-time predicate inlined VERBATIM from marts.play_epa
+# (src/schemas/marts/010_play_epa.sql). The mart itself must NOT be joined
+# here (PR #66 review, P1): it is defined WHERE p.ppa IS NOT NULL, so an
+# inner join silently drops any scrimmage play CFBD did not score --
+# corrupting snapshot sequences and re-importing the CFBD-coverage
+# dependency this house model exists to remove. If 010's definition ever
+# changes, change this in the same commit.
+GARBAGE_TIME_SQL = """(
+      (p.period = 4 AND ABS(COALESCE(p.score_diff, 0)) > 28) OR
+      (p.period >= 3 AND ABS(COALESCE(p.score_diff, 0)) > 35)
+)"""
+
+PLAYS_QUERY = f"""
     SELECT p.game_id,
            p.drive_id,
            p.play_number,
@@ -424,13 +456,12 @@ PLAYS_QUERY = """
            d.drive_result
     FROM core.plays p
     JOIN core.drives d ON d.id = p.drive_id AND d.game_id = p.game_id
-    JOIN marts.play_epa pe ON pe.play_id = p.id
     WHERE p.season BETWEEN %(start)s AND %(end)s
       AND p.play_type = ANY(%(types)s)
       AND p.down BETWEEN 1 AND 4
       AND p.distance BETWEEN 1 AND 45
       AND p.yards_to_goal BETWEEN 1 AND 99
-      AND NOT pe.is_garbage_time
+      AND NOT {GARBAGE_TIME_SQL}
       AND d.drive_result <> 'POSSESSION (FOR OT DRIVES)'
 """
 
@@ -534,9 +565,8 @@ def run_era(conn, era: str, alpha: float, do_bootstrap: bool, do_validate: bool)
         logger.error("Era %s: no plays -- is marts.play_epa refreshed?", era)
         return 1
 
-    transitions, per_game, unmapped = build_transitions(plays)
-    n_drives = unmapped + len({(g, a) for (g, a, _) in per_game})  # approx upper bound denom
-    share = unmapped / max(1, n_drives)
+    transitions, per_game, drive_outcomes, n_mapped, unmapped = build_transitions(plays)
+    share = unmapped / max(1, n_mapped + unmapped)
     logger.info(
         "Era %s: %d transitions, %d unmapped drives (%.2f%%)",
         era,
@@ -559,7 +589,7 @@ def run_era(conn, era: str, alpha: float, do_bootstrap: bool, do_validate: bool)
     if do_validate:
         vz = check_monotone_zone(ep)
         vd = check_monotone_down(ep)
-        mae = calibration_mae(absorb_probs, transitions)
+        mae = calibration_mae(absorb_probs, drive_outcomes)
         for v in vz + vd:
             logger.warning("Era %s monotonicity: %s", era, v)
         print(

@@ -168,17 +168,20 @@ class TestBuildTransitions:
 
     def test_last_play_absorbs_into_drive_result(self):
         plays = self._drive(1, "d1", "PUNT", [(1, 10, 75), (2, 6, 71), (3, 6, 71)])
-        transitions, per_game, unmapped = build_transitions(plays)
+        transitions, per_game, outcomes, n_mapped, unmapped = build_transitions(plays)
 
         assert unmapped == 0
+        assert n_mapped == 1
+        assert outcomes[(state_key(1, 10, 75), "PUNT")] == 1
         assert transitions[(state_key(1, 10, 75), state_key(2, 6, 71))] == 1
         assert transitions[(state_key(3, 6, 71), "PUNT")] == 1
 
     def test_unmapped_drive_result_is_dropped_and_counted(self):
         plays = self._drive(1, "d1", "Uncategorized", [(1, 10, 75)])
-        transitions, _, unmapped = build_transitions(plays)
+        transitions, _, _, n_mapped, unmapped = build_transitions(plays)
 
         assert unmapped == 1
+        assert n_mapped == 0
         assert not transitions
 
     def test_penalty_gap_is_absorbed_into_next_snapshot(self):
@@ -195,9 +198,72 @@ class TestBuildTransitions:
                 "drive_result": "TD",
             }
         ]
-        transitions, _, _ = build_transitions(plays)
+        transitions, _, _, _, _ = build_transitions(plays)
 
         assert transitions[(state_key(1, 10, 75), state_key(1, 10, 60))] == 1
+
+    def test_drives_are_counted_as_drives(self):
+        """PR #66 review, P2: the unmapped-share denominator is drives.
+        One drive visiting three states is still ONE drive, and two drives
+        revisiting the same state are still TWO."""
+        plays = (
+            self._drive(1, "a", "PUNT", [(1, 10, 75), (2, 6, 71), (3, 6, 71)])
+            + self._drive(1, "b", "TD", [(1, 10, 75)])
+            + self._drive(1, "c", "Uncategorized", [(1, 10, 75)])
+        )
+        _, _, _, n_mapped, unmapped = build_transitions(plays)
+
+        assert n_mapped == 2
+        assert unmapped == 1
+
+
+class TestShrinkageGrandparentTargets:
+    def test_grandparent_only_target_is_emitted(self):
+        """PR #66 review, P1: a target observed only elsewhere in the same
+        down carries grandparent probability through p_parent(); if the row
+        never emits it, the row sums to less than 1 and solve_ep() leaks
+        that mass out of the chain."""
+        counts = Counter(
+            {
+                ("d2|med|z3", "TD"): 100,  # zone 3 parent only ever sees TD
+                ("d2|med|z8", "PUNT"): 100,  # zone 8 parent only ever sees PUNT
+            }
+        )
+        shrunk = shrink(counts, alpha=50.0)
+
+        # Each row must emit BOTH targets and sum to exactly 1.
+        for state in ("d2|med|z3", "d2|med|z8"):
+            row = {b: p for (a, b), p in shrunk.items() if a == state}
+            assert "TD" in row and "PUNT" in row, f"{state} missing a grandparent target"
+            assert sum(row.values()) == pytest.approx(1.0)
+
+
+class TestCalibration:
+    def test_perfect_model_scores_zero(self):
+        from scripts.compute_drive_chain import calibration_mae
+
+        outcomes = Counter({("d1|standard|z8", "TD"): 30, ("d1|standard|z8", "PUNT"): 70})
+        absorb = {("d1|standard|z8", "TD"): 0.3}
+        assert calibration_mae(absorb, outcomes) == pytest.approx(0.0)
+
+    def test_miscalibration_is_measured_against_realized_outcomes(self):
+        """PR #66 review, P2: the gate compares model vs REALIZED drive
+        outcomes, not model vs itself -- a systematically wrong chain must
+        score badly."""
+        from scripts.compute_drive_chain import calibration_mae
+
+        outcomes = Counter({("d1|standard|z8", "TD"): 30, ("d1|standard|z8", "PUNT"): 70})
+        absorb = {("d1|standard|z8", "TD"): 0.6}  # model says 60%, reality 30%
+        assert calibration_mae(absorb, outcomes) == pytest.approx(0.3)
+
+    def test_thin_start_states_are_skipped(self):
+        from scripts.compute_drive_chain import calibration_mae
+
+        outcomes = Counter({("d4|xlong|z2", "TD"): 3})  # 3 drives: noise, not signal
+        absorb = {("d4|xlong|z2", "TD"): 0.9}
+        import math
+
+        assert math.isnan(calibration_mae(absorb, outcomes))
 
 
 class TestMonotoneGates:

@@ -164,7 +164,12 @@ any candidate goes through the section 2.5 screen on its own merits later.
 
 ## 10.5 First real-chain run (2026-08-08, era 2021+, offline via MCP counts)
 
-875,715 scrimmage plays, 162 states, 6,729 unique transitions. Gate 1a
+Corrected engine after PR #66 review (grandparent-target emission, no
+play_epa join, drive-exact unmapped guard, realized-outcome calibration):
+872,678 scrimmage plays, 158,649 mapped drives (0.90% unmapped), 6,687
+unique transitions, every shrunk row summing to exactly 1. Realized-
+outcome calibration MAE for P(TD) from drive-start states: **0.0076**.
+Gate 1a
 (zone monotonicity) PASSED: 1st-and-10 drive EP declines smoothly 4.75
 (z2) -> 1.17 (z10); 1st-and-goal inside the 10 = 5.65 with P(TD) 0.758;
 own-25 = 1.80 -- all consistent with published CFB EP curves. Gate 1b

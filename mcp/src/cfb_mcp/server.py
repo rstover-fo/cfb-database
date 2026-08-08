@@ -1,4 +1,4 @@
-"""cfb_mcp FastMCP server: 8 read-only tools over the cfb-database warehouse.
+"""cfb_mcp FastMCP server: 9 read-only tools over the cfb-database warehouse.
 
 Every tool is a thin, LLM-facing wrapper around one or more PostgREST calls
 (see cfb_mcp.postgrest). Tools only touch objects in the public surface
@@ -674,3 +674,112 @@ async def get_data_freshness() -> str:
     except PostgrestError as e:
         return e.message
     return _dump(_wrap("public.get_data_freshness", rows))
+
+
+# ---------------------------------------------------------------------
+# 9. get_expected_points
+# ---------------------------------------------------------------------
+
+
+class EpEra(StrEnum):
+    """Rules-era curves for `get_expected_points` -- see api.expected_points.
+
+    Eras are estimated separately because scoring environments differ by up
+    to 0.22 EP (~15 bootstrap SEs); a game must be priced against its own
+    era's curve. MODERN is the right default for anything current.
+    """
+
+    LEGACY = "2004-2013"
+    MIDDLE = "2014-2020"
+    MODERN = "2021+"
+
+
+@mcp.tool(
+    name="get_expected_points",
+    annotations={"title": "Get Expected Points", **READ_ONLY_ANNOTATIONS},
+)
+async def get_expected_points(
+    down: Annotated[
+        int | None,
+        Field(default=None, ge=1, le=4, description="Down (1-4). Omit for all downs."),
+    ] = None,
+    distance_bucket: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Distance bucket. Down-aware vocabulary: 1st down uses "
+            "'standard' (=10), 'short' (<10, post-penalty), 'long' (>10), 'goal'; "
+            "downs 2-4 use 'short' (<=3), 'med' (4-6), 'long' (7-10), 'xlong' (>10), "
+            "'goal'. Omit for all buckets.",
+        ),
+    ] = None,
+    field_zone: Annotated[
+        int | None,
+        Field(
+            default=None,
+            ge=1,
+            le=10,
+            description="10-yard band of yards-to-goal: 1 = inside the opponent 10, "
+            "3 = opponent 21-30 (the 'opp 25'), 8 = own 21-30 (the 'own 25'), "
+            "10 = backed up inside own 10. Omit for the full field.",
+        ),
+    ] = None,
+    era: Annotated[
+        EpEra,
+        Field(
+            default=EpEra.MODERN,
+            description="Rules era whose curve to use. Default '2021+' (modern). "
+            "Historical questions must use the era the game was played in.",
+        ),
+    ] = EpEra.MODERN,
+    limit: Annotated[
+        int, Field(default=DEFAULT_ROW_CAP, ge=1, le=DEFAULT_ROW_CAP)
+    ] = DEFAULT_ROW_CAP,
+) -> str:
+    """Get house expected points for drive states (down / distance / field position).
+
+    When to use: "what's a 1st-and-10 from the opponent 25 worth", "how often
+    does a drive score a TD from midfield", "compare 3rd-and-short vs
+    3rd-and-long at the 40".
+
+    Backed by api.expected_points -- the warehouse's own drive-state Markov
+    chain (2.5M plays, garbage time excluded), not CFBD's model.
+
+    Caveats (repeat these when answering -- they change interpretation):
+      - ep_drive is the DRIVE basis: points this possession is worth (TD 6.97,
+        FG 3). It is NOT comparable to CFBD PPA/EPA numbers; the comparable
+        ep_net column is NULL until the net next-score model lands. Never
+        read a NULL ep_net as zero.
+      - down=4 rows are GO-FOR-IT-CONDITIONAL: the chain only sees a 4th-down
+        snapshot when the offense lined up to go (punts/FGs exit at 3rd
+        down), so 4th-down EP can legitimately exceed 3rd-down EP. Say
+        "given they go for it" when quoting d4 numbers.
+      - Quote intervals: se_boot is the bootstrap SE of ep_drive, so
+        ep_drive +/- 2*se_boot is the honest form, and check n_obs before
+        leaning on a thin state.
+
+    Returns: JSON {"_source": "api.expected_points", "count": int, "rows": [...]},
+    rows ordered by down, then field zone.
+    """
+    params: dict[str, Any] = {"era": eq(era.value)}
+    if down is not None:
+        params["down"] = eq(down)
+    if distance_bucket is not None:
+        params["distance_bucket"] = eq(distance_bucket)
+    if field_zone is not None:
+        params["field_zone"] = eq(field_zone)
+    params["order"] = "down.asc,field_zone.asc,distance_bucket.asc"
+
+    try:
+        client = PostgrestClient()
+        rows = await client.select("expected_points", params, profile="api", limit=limit)
+    except PostgrestError as e:
+        return e.message
+
+    if not rows:
+        return (
+            f"No expected-points states match era={era.value} with the given filters. "
+            "Check the down-aware distance_bucket vocabulary (1st down: standard/short/"
+            "long/goal; downs 2-4: short/med/long/xlong/goal)."
+        )
+    return _dump(_wrap("api.expected_points", rows))

@@ -29,6 +29,9 @@ SELECT
     tss.sp_defense,
     tss.elo,
     tss.fpi,
+    tss.core_overall,
+    tss.core_offense,
+    tss.core_defense,
 
     -- EPA (if available for that season)
     epa.epa_per_play,
@@ -46,7 +49,7 @@ LEFT JOIN marts.team_epa_season epa
     ON epa.team = tss.team AND epa.season = tss.season
 ORDER BY tss.team, tss.season DESC;
 
-COMMENT ON VIEW api.team_history IS 'Multi-season team history with records, ratings (incl. SP+ offense/defense split), and EPA trends';
+COMMENT ON VIEW api.team_history IS 'Multi-season team history with records, ratings (incl. SP+ offense/defense split and CORE, 2016+), and EPA trends';
 
 -- Re-grant on every apply: this file DROPs the view first, which discards
 -- existing grants (no ALTER DEFAULT PRIVILEGES for the PostgREST roles in

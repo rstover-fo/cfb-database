@@ -110,6 +110,11 @@ SELECT
     sp."defense__rating" AS sp_defense,
     elo.elo,
     fpi.fpi,
+    -- CORE covers 2016+ only: NULL means not-rated (pre-2016 or non-CORE
+    -- team), never zero. core_defense is LOWER-better.
+    cr.overall AS core_overall,
+    cr.offense AS core_offense,
+    cr.defense AS core_defense,
 
     -- Recruiting
     rec.rank AS recruiting_rank,
@@ -119,6 +124,7 @@ FROM team_records tr
 LEFT JOIN ratings.sp_ratings sp ON tr.team = sp.team AND tr.season = sp.year
 LEFT JOIN ratings.elo_ratings elo ON tr.team = elo.team AND tr.season = elo.year
 LEFT JOIN ratings.fpi_ratings fpi ON tr.team = fpi.team AND tr.season = fpi.year
+LEFT JOIN ratings.core_ratings cr ON tr.team = cr.team AND tr.season = cr.year
 LEFT JOIN recruiting.team_recruiting rec ON tr.team = rec.team AND tr.season = rec.year;
 
 -- Required for REFRESH CONCURRENTLY

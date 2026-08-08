@@ -18,6 +18,7 @@ MARTS_VIEWS = [
     "conference_comparison",
     "conference_era_summary",
     "conference_head_to_head",
+    "core_ratings",
     "data_freshness",
     "defensive_havoc",
     "matchup_edges",
@@ -153,6 +154,10 @@ class TestTeamSeasonSummaryColumns:
         "sp_defense",
         "elo",
         "fpi",
+        # CORE ratings (2016+; NULL = not-rated). Added 2026-08-08.
+        "core_overall",
+        "core_offense",
+        "core_defense",
         "recruiting_rank",
         "recruiting_points",
     }

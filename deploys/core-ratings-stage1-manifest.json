@@ -1,0 +1,11 @@
+{
+  "action": "apply",
+  "files": [
+    "src/schemas/marts/043_core_ratings.sql",
+    "src/schemas/api/044_core_ratings.sql",
+    "src/schemas/marts/028_data_freshness.sql",
+    "src/schemas/public/011_data_freshness_function.sql",
+    "src/schemas/functions/refresh_all_marts.sql",
+    "src/schemas/api/validation_core_ratings.sql"
+  ]
+}

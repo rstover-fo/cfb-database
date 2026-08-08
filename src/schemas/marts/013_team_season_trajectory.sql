@@ -1,10 +1,45 @@
 -- Team performance trajectory year-over-year with era awareness
--- Depends on: marts.team_epa_season, ref.eras
+-- Depends on: marts.team_epa_season, marts.team_season_summary,
+--             marts.defensive_havoc, ref.eras, core.games, ref.teams
+--
+-- 2026-08-08: reconstructed to carry off_epa_rank/def_epa_rank and the
+-- wins/games column names that public.team_season_trajectory (public/002) and
+-- get_trajectory_averages (public/008) select. The live matview had these
+-- columns from an uncommitted apply; this file had drifted behind it, which
+-- surfaced when the CORE-ratings stage-2 deploy rebuilt the matview from
+-- source (the team_season_summary CASCADE). Rank semantics copied from
+-- public.team_epa_season in public/002: RANK within (season, classification)
+-- -- classification season-accurate from core.games with ref.teams fallback --
+-- by epa_per_play DESC for offense and defensive_havoc.opp_epa_per_play ASC
+-- (999 when NULL) for defense. The pre-drift names (total_wins, games_played,
+-- ...) are kept alongside the aliases so both column vocabularies resolve.
 
 DROP MATERIALIZED VIEW IF EXISTS marts.team_season_trajectory CASCADE;
 
 CREATE MATERIALIZED VIEW marts.team_season_trajectory AS
-WITH team_metrics AS (
+WITH team_season_class AS (
+    -- Season-accurate classification from the games actually played
+    SELECT team, season, MAX(classification) AS classification
+    FROM (
+        SELECT g.home_team AS team, g.season, g.home_classification AS classification
+        FROM core.games g
+        WHERE g.home_classification IS NOT NULL
+        UNION ALL
+        SELECT g.away_team, g.season, g.away_classification
+        FROM core.games g
+        WHERE g.away_classification IS NOT NULL
+    ) x
+    GROUP BY team, season
+),
+teams_deduped AS (
+    -- ref.teams has ~35 duplicate school names; pick FBS classification first, else first row
+    -- fallback only: current membership, used when core.games has no rows for a team-season
+    SELECT DISTINCT ON (school)
+        school, classification
+    FROM ref.teams
+    ORDER BY school, classification NULLS LAST
+),
+team_metrics AS (
     SELECT
         t.team,
         t.season,
@@ -20,10 +55,25 @@ WITH team_metrics AS (
         s.conf_losses,
         -- Recruiting rank
         r.rank AS recruiting_rank,
-        r.points AS recruiting_points
+        r.points AS recruiting_points,
+        -- EPA ranks within (season, classification), matching public.team_epa_season
+        (RANK() OVER (
+            PARTITION BY t.season, COALESCE(tsc.classification, td.classification)
+            ORDER BY t.epa_per_play DESC
+        ))::INT AS off_epa_rank,
+        (RANK() OVER (
+            PARTITION BY t.season, COALESCE(tsc.classification, td.classification)
+            ORDER BY COALESCE(d.opp_epa_per_play, 999::NUMERIC)
+        ))::INT AS def_epa_rank
     FROM marts.team_epa_season t
     LEFT JOIN marts.team_season_summary s
         ON t.team = s.team AND t.season = s.season
+    LEFT JOIN marts.defensive_havoc d
+        ON t.team = d.team AND t.season = d.season
+    LEFT JOIN team_season_class tsc
+        ON tsc.team = t.team AND tsc.season = t.season
+    LEFT JOIN teams_deduped td
+        ON td.school = t.team
     LEFT JOIN recruiting.team_recruiting r
         ON t.team = r.team AND t.season = r.year
 )
@@ -35,7 +85,9 @@ SELECT
     m.epa_tier,
     m.total_plays,
     m.games_played,
+    m.games_played AS games,
     m.total_wins,
+    m.total_wins AS wins,
     m.total_losses,
     -- Win percentage
     CASE
@@ -47,6 +99,8 @@ SELECT
     m.conf_losses,
     m.recruiting_rank,
     m.recruiting_points,
+    m.off_epa_rank,
+    m.def_epa_rank,
     -- Era assignment (primary era for the season)
     (SELECT e.era_code FROM ref.get_era(m.season::INT) e ORDER BY e.era_code LIMIT 1) AS era_code,
     (SELECT e.era_name FROM ref.get_era(m.season::INT) e ORDER BY e.era_code LIMIT 1) AS era_name,

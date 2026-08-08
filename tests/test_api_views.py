@@ -51,6 +51,10 @@ TEAM_DETAIL_COLUMNS = {
     "sp_defense",
     "elo",
     "fpi",
+    # CORE ratings (2016+; NULL = not-rated). Added 2026-08-08.
+    "core_overall",
+    "core_offense",
+    "core_defense",
     "epa_per_play",
     "epa_tier",
     "success_rate",
@@ -77,6 +81,10 @@ TEAM_HISTORY_COLUMNS = {
     "sp_defense",
     "elo",
     "fpi",
+    # CORE ratings (2016+; NULL = not-rated). Added 2026-08-08.
+    "core_overall",
+    "core_offense",
+    "core_defense",
     "epa_per_play",
     "epa_tier",
     "success_rate",
@@ -269,6 +277,25 @@ POLL_RANKINGS_COLUMNS = {
     "conference",
     "first_place_votes",
     "points",
+}
+
+# CFBD CORE ratings passthrough (api.core_ratings, added 2026-08-08).
+# defense is LOWER-better; defense_rank is ranked ascending accordingly.
+CORE_RATINGS_COLUMNS = {
+    "season",
+    "team",
+    "conference",
+    "overall",
+    "offense",
+    "defense",
+    "offense_plays",
+    "defense_plays",
+    "through_week",
+    "through_season_type",
+    "model_version",
+    "overall_rank",
+    "offense_rank",
+    "defense_rank",
 }
 
 TEAM_ELO_COLUMNS = {
@@ -654,6 +681,10 @@ class TestViewsExistAndReturnRows:
             # Drive-chain EP: ~160 states x 3 eras, all written in one compute
             # run -- conservative floor of two eras' worth.
             ("api.expected_points", 300),
+            # CFBD CORE ratings: ~130-136 FBS teams x 10 backfilled seasons
+            # (2016-2025) = ~1,300+; conservative floor below the backfill,
+            # 2026 in-season rows are upside.
+            ("api.core_ratings", 1000),
         ],
         ids=[
             "team_detail",
@@ -677,6 +708,7 @@ class TestViewsExistAndReturnRows:
             "team_penalties",
             "season_outlook",
             "expected_points",
+            "core_ratings",
         ],
     )
     def test_view_returns_rows(self, db_conn, view_name, min_rows):
@@ -723,6 +755,7 @@ class TestViewColumns:
             ("api.team_penalties", TEAM_PENALTIES_COLUMNS),
             ("api.season_outlook", SEASON_OUTLOOK_COLUMNS),
             ("api.expected_points", EXPECTED_POINTS_COLUMNS),
+            ("api.core_ratings", CORE_RATINGS_COLUMNS),
         ],
         ids=[
             "team_detail",
@@ -750,6 +783,7 @@ class TestViewColumns:
             "team_penalties",
             "season_outlook",
             "expected_points",
+            "core_ratings",
         ],
     )
     def test_columns_present(self, db_conn, view_name, expected_columns):

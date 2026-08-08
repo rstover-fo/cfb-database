@@ -35,6 +35,9 @@ SELECT
     tss.sp_defense,
     tss.elo,
     tss.fpi,
+    tss.core_overall,
+    tss.core_offense,
+    tss.core_defense,
 
     -- EPA metrics
     epa.epa_per_play,

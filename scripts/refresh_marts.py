@@ -41,6 +41,7 @@ MARTS_VIEWS = [
     "marts.returning_production",
     "marts.player_usage",
     "marts.team_ats_records",
+    "marts.core_ratings",
     "marts.penalty_log",
     "marts.team_penalty_box",
     # Layer 2: Depends on Layer 1

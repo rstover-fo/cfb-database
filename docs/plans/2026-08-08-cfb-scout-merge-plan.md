@@ -55,7 +55,9 @@ New directory **`src/schemas/scouting/`** (parallel to `public/`), applied only 
    - `002_player_mart.sql` — the 45-col matview (first version-controlled DDL for it, closing the gap flagged in the 2026-02-05 analysis) + indexes. Includes the `cron.schedule('refresh-player-mart', '30 12 * * *', ...)` call as a **commented revival step**.
    - `003_functions.sql` — `scouting.refresh_player_mart()` etc. Consolidate here and remove `src/schemas/functions/refresh_player_mart.sql` (check `refresh_all_marts.sql`/`refresh_all_views.sql` for references first); leave a pointer comment.
    - `004_portal_surveillance.sql` — `scouting.fn_evaluate_portal_value()` re-adopted verbatim from `docs/handoffs/2026-07-19-portal-surveillance-cron-to-cfb-scout.md`. **Function only**; cron scheduling stays commented out. This cleanly reverses the old 017 removal without resurrecting its number collision.
-3. Fidelity check: apply each file against prod (idempotent no-op), re-dump, diff against the original dump.
+3. Fidelity check, two halves (revised per PR #67 review):
+   - **Idempotency**: apply each file against prod — must be a no-op (catalog fingerprint unchanged).
+   - **Completeness**: prod re-apply alone cannot prove the files reconstruct the schema (`IF NOT EXISTS` silently no-ops over any omission). Also apply the files to a clean ephemeral Postgres (`pgvector/pgvector` container; create stub `core.roster`, `recruiting.recruits`, `stats.player_season_stats`, `metrics.ppa_players_season` tables first so `002_player_mart.sql` parses) and diff the resulting scouting schema against a prod catalog dump. Runs as a PR2 verification step (locally or as a CI job with a Postgres service container).
 4. **Unschedule the cron job** (user-approved): `SELECT cron.unschedule('refresh-player-mart');` — the only live mutation in the migration besides password rotation. Log it in the handoff doc.
 
 ## Phase 3 — Dependency + tooling merge
@@ -68,7 +70,12 @@ New directory **`src/schemas/scouting/`** (parallel to `public/`), applied only 
    Daily-load/flat-files installs never pull `[scout]`; CI test job adds it so imports resolve.
 2. Keep `requires-python >=3.11` and ruff `target-version = "py311"` unless Phase 0 finds hard 3.12 deps.
 3. Ruff pass on moved code (`ruff check --fix` + `ruff format`) — **committed separately from the raw snapshot copy** so the diff stays reviewable.
-4. Pytest: register marker `scout_network` for tests hitting crawl targets / LLM APIs; CI adds `-m "not scout_network"`. DB-only scout tests reuse the existing module-scoped `db_conn` fixture from `tests/conftest.py` (same live-Supabase pattern as `test_api_views.py`). `tests/scout/conftest.py` provides a FastAPI `TestClient` importable without secrets.
+4. Pytest (revised per PR #67 review — the original `-m "not scout_network"` selector still let scout live-DB tests run in CI against production, including a write path):
+   - Register TWO markers: `scout_network` (external crawl targets / LLM APIs) and `scout_db` (any scout test touching the live database).
+   - CI selector becomes `-m "not scout_network and not scout_db"` — scout DB tests never run on PR/push CI. They run locally or via a separately gated `workflow_dispatch` job only.
+   - `test_player_upsert.py` **writes** to `scouting.players`; before it runs anywhere shared it must also be rewritten transactional (open a transaction in the fixture, roll back at teardown) — the marker exclusion is the backstop, not the fix.
+   - The misnamed `mock_db_connection` fixture (yields a real connection) gets renamed/marked `scout_db` with the rest.
+   - Read-only scout DB tests may reuse the module-scoped `db_conn` fixture from `tests/conftest.py`, but under the `scout_db` marker — unlike this repo's existing read-only integration tests, they arrived from a repo whose suite was never CI-safe, so they stay excluded until individually vetted. `tests/scout/conftest.py` provides a FastAPI `TestClient` importable without secrets.
 5. Pre-push hook: unchanged (ruff + pytest, green after the above).
 
 ## Phase 4 — Docs + contract updates
@@ -91,7 +98,7 @@ New directory **`src/schemas/scouting/`** (parallel to `public/`), applied only 
 
 ```bash
 ruff check . && ruff format --check .
-pytest -q --tb=short -m "not scout_network"
+pytest -q --tb=short -m "not scout_network and not scout_db"   # the CI-safe selector
 python -c "from src.scout.api.main import app; print(type(app))"   # parked app imports without secrets
 python scripts/run_migrations.py --file src/schemas/scouting/001_tables.sql   # repeat 002–004; must be no-ops
 pg_dump "$SUPABASE_DB_URL" --schema-only --schema=scouting --no-owner --no-privileges | diff - scratch/scouting_dump.sql

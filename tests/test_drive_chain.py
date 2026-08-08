@@ -345,3 +345,135 @@ class TestZoneGateFourthDownExemption:
         ep = {f"d3|short|z{z}": 4.0 - 0.3 * z for z in range(1, 11)}
         ep["d3|short|z7"] = ep["d3|short|z6"] + 1.0
         assert check_monotone_zone(ep)
+
+
+def _uniform_handoffs(target_zone):
+    """Every handoff class sends the opponent to exactly target_zone."""
+    from scripts.compute_drive_chain import HANDOFF_ABSORBING
+
+    return {
+        cls: {
+            ez: {z: (1.0 if z == target_zone else 0.0) for z in range(1, 11)} for ez in range(1, 11)
+        }
+        for cls in HANDOFF_ABSORBING
+    }
+
+
+def _full_d1_grid(extra=None):
+    """Minimal chain containing every handoff state (z1 goal + z2-10 standard),
+    each defaulting to END_OF_HALF so the system is well-posed."""
+    from scripts.compute_drive_chain import handoff_state
+
+    probs = {}
+    for z in range(1, 11):
+        probs[(handoff_state(z), "END_OF_HALF")] = 1.0
+    if extra:
+        for (a, b), p in extra.items():
+            if (a, "END_OF_HALF") in probs and b != "END_OF_HALF":
+                probs[(a, "END_OF_HALF")] = max(
+                    0.0, 1.0 - sum(q for (x, y), q in extra.items() if x == a)
+                )
+            probs[(a, b)] = p
+    return probs
+
+
+class TestSolveNetEP:
+    def test_certain_td_is_full_value(self):
+        from scripts.compute_drive_chain import solve_net_ep
+
+        probs = _full_d1_grid({("d1|standard|z5", "TD"): 1.0})
+        net = solve_net_ep(probs, _uniform_handoffs(8))
+        assert net["d1|standard|z5"] == pytest.approx(TD_VALUE)
+
+    def test_end_of_half_is_zero(self):
+        from scripts.compute_drive_chain import solve_net_ep
+
+        net = solve_net_ep(_full_d1_grid(), _uniform_handoffs(8))
+        for state, val in net.items():
+            assert val == pytest.approx(0.0), state
+
+    def test_symmetric_punt_alternation_nets_to_zero(self):
+        """A state that always punts to an opponent in the SAME state must be
+        worth exactly 0 on the next-score basis: x = -x. A small half-end
+        leak keeps the system nonsingular without breaking the symmetry."""
+        from scripts.compute_drive_chain import solve_net_ep
+
+        probs = _full_d1_grid(
+            {("d1|standard|z6", "PUNT"): 0.9, ("d1|standard|z6", "END_OF_HALF"): 0.1}
+        )
+        net = solve_net_ep(probs, _uniform_handoffs(6))
+        assert net["d1|standard|z6"] == pytest.approx(0.0, abs=1e-12)
+
+    def test_score_or_punt_analytic(self):
+        """x = 0.5*TD + 0.5*(-x)  =>  x = TD/3."""
+        from scripts.compute_drive_chain import solve_net_ep
+
+        probs = _full_d1_grid({("d1|standard|z6", "TD"): 0.5, ("d1|standard|z6", "PUNT"): 0.5})
+        net = solve_net_ep(probs, _uniform_handoffs(6))
+        assert net["d1|standard|z6"] == pytest.approx(TD_VALUE / 3)
+
+    def test_asymmetric_alternation_analytic(self):
+        """A(z6): 80% punt->opp z10, 20% half-end. B(z10): 80% punt->opp z6,
+        20% TD. Hand-solved: b = 0.2*TD - 0.8a, a = -0.8b =>
+        b = 0.2*TD/(1-0.64), a = -0.8b."""
+        from scripts.compute_drive_chain import HANDOFF_ABSORBING, solve_net_ep
+
+        probs = _full_d1_grid(
+            {
+                ("d1|standard|z6", "PUNT"): 0.8,
+                ("d1|standard|z6", "END_OF_HALF"): 0.2,
+                ("d1|standard|z10", "PUNT"): 0.8,
+                ("d1|standard|z10", "TD"): 0.2,
+            }
+        )
+        handoffs = {
+            cls: {
+                ez: {z: (1.0 if z == (10 if ez == 6 else 6) else 0.0) for z in range(1, 11)}
+                for ez in range(1, 11)
+            }
+            for cls in HANDOFF_ABSORBING
+        }
+        net = solve_net_ep(probs, handoffs)
+        b = 0.2 * TD_VALUE / (1 - 0.64)
+        assert net["d1|standard|z10"] == pytest.approx(b)
+        assert net["d1|standard|z6"] == pytest.approx(-0.8 * b)
+
+    def test_missing_handoff_state_raises(self):
+        from scripts.compute_drive_chain import solve_net_ep
+
+        with pytest.raises(ValueError, match="handoff states absent"):
+            solve_net_ep({("d1|standard|z5", "TD"): 1.0}, _uniform_handoffs(8))
+
+
+class TestBuildHandoffs:
+    def test_observed_rows_dominate_with_support(self):
+        from scripts.compute_drive_chain import build_handoffs
+
+        pairs = {("PUNT", 8, 6): 900, ("PUNT", 8, 7): 100}
+        h = build_handoffs(pairs, alpha=10.0)
+        assert h["PUNT"][8][6] > 0.85
+
+    def test_starved_exit_zone_inherits_marginal(self):
+        """Punts from inside the opponent 30 (zones 1-3) had 11/33/85
+        observations in 2021+ -- their rows must come from the marginal."""
+        from scripts.compute_drive_chain import build_handoffs
+
+        pairs = {("PUNT", 8, 6): 500, ("PUNT", 7, 7): 500}
+        h = build_handoffs(pairs, alpha=10.0)
+        assert h["PUNT"][2][6] == pytest.approx(0.5, abs=0.01)
+        assert h["PUNT"][2][7] == pytest.approx(0.5, abs=0.01)
+
+    def test_rows_are_distributions(self):
+        from scripts.compute_drive_chain import HANDOFF_ABSORBING, build_handoffs
+
+        pairs = {("PUNT", 8, 6): 10, ("TURNOVER", 5, 5): 3, ("DOWNS", 4, 96 // 10): 2}
+        h = build_handoffs(pairs)
+        for cls in HANDOFF_ABSORBING:
+            for ez in range(1, 11):
+                assert sum(h[cls][ez].values()) == pytest.approx(1.0)
+
+    def test_scoring_classes_are_ignored(self):
+        from scripts.compute_drive_chain import build_handoffs
+
+        h = build_handoffs({("TD", 3, 8): 100})
+        assert "TD" not in h

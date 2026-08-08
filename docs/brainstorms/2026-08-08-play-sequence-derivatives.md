@@ -128,3 +128,80 @@ review gates before touching `features.team_week` — predictability and
 discipline metrics in particular are exactly the kind of plausible-sounding
 feature the pre-registration discipline exists to keep honest. Everything here
 is derivable from data already in the warehouse: **zero CFBD API calls.**
+
+---
+
+# Addendum (same day): related work + the scheme/formation question
+
+## Formation data: we have more than we thought
+
+`play_text` was assumed to be bare "Player rush for X yds" text. Empirically
+(2026-08-08):
+
+| season | shotgun-tagged plays | no-huddle-tagged |
+|---|---|---|
+| 2014–2021 | 0.0% | 0.0% |
+| 2022–2024 | ~0.5% | ~0.5% |
+| **2025** | **32.6%** | **23.4%** |
+
+The 2025 text is official NCAA live-stats format —
+`(10:57) No Huddle-Shotgun Player rush middle for 0 yards ...` — and the
+coverage is a **per-game split**: 720 of 1,653 games are fully tagged
+(shotgun rate inside them: 72.3%, consistent with modern CFB), the rest have
+zero tags. So:
+
+- **Shotgun and no-huddle — the exact covariates in the Ötting HMM — are
+  extractable for ~44% of 2025 games and presumably a growing share of 2026.**
+- A cheap regex extraction (`is_shotgun`, `is_no_huddle`, `is_sack`, penalty
+  structure) belongs in the play_epa pipeline regardless of anything else.
+- **Selection-bias guard before any feature use:** which games carry NCAA text
+  is not random (sampled tagged games skew non-P5). Any formation-derived
+  feature needs a `game_is_tagged` indicator and a bias check on the tagged
+  subsample before it goes near `features.team_week`.
+
+## What is genuinely NOT derivable, and the honest substitutes
+
+Alignment, motion, personnel packages (11/12/21), route concepts, and coverage
+shells do not exist in any CFBD field. Options, in increasing cost:
+
+1. **PROE / xpass** (industry standard): fit P(pass | down, distance, field
+   position, score, clock) league-wide; a team's pass rate *over* expected is
+   a scheme-intent fingerprint that needs no formation data at all. Fully
+   derivable today, all seasons. The closest thing to "scheme in one number."
+2. **Skill-personnel proxies from `stats.play_stats`:** co-occurrence of
+   ball-touchers per play/drive approximates personnel rotation breadth
+   (O-linemen never appear, so it is a proxy, not personnel).
+3. **External charting** (PFF/SIS): real formation/coverage labels, paywalled,
+   would enter via the flat-file lane if ever purchased.
+4. **CV on broadcast film:** an active research area, out of scope for this
+   warehouse.
+
+## Reading list (verified links)
+
+| Paper | Why it matters here |
+|---|---|
+| Goldner (2012), *A Markov Model of Football*, JQAS | The Tier 1 blueprint: absorbing chain over (down, distance, yardline), EP = absorption probs × state values. |
+| Chan, Fernandes & Puterman (2021), *Points Gained in Football*, Operations Research | The Tier 1 upgrade path: Bellman/Markov-reward formulation with asymmetric teams; play-level value ("points gained") from the value function. |
+| Brill, Yurko & Wyner (2025), *Analytics, have some humility*, The American Statistician (arXiv:2311.03490) | Mandatory Tier 4 guardrail: bootstrap uncertainty on EP/WP; many 4th-down "decisions" are statistical coin-flips. Report intervals, not verdicts. |
+| Romer (2006), *Do Firms Maximize?* / NBER w9024 dynamic-programming 4th-down analysis | The classic decision baseline. |
+| Ötting (2020), arXiv:2003.10791 | Tier 3 blueprint (HMM play-call regimes). |
+| arXiv:2103.06939, *RL Based Approach to Play Calling* | Play-calling as sequential decision problem — Tier 3/4 bridge. |
+| arXiv:2309.00756, *Learning Risk Preferences in MDPs* (4th down) | Inverse-RL take: infer coach risk preferences from observed decisions — richer than "aggressiveness above expectation." |
+| arXiv:2102.01846, *NFLSimulatoR* | Simulation harness pattern for strategy evaluation. |
+| Yurko, Ventura & Horowitz (2018), *nflWAR* (arXiv:1802.00998) | Tier 5 upgrade: multilevel player value from PBP alone — the road from player EPA to a WAR-style number. |
+| PROE / xpass (industry, nflfastR ecosystem) | Scheme-intent without formation data; Tier 3 item 1 should produce this as its first output. |
+
+## Other gaps surfaced while looking (not sequence-related, all derivable)
+
+- **Rest & travel:** days of rest / bye weeks from the schedule; travel
+  distance and altitude from `ref.venues` lat/lon. Classic HFA decomposition
+  features; never built, zero API calls.
+- **Special teams in the chain:** the Tier 1 EP model needs punt and FG
+  submodels anyway (house FG make-probability curve from `core.plays` FG
+  attempts); that yields FG-attempt EPA and punter field-position value as
+  byproducts.
+- **Weather:** `core.game_weather` is loaded and unscreened as a feature
+  source (wind × pass-rate interactions are the plausible candidate).
+- **QB continuity:** `stats.play_stats` identifies who took snaps; a
+  week-over-week starting-QB-change indicator is derivable and is the single
+  most prediction-relevant availability signal.

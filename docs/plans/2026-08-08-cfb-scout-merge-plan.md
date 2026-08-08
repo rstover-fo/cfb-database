@@ -119,6 +119,57 @@ Order: PR1 → PR2 → PR3. PR2's tests assume versioned schema exists; PR3 last
 - **O4** psycopg2 sync storage layer — keep as-is; unifying connection handling is revival-scope.
 - **O5** git-history scrub of the leaked password — rotation makes it moot; default: don't.
 
+## Phase 0 audit results (2026-08-08 — completed)
+
+The repo's actual name is **`rstover-fo/cub-scout`** (public; the "cfb-scout" name in all prior docs is the project name, not the repo). Audited at commit `27cc3a4` (2026-02-26, single squashed commit). Findings that supersede assumptions above:
+
+### Corrections to the plan
+- **Python version is a non-issue (O1 resolved).** Zero 3.12-only constructs anywhere (no PEP 695, no `itertools.batched`, no `typing.override`). `requires-python >=3.12` was aspirational. Keep this repo at py311; no down-patching needed.
+- **DB layer is psycopg 3 async + AsyncConnectionPool, not sync psycopg2** (O4 moot). The `[scout]` extra becomes:
+  ```toml
+  scout = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "psycopg[binary]>=3.2",
+           "psycopg_pool>=3.2", "anthropic>=0.40.0", "openai>=1.12",
+           "httpx>=0.27", "beautifulsoup4>=4.12", "lxml>=5.0",
+           "rapidfuzz>=3.6", "numpy>=1.26", "python-dotenv>=1.0", "pydantic>=2"]
+  ```
+  Drop `praw` (no Reddit crawler exists — dead dependency). Declare `pydantic` explicitly (currently only transitive via fastapi).
+- **No secrets in the cub-scout repo itself** — `.env.example` and docs contain only placeholders. The plaintext-password scrub/rotation item applies to *this* repo's docs only. However, **five live GitHub Actions secrets** are provisioned on cub-scout (`DATABASE_URL`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`) — remove them when archiving.
+- **`main` is broken as-is:** `src/api/routers/admin.py` has three wrong-level relative imports (`..` should be `...`) and calls a function that doesn't exist (`refresh_player_sentiment`; actual: `refresh_player_profile` in `processing/aggregation.py`). This makes `src.api.main` unimportable and fails two test files at collection. Fix as the first commit of the code-move PR so the move can be verified against a working baseline.
+- **Env vars the parked service reads:** `DATABASE_URL`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `PFF_API_KEY` (missing from its `.env.example`), `REDDIT_CLIENT_ID/SECRET/USER_AGENT` (vestigial). Config is plain `os.environ` + `load_dotenv()`; the `Config` dataclass is largely vestigial.
+
+### Pre-merge safety gates (before pushing anything to cub-scout or re-activating it)
+1. **Disable `.github/workflows/daily-pipeline.yml` on cub-scout** — an enabled daily cron (12:00 UTC) that crawls and **writes to production Supabase** with `continue-on-error: true` on every step. GitHub likely auto-disabled it (~60 days inactivity), but any repo activity can re-enable it.
+2. **cub-scout CI runs live-DB tests on every push** — its `-m "not integration"` filter matches nothing (no such marker exists in the suite), so `test_player_upsert.py` *writes* to `scouting.players` in CI. Do not push branches to cub-scout; do all merge work in this repo.
+3. pg_cron: already settled — only `refresh-player-mart` exists; unschedule per Phase 2.
+
+### Schema notes
+- cub-scout carries `src/storage/schema.sql` + 6 migration files (with a duplicate `002_` prefix and no runner). **Every `scouting.*` reference in code matches the known live 13-table + player_mart inventory — no unknown tables.** Live DB remains authoritative; cub-scout's SQL is discarded after cross-checking.
+- `player_mart`'s DDL orders by `core.roster._dlt_load_id` (dlt internal column) — fragile coupling to this repo's loader; note in the versioned DDL.
+- `scouting.pending_links.candidate_roster_id` and `player_embeddings.roster_id` are TEXT vs `core.roster.id` integer (casts scattered in code) — document, don't fix during the move.
+- `team_rosters` and `crawl_jobs` are marked "reserved/unused" in cub-scout's own schema and gap analysis — keep in the codified DDL (they exist live) but note as drop candidates.
+
+### Final file mapping (cub-scout → this repo)
+
+| cub-scout | LOC | Destination | Notes |
+|---|---|---|---|
+| `src/api/` (incl. `routers/`) | 827 | `src/scout/api/` | Fix admin.py imports + add missing `__init__.py` first |
+| `src/crawlers/` | 735 | `src/scout/crawlers/` | Includes `articles/` (On3 + 247, post-Feb-analysis addition) |
+| `src/processing/` | 3,118 | `src/scout/processing/` | **Kept intact** (40% of src; splitting into llm/analysis/orchestration is revival-scope) |
+| `src/clients/` | 194 | `src/scout/clients/` | Kept as-is (`anthropic.py` + `pff.py`); planned `llm/` rename dropped — lossy |
+| `src/storage/db.py` | 1,094 | `src/scout/storage/db.py` | psycopg3 async pool |
+| `src/storage/schema.sql` + `migrations/` | 368 | — | Superseded by `src/schemas/scouting/` (Phase 2) |
+| `src/config.py` | 38 | `src/scout/config.py` | |
+| `src/film_parser/` | 1,395 | `src/film_parser/` (top-level) | **Not a scouting concern**: offline video→JSON CLI, zero DB coupling, ~1GB deps → separate `[film]` extra + keep `cfb-parse` script entry |
+| `scripts/run_pipeline.py`, `run_api.py`, `backfill_embeddings.py` | 567 | `scripts/scout_*.py` | Namespaced to avoid collisions |
+| `scripts/agent_dispatch.py` | 56 | dropped | Raw-connection one-off; superseded by `--review-links` |
+| `tests/` (28 files) | 3,496 | `tests/scout/` | Add real `integration`/`scout_db` markers to the 9 live-DB files (incl. misnamed `mock_db_connection` fixture, which yields a real connection) |
+| `tests/film_parser/` (7 files) | 1,440 | `tests/film_parser/` | Pure unit, moves cleanly |
+| `docs/` (~9,800 lines) | — | `docs/scout-archive/` | Historical plans; copy, don't integrate |
+| `CLAUDE.md` | — | not copied | Stale (pre-Sprint-7); repo CLAUDE.md gets a short scout section instead |
+| `.github/workflows/*` | — | not copied | daily-pipeline stays parked; CI covered by this repo's ci.yml |
+
+Import rewrites required by the move: ~15 absolute `from src.film_parser.*` imports, ~40 in tests, ~11 in scripts (`src/processing`/`api`/`crawlers` use relative imports and survive the rename untouched). Dead code flag: `processing/portal_watcher.py` (236 LOC) is imported by nothing — moves anyway (parked), noted for revival triage.
+
 ## Critical files
 
 - `pyproject.toml`, `scripts/run_migrations.py`

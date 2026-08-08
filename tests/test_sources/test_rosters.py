@@ -179,3 +179,27 @@ class FakeConn:
 def test_fakeconn_close_is_a_noop():
     """run_rosters_pipeline closes the connection in a finally block."""
     FakeConn([]).close()
+
+
+class TestAllSourcesExitCode:
+    """`--source all` continues past a failure on purpose -- one broken source
+    should not cost the other twelve their data -- but the exit code has to
+    carry the failure, or scheduled automation reads a clean load."""
+
+    def test_the_loop_records_failures_and_exits_nonzero(self):
+        import inspect
+
+        from src.pipelines import run
+
+        body = inspect.getsource(run.main)
+        all_branch = body.split('if args.source == "all":')[1].split("else:")[0]
+        assert "failed.append(name)" in all_branch
+        assert "sys.exit(1)" in all_branch
+
+    def test_failures_are_named_not_just_counted(self):
+        """ "3 sources failed" without names sends an operator back to the log."""
+        import inspect
+
+        from src.pipelines import run
+
+        assert "', '.join(failed)" in inspect.getsource(run.main)

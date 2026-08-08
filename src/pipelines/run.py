@@ -884,13 +884,24 @@ def main() -> NoReturn:
     }
 
     if args.source == "all":
-        # Run all pipelines
+        # Run all pipelines. Continuing past a failure is deliberate -- one
+        # broken source should not cost the other twelve their data -- but the
+        # exit code has to carry it, or a scheduled `--source all` reports a
+        # clean load while a source failed. Roster resolution now RAISES on an
+        # unloaded schedule precisely so it cannot no-op silently; swallowing
+        # that here would put the silence straight back.
+        failed = []
         for name, runner in source_runners.items():
             try:
                 runner()
             except Exception as e:
                 print(f"ERROR in {name}: {e}")
+                failed.append(name)
                 continue
+        if failed:
+            show_status()
+            print(f"\n{len(failed)} of {len(source_runners)} sources failed: {', '.join(failed)}")
+            sys.exit(1)
     else:
         runner = source_runners.get(args.source)
         if runner:

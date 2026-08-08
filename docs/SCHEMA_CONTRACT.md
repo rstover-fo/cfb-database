@@ -20,7 +20,7 @@ Last updated: 2026-08-08
   one comparable to CFBD PPA, nflfastR EP, and every "expected points"
   number in the literature -- solved from empirical drive-handoff
   distributions per era. It can be negative (own-5 in the modern era is
-  -0.18: the next score is more likely the opponent's), which `ep_drive`
+  -0.12: the next score is more likely the opponent's), which `ep_drive`
   never is; consumers rendering both must not clamp or abs() it. Benchmark:
   play-level EPA deltas built from `ep_net` correlate 0.8565 with CFBD
   `ppa` (2024, n=174k) against a grid ceiling of 0.9340 -- 92% of what the

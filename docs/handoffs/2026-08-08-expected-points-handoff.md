@@ -25,7 +25,7 @@ GET /rest/v1/expected_points?era=eq.2021%2B&down=eq.1&distance_bucket=eq.standar
 1. **Two bases, two uses.** `ep_drive` = expected points of THIS possession
    (TD 6.97, FG 3; never negative). `ep_net` = expected value of the NEXT
    score in the half — **the basis comparable to CFBD `ppa`/nflfastR EP** —
-   and it CAN be negative (own-5, modern era: −0.18; the next score is more
+   and it CAN be negative (own-5, modern era: −0.12; the next score is more
    likely the opponent's). Never clamp or abs() `ep_net`. Build EPA-style
    deltas only from `ep_net`; benchmark vs CFBD `ppa`: r = 0.86 at play
    level against a 0.93 grid ceiling. If `ep_net` is NULL (partial

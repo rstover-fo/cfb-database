@@ -361,11 +361,20 @@ def check_monotone_zone(ep: dict[str, float]) -> list[str]:
 
 def check_monotone_down(ep: dict[str, float]) -> list[str]:
     """Gate 1b: at fixed medium distance and zone, earlier downs are worth
-    at least as much as later downs."""
+    at least as much as later downs -- checked for downs 2-3 ONLY.
+
+    4th down is exempt by design, not tolerance: a d4 scrimmage snapshot
+    exists only when the offense lined up to go (punts and FGs exit the
+    chain from the 3rd-down play), so d4 states are go-for-it-conditional
+    and can legitimately price above d3 -- the punt outcome is excluded
+    from their mix. First observed on the real 2021+ chain (d4|med|z7 1.40
+    vs d3|med|z7 1.37) and structural in any Goldner-style drive chain.
+    P4's 4th-down model USES this: EP(go | state) is the d4-state value.
+    """
     violations = []
     for z in range(2, 10):
         chain = []
-        for down, bucket in (("d2", "med"), ("d3", "med"), ("d4", "med")):
+        for down, bucket in (("d2", "med"), ("d3", "med")):
             key = f"{down}|{bucket}|z{z}"
             if key in ep:
                 chain.append((key, ep[key]))

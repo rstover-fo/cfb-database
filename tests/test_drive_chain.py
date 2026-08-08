@@ -215,7 +215,17 @@ class TestMonotoneGates:
         for z in range(2, 10):
             ep[f"d2|med|z{z}"] = 3.0
             ep[f"d3|med|z{z}"] = 2.5
-            ep[f"d4|med|z{z}"] = 2.0
         assert check_monotone_down(ep) == []
-        ep["d4|med|z5"] = 9.0
+        ep["d3|med|z5"] = 9.0
         assert check_monotone_down(ep)
+
+    def test_fourth_down_is_exempt_by_design(self):
+        """d4 snapshots are go-for-it-conditional (punts/FGs exit from the
+        3rd-down play), so d4 above d3 is legitimate -- observed on the real
+        2021+ chain -- and must NOT fail the gate."""
+        ep = {}
+        for z in range(2, 10):
+            ep[f"d2|med|z{z}"] = 3.0
+            ep[f"d3|med|z{z}"] = 2.5
+            ep[f"d4|med|z{z}"] = 2.6  # above d3: allowed
+        assert check_monotone_down(ep) == []

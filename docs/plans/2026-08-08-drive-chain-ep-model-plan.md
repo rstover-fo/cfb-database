@@ -162,6 +162,19 @@ the Brill/Yurko/Wyner point: publish intervals, not verdicts.
 Feature adoption into `features.team_week` is out of scope for all phases —
 any candidate goes through the section 2.5 screen on its own merits later.
 
+## 10.5 First real-chain run (2026-08-08, era 2021+, offline via MCP counts)
+
+875,715 scrimmage plays, 162 states, 6,729 unique transitions. Gate 1a
+(zone monotonicity) PASSED: 1st-and-10 drive EP declines smoothly 4.75
+(z2) -> 1.17 (z10); 1st-and-goal inside the 10 = 5.65 with P(TD) 0.758;
+own-25 = 1.80 -- all consistent with published CFB EP curves. Gate 1b
+surfaced a structural property, not an error: d4 transient states are
+GO-FOR-IT-CONDITIONAL (punts/FGs exit the chain from the 3rd-down play), so
+d4 can price above d3 (observed: d4|med|z7 1.40 vs d3|med|z7 1.37). The
+gate now checks downs 2-3 only, with the exemption documented in code; P4's
+4th-down model uses the conditionality directly (EP(go | state) IS the
+d4-state value).
+
 ## 11. Open questions
 
 1. Half-open drives: `END_OF_HALF` truncation censors long drives — v1

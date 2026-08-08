@@ -1,0 +1,7 @@
+{
+  "action": "compute",
+  "compute": {
+    "script": "compute_drive_chain",
+    "args": ["--full", "--validate"]
+  }
+}

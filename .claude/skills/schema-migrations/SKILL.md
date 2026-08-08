@@ -29,6 +29,10 @@ description: Schema-change workflow for this repo — migrations, grants/RLS, ma
   - `MIGRATION_ORDER` in `scripts/run_migrations.py` (the ordered chain).
   - Deploy-manifest style, applied via `run_migrations.py --file <path>`
     (the 019-028 / 041+ pattern). State this in the header comment.
+- `src/schemas/scouting/` (own numbering, 001+) is DDL codified FROM the
+  live database during the 2026-08 cub-scout merge — applied via `--file`,
+  never in `MIGRATION_ORDER`. Applying any of it against prod must be a
+  no-op; the scouting schema deliberately has no anon/authenticated grants.
 - Idempotent by construction: `ADD COLUMN IF NOT EXISTS`,
   `CREATE OR REPLACE`, guarded indexes. The verification bar is "applies
   twice without error".

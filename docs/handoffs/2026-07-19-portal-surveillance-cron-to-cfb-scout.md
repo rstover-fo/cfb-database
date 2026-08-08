@@ -119,3 +119,19 @@ comment on function scouting.fn_evaluate_portal_value() is 'Automated scouter th
 ## Live database state
 
 _To be recorded during verification: `SELECT jobname, schedule FROM cron.job;`_
+
+## Status update — 2026-08-08 (superseded by the monorepo merge)
+
+The cfb-scout repo (actual name `cub-scout`) is being merged into this repo
+(docs/plans/2026-08-08-cfb-scout-merge-plan.md), which reverses this handoff:
+the `scouting` schema is now owned here, codified in `src/schemas/scouting/`.
+
+- The SQL above was re-adopted as `src/schemas/scouting/004_portal_surveillance.sql`
+  (function only, `SET search_path = ''` added). Applied 2026-08-08 — the function
+  now exists in production for the first time; cub-scout never applied it.
+- The `daily-portal-surveillance` cron job was **never scheduled** and remains
+  unscheduled — the scout service is parked.
+- Live cron state as of 2026-08-08: `cron.job` held exactly one job,
+  `refresh-player-mart` (`30 12 * * *`), which was unscheduled the same day
+  (scout data frozen since 2026-02-05; revival command is in
+  `src/schemas/scouting/002_player_mart.sql`). `cron.job` is now empty.

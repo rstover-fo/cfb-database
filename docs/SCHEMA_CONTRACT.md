@@ -15,6 +15,16 @@ Last updated: 2026-08-08
 
 ## Recent Contract Changes
 
+- **2026-08-08 — Scouting schema ownership transferred to this repo.** The
+  cub-scout (cfb-scout) repo is being merged into cfb-database
+  (docs/plans/2026-08-08-cfb-scout-merge-plan.md). The `scouting` schema is now
+  owned here, codified from the live database in `src/schemas/scouting/`
+  (including the first version-controlled DDL for `scouting.player_mart`). The
+  scout service is parked: its data is frozen as of 2026-02-05 and the daily
+  `refresh-player-mart` pg_cron job was unscheduled. The cfb-scout consumer
+  section below still lists the api views/RPC the (now internal) scout code
+  calls; that section is rewritten when the code lands in `src/scout/`.
+
 - **2026-08-08 — House expected points: `api.expected_points` added.** First
   contract surface for the drive-state Markov chain (PRs #66/#69): drive EP,
   drive-outcome probabilities, and bootstrap SEs per (era, state), with the
@@ -758,17 +768,19 @@ cfb-scout is the recruiting/scouting application. It has a narrower dependency s
 |----------|--------|-------------|
 | `get_player_search` | `public` | Fuzzy player name search with typo tolerance. **Replaces raw roster table queries** for player lookup in cfb-scout. |
 
-### Scouting Schema (Owned by cfb-scout)
+### Scouting Schema (Owned by this repo)
 
-The `scouting` schema is owned and managed by cfb-scout pipelines, not cfb-database.
-cfb-database does not make stability guarantees for these objects.
+The `scouting` schema is owned by cfb-database as of 2026-08-08 (cub-scout monorepo
+merge). DDL is version-controlled in `src/schemas/scouting/`, codified from the live
+database. The scout service is parked and its data frozen as of 2026-02-05; the
+schema has no anon/authenticated grants (not PostgREST-reachable) by design.
 
 | Object | Type | Description |
 |--------|------|-------------|
 | `scouting.players` | Table | Scouting player profiles |
 | `scouting.reports` | Table | Scouting reports |
-| `scouting.player_mart` | View | Denormalized player mart |
-| `scouting.player_embeddings` | Table | Vector embeddings for player similarity |
+| `scouting.player_mart` | Matview | Denormalized player mart (45 cols, ~30K rows; daily pg_cron refresh unscheduled 2026-08-08) |
+| `scouting.player_embeddings` | Table | Vector embeddings for player similarity (26,128 rows / 418 MB, frozen, retained) |
 | `scouting.alerts` | Table | Scouting alerts |
 | `scouting.alert_history` | Table | Alert trigger history |
 | `scouting.watch_lists` | Table | Scout watch lists |
@@ -779,7 +791,8 @@ cfb-database does not make stability guarantees for these objects.
 | `scouting.crawl_jobs` | Table | Web crawl job tracking |
 | `scouting.pending_links` | Table | Pending crawl links |
 | `scouting.team_rosters` | Table | Crawled roster snapshots |
-| `scouting.refresh_player_mart` | Function | Refreshes the player_mart view |
+| `scouting.refresh_player_mart` | Function | Refreshes the player_mart matview |
+| `scouting.fn_evaluate_portal_value` | Function | Portal-value scorer + alert firing (parked, no cron) |
 
 ---
 

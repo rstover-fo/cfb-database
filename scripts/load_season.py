@@ -616,7 +616,10 @@ def main() -> None:
         allow_skip_final=allow_skip_final,
     )
 
-    if summary.get("errors", 0) > 0:
+    # Validation failures return {"error": str} (singular) before any source
+    # runs; per-source failures count up {"errors": int}. Both must exit
+    # nonzero or a mistyped --sources reports success having loaded nothing.
+    if summary.get("error") or summary.get("errors", 0) > 0:
         sys.exit(1)
 
 

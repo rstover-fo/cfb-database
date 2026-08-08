@@ -376,3 +376,30 @@ class TestDependencyOrdering:
 
         assert "Unknown sources" in summary["error"]
         assert "nonsense" in summary["error"]
+
+
+class TestMainExitCode:
+    """A validation failure returns {"error": str} before any source runs;
+    main() must exit nonzero on it, not just on per-source {"errors": int}.
+    Otherwise a mistyped --sources in CI reports green having loaded nothing
+    (found by review on the backfill-sources workflow)."""
+
+    def test_unknown_source_exits_nonzero(self, monkeypatch):
+        from scripts.load_season import main
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["load_season.py", "--season", "2026", "--sources", "nonsense", "--dry-run"],
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            main()
+        assert excinfo.value.code == 1
+
+    def test_valid_dry_run_exits_zero(self, monkeypatch):
+        from scripts.load_season import main
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["load_season.py", "--season", "2026", "--sources", "games", "--dry-run"],
+        )
+        assert main() is None

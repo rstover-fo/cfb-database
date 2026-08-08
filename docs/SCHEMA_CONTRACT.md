@@ -4,7 +4,7 @@
 > only depend on objects listed here as **public**. Everything else is internal and may change
 > without notice.
 
-Last updated: 2026-07-26
+Last updated: 2026-08-08
 
 > **Note on cfb-analytics:** the retired OU-only app (rstover-fo/cfb-analytics) was never a
 > warehouse consumer -- it ran its own DuckDB ingestion. Its unique features (rivals page,
@@ -14,6 +14,27 @@ Last updated: 2026-07-26
 ---
 
 ## Recent Contract Changes
+
+- **2026-08-08 — House expected points: `api.expected_points` added.** First
+  contract surface for the drive-state Markov chain (PRs #66/#69): drive EP,
+  drive-outcome probabilities, and bootstrap SEs per (era, state), with the
+  state key parsed into `down`/`distance_bucket`/`field_zone` columns for
+  direct filtering. Four things consumers must get right, spelled out in
+  `docs/handoffs/2026-08-08-expected-points-handoff.md`:
+  (1) `ep_drive` is the **drive basis** — points this possession is worth —
+  and is NOT comparable to CFBD `ppa`/PPA until `ep_net` (P2) lands;
+  (2) `ep_net` is **NULL on every row today** and NULL means "not yet
+  computed", never zero; (3) join a game to **its own era's** curve
+  (`2004-2013` / `2014-2020` / `2021+`) — the eras differ by up to 0.22 EP at
+  ~15 bootstrap SEs, and the era value `2021+` needs URL-encoding as
+  `eq.2021%2B` in PostgREST queries; (4) `down=4` rows are
+  **go-for-it-conditional** (punts/FGs exit the chain at 3rd down), so 4th
+  down legitimately pricing above 3rd is a property, not a bug — do not
+  render d4 in the same ladder as d1–d3 without that caveat. `se_boot` ships on every row of a
+  standard compute run so UIs can show intervals rather than bare point
+  estimates -- but it is **nullable by contract**: a `--no-bootstrap`
+  recompute writes NULL SEs (PR #70 review). Render a NULL `se_boot` as "no
+  interval available", never as +/-0.
 
 - **2026-07-26 — Projection accuracy: `api.model_backtest` added.** The
   preseason backtest that measures how wrong the season-win projections are
@@ -521,6 +542,7 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.matchup` | **Deployed** | 11,975 | Head-to-head matchup history and current season comparison. Columns: team1, team2, total_games, team1_wins, team2_wins, ties, first_meeting, last_meeting, recent_results (JSONB array), team1/team2 current season stats |
 | `api.leaderboard_teams` | **Deployed** | 3,667 | Team leaderboard with rankings, ratings, EPA. Columns: team, conference, season, classification, wins, losses, win_pct, ppg, opp_ppg, sp_rank, epa_per_play, epa_tier, wins_rank, ppg_rank, defense_ppg_rank, epa_rank. Rank columns are scoped `PARTITION BY season, classification` (see 2026-07-22 changelog entry) -- all rows still returned, no `WHERE fbs` filter. |
 | `api.roster_lookup` | **Deployed** | 340,855 | Stable roster view for player matching |
+| `api.expected_points` | **Deployed** | 483 | House drive EP per (era, state): era, state, down, distance_bucket, field_zone, yards_to_goal_min/max, n_obs, ep_drive, ep_net (NULL until P2), p_td, p_fg, p_punt, p_turnover, se_boot (nullable: NULL after a --no-bootstrap recompute, render as no-interval not +/-0), computed_at. Drive basis, era-scoped, d4 go-conditional — see 2026-08-08 changelog entry. |
 | `api.penalty_log` | **Deployed** | ~250K | Play-derived penalty events (2004+), best-effort parsed from play_text. Columns: play_id, game_id, season, week, season_type, period, down, distance, offense, defense, play_type, is_penalty_play_type, penalized_team, benefiting_team, infraction, penalty_yards, declined, offsetting, no_play, multi_penalty, yards_gained, ppa, play_text, parse_ok. 'Unknown'/NULL = unclassified, not absent (see 2026-07-23 changelog). |
 | `api.team_penalties` | **Deployed** | ~42K | Official box-score penalty counts per (game, team) from totalPenaltiesYards. Columns: game_id, season, week, season_type, team, opponent, home_away, penalties, penalty_yards, opponent_penalties, opponent_penalty_yards. |
 | `api.recruit_lookup` | **Deployed** | 67,179 | Stable recruiting view for recruit data |

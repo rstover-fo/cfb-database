@@ -377,6 +377,25 @@ GAME_PREDICTIONS_COLUMNS = {
 # projection per (season, team, model). games_unscored is derived in the view
 # (games_scheduled - games_simulated) so a consumer cannot mistake an unscored
 # game for a loss.
+EXPECTED_POINTS_COLUMNS = {
+    "era",
+    "state",
+    "down",
+    "distance_bucket",
+    "field_zone",
+    "yards_to_goal_min",
+    "yards_to_goal_max",
+    "n_obs",
+    "ep_drive",
+    "ep_net",
+    "p_td",
+    "p_fg",
+    "p_punt",
+    "p_turnover",
+    "se_boot",
+    "computed_at",
+}
+
 SEASON_OUTLOOK_COLUMNS = {
     "projection_id",
     "computed_at",
@@ -632,6 +651,9 @@ class TestViewsExistAndReturnRows:
             # one season's worth -- the view is latest-snapshot, so the count
             # does not grow with the append-only daily history.
             ("api.season_outlook", 300),
+            # Drive-chain EP: ~160 states x 3 eras, all written in one compute
+            # run -- conservative floor of two eras' worth.
+            ("api.expected_points", 300),
         ],
         ids=[
             "team_detail",
@@ -654,6 +676,7 @@ class TestViewsExistAndReturnRows:
             "penalty_log",
             "team_penalties",
             "season_outlook",
+            "expected_points",
         ],
     )
     def test_view_returns_rows(self, db_conn, view_name, min_rows):
@@ -699,6 +722,7 @@ class TestViewColumns:
             ("api.penalty_log", PENALTY_LOG_COLUMNS),
             ("api.team_penalties", TEAM_PENALTIES_COLUMNS),
             ("api.season_outlook", SEASON_OUTLOOK_COLUMNS),
+            ("api.expected_points", EXPECTED_POINTS_COLUMNS),
         ],
         ids=[
             "team_detail",
@@ -725,6 +749,7 @@ class TestViewColumns:
             "penalty_log",
             "team_penalties",
             "season_outlook",
+            "expected_points",
         ],
     )
     def test_columns_present(self, db_conn, view_name, expected_columns):

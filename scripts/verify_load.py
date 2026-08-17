@@ -24,6 +24,10 @@ Checks:
        season (in-season only; WARNs if migration 041 isn't applied yet)
     7. meta.flat_file_loads has a recent successful 'availability' load
        (in-season only; never FAILs -- external conference sites are flaky)
+    8. stats.player_returning rows for the upcoming season are POSSIBLE:
+       a team cannot return more of last season's PPA than its still-eligible
+       players produced (preseason only; never FAILs -- the defect is CFBD's
+       provisional roster snapshot, not our load)
 
 Pre-season semantics: with no completed games, checks 3-4 pass vacuously and
 check 2 is the meaningful one (schedules publish in July, so core.games must
@@ -400,6 +404,132 @@ def check_backtest_freshness(cur, report: Report) -> None:
     )
 
 
+# CFBD computes /player/returning from its own roster snapshots, and schools'
+# upcoming-season rosters land upstream progressively through late August. A
+# school CFBD has not refreshed yet is scored against LAST season's roster and
+# reads as "everyone returns" -- 2026-08-17 audit: Washington State published
+# 91% returning PPA for 2026 with its top two producers (~45% of team PPA)
+# out of eligibility. The warehouse can already refute those rows: a player
+# with RETURNING_MAX_SEASONS distinct roster seasons through last season has
+# exhausted eligibility (redshirt + 4), so the PPA his teammates actually
+# retain caps the percent CFBD may claim.
+RETURNING_MAX_SEASONS = 5
+# Players first rostered before 2021 may hold a 2020 COVID free season, so
+# five seasons is not proof of exhaustion for them -- they stay out of the
+# refutation set (under-flagging is fine; this check refutes, not measures).
+RETURNING_COVID_CUTOFF = 2021
+# Absorbs PPA rounding and the odd medical-waiver sixth year; a genuinely
+# stale roster snapshot overshoots the eligibility cap by far more than this.
+RETURNING_SLACK = 0.05
+
+
+def evaluate_returning_provisional(evaluated: int, flagged: int) -> str:
+    """Grade eligibility-impossible returning-production rows.
+
+    Never FAIL: the defect is upstream (CFBD's provisional rosters), the
+    daily merge self-corrects once CFBD refreshes them, and no re-run of our
+    load can green it -- the availability_archive rationale exactly.
+    """
+    if evaluated == 0 or flagged == 0:
+        return PASS
+    return WARN
+
+
+def check_returning_provisional(cur, report: Report) -> None:
+    """Preseason returning production must be possible, not merely present.
+
+    Season-independent like check_fitted_coverage: it targets the newest
+    season in stats.player_returning (the daily preseason refresh loads the
+    upcoming season months before --season rolls over to it), and only while
+    that season has no completed FBS games. After kickoff the metric is
+    settled -- and consumed history, not a live preseason input -- so the
+    check passes vacuously.
+    """
+    cur.execute(
+        "SELECT to_regclass('stats.player_returning'), "
+        "to_regclass('metrics.ppa_players_season'), to_regclass('core.roster')"
+    )
+    if any(oid is None for oid in cur.fetchone()):
+        report.record(WARN, "returning_provisional", "source table(s) absent, skipping")
+        return
+
+    cur.execute("SELECT MAX(season) FROM stats.player_returning")
+    target = cur.fetchone()[0]
+    if target is None:
+        report.record(PASS, "returning_provisional", "no returning-production rows to validate")
+        return
+
+    cur.execute(
+        f"SELECT COUNT(*) FROM core.games g WHERE g.season = %s AND g.completed AND {FBS_INVOLVED}",
+        (target,),
+    )
+    if cur.fetchone()[0] > 0:
+        report.record(PASS, "returning_provisional", f"season {target} underway; rosters settled")
+        return
+
+    cur.execute(
+        """
+        WITH exhausted AS (
+            SELECT r.id::text AS athlete_id
+            FROM core.roster r
+            WHERE r.year < %(season)s
+            GROUP BY r.id::text
+            HAVING COUNT(DISTINCT r.year) >= %(max_seasons)s
+               AND MIN(r.year) >= %(covid_cutoff)s
+        ),
+        prod AS (
+            SELECT p.team,
+                   SUM(GREATEST(p.total_ppa__all, 0)) AS team_ppa,
+                   COALESCE(SUM(GREATEST(p.total_ppa__all, 0))
+                            FILTER (WHERE e.athlete_id IS NOT NULL), 0) AS gone_ppa
+            FROM metrics.ppa_players_season p
+            LEFT JOIN exhausted e ON e.athlete_id = p.id::text
+            WHERE p.season = %(season)s - 1
+            GROUP BY p.team
+        ),
+        graded AS (
+            SELECT pr.team,
+                   pr.percent_ppa,
+                   1 - prod.gone_ppa / prod.team_ppa AS max_possible
+            FROM stats.player_returning pr
+            JOIN prod ON prod.team = pr.team
+            WHERE pr.season = %(season)s AND prod.team_ppa > 0
+        )
+        SELECT COUNT(*)::int,
+               COUNT(*) FILTER (WHERE percent_ppa > max_possible + %(slack)s)::int,
+               (SELECT string_agg(
+                          team || ' claims ' || round(percent_ppa::numeric, 2)
+                               || ' vs eligibility cap '
+                               || round(GREATEST(max_possible, 0)::numeric, 2),
+                          '; ')
+                FROM (SELECT team, percent_ppa, max_possible
+                      FROM graded
+                      WHERE percent_ppa > max_possible + %(slack)s
+                      ORDER BY percent_ppa - max_possible DESC
+                      LIMIT 3) worst)
+        FROM graded
+        """,
+        {
+            "season": target,
+            "max_seasons": RETURNING_MAX_SEASONS,
+            "covid_cutoff": RETURNING_COVID_CUTOFF,
+            "slack": RETURNING_SLACK,
+        },
+    )
+    evaluated, flagged, worst = cur.fetchone()
+    detail = f"{flagged}/{evaluated} team(s) with eligibility-impossible returning PPA for {target}"
+    if flagged:
+        detail += (
+            f" (worst: {worst}) -- CFBD /player/returning is running on provisional "
+            f"rosters; the daily merge self-corrects once {target} rosters land "
+            "upstream, but features/marts consumers should treat the metric as "
+            "provisional until this check passes"
+        )
+    report.record(
+        evaluate_returning_provisional(evaluated, flagged), "returning_provisional", detail
+    )
+
+
 def check_freshness(cur, in_season: bool, strict: bool, report: Report) -> None:
     cur.execute(
         """
@@ -445,6 +575,7 @@ def verify(season: int, strict: bool) -> int:
             check_freshness(cur, in_season, strict, report)
             check_massey_composite(cur, season, report)
             check_availability_archive(cur, season, report)
+            check_returning_provisional(cur, report)
     finally:
         conn.close()
 

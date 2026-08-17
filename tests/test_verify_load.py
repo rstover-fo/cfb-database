@@ -304,6 +304,128 @@ class TestCoverageChecksScopedToFbs:
         assert "g.away_classification = 'fbs'" in sql
 
 
+class TestEvaluateReturningProvisional:
+    def test_nothing_evaluated_passes(self):
+        from scripts.verify_load import evaluate_returning_provisional
+
+        assert evaluate_returning_provisional(0, 0) == PASS
+
+    def test_no_flagged_teams_passes(self):
+        from scripts.verify_load import evaluate_returning_provisional
+
+        assert evaluate_returning_provisional(136, 0) == PASS
+
+    def test_flagged_teams_warn(self):
+        from scripts.verify_load import evaluate_returning_provisional
+
+        assert evaluate_returning_provisional(136, 1) == WARN
+        assert evaluate_returning_provisional(136, 14) == WARN
+
+    def test_never_fails(self):
+        """The defect is CFBD's provisional roster snapshot, not our load; a
+        FAIL would redline the daily job for weeks on something no re-run can
+        fix (the availability_archive rationale)."""
+        from scripts.verify_load import evaluate_returning_provisional
+
+        assert evaluate_returning_provisional(136, 136) != FAIL
+
+
+class TestCheckReturningProvisional:
+    """Preseason returning production must be POSSIBLE, not merely present.
+
+    2026-08-17 audit: CFBD published Washington State at 91% returning PPA
+    for 2026 while its top two producers -- ~45% of team PPA, both out of
+    eligibility -- could not return. The number merged cleanly, refreshed
+    daily, and fed features/marts with no signal anything was wrong."""
+
+    def test_source_tables_absent_warns_and_stops(self):
+        from scripts.verify_load import Report, check_returning_provisional
+
+        cur = _SequencedCursor([(None, "oid", "oid")])
+        report = Report()
+        check_returning_provisional(cur, report)
+
+        assert len(cur.queries) == 1
+        assert "to_regclass" in cur.queries[0][0]
+        assert report.failures == 0
+
+    def test_no_returning_rows_passes(self):
+        from scripts.verify_load import Report, check_returning_provisional
+
+        cur = _SequencedCursor([("oid", "oid", "oid"), (None,)])
+        report = Report()
+        check_returning_provisional(cur, report)
+
+        assert len(cur.queries) == 2
+        assert report.failures == 0
+
+    def test_season_underway_passes_without_grading(self):
+        """After kickoff rosters have landed and the metric is settled
+        history; grading it would re-warn all season on stale evidence."""
+        from scripts.verify_load import Report, check_returning_provisional
+
+        cur = _SequencedCursor([("oid", "oid", "oid"), (2026,), (12,)])
+        report = Report()
+        check_returning_provisional(cur, report)
+
+        assert len(cur.queries) == 3
+        assert cur.queries[2][1] == (2026,)
+        assert report.failures == 0
+
+    def test_preseason_flagged_teams_warn_but_never_fail(self):
+        from scripts.verify_load import Report, check_returning_provisional
+
+        cur = _SequencedCursor(
+            [
+                ("oid", "oid", "oid"),
+                (2026,),
+                (0,),
+                (134, 14, "Washington State claims 0.91 vs eligibility cap 0.55"),
+            ]
+        )
+        report = Report()
+        check_returning_provisional(cur, report)
+
+        assert len(cur.queries) == 4
+        assert report.failures == 0
+
+    def test_grading_query_refutes_by_eligibility(self):
+        """The check must compare the CLAIMED percent against what
+        still-eligible players produced, with the COVID cohort excluded from
+        the refutation set (a pre-2021 first season may hold a free year)."""
+        from scripts.verify_load import Report, check_returning_provisional
+
+        cur = _SequencedCursor([("oid", "oid", "oid"), (2026,), (0,), (134, 0, None)])
+        check_returning_provisional(cur, Report())
+
+        sql, params = cur.queries[3]
+        assert "COUNT(DISTINCT r.year) >= %(max_seasons)s" in sql
+        assert "MIN(r.year) >= %(covid_cutoff)s" in sql
+        assert "percent_ppa > max_possible + %(slack)s" in sql
+        assert params["season"] == 2026
+
+    def test_eligibility_constants_are_sane(self):
+        """5 = redshirt + 4 playing seasons; 2021 = first cohort with no
+        possible 2020 COVID year. Neither is tunable without re-deriving."""
+        from scripts.verify_load import (
+            RETURNING_COVID_CUTOFF,
+            RETURNING_MAX_SEASONS,
+            RETURNING_SLACK,
+        )
+
+        assert RETURNING_MAX_SEASONS == 5
+        assert RETURNING_COVID_CUTOFF == 2021
+        assert 0 < RETURNING_SLACK <= 0.1
+
+    def test_the_gate_is_wired_into_the_run(self):
+        """A gate that is never called is a comment."""
+        import inspect
+
+        import scripts.verify_load as vl
+
+        assert "check_returning_provisional(cur, report)" in inspect.getsource(vl)
+
+
 class TestBacktestFreshnessGate:
     """The honesty numbers must be CURRENT, not merely present.
 

@@ -80,6 +80,9 @@ MARTS_VIEWS = [
     # Layer 7: Tier 3 analytics (computed from play/feature builds, depends on Layer 6)
     "marts.team_week_features",
     "marts.adjusted_epa_week",
+    # Reads marts.team_adjusted_epa (layer 6) + marts.team_epa_season (layer 2)
+    # against the external ratings tables; cheap (a few thousand rows).
+    "marts.epa_crossvalidation",
 ]
 
 ANALYTICS_VIEWS = [

@@ -4,7 +4,7 @@
 > only depend on objects listed here as **public**. Everything else is internal and may change
 > without notice.
 
-Last updated: 2026-08-08
+Last updated: 2026-08-29
 
 > **Note on cfb-analytics:** the retired OU-only app (rstover-fo/cfb-analytics) was never a
 > warehouse consumer -- it ran its own DuckDB ingestion. Its unique features (rivals page,
@@ -14,6 +14,32 @@ Last updated: 2026-08-08
 ---
 
 ## Recent Contract Changes
+
+- **2026-08-29 — `marts.epa_crossvalidation` added (INTERNAL, not a public
+  surface).** Mart 044 (`src/schemas/marts/044_epa_crossvalidation.sql`) is the
+  output-plausibility harness for the 2014-2025 historical play-stats refresh
+  campaign (`scripts/backfill_refresh.py`). Grain `(season, external_system,
+  team)`: house adjusted EPA (`marts.team_adjusted_epa.net_adj_epa`, plus raw
+  non-garbage `marts.team_epa_season.epa_per_play` as a diagnostic) compared
+  against three season-final external anchors — `cfbd_fpi_season`
+  (`ratings.fpi_ratings`, has data today), `sdv_adj_net`
+  (`ratings.sdv_ratings_weekly`) and `espn_fpi_weekly`
+  (`ratings.espn_fpi_weekly`), the latter two dark until the sportsdataverse
+  flat-file sources first run. Comparison is **rank- and z-based only** within
+  each `(season, external_system)` matched set — EPA/play and FPI points are
+  different scales and must never be differenced. Registered in
+  `marts.refresh_all()` and `scripts/refresh_marts.py` at layer 7 (now 43
+  matviews). Four things to get right: (1) it is **not a model input** — every
+  row mixes season-final information and would leak if used as-of, and it is
+  absent from `DIFF_FEATURE_COLUMNS` by design; (2) it is **not a shipping
+  gate** — only the walk-forward no-regression gate on
+  `marts.prediction_accuracy` ships a model change; (3) it is **legitimately
+  empty** before an external anchor loads, so it is in `test_marts.py`'s
+  `EMPTY_OK` set and a dark anchor is UNTESTABLE, never a null result; (4)
+  migration 052 must be applied in an **earlier deploy run** than this mart —
+  `deploy_schema.py` runs `run_marts.py` before its `--files` migrations. The
+  before/after operator protocol and its fixed decision rule live in the mart
+  file's header. No `api.*` view and no downstream-consumer impact.
 
 - **2026-08-08 — CFBD CORE ratings surfaced: `api.core_ratings` added;
   `api.team_detail`/`api.team_history` gain `core_overall`/`core_offense`/

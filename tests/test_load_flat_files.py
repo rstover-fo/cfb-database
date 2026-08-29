@@ -134,7 +134,9 @@ class TestDryRun:
         rc = load_flat_files.main(["--dry-run"])
 
         assert rc == 0
-        assert len(REGISTRY) == 9
+        # 5 launch sources + 4 sdv_* + 7 ncaa_* (B6a; ncaa_pbp included --
+        # its 2025 file is ~11.8MB, well under the ~200MB scope threshold).
+        assert len(REGISTRY) == 16
         captured = capsys.readouterr()
         for name in REGISTRY:
             assert name in captured.out

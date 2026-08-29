@@ -30,6 +30,14 @@ CI/sandboxes with no Supabase credentials) -- due-status lookups swallow any
 missing creds) and fall back to "never loaded". Real runs make no such
 allowance: a missing DB surfaces as a per-source ``status=failed`` result
 (via the same try/except that catches parser errors), never a driver crash.
+
+Per-season multi-file sources (B6a): see ``flat_files.py``'s module
+docstring for the full design (``url_template``, ``ledger_key()``,
+``fallback_latest``). This driver's piece is ``_fetch_seasoned()``, which
+wraps ``fetch_file()`` with the 404-fallback probe -- it is the only place
+that walks backward through seasons, and it only does so when the season
+was NOT explicitly requested via ``--season`` (an explicit request that
+404s is a loud ``SeasonNotPublishedError``, never a silent substitution).
 """
 
 import argparse
@@ -40,18 +48,22 @@ import time
 from datetime import UTC, date, datetime
 
 import dlt
+import httpx
 
 from src.pipelines.sources.flat_files import (
     LOAD_SEASON_MONTHS,
     REGISTRY,
     FlatFileSpec,
     ParseContext,
+    SeasonNotPublishedError,
     StaleSnapshotError,
     build_flat_file_source,
+    ledger_key,
+    resolve_fetch_url,
     resolve_parser,
     season_for_date,
 )
-from src.pipelines.utils.file_fetcher import fetch_file
+from src.pipelines.utils.file_fetcher import FetchedFile, fetch_file
 from src.pipelines.utils.load_ledger import already_loaded, last_success, record_load
 from src.pipelines.utils.team_xwalk import XwalkResolver
 
@@ -61,6 +73,62 @@ logger = logging.getLogger(__name__)
 # Ledger error messages can carry an unbounded amount of detail (e.g. an
 # UnmappedNamesError's row-by-row breakdown); cap what we persist/print.
 ERROR_MESSAGE_LIMIT = 500
+
+# How many seasons back _fetch_seasoned() will probe on a 404 before giving
+# up (fallback_latest specs only, and only when the season was not
+# explicitly requested via --season). 3 is a generous cushion for "the
+# upstream cron is running late" without turning into an unbounded crawl.
+FALLBACK_MAX_STEPS = 3
+
+
+def _fetch_seasoned(
+    spec: FlatFileSpec, season: int, *, allow_fallback: bool
+) -> tuple[FetchedFile, int]:
+    """Fetch ``spec``'s file for ``season``, honoring 404 fallback.
+
+    Returns ``(fetched, resolved_season)`` -- ``resolved_season`` is
+    ``season`` itself unless a fallback season's file is the one that
+    actually loaded. A 404 with fallback disabled or exhausted raises
+    ``SeasonNotPublishedError`` (mapped by ``run_source`` to a
+    ``not_published`` outcome, not a failure). Any other exception
+    (non-404 HTTP error, connection error, ...) propagates unchanged.
+
+    ``allow_fallback`` gates whether fallback applies at all -- it is False
+    whenever the caller explicitly requested this season via ``--season``,
+    per ``flat_files.py``'s module docstring: an explicit request that
+    404s should never be silently substituted with a different season's
+    data.
+    """
+    url = resolve_fetch_url(spec, season)
+    try:
+        return fetch_file(url), season
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code != 404:
+            raise
+        if not (allow_fallback and spec.url_template and spec.fallback_latest):
+            raise SeasonNotPublishedError(
+                f"{spec.name}: season {season} file not published (404): {url}"
+            ) from e
+
+        for step in range(1, FALLBACK_MAX_STEPS + 1):
+            candidate = season - step
+            if spec.min_season is not None and candidate < spec.min_season:
+                break
+            candidate_url = resolve_fetch_url(spec, candidate)
+            logger.info(
+                f"{spec.name}: season {season} not yet published (404); falling back to {candidate}"
+            )
+            try:
+                return fetch_file(candidate_url), candidate
+            except httpx.HTTPStatusError as fallback_error:
+                if fallback_error.response.status_code != 404:
+                    raise
+                continue
+
+        raise SeasonNotPublishedError(
+            f"{spec.name}: no published file found for season {season} or the "
+            f"{FALLBACK_MAX_STEPS} season(s) before it"
+        ) from e
 
 
 def is_due(spec: FlatFileSpec, last: datetime | None, today: date) -> bool:
@@ -137,6 +205,7 @@ def run_source(
     *,
     file_path: str | None = None,
     season: int | None = None,
+    season_explicit: bool = False,
     today: date | None = None,
 ) -> dict:
     """Fetch/parse/load one registry source.
@@ -146,6 +215,11 @@ def run_source(
     try/except) so a multi-source run continues past any single source's
     failure. Also prints the ``FLATFILE_LOAD ...`` gate line as its last
     action, once ``duration_s`` is known.
+
+    ``season_explicit`` gates 404 fallback for ``url_template`` sources
+    (``_fetch_seasoned``): True means the caller asked for this exact season
+    (``--season``), so a 404 there is a loud failure, never a silent
+    substitution -- see ``flat_files.py``'s module docstring.
 
     Returns:
         {"source", "status", "rows", "sha", "duration_s", "error"}, plus
@@ -167,6 +241,11 @@ def run_source(
         "gaps": None,
     }
     resolver: XwalkResolver | None = None
+    # Ledger source key for this attempt -- starts at the requested season's
+    # key and is corrected to the fallback season's key the moment a fetch
+    # actually resolves one (see _fetch_seasoned). Used by both the success
+    # path and any post-fetch failure's ledger write.
+    ledger_source = ledger_key(spec, season)
 
     try:
         if spec.kind == "archiver":
@@ -180,7 +259,7 @@ def run_source(
             # unique (source, file_sha256) WHERE status='loaded' index on a
             # same-day rerun, failing an otherwise harmless re-invocation.
             sha = f"archiver-{datetime.now(UTC).isoformat()}"
-            record_load(spec.name, sha, status="loaded", row_count=rows)
+            record_load(ledger_source, sha, status="loaded", row_count=rows)
             result.update(
                 status="gap" if gaps else "loaded",
                 rows=rows,
@@ -189,16 +268,23 @@ def run_source(
             )
 
         elif spec.kind == "dlt":
-            fetch_target = file_path or spec.fetch_url
+            fetch_target = file_path or resolve_fetch_url(spec, season)
             if not fetch_target:
                 result["error"] = f"{spec.name}: no fetch target -- pass --file or add fetch_url"
             else:
-                fetched = fetch_file(fetch_target)
+                if file_path:
+                    fetched = fetch_file(file_path)
+                    resolved_season = season
+                else:
+                    fetched, resolved_season = _fetch_seasoned(
+                        spec, season, allow_fallback=not season_explicit
+                    )
+                ledger_source = ledger_key(spec, resolved_season)
                 result["sha"] = fetched.sha256
 
-                if already_loaded(spec.name, fetched.sha256):
+                if already_loaded(ledger_source, fetched.sha256):
                     record_load(
-                        spec.name,
+                        ledger_source,
                         fetched.sha256,
                         status="skipped",
                         source_url=fetched.source_url,
@@ -208,7 +294,7 @@ def run_source(
                     ctx = ParseContext(
                         source=spec.name,
                         snapshot_date=today,
-                        season=season,
+                        season=resolved_season,
                         source_url=fetched.source_url,
                         file_name=os.path.basename(fetched.source_url),
                     )
@@ -229,7 +315,7 @@ def run_source(
                         rows += row_counts.get(spec.child_table, 0)
 
                     record_load(
-                        spec.name,
+                        ledger_source,
                         fetched.sha256,
                         status="loaded",
                         source_url=fetched.source_url,
@@ -243,12 +329,21 @@ def run_source(
         msg = str(e)[:ERROR_MESSAGE_LIMIT]
         result["error"] = msg
         result["status"] = "no_op_offseason"
-        _safe_record_load(spec.name, result["sha"], status="skipped", error=msg)
+        _safe_record_load(ledger_source, result["sha"], status="skipped", error=msg)
+    except SeasonNotPublishedError as e:
+        # A season-parameterized source's file isn't out yet (and fallback
+        # didn't apply or was exhausted) -- expected, self-healing state,
+        # not an operational failure. No sha was ever obtained, so (per
+        # _safe_record_load) nothing is written to the ledger, same as the
+        # "missing fetch target" case above.
+        msg = str(e)[:ERROR_MESSAGE_LIMIT]
+        result["error"] = msg
+        result["status"] = "not_published"
     except Exception as e:
         msg = str(e)[:ERROR_MESSAGE_LIMIT]
         result["error"] = msg
         result["status"] = "failed"
-        _safe_record_load(spec.name, result["sha"], status="failed", error=msg)
+        _safe_record_load(ledger_source, result["sha"], status="failed", error=msg)
     finally:
         if resolver is not None:
             result["unmapped"] = len(resolver.misses)
@@ -285,7 +380,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--season",
         type=int,
         default=None,
-        help="Season override passed to the parser (default: inferred from today's date)",
+        help="Season override passed to the parser (default: inferred from today's date). "
+        "For a url_template source this targets that exact season's file and disables "
+        "404 fallback -- a backfill request is never silently substituted.",
     )
     parser.add_argument(
         "--dry-run",
@@ -296,21 +393,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _planned_sources(args: argparse.Namespace, today: date) -> list[str]:
+def _planned_sources(args: argparse.Namespace, today: date, season: int) -> list[str]:
     if args.source:
         return list(args.source)
     if args.due:
         return [
-            name for name, spec in REGISTRY.items() if is_due(spec, _safe_last_success(name), today)
+            name
+            for name, spec in REGISTRY.items()
+            if is_due(spec, _safe_last_success(ledger_key(spec, season)), today)
         ]
     return list(REGISTRY)
 
 
-def _fetch_target_display(spec: FlatFileSpec, file_override: str | None) -> str:
+def _fetch_target_display(spec: FlatFileSpec, file_override: str | None, season: int) -> str:
     if file_override:
         return file_override
-    if spec.fetch_url:
-        return spec.fetch_url
+    fetch_url = resolve_fetch_url(spec, season)
+    if fetch_url:
+        return fetch_url
     if spec.kind == "archiver":
         return "<archiver: auto-discovery>"
     return "<requires --file>"
@@ -324,20 +424,27 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--file requires exactly one --source")
 
     today = date.today()
-    season = args.season if args.season is not None else season_for_date(today)
-    names = _planned_sources(args, today)
+    season_explicit = args.season is not None
+    season = args.season if season_explicit else season_for_date(today)
+    names = _planned_sources(args, today, season)
 
     if args.dry_run:
         print(f"[DRY RUN] {len(names)} flat-file source(s) planned for season {season}")
         for name in names:
             spec = REGISTRY[name]
-            due = is_due(spec, _safe_last_success(name), today)
-            fetch_target = _fetch_target_display(spec, args.file)
+            due = is_due(spec, _safe_last_success(ledger_key(spec, season)), today)
+            fetch_target = _fetch_target_display(spec, args.file, season)
             print(f"  {name:20s} cadence={spec.cadence:8s} due={due!s:5s} fetch={fetch_target}")
         return 0
 
     results = [
-        run_source(REGISTRY[name], file_path=args.file, season=season, today=today)
+        run_source(
+            REGISTRY[name],
+            file_path=args.file,
+            season=season,
+            season_explicit=season_explicit,
+            today=today,
+        )
         for name in names
     ]
 

@@ -26,6 +26,24 @@
 -- load. Types below match dlt's inference for the parsed values
 -- (bigint/double precision/text/date/timestamptz), verified against the real
 -- 2025-season parquet files' pyarrow schemas (not API docs).
+--
+-- Corrections applied by the B6a schema-architect review, before this
+-- migration was ever applied to a live database:
+-- 1. ref.team_id_xwalk's PK is (season, xwalk_key), not (season, norm_key) --
+--    norm_key is NOT unique (the "roosevelt lakers" collision, two distinct
+--    schools sharing a norm_key with different espn_team_id values) and
+--    would silently drop one school under dlt merge. xwalk_key is a
+--    parser-derived tiebreak (norm_key + first non-null of
+--    espn/fox/yahoo_team_id); norm_key is kept as a plain non-unique indexed
+--    column. See parse_team_xwalk's docstring for the full reasoning.
+-- 2. ratings.fpi_weekly -> ratings.espn_fpi_weekly (distinguishes this
+--    weekly-snapshot ESPN FPI table from CFBD's own season-grain
+--    ratings.fpi_ratings).
+-- 3. ratings.external_weekly -> ratings.sdv_ratings_weekly (matches the
+--    repo's source-prefix table-naming convention: massey_composite,
+--    nflverse_draft_picks).
+-- 4. idx_team_id_xwalk_espn / idx_game_id_xwalk_espn made partial
+--    (WHERE ... IS NOT NULL) -- espn_team_id/espn_game_id are 9%/45% null.
 
 -- ---------------------------------------------------------------------------
 -- ref.team_id_xwalk -- ESPN/Fox/Yahoo team identity crosswalk (weekly refresh;
@@ -35,6 +53,7 @@
 CREATE TABLE IF NOT EXISTS ref.team_id_xwalk (
     season bigint NOT NULL,
     norm_key text NOT NULL,
+    xwalk_key text NOT NULL,
     espn_team_id bigint,
     espn_team text,
     espn_abbreviation text,
@@ -46,9 +65,17 @@ CREATE TABLE IF NOT EXISTS ref.team_id_xwalk (
     yahoo_abbreviation text,
     matched_sources text,
     loaded_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (season, norm_key)
+    PRIMARY KEY (season, xwalk_key)
 );
 
+COMMENT ON TABLE ref.team_id_xwalk IS
+    'ESPN/Fox/Yahoo team identity crosswalk from sportsdataverse-data -- '
+    'distinct from ref.team_name_xwalk (migration 041: source-spelling -> '
+    'CFBD-full-name crosswalk used by the massey/sbr ingestion path). This '
+    'table is NOT consulted by build_flat_file_source''s uses_xwalk resolver '
+    '-- the sdv_* sources join to ref.teams/core.games directly on the '
+    'verified-equal numeric ESPN/CFBD id (see the sportsdataverse.py module '
+    'docstring), bypassing name resolution entirely.';
 COMMENT ON COLUMN ref.team_id_xwalk.espn_team_id IS
     'ESPN numeric team id. ~9% null in the 2025 file (fox/yahoo-only matches '
     'with no ESPN counterpart) -- never assume non-null. By CFBD/ESPN''s '
@@ -56,13 +83,26 @@ COMMENT ON COLUMN ref.team_id_xwalk.espn_team_id IS
     'was verified against the live warehouse on 2026-08-29 (333=Alabama, '
     '2483=Oregon).';
 COMMENT ON COLUMN ref.team_id_xwalk.norm_key IS
-    'Primary key component alongside season. Not perfectly unique upstream: '
-    'the 2025 file has one known collision ("roosevelt lakers", two distinct '
-    'small colleges with different espn_team_id values) -- an accepted '
-    'sportsdataverse data-quality edge, same class of issue as ref.teams'' '
-    '35 duplicate school names.';
+    'Normalized "school mascot" key. NOT unique alone (kept as a plain '
+    'indexed lookup column, not the PK): the 2025 file has one known '
+    'collision ("roosevelt lakers", two distinct small colleges with '
+    'different espn_team_id values) -- an accepted sportsdataverse '
+    'data-quality edge, same class of issue as ref.teams'' 35 duplicate '
+    'school names. xwalk_key (the actual PK component) resolves the '
+    'collision -- see its comment.';
+COMMENT ON COLUMN ref.team_id_xwalk.xwalk_key IS
+    'Primary key component alongside season: norm_key + ''#'' + the first '
+    'non-null of espn_team_id/fox_team_id/yahoo_team_id, computed by '
+    'parse_team_xwalk. Exists because norm_key alone collides (see its '
+    'comment) -- distinct source ids on the colliding rows (599 vs 127991 '
+    'for "roosevelt lakers") make xwalk_key distinct too. A residual '
+    'collision is possible only if two colliding norm_key rows also share '
+    'the same tiebreak id (all three source ids null on both) -- not '
+    'observed in the 2025 file.';
 
-CREATE INDEX IF NOT EXISTS idx_team_id_xwalk_espn ON ref.team_id_xwalk (espn_team_id);
+CREATE INDEX IF NOT EXISTS idx_team_id_xwalk_norm_key ON ref.team_id_xwalk (season, norm_key);
+CREATE INDEX IF NOT EXISTS idx_team_id_xwalk_espn ON ref.team_id_xwalk (espn_team_id)
+    WHERE espn_team_id IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- ref.game_id_xwalk -- ESPN/Fox/Yahoo game identity crosswalk (weekly refresh;
@@ -100,17 +140,18 @@ COMMENT ON COLUMN ref.game_id_xwalk.home_team IS
     'bare-school spelling ("Ohio State") -- do not join this column directly '
     'against ref.teams.school or core.games team names.';
 
-CREATE INDEX IF NOT EXISTS idx_game_id_xwalk_espn ON ref.game_id_xwalk (espn_game_id);
+CREATE INDEX IF NOT EXISTS idx_game_id_xwalk_espn ON ref.game_id_xwalk (espn_game_id)
+    WHERE espn_game_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_game_id_xwalk_yahoo ON ref.game_id_xwalk (yahoo_game_id);
 
 -- ---------------------------------------------------------------------------
--- ratings.fpi_weekly -- ESPN FPI, weekly-snapshot granularity (distinct from
+-- ratings.espn_fpi_weekly -- ESPN FPI, weekly-snapshot granularity (distinct from
 -- the existing season-level ratings.fpi_ratings sourced directly from CFBD's
 -- /ratings/fpi; this table is the in-season week-by-week history CFBD's
 -- endpoint does not expose). sportsdataverse's cfb_fpi_weekly_{season}.parquet.
 -- ---------------------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS ratings.fpi_weekly (
+CREATE TABLE IF NOT EXISTS ratings.espn_fpi_weekly (
     season bigint NOT NULL,
     season_type bigint NOT NULL,
     week bigint NOT NULL,
@@ -166,29 +207,29 @@ CREATE TABLE IF NOT EXISTS ratings.fpi_weekly (
     PRIMARY KEY (season, season_type, week, team_id)
 );
 
-COMMENT ON COLUMN ratings.fpi_weekly.season_type IS
+COMMENT ON COLUMN ratings.espn_fpi_weekly.season_type IS
     'CFBD-style postseason-week-restart convention applies: 2 = regular '
     'season (week 1-16 observed in 2025), 3 = postseason (week resets to 1) '
     '-- included in the PK to avoid regular/postseason week collisions.';
-COMMENT ON COLUMN ratings.fpi_weekly.team_id IS
+COMMENT ON COLUMN ratings.espn_fpi_weekly.team_id IS
     'ESPN numeric team id (0 nulls observed). By CFBD/ESPN''s shared id '
     'namespace this equals ref.teams.id -- verified against the live '
     'warehouse on 2026-08-29 (333=Alabama).';
-COMMENT ON COLUMN ratings.fpi_weekly.projectedt IS
+COMMENT ON COLUMN ratings.espn_fpi_weekly.projectedt IS
     'Always NULL in every 2025 row observed (an all-null Arrow column '
     'upstream) -- typed double precision on the assumption it would hold a '
     'number like projectedw/projectedl if ESPN ever populates it.';
 
-CREATE INDEX IF NOT EXISTS idx_fpi_weekly_season_week ON ratings.fpi_weekly (season, week);
+CREATE INDEX IF NOT EXISTS idx_espn_fpi_weekly_season_week ON ratings.espn_fpi_weekly (season, week);
 
 -- ---------------------------------------------------------------------------
--- ratings.external_weekly -- external adjusted-EPA/FEI weekly ratings (a
+-- ratings.sdv_ratings_weekly -- external adjusted-EPA/FEI weekly ratings (a
 -- second, independent benchmark for the house adjusted-EPA model in
 -- scripts/compute_adjusted_epa_week.py). sportsdataverse's
 -- cfb_ratings_weekly_{season}.parquet.
 -- ---------------------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS ratings.external_weekly (
+CREATE TABLE IF NOT EXISTS ratings.sdv_ratings_weekly (
     season bigint NOT NULL,
     through_week bigint NOT NULL,
     team_id bigint NOT NULL,
@@ -209,20 +250,20 @@ CREATE TABLE IF NOT EXISTS ratings.external_weekly (
     PRIMARY KEY (season, through_week, team_id)
 );
 
-COMMENT ON COLUMN ratings.external_weekly.team_id IS
+COMMENT ON COLUMN ratings.sdv_ratings_weekly.team_id IS
     'Source ships this as a string ("333"); the parser casts it to bigint so '
-    'it lines up with ratings.fpi_weekly.team_id and (by the same '
+    'it lines up with ratings.espn_fpi_weekly.team_id and (by the same '
     'unverified-but-documented equivalence) ref.teams.id.';
-COMMENT ON TABLE ratings.external_weekly IS
+COMMENT ON TABLE ratings.sdv_ratings_weekly IS
     'Single external system (adjusted EPA + FEI), wide format -- no '
     'system/label column. A second external ratings system would need either '
     'a new table or a reshape to long format, not a bolt-on column here.';
 
-CREATE INDEX IF NOT EXISTS idx_external_weekly_team ON ratings.external_weekly (team_id, season);
+CREATE INDEX IF NOT EXISTS idx_sdv_ratings_weekly_team ON ratings.sdv_ratings_weekly (team_id, season);
 
 -- ---------------------------------------------------------------------------
 -- Grants (mirror 041: read-only exposure via existing ref/ratings schema USAGE)
 -- ---------------------------------------------------------------------------
 
 GRANT SELECT ON ref.team_id_xwalk, ref.game_id_xwalk TO anon, authenticated;
-GRANT SELECT ON ratings.fpi_weekly, ratings.external_weekly TO anon, authenticated;
+GRANT SELECT ON ratings.espn_fpi_weekly, ratings.sdv_ratings_weekly TO anon, authenticated;

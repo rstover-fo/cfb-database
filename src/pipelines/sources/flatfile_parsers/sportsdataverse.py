@@ -2,13 +2,21 @@
 
 Sources (weekly, per-season GitHub release assets -- see the deviation note
 below):
-- cfb_teams_crosswalk_{season}.parquet    -> ref.team_id_xwalk (PK season, norm_key)
+- cfb_teams_crosswalk_{season}.parquet    -> ref.team_id_xwalk (PK season, xwalk_key)
 - cfb_schedule_crosswalk_{season}.parquet -> ref.game_id_xwalk
   (PK season, matchup_key, yahoo_date)
-- cfb_fpi_weekly_{season}.parquet         -> ratings.fpi_weekly
+- cfb_fpi_weekly_{season}.parquet         -> ratings.espn_fpi_weekly
   (PK season, season_type, week, team_id)
-- cfb_ratings_weekly_{season}.parquet     -> ratings.external_weekly
+- cfb_ratings_weekly_{season}.parquet     -> ratings.sdv_ratings_weekly
   (PK season, through_week, team_id)
+
+**Table renames (schema-architect review, B6a):** ``ratings.fpi_weekly`` ->
+``ratings.espn_fpi_weekly`` (different provenance than CFBD's own
+season-grain ``ratings.fpi_ratings`` -- the name must say so) and
+``ratings.external_weekly`` -> ``ratings.sdv_ratings_weekly`` (matches the
+repo's source-prefix table-naming convention: ``massey_composite``,
+``nflverse_draft_picks``). Migration 052 and the registry entries below were
+updated before either table was ever applied to a live database.
 
 **Deviation from the nflverse pattern these parsers otherwise clone:** nflverse's
 combine/draft_picks releases are genuinely cumulative -- one URL, all history,
@@ -18,13 +26,16 @@ releases are NOT cumulative: cfbfastR-cfb-data publishes one asset per season
 assets (docs in the T-task report; no live API access was available to enumerate
 them, so this was confirmed by direct-download probing of
 github.com/sportsdataverse/sportsdataverse-data/releases/download/<tag>/<asset>).
-`FlatFileSpec.fetch_url` is a single fixed string with no season templating, so
-the registry entries below are pinned to the 2025 asset (the latest published
-at write time -- 2026's had not appeared yet). **This URL will need a manual
-bump to `_2026` once cfbfastR-cfb-data publishes it** (their cron runs through
-the season); this is a known follow-up, not a bug. Until bumped, these sources
-will keep re-fetching 2025 (harmless -- hash-skip no-ops after the first load)
-and will NOT pick up 2026 automatically.
+
+**B2-era manual-bump debt, resolved in B6a:** the original registry entries used
+a single fixed `FlatFileSpec.fetch_url` pinned to the 2025 asset with a
+documented "bump to `_2026` manually" TODO. `src/pipelines/sources/flat_files.py`
+now has a `url_template` + `fallback_latest` mechanism for exactly this shape of
+source (see that module's docstring); these four registry entries were migrated
+to it, so a season rollover self-heals once cfbfastR-cfb-data actually publishes
+the new file (confirmed live at write time: today resolves to season 2026, but
+none of these four tags has a 2026 asset yet, so every one of them is presently
+falling back to 2025 automatically instead of needing a manual edit).
 
 **No player/roster crosswalk exists.** The task anticipated a
 `cfb_rosters_crosswalk` (or similarly-named) asset for CFBD<->ESPN player
@@ -102,15 +113,25 @@ def parse_team_xwalk(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
         yahoo_team_id, yahoo_team, yahoo_abbreviation: large_string
         matched_sources: large_string (e.g. "espn+fox+yahoo", "fox", "yahoo")
 
-    PK: (season, norm_key). ``espn_team_id`` cannot be the PK -- see the null
+    PK: (season, xwalk_key) -- NOT (season, norm_key) (schema-architect
+    review correction). ``espn_team_id`` cannot be the PK -- see the null
     rate above; rows with a null id are exactly the fox/yahoo-only matches
     the crosswalk exists to carry, dropping them would defeat the source's
-    purpose. ``norm_key`` is not perfectly unique either -- the 2025 file has
-    one real collision ("roosevelt lakers", two distinct small colleges with
-    different espn_team_id values, espn_team_id 599 and 127991) -- this is an
-    upstream data-quality edge in sportsdataverse's own matching, not a
-    parser bug; it is left as a documented, accepted collision (same class of
-    issue as ref.teams' 35 duplicate school names).
+    purpose. ``norm_key`` is not unique either -- the 2025 file has one real
+    collision ("roosevelt lakers", two distinct small colleges with
+    different espn_team_id values, espn_team_id 599 and 127991) -- an
+    upstream data-quality edge in sportsdataverse's own matching (same class
+    of issue as ref.teams' 35 duplicate school names), but unlike that
+    precedent this collision sits on what would otherwise be the PK, so under
+    dlt merge it would silently drop one of the two schools every load
+    rather than just complicate a join. The parser instead derives
+    ``xwalk_key = f"{norm_key}#{tiebreak}"`` where ``tiebreak`` is the first
+    non-null of espn_team_id/fox_team_id/yahoo_team_id -- distinct source ids
+    for the colliding rows (verified: 599 vs 127991) make xwalk_key distinct
+    too. ``norm_key`` is kept as a plain (non-unique, indexed) column for
+    lookups by normalized name; residual xwalk_key collisions are possible
+    only if two colliding norm_key rows ALSO share the same tiebreak id (all
+    three source ids null on both) -- not observed in the 2025 file.
     """
     table = pyarrow.parquet.read_table(io.BytesIO(raw))
     schema_names = set(table.column_names)
@@ -136,6 +157,13 @@ def parse_team_xwalk(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
 
         if row.get("espn_team_id") is not None:
             row["espn_team_id"] = int(row["espn_team_id"])
+
+        tiebreak = row.get("espn_team_id")
+        if tiebreak is None:
+            tiebreak = row.get("fox_team_id")
+        if tiebreak is None:
+            tiebreak = row.get("yahoo_team_id")
+        row["xwalk_key"] = f"{row['norm_key']}#{tiebreak}"
 
         yield row
 
@@ -200,7 +228,7 @@ def parse_game_xwalk(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
 
 
 def parse_fpi_weekly(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
-    """Parse cfb_fpi_weekly_{season}.parquet into ratings.fpi_weekly rows.
+    """Parse cfb_fpi_weekly_{season}.parquet into ratings.espn_fpi_weekly rows.
 
     Real columns (51; season/season_type/week/team_id all present in-file --
     used as-is, ``ctx.season`` is NOT consulted): season, season_type (2 =
@@ -314,7 +342,7 @@ def parse_fpi_weekly(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
 
 
 def parse_ratings_weekly(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
-    """Parse cfb_ratings_weekly_{season}.parquet into ratings.external_weekly rows.
+    """Parse cfb_ratings_weekly_{season}.parquet into ratings.sdv_ratings_weekly rows.
 
     Real columns (16; season/through_week/team_id all present in-file --
     ``ctx.season`` is NOT consulted): season (int64), team_id (large_string

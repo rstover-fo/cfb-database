@@ -43,6 +43,7 @@ class TestParseTeamXwalk:
         assert isinstance(row["espn_team_id"], int)
         assert row["espn_team"] == "Alabama Crimson Tide"
         assert row["matched_sources"] == "espn+fox+yahoo"
+        assert row["xwalk_key"] == "alabama crimson tide#333"
 
     def test_fixture_null_espn_team_id_passes_through(self):
         """A fox/yahoo-only row (no ESPN match) keeps espn_team_id as None, not dropped."""
@@ -53,16 +54,21 @@ class TestParseTeamXwalk:
         assert len(null_rows) == 1
         assert null_rows[0]["norm_key"] == "penn quakers"
         assert null_rows[0]["fox_team_id"] is not None
+        # tiebreak falls through to fox_team_id when espn_team_id is null
+        assert null_rows[0]["xwalk_key"] == f"penn quakers#{null_rows[0]['fox_team_id']}"
 
     def test_fixture_duplicate_norm_key_both_kept(self):
         """The known upstream norm_key collision (roosevelt lakers) is not deduped here --
-        that is dlt's merge behavior, not the parser's job."""
+        that is dlt's merge behavior, not the parser's job. xwalk_key (the actual PK
+        component, not norm_key) must be distinct for the two colliding rows, or dlt
+        merge would silently drop one."""
         raw = _read_fixture("sdv_team_xwalk_sample.parquet")
         ctx = ParseContext(source="sdv_team_xwalk", snapshot_date=date(2026, 8, 29), season=2025)
         rows = list(sportsdataverse.parse_team_xwalk(raw, ctx))
         roosevelt = [r for r in rows if r["norm_key"] == "roosevelt lakers"]
         assert len(roosevelt) == 2
         assert {r["espn_team_id"] for r in roosevelt} == {599, 127991}
+        assert len({r["xwalk_key"] for r in roosevelt}) == 2
 
     def test_pk_null_norm_key_dropped_with_log(self, caplog):
         schema = pa.schema(
@@ -363,8 +369,17 @@ class TestRegistry:
             assert spec.kind == "dlt"
             assert spec.write_disposition == "merge"
             assert spec.cadence == "weekly"
-            assert spec.fetch_url is not None and spec.fetch_url.startswith("https://")
+            # Migrated to the url_template mechanism in B6a -- no more pinned
+            # fetch_url, and fallback_latest handles an unpublished current season.
+            assert spec.fetch_url is None
+            assert spec.url_template is not None and spec.url_template.startswith("https://")
+            assert "{season}" in spec.url_template
+            assert spec.fallback_latest is True
             assert spec.uses_xwalk is False
+
+        assert REGISTRY["sdv_fpi_weekly"].table == "espn_fpi_weekly"
+        assert REGISTRY["sdv_ratings_weekly"].table == "sdv_ratings_weekly"
+        assert REGISTRY["sdv_team_xwalk"].primary_key == ("season", "xwalk_key")
 
     def test_no_player_xwalk_registry_entry(self):
         """Deliberate: no cfb_rosters_crosswalk-shaped asset exists upstream."""
@@ -377,3 +392,41 @@ class TestRegistry:
 
         for name in ("sdv_team_xwalk", "sdv_game_xwalk", "sdv_fpi_weekly", "sdv_ratings_weekly"):
             resolve_parser(REGISTRY[name].parser)
+
+
+class TestUrlTemplateMigration:
+    """The four sdv_* specs produce the same URLs today (season resolves to
+    2025's asset, the latest actually published) as the pre-B6a pinned
+    fetch_url strings, and a 2026 URL once that season is requested/published."""
+
+    EXPECTED_2025 = {
+        "sdv_team_xwalk": (
+            "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/"
+            "cfb_crosswalk/cfb_teams_crosswalk_2025.parquet"
+        ),
+        "sdv_game_xwalk": (
+            "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/"
+            "cfb_crosswalk/cfb_schedule_crosswalk_2025.parquet"
+        ),
+        "sdv_fpi_weekly": (
+            "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/"
+            "cfb_fpi_weekly/cfb_fpi_weekly_2025.parquet"
+        ),
+        "sdv_ratings_weekly": (
+            "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/"
+            "cfb_ratings_weekly/cfb_ratings_weekly_2025.parquet"
+        ),
+    }
+
+    def test_resolves_same_2025_url_as_the_old_pinned_fetch_url(self):
+        from src.pipelines.sources.flat_files import REGISTRY, resolve_fetch_url
+
+        for name, expected in self.EXPECTED_2025.items():
+            assert resolve_fetch_url(REGISTRY[name], 2025) == expected
+
+    def test_resolves_2026_url_when_that_season_is_requested(self):
+        from src.pipelines.sources.flat_files import REGISTRY, resolve_fetch_url
+
+        for name, expected_2025 in self.EXPECTED_2025.items():
+            expected_2026 = expected_2025.replace("_2025.parquet", "_2026.parquet")
+            assert resolve_fetch_url(REGISTRY[name], 2026) == expected_2026

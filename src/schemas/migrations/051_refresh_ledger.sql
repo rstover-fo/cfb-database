@@ -51,15 +51,14 @@ CREATE TABLE IF NOT EXISTS meta.refresh_progress (
     PRIMARY KEY (campaign, task, game_id)
 );
 
--- Backs "backlog remaining for campaign X" lookups (scripts/backfill_refresh.py
--- --status and the per-run backlog query).
-CREATE INDEX IF NOT EXISTS idx_refresh_progress_campaign_time
-    ON meta.refresh_progress (campaign, refreshed_at);
+-- No (campaign, refreshed_at) secondary index: every campaign-scoped lookup
+-- the script issues (_DONE_IDS_QUERY, --status) filters on campaign+task, a
+-- leftmost prefix of the PRIMARY KEY above, so a second composite index
+-- would only tax every ledger insert (schema review, 2026-08-29).
 
 -- Backs the month guard: SELECT SUM(calls) FROM meta.refresh_progress WHERE
 -- refreshed_at >= date_trunc('month', now()) scans across ALL campaigns, not
--- just one, so it needs its own index rather than relying on the composite
--- above.
+-- just one, so it needs its own index rather than relying on the PK.
 CREATE INDEX IF NOT EXISTS idx_refresh_progress_refreshed_at
     ON meta.refresh_progress (refreshed_at);
 

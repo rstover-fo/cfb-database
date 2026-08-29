@@ -37,8 +37,11 @@
 
 -- ---------------------------------------------------------------------------
 -- Schema USAGE: `metrics` was never granted USAGE in
--- grant_read_access_for_security_invoker.sql (that migration's schema list
--- predates this repo's metrics.* tables having any anon-facing consumer).
+-- grant_read_access_for_security_invoker.sql. Existing api.* readers of
+-- metrics.* (e.g. api.game_win_probability) work without it because api
+-- views run with owner privileges (none set security_invoker -- see
+-- api/043's measurement); this grant is for the DIRECT PostgREST table
+-- exposure the new metrics tables get, matching ref/stats/ratings.
 -- Idempotent -- GRANT is a no-op if already held.
 -- ---------------------------------------------------------------------------
 

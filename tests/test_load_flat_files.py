@@ -135,8 +135,11 @@ class TestDryRun:
 
         assert rc == 0
         # 5 launch sources + 4 sdv_* + 7 ncaa_* (B6a; ncaa_pbp included --
-        # its 2025 file is ~11.8MB, well under the ~200MB scope threshold).
-        assert len(REGISTRY) == 16
+        # its 2025 file is ~11.8MB, well under the ~200MB scope threshold)
+        # + 5 espn_* (B6b; espn_pbp_2002_2003 dropped -- the dataset's real
+        # minimum season is 2004, verified live, so no pre-CFBD gap-fill
+        # table exists).
+        assert len(REGISTRY) == 21
         captured = capsys.readouterr()
         for name in REGISTRY:
             assert name in captured.out

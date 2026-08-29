@@ -493,11 +493,30 @@ The table was successfully loaded via `game_stats_source`'s week-by-week loading
 | ncaa_player_stats | ncaa.player_stats | Parquet (sportsdataverse-data ncaa_mfb_player_stats, per-season) | Weekly | Built (awaiting first load) |
 | ncaa_team_stats | ncaa.team_stats | Parquet (sportsdataverse-data ncaa_mfb_team_stats, per-season) | Weekly | Built (awaiting first load) |
 | ncaa_pbp | ncaa.pbp | Parquet (sportsdataverse-data ncaa_mfb_pbp, per-season) | Weekly | Built (awaiting first load) |
+| espn_player_passing | stats.espn_player_passing | Parquet (sportsdataverse-data espn_cfb_adv_passing, per-season) | Weekly | Built (awaiting first load) |
+| espn_player_rushing | stats.espn_player_rushing | Parquet (sportsdataverse-data espn_cfb_adv_rushing, per-season) | Weekly | Built (awaiting first load) |
+| espn_player_receiving | stats.espn_player_receiving | Parquet (sportsdataverse-data espn_cfb_adv_receiving, per-season) | Weekly | Built (awaiting first load) |
+| espn_player_defense | stats.espn_player_defense | Parquet (sportsdataverse-data espn_cfb_adv_defensive_players, per-season) | Weekly | Built (awaiting first load) |
+| espn_play_participants | stats.espn_play_participants | Parquet (sportsdataverse-data espn_cfb_play_participants, per-season) | Weekly | Built (awaiting first load) |
 
 `ncaa.*` lives in its own, deliberately ungranted Postgres schema (migration
 053): stats.ncaa.org ids (team/player/contest) are a disjoint id space from
 CFBD/ESPN with no verified crosswalk, so the schema is reachable only via the
 pipeline's service-role connection until a deliberate exposure decision.
+
+`espn_*` (B6b) lives in the existing, already-granted `stats` schema (migration
+055) -- ESPN's numeric ids are verified equal to CFBD's, so provenance is
+carried by the `espn_` table-name prefix, not schema isolation. Notable gaps,
+verified live rather than assumed: none of `espn_player_passing`/`_rushing`/
+`_receiving`/`_defense` carries an athlete id at all (player identity is a
+free-text name column only -- ESPN's advanced-stat text scrape, a different
+upstream path than the id-carrying `espn_play_participants`); none of the five
+tables carries a `position` column; `espn_play_participants` carries no team
+id/name column at all. `espn_pbp_2002_2003` (a proposed pre-CFBD 2002-03
+play-by-play gap-fill) was dropped from this unit -- the real
+`espn_cfb_pbp` release's minimum season is 2004 (verified via a live download:
+`play_by_play_2004.parquet` succeeds, `play_by_play_2002/2003.parquet` both
+404), so the dataset this table would have held does not exist upstream.
 
 First deploy (one-time, requires DB credentials):
 

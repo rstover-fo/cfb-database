@@ -8,7 +8,11 @@ This module is the contract surface for the flat-file subsystem
 - ``ParseContext`` -- everything a pure parser is allowed to know about a fetch.
 - ``REGISTRY`` -- the five launch sources (massey, nflverse_combine,
   nflverse_draft, sbr, availability) plus the sportsdataverse-data additions
-  (sdv_team_xwalk, sdv_game_xwalk, sdv_fpi_weekly, sdv_ratings_weekly).
+  (sdv_team_xwalk, sdv_game_xwalk, sdv_fpi_weekly, sdv_ratings_weekly), the
+  NCAA bundle (ncaa_schedule, ncaa_teams, ncaa_rosters, ncaa_linescores,
+  ncaa_player_stats, ncaa_team_stats, ncaa_pbp), and the ESPN player-grain
+  bundle (espn_player_passing, espn_player_rushing, espn_player_receiving,
+  espn_player_defense, espn_play_participants).
 - ``build_flat_file_source()`` -- wraps parsed rows into a ``@dlt.source`` whose
   resources merge into pre-created tables (migration 041).
 
@@ -488,6 +492,91 @@ REGISTRY: dict[str, FlatFileSpec] = {
         ),
         fallback_latest=True,
         min_season=2013,
+    ),
+    # ESPN player-grain bundle (B6b), via sportsdataverse-data's
+    # espn_cfb_adv_*/espn_cfb_play_participants release tags. Own tables in
+    # the EXISTING `stats` schema (already USAGE-granted) -- no new `espn`
+    # schema: the schema-architect verdict is that ESPN's numeric ids ARE
+    # CFBD's (verified against the live warehouse 2026-08-29). Exact asset
+    # URLs (e.g. `adv_passing_{season}.parquet`, NOT
+    # `espn_cfb_adv_passing_{season}.parquet`) were read out of the real
+    # `sportsdataverse` 0.1.3 PyPI package's generated cfb_loaders.py, then
+    # verified live -- see flatfile_parsers/espn.py's module docstring for
+    # the full finding, including why there is deliberately no
+    # `espn_pbp_2002_2003` entry here (the dataset's own minimum season is
+    # 2004, verified live -- the task's 2002-03 gap-fill premise does not
+    # hold) and why none of the four adv_* sources carries an athlete id or
+    # position column at all (only espn_play_participants does, in its
+    # per-participant-type `{type}_player_id` columns).
+    "espn_player_passing": FlatFileSpec(
+        name="espn_player_passing",
+        parser="espn.parse_player_passing",
+        schema="stats",
+        table="espn_player_passing",
+        primary_key=("season", "game_id", "pos_team_id", "passer_player_name"),
+        cadence="weekly",
+        url_template=(
+            "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/"
+            "espn_cfb_adv_passing/adv_passing_{season}.parquet"
+        ),
+        fallback_latest=True,
+        min_season=2004,
+    ),
+    "espn_player_rushing": FlatFileSpec(
+        name="espn_player_rushing",
+        parser="espn.parse_player_rushing",
+        schema="stats",
+        table="espn_player_rushing",
+        primary_key=("season", "game_id", "pos_team_id", "rusher_player_name"),
+        cadence="weekly",
+        url_template=(
+            "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/"
+            "espn_cfb_adv_rushing/adv_rushing_{season}.parquet"
+        ),
+        fallback_latest=True,
+        min_season=2004,
+    ),
+    "espn_player_receiving": FlatFileSpec(
+        name="espn_player_receiving",
+        parser="espn.parse_player_receiving",
+        schema="stats",
+        table="espn_player_receiving",
+        primary_key=("season", "game_id", "pos_team_id", "receiver_player_name"),
+        cadence="weekly",
+        url_template=(
+            "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/"
+            "espn_cfb_adv_receiving/adv_receiving_{season}.parquet"
+        ),
+        fallback_latest=True,
+        min_season=2004,
+    ),
+    "espn_player_defense": FlatFileSpec(
+        name="espn_player_defense",
+        parser="espn.parse_player_defense",
+        schema="stats",
+        table="espn_player_defense",
+        primary_key=("season", "game_id", "def_pos_team_id", "player_name"),
+        cadence="weekly",
+        url_template=(
+            "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/"
+            "espn_cfb_adv_defensive_players/adv_defensive_players_{season}.parquet"
+        ),
+        fallback_latest=True,
+        min_season=2004,
+    ),
+    "espn_play_participants": FlatFileSpec(
+        name="espn_play_participants",
+        parser="espn.parse_play_participants",
+        schema="stats",
+        table="espn_play_participants",
+        primary_key=("season", "game_id", "play_id"),
+        cadence="weekly",
+        url_template=(
+            "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/"
+            "espn_cfb_play_participants/play_participants_{season}.parquet"
+        ),
+        fallback_latest=True,
+        min_season=2014,
     ),
 }
 

@@ -150,20 +150,6 @@ CORE_ENDPOINTS = {
         schema="core",
         write_disposition="merge",
     ),
-    "team_matchup": EndpointConfig(
-        path="/teams/matchup",
-        table_name="team_matchups",
-        primary_key=["team1", "team2"],
-        schema="core",
-        write_disposition="merge",
-    ),
-    "player_search": EndpointConfig(
-        path="/player/search",
-        table_name="players",
-        primary_key=["id"],
-        schema="core",
-        write_disposition="merge",
-    ),
 }
 
 # Stats endpoints (year-iterated, merge)

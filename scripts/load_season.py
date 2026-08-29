@@ -35,6 +35,7 @@ SOURCE_ORDER = [
     "draft",  # NFL draft picks
     "metrics",  # PPA, pregame win probability
     "metrics_wp",  # In-game win probability -- game-id-driven, see run_metrics_wp_pipeline
+    "wepa",  # Year-keyed opponent-adjusted EPA metrics, 4 calls
     "rosters",  # Team rosters
 ]
 
@@ -62,6 +63,7 @@ ESTIMATED_CALLS = {
     # backfill run resolves far more missing games and costs proportionally
     # more -- this estimate is for the dry-run printout, not a hard cap.
     "metrics_wp": 70,
+    "wepa": 4,
     # One call per team, and the team list is the season's schedule -- both
     # sides, so FCS visitors count. 350 for 2026, not the 150 this said when
     # it meant "FBS only".
@@ -117,6 +119,7 @@ IMMUTABLE_ONCE_FINAL = frozenset(
         "betting",
         "draft",
         "metrics",
+        "wepa",
         "rosters",
     }
 )
@@ -317,6 +320,7 @@ def load_season(
         run_reference_pipeline,
         run_rosters_pipeline,
         run_stats_pipeline,
+        run_wepa_pipeline,
     )
     from src.pipelines.utils.rate_limiter import get_rate_limiter
 
@@ -442,6 +446,7 @@ def load_season(
         "draft": lambda: run_draft_pipeline(years=[season]),
         "metrics": lambda: run_metrics_pipeline(years=[season]),
         "metrics_wp": lambda: run_metrics_wp_pipeline(seasons=[season]),
+        "wepa": lambda: run_wepa_pipeline(years=[season]),
         # Excluded from the default active set above (one call per team), so
         # this only runs when an operator asks for it by name:
         # --sources rosters. The team list resolves from the season's

@@ -158,8 +158,8 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 44 | `/metrics/wp/pregame` | metrics.pregame_win_probability | metrics.py | pregame_wp_resource | YES | merge | season, game_id | 2014-2026 | WORKING |
 | 45 | `/ppa/games` | metrics.ppa_games | metrics.py | ppa_games_resource | YES | merge | game_id, team | 2014-2026 | WORKING |
 | 46 | `/ppa/players/games` | metrics.ppa_players_games | metrics.py | ppa_players_games_resource | YES | merge | id | 2014-2026 | WORKING |
-| 47 | `/metrics/wp` | metrics.win_probability | metrics.py | win_probability_resource (via metrics_wp_source) | YES | merge | game_id, play_id | 2014-2026 | PENDING_DEPLOY |
-| 48 | `/ppa/predicted` | — | — | — | — | — | down, distance, yard_line | — | DEFERRED |
+| 47 | `/metrics/wp` | metrics.win_probability | metrics.py | win_probability_resource (via metrics_wp_source) | YES | merge | game_id, play_id | 2014-2026 | WORKING (1,971,363 rows) |
+| 48 | `/ppa/predicted` | metrics.ppa_predicted (not created -- see note) | metrics.py | ppa_predicted_resource | YES | merge | down, distance | — | WORKING (0 rows -- see note) |
 | 49 | `/metrics/fg/ep` | metrics.fg_expected_points | metrics.py | fg_expected_points_resource | YES | merge | distance | — | WORKING |
 
 ### Rankings
@@ -194,10 +194,10 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | Status | Count |
 |---|---|
 | WORKING | 52 |
-| WORKING (note) | 1 |
+| WORKING (note) | 3 |
 | CONFIG_ONLY | 0 |
-| PENDING_DEPLOY | 1 |
-| DEFERRED | 2 |
+| PENDING_DEPLOY | 0 |
+| DEFERRED | 1 |
 | UNMAPPED | 3 |
 | REMOVED | 1 |
 | **Total** | **60** |
@@ -212,7 +212,17 @@ timeouts — `run.py --source game_stats --weekly` or `scripts/load_season.py --
 
 **Sprint 4 Progress:** Promoted 15 endpoints from UNMAPPED/CONFIG_ONLY to WORKING: `/game/box/advanced`, `/plays/stats`, `/stats/season/advanced`, `/stats/game/havoc`, `/ratings/sp/conferences`, `/player/usage`, `/player/returning`, `/teams/ats`, `/ppa/games`, `/ppa/players/games`, `/metrics/fg/ep`, `/wepa/players/passing`, `/wepa/players/rushing`, `/wepa/team/season`, `/wepa/players/kicking`. Removed `/player/search` (requires searchTerm; use core.rosters instead). Deleted dead code: `adjusted_metrics.py` (duplicate of `wepa.py`), `players.py` (broken source).
 
-**Note**: The API reference lists ~61 endpoints but some are variants of others (e.g., `/stats/season` vs `/stats/player/season` are listed as one "stats" category). This manifest counts distinct loadable endpoints.
+**2026-08-29 update:** `/metrics/wp` (row 47) verified against the live database
+(`SELECT COUNT(*) FROM metrics.win_probability` -> 1,971,363) and promoted
+PENDING_DEPLOY -> WORKING; see the dated addendum under its investigation note
+below. `/ppa/predicted` (row 48) is now returned from `metrics_source`'s
+resource list (src/pipelines/sources/metrics.py), so it graduates out of
+DEFERRED, but `pg_attribute` shows no `metrics.ppa_predicted` table exists in
+the live database -- the endpoint still 400s on the parameterless call the
+resource makes, so it has never loaded a row. See its investigation note's
+2026-08-29 addendum before treating this row as "data is loaded."
+
+**Note**: The API reference now lists 74 endpoints (see `docs/cfbd-api-endpoints.md`) but some are variants of others (e.g., `/stats/season` vs `/stats/player/season` are listed as one "stats" category). This manifest counts distinct loadable endpoints, and the 12 endpoints new to the 74-count regeneration (2026-08-29) have not yet been added as rows here -- a later unit owns that.
 
 ---
 
@@ -265,6 +275,10 @@ must still confirm (CFBD's WP model was reportedly rebuilt in 2025, so the
 `playId`/`down`/`distance`/`yardLine` field names this note originally
 recorded on 2026-01-29 are unverified against current live data).
 
+**Resolution (2026-08-29):** `SELECT COUNT(*) FROM metrics.win_probability`
+against the live database returns 1,971,363 -- the deploy sequence above has
+run. Status promoted PENDING_DEPLOY -> WORKING (row 47).
+
 ### `/ppa/predicted` (Predicted Points Lookup) — DEFERRED
 
 **Investigation Date:** 2026-01-29
@@ -280,6 +294,17 @@ While the total dataset is small (~10K records), the endpoint requires iterating
 
 **Recommendation:**
 If needed, implement a simple nested loop over realistic down/distance combinations (down 1-4, distance 1-30) to build the complete lookup table. This could be done in a single pipeline run with ~120 API calls.
+
+**Resolution (2026-08-29):** `ppa_predicted_resource` is now returned from
+`metrics_source`'s resource list and is CLI-registered via `--source
+metrics`, so it no longer meets DEFERRED's "not returned from source"
+bar and is promoted to WORKING (row 48) under this manifest's wiring
+criterion. That is not the same as "data is loaded": the resource still
+calls `/ppa/predicted` with no parameters and catches the 400 CFBD returns
+for that call (same finding as 2026-01-29) -- confirmed against the live
+database via `pg_attribute`, no `metrics.ppa_predicted` table exists, so the
+resource has never produced a row. The down/distance fan-out this note
+recommended (~120 calls) was never implemented.
 
 ### `/teams/matchup` (Historical Matchups) — DEFERRED
 

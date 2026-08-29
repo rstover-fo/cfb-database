@@ -5,7 +5,7 @@
 College Football Database -- a complete data warehouse for the CFBD (College Football Data) API, powered by Supabase Postgres and dlthub pipelines.
 
 **Goals:**
-- Ingest all 62 CFBD API endpoints into a well-designed Postgres schema
+- Ingest all 74 CFBD API endpoints into a well-designed Postgres schema
 - Support both analytics (read-heavy, denormalized) and application (normalized, transactional) use cases
 - Maintain working pipelines for ongoing 2026 season data
 - Full historical data (no storage constraints -- will upgrade Supabase tier if needed)
@@ -249,12 +249,23 @@ Use this skill when building or debugging anything that calls the CFBD API:
 - **Failure classification**: empty-200 vs 403 semantics, Cloudflare burst 429s vs quota exhaustion, when auto-retry is wrong (one-off scripts) vs correct (the pipeline's Retry-After + circuit-breaker pattern)
 - **Data-shape traps**: nullable fields, v2 breaking changes, completed games with NULL scores, duplicate school names
 
-The complete 61-endpoint inventory stays in `docs/cfbd-api-endpoints.md`; the skill carries conventions and traps, not the endpoint list.
+The complete 74-endpoint inventory stays in `docs/cfbd-api-endpoints.md`; the skill carries conventions and traps, not the endpoint list.
 
 ### dlt REST API Reference
 Location: `docs/dlt-reference.md`
 
 Consult when building or modifying dlt pipelines: `RESTAPIConfig` structure, bearer auth via `dlt.secrets`, incremental placeholder syntax (`{incremental.start_value}`), write dispositions (`merge` is this repo's default), pagination notes, and `.dlt/config.toml` / `secrets.toml` patterns. CFBD has no native pagination, so most generic pagination machinery is irrelevant here — this repo's sources iterate year/week programmatically instead. dlt child-table gotchas (`_dlt_parent_id` LATERAL joins, column renames) are documented in `docs/solutions/database-issues/`.
+
+## Model Delegation
+
+Orchestrator sessions (Fable/Mythos-class) write task specs, sequence work,
+review diffs, and integrate -- they do not implement. Implementation goes to
+subagents: `pipeline-engineer` and `schema-architect` on Sonnet-class models,
+`modeling-scientist` on Opus-class (its leak-free and pre-registration
+guardrails warrant the extra care), and exploration/scoping on Haiku- or
+Sonnet-class. Independent units run in parallel rather than sequentially,
+keeping the orchestrator's own context free for review instead of
+implementation.
 
 ## CFBD API Categories
 

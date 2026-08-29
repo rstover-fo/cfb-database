@@ -1,0 +1,131 @@
+name: Historical Refresh
+
+# Budget-capped, resumable historical-refresh campaign (unit A3, 2026-08-29):
+# CFBD corrected historical data upstream (15k+ garbage-time reclassifications
+# and other cleanups), and the per-game endpoints behind stats.py's
+# play_stats_resource (/plays/stats) and advanced_game_stats_resource
+# (/game/box/advanced) need re-fetching for ~2014-2025 completed games --
+# up to ~38k calls total (~1,600 games/season x 12 seasons x up to 2 tasks),
+# far more than any single run should spend against the 125k/month budget
+# the daily load (daily-load.yml) also consumes. scripts/backfill_refresh.py
+# drains that backlog a bounded --max_calls at a time per run, tracked in
+# meta.refresh_campaigns/meta.refresh_progress
+# (src/schemas/migrations/051_refresh_ledger.sql) so an interrupted or
+# monthly-capped run resumes exactly where it left off.
+#
+# Shares the daily load's concurrency group -- this workflow calls the same
+# stats.play_stats / stats.advanced_game_stats tables and the same mart
+# refresh, so it must queue behind (never race) a scheduled daily load.
+#
+# IMPORTANT: once the named campaign's backlog fully drains,
+# scripts/backfill_refresh.py becomes a permanent cheap no-op (it prints
+# "already complete" and exits 0) -- but at that point DELETE OR DISABLE the
+# `schedule:` trigger below; there is no reason to keep polling a finished
+# campaign once, and a new campaign (a future upstream correction) should get
+# its own deliberate workflow_dispatch with --create rather than silently
+# reusing this cron.
+#
+# Requires repo secrets:
+#   CFBD_API_KEY    - collegefootballdata.com API key
+#   SUPABASE_DB_URL - Supabase SESSION pooler URL (see daily-load.yml)
+
+on:
+  schedule:
+    - cron: "0 12 * * *" # 12:00 UTC, after the 10:00 UTC daily season load
+  workflow_dispatch:
+    inputs:
+      campaign:
+        description: "Campaign name (meta.refresh_campaigns primary key)"
+        required: false
+        type: string
+        default: "2026-08-upstream-corrections"
+      tasks:
+        description: "Comma-separated tasks to process this run"
+        required: false
+        type: string
+        default: "plays_stats,box_advanced"
+      max_calls:
+        description: "Per-run cap on API calls (one call per game)"
+        required: false
+        type: string
+        default: "1000"
+      create:
+        description: "Create the campaign (--create --seasons 2014-2025) before draining it"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: daily-season-load
+  cancel-in-progress: false # never kill a mid-merge load; this run waits its turn
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  PYTHON_VERSION: "3.11"
+  SOURCES__CFBD__API_KEY: ${{ secrets.CFBD_API_KEY }}
+  SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+jobs:
+  refresh:
+    name: Drain historical-refresh backlog
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[compute]"
+      - name: Set dlt destination credentials
+        # dlt requires the postgres:// scheme (see .dlt/secrets.toml.example)
+        run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
+      - name: Drain backlog
+        # The scheduled (non-dispatch) run always passes create=false, so a
+        # campaign that hasn't been created yet -- or has already fully
+        # drained -- is a safe, script-level no-op (exit 0); the workflow
+        # stays green either way. `create` only ever fires --create on a
+        # deliberate workflow_dispatch.
+        run: |
+          CAMPAIGN="${{ inputs.campaign || '2026-08-upstream-corrections' }}"
+          TASKS="${{ inputs.tasks || 'plays_stats,box_advanced' }}"
+          MAX_CALLS="${{ inputs.max_calls || '1000' }}"
+          if [ "${{ inputs.create }}" = "true" ]; then
+            python scripts/backfill_refresh.py --campaign "$CAMPAIGN" --create --seasons 2014-2025 \
+              --tasks "$TASKS" --max-calls "$MAX_CALLS"
+          else
+            python scripts/backfill_refresh.py --campaign "$CAMPAIGN" --tasks "$TASKS" \
+              --max-calls "$MAX_CALLS"
+          fi
+      - name: Open or update failure issue
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = "Historical refresh failing";
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const { data } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+            });
+            const existing = data.find((i) => i.title === title);
+            const body = `Run failed: ${runUrl} (${new Date().toISOString()})`;
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+              });
+            }

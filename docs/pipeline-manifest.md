@@ -190,9 +190,11 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 
 ### Expansion Endpoints (A2 unit, 2026-08-29)
 
-10 endpoints new to the 74-count regeneration, rowed here for the first time (2 of 12 --
-`/coaches/profile` and `/player/season/overview` -- remain PENDING, see the summary note
-below).
+12 endpoints new to the 74-count regeneration are now rowed here. The last two -- rows
+69-70, `/coaches/profile` and `/player/season/overview` (A4 unit, 2026-08-29) -- are
+per-entity fan-out drainers wired as a bounded backlog-draining slice per run (a cap, not
+a one-time backfill), unlike the year-fetch-all shape of the other ten; see each row's
+note and the summary note below.
 
 | # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
 |---|---|---|---|---|---|---|---|---|---|
@@ -210,6 +212,13 @@ than renumbered into this section.
 
 | 67 | `/stats/player/success` | stats.player_success_season | stats.py | player_success_season_resource | YES | merge | season, id, team | 2014-2026 | WORKING (not yet backfilled) |
 | 68 | `/stats/player/success/game` | stats.player_success_game | stats.py | player_success_game_resource | YES | merge | game_id, id | 2014-2026 | WORKING (not yet backfilled) |
+
+Rows 69-70 (A4 unit, 2026-08-29) are the two per-entity fan-out drainers left PENDING by
+the A2 unit above -- see the summary note for why they needed a targeted loader rather
+than a year-fetch-all.
+
+| 69 | `/coaches/profile` | ref.coach_profiles | coaches.py | coach_profiles_resource | YES (drainer -- `run.py::run_coach_profiles_pipeline`, in `SOURCE_ORDER`, capped at 200 coach ids/run) | merge | id | current | WORKING (wired, not yet backfilled -- candidate coach ids come from ref.coach_seasons, itself not yet backfilled against the live database) |
+| 70 | `/player/season/overview` | stats.player_season_overview | player_overview.py | player_season_overview_resource | YES (drainer -- `run.py::run_player_overview_pipeline`, in `SOURCE_ORDER`, capped at 250 player-seasons/run) | merge | season, id | finished seasons only (completed-season gate) | WORKING (wired, not yet backfilled) |
 
 ---
 
@@ -276,7 +285,7 @@ endpoints rowed.
   parameterless request); its column names come from the CFBD OpenAPI spec,
   not an inspected response -- verify via `pg_attribute` after the first load.
 
-**Note**: The API reference now lists 74 endpoints (see `docs/cfbd-api-endpoints.md`) but some are variants of others (e.g., `/stats/season` vs `/stats/player/season` are listed as one "stats" category). This manifest counts distinct loadable endpoints. Of the 12 endpoints new to the 74-count regeneration (2026-08-29), 10 are now rowed above (this unit); the remaining 2 -- `/coaches/profile` (requires `coachId`, one call per coach -- a small, boundable fan-out once coach ids are known from coach_seasons/coach_tenures) and `/player/season/overview` (requires `year` + `playerId`, one call per player per season -- a large, unbounded fan-out that needs a targeted loader, not a full backfill) -- are PENDING a future unit.
+**Note**: The API reference now lists 74 endpoints (see `docs/cfbd-api-endpoints.md`) but some are variants of others (e.g., `/stats/season` vs `/stats/player/season` are listed as one "stats" category). This manifest counts distinct loadable endpoints. All 12 endpoints new to the 74-count regeneration (2026-08-29) are now rowed: 10 in the A2 unit above, plus `/coaches/profile` and `/player/season/overview` (rows 69-70, A4 unit, 2026-08-29) -- the two that were PENDING here. Both needed a targeted loader rather than a year-fetch-all: `/coaches/profile` (requires `coachId`, one call per coach) is drained by `run.py::run_coach_profiles_pipeline` from the coach ids seen in `ref.coach_seasons`, and `/player/season/overview` (requires `year` + `playerId`, one call per player per season -- a large, unbounded fan-out) is drained by `run.py::run_player_overview_pipeline` from the player-seasons seen in `stats.player_usage`/`metrics.ppa_players_season`, gated to finished seasons only. Both are DB-set-difference drainers capped per run (200 and 250 respectively) and wired into `scripts/load_season.py`'s `SOURCE_ORDER`, not full backfills.
 
 ---
 
@@ -473,6 +482,22 @@ The table was successfully loaded via `game_stats_source`'s week-by-week loading
 | nflverse_draft | draft.nflverse_draft_picks | Parquet (nflverse) | Annual | Built (awaiting first load) |
 | sbr | betting.sbr_historical | Excel (manual backfill) | Manual | Built (awaiting first load) |
 | availability | raw.availability_reports | PDF archive (conf reports) | Weekly | Built (awaiting first load) |
+| sdv_team_xwalk | ref.team_id_xwalk | Parquet (sportsdataverse-data, per-season) | Weekly | Built (awaiting first load) |
+| sdv_game_xwalk | ref.game_id_xwalk | Parquet (sportsdataverse-data, per-season) | Weekly | Built (awaiting first load) |
+| sdv_fpi_weekly | ratings.espn_fpi_weekly | Parquet (sportsdataverse-data, per-season) | Weekly | Built (awaiting first load) |
+| sdv_ratings_weekly | ratings.sdv_ratings_weekly | Parquet (sportsdataverse-data, per-season) | Weekly | Built (awaiting first load) |
+| ncaa_schedule | ncaa.schedule | Parquet (sportsdataverse-data ncaa_mfb_schedule, per-season) | Weekly | Built (awaiting first load) |
+| ncaa_teams | ncaa.teams | Parquet (sportsdataverse-data ncaa_mfb_teams, per-season) | Annual | Built (awaiting first load) |
+| ncaa_rosters | ncaa.rosters | Parquet (sportsdataverse-data ncaa_mfb_rosters, per-season) | Annual | Built (awaiting first load) |
+| ncaa_linescores | ncaa.linescores | Parquet (sportsdataverse-data ncaa_mfb_linescore, per-season) | Weekly | Built (awaiting first load) |
+| ncaa_player_stats | ncaa.player_stats | Parquet (sportsdataverse-data ncaa_mfb_player_stats, per-season) | Weekly | Built (awaiting first load) |
+| ncaa_team_stats | ncaa.team_stats | Parquet (sportsdataverse-data ncaa_mfb_team_stats, per-season) | Weekly | Built (awaiting first load) |
+| ncaa_pbp | ncaa.pbp | Parquet (sportsdataverse-data ncaa_mfb_pbp, per-season) | Weekly | Built (awaiting first load) |
+
+`ncaa.*` lives in its own, deliberately ungranted Postgres schema (migration
+053): stats.ncaa.org ids (team/player/contest) are a disjoint id space from
+CFBD/ESPN with no verified crosswalk, so the schema is reachable only via the
+pipeline's service-role connection until a deliberate exposure decision.
 
 First deploy (one-time, requires DB credentials):
 
@@ -494,3 +519,76 @@ Notes: Massey no-ops (`status=no_op_offseason`) until its CSV rolls to the curre
 season (typically preseason); SEC/Big 12/CFP availability reports are served through a
 JS-only widget and are recorded as gaps -- Big Ten archives now, the rest need a
 headless-browser follow-up.
+
+---
+
+## Historical Refresh Campaigns (unit A3)
+
+CFBD corrected historical data upstream (15k+ garbage-time reclassifications and
+other cleanups). The per-game endpoints behind `stats.py`'s `play_stats_resource`
+(`/plays/stats`) and `advanced_game_stats_resource` (`/game/box/advanced`, row 12
+above) need re-fetching for ~2014-2025 completed games -- up to ~1,600
+games/season x 12 seasons x up to 2 tasks, i.e. up to ~38,000 calls total. That is
+far more than any single run should spend against the 125,000/month budget the
+daily load also consumes, so `scripts/backfill_refresh.py` and
+`.github/workflows/historical-refresh.yml` spread it across many budget-capped,
+resumable runs instead of one backfill.
+
+**Mechanism:**
+
+- `src/schemas/migrations/051_refresh_ledger.sql` adds `meta.refresh_campaigns`
+  (one row per named campaign: its seasons, its tasks, when it completed) and
+  `meta.refresh_progress` (one row per `(campaign, task, game_id)` already
+  re-fetched -- the resumability primitive).
+- A run's backlog for a task = completed games (both scores non-null) in the
+  campaign's seasons, newest season then newest week first, MINUS the game_ids
+  already in `meta.refresh_progress` for that `(campaign, task)` -- the same
+  set-difference shape `src/pipelines/run.py`'s `run_metrics_wp_pipeline` uses
+  against `metrics.win_probability`.
+- Cross-task order: `plays_stats` drains completely before `box_advanced` starts
+  spending any of a run's `--max-calls` budget (it feeds the EPA/adjusted-EPA
+  chain that the rest of the compute pipeline depends on daily; `box_advanced`
+  does not yet have a downstream consumer).
+- Two independent, non-fatal budget guards run before any call: the
+  ledger-backed month guard (`SUM(calls)` in `meta.refresh_progress` since the
+  start of the current month vs. `--monthly-cap`, checked before every batch --
+  this is the one that actually holds on ephemeral CI runners), and the repo's
+  local `RateLimiter` (advisory only in CI, since its JSON state does not
+  survive an ephemeral runner -- meaningful only on a persistent local
+  machine). Either tripping prints a message and exits 0: a pacing stop, not an
+  error.
+- Every game-id-driven write uses the exact same dlt pipeline identity
+  (`pipeline_name="cfbd_stats"`, `dataset_name="stats"`) as
+  `run_stats_pipeline`'s normal year-driven load, so corrected rows MERGE into
+  the existing `stats.play_stats` / `stats.advanced_game_stats` tables rather
+  than standing up a parallel dlt schema.
+- A run that loads anything refreshes materialized views afterward
+  (`scripts/refresh_marts.py`) -- corrected play stats feed the EPA chain.
+
+**Running it:**
+
+```bash
+# One-time: create the campaign (idempotent)
+python scripts/backfill_refresh.py --campaign 2026-08-upstream-corrections \
+    --create --seasons 2014-2025 --tasks plays_stats,box_advanced
+
+# Subsequent runs: drain up to --max-calls games (default 1000)
+python scripts/backfill_refresh.py --campaign 2026-08-upstream-corrections
+
+# Check progress without spending any calls
+python scripts/backfill_refresh.py --campaign 2026-08-upstream-corrections --status
+```
+
+`.github/workflows/historical-refresh.yml` runs this daily at 12:00 UTC (sharing
+the daily load's `daily-season-load` concurrency group, so the two queue rather
+than race) and is also `workflow_dispatch`-able for a one-off `--create` or a
+larger `--max-calls`. Once a campaign's backlog fully drains the script becomes a
+permanent no-op ("already complete", exit 0) -- at that point disable or delete
+the workflow's `schedule:` trigger; a future upstream correction should get its
+own deliberately named campaign, not silently reuse a finished one's cron.
+
+**Call-count guidance:** a scheduled run at the default `--max-calls 1000` costs
+at most 1,000 calls/day (further bounded by `--monthly-cap`, default 30,000/month,
+tracked independently of the daily load's own budget). A full one-time backfill
+across both tasks for 2014-2025 is ~38,000 calls, draining in ~38 days at the
+default per-run cap (fewer with a larger `--max-calls` on a manual dispatch).

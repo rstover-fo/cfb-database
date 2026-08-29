@@ -224,6 +224,18 @@ STATS_ENDPOINTS = {
         schema="stats",
         write_disposition="merge",
     ),
+    # Per-(year, playerId) fan-out (both required -- a bare call 400s), NOT
+    # part of stats_source -- lives in its own player_overview.py module and
+    # its own drainer (run.py::run_player_overview_pipeline) because its
+    # candidate set is drawn FROM player_usage and metrics.ppa_players_season
+    # via a DB set-difference. See player_overview.py's module docstring.
+    "player_season_overview": EndpointConfig(
+        path="/player/season/overview",
+        table_name="player_season_overview",
+        primary_key=["season", "id"],
+        schema="stats",
+        write_disposition="merge",
+    ),
     "play_stats": EndpointConfig(
         path="/plays/stats",
         table_name="play_stats",
@@ -494,9 +506,10 @@ PLAYOFFS_ENDPOINTS = {
     ),
 }
 
-# Coaches endpoints. coach_seasons is year-iterated; coach_tenures is
-# per-team (requires coachId or team -- a bare year 400s) and is deliberately
-# NOT returned from cfbd_coaches -- see coaches.py's module docstring.
+# Coaches endpoints. coach_seasons is year-iterated; coach_tenures and
+# coach_profile are both per-entity fan-outs (coachId/team required -- a bare
+# year or bare call 400s) and are deliberately NOT returned from
+# cfbd_coaches -- see coaches.py's module docstring.
 COACHES_ENDPOINTS = {
     "coach_seasons": EndpointConfig(
         path="/coaches/seasons",
@@ -508,6 +521,14 @@ COACHES_ENDPOINTS = {
     "coach_tenures": EndpointConfig(
         path="/coaches/tenures",
         table_name="coach_tenures",
+        primary_key=["id"],
+        schema="ref",
+        write_disposition="merge",
+    ),
+    "coach_profile": EndpointConfig(
+        path="/coaches/profile",
+        table_name="coach_profiles",
+        # CoachProfile carries its own globally unique top-level id.
         primary_key=["id"],
         schema="ref",
         write_disposition="merge",

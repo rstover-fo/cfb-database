@@ -169,6 +169,21 @@ class TestSyncedEndpointPKs:
         config = STATS_ENDPOINTS["advanced_team_stats"]
         assert config.primary_key == ["season", "team"]
 
+    def test_coach_profile_pk(self):
+        """coach_profile keyed by id -- CoachProfile carries its own
+        globally unique top-level id (A4 unit, 2026-08-29)."""
+        config = COACHES_ENDPOINTS["coach_profile"]
+        assert config.primary_key == ["id"]
+        assert config.path == "/coaches/profile"
+
+    def test_player_season_overview_pk(self):
+        """player_season_overview keyed by season + id, the player-grain
+        join spine shared with stats.player_usage / metrics.ppa_players_season
+        (A4 unit, 2026-08-29)."""
+        config = STATS_ENDPOINTS["player_season_overview"]
+        assert config.primary_key == ["season", "id"]
+        assert config.path == "/player/season/overview"
+
 
 class TestPrimaryKeyFieldsAreStrings:
     """PK fields should be simple string column names, not nested/complex types."""

@@ -156,8 +156,8 @@ cfb-database/
 │   │   ├── config/               # RESTAPIConfig definitions
 │   │   │   ├── endpoints.py
 │   │   │   └── years.py
-│   │   ├── sources/              # 16 endpoint-specific source modules (incl. playoffs.py,
-│   │   │   │                     # coaches.py, conferences.py) + flat-file sources
+│   │   ├── sources/              # 17 endpoint-specific source modules (incl. playoffs.py,
+│   │   │   │                     # coaches.py, conferences.py, player_overview.py) + flat-file sources
 │   │   │   ├── flat_files.py      # Flat-file source registry and orchestration
 │   │   │   └── flatfile_parsers/  # Parsers for CSV, parquet, PDF flat-file formats
 │   │   ├── utils/

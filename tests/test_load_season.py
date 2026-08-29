@@ -246,6 +246,77 @@ class TestExpansionUnitWiring:
         assert "playoffs" in out
 
 
+class TestFanoutDrainerWiring:
+    """A4 unit (2026-08-29): the two per-entity fan-out drainers,
+    coach_profiles (ref.coach_profiles) and player_overview
+    (stats.player_season_overview), wired into load_season.py's automated
+    orchestration the same way metrics_wp was -- SOURCE_ORDER, ESTIMATED_CALLS
+    (a cap, not a steady-state estimate), active-by-default, and deliberately
+    excluded from IMMUTABLE_ONCE_FINAL for opposite reasons from each other."""
+
+    def test_new_sources_are_in_source_order(self):
+        for src in ("coach_profiles", "player_overview"):
+            assert src in SOURCE_ORDER
+
+    def test_coach_profiles_runs_after_coaches(self):
+        """coach_profiles' candidates come from ref.coach_seasons (coaches),
+        though the drainer itself re-queries the DB rather than taking a
+        team/id list from the coaches step -- ordering documents the
+        conceptual dependency the same way playoffs/games does."""
+        assert SOURCE_ORDER.index("coaches") < SOURCE_ORDER.index("coach_profiles")
+
+    def test_player_overview_runs_before_rosters(self):
+        """rosters is excluded from the default active-source list (see
+        test_new_sources_are_active_by_default); player_overview must stay
+        ahead of it in SOURCE_ORDER regardless."""
+        assert SOURCE_ORDER.index("player_overview") < SOURCE_ORDER.index("rosters")
+
+    def test_new_sources_have_estimated_calls(self):
+        """Both are caps on a backlog drainer, not steady-state estimates --
+        see the ESTIMATED_CALLS comments for coach_profiles/player_overview."""
+        assert ESTIMATED_CALLS["coach_profiles"] == 200
+        assert ESTIMATED_CALLS["player_overview"] == 250
+
+    def test_new_sources_are_active_by_default(self):
+        """Only "rosters" is excluded from the default active-source list;
+        coach_profiles/player_overview must not be excluded the same way."""
+        default_active = [s for s in SOURCE_ORDER if s != "rosters"]
+        for src in ("coach_profiles", "player_overview"):
+            assert src in default_active
+
+    def test_coach_profiles_is_not_immutable_once_final(self):
+        """The candidate set (every coach id ever seen in coach_seasons)
+        keeps growing regardless of whether any one season is finished -- a
+        coaching change is itself the event that adds a new id. Cost is
+        bounded by run.MAX_COACH_PROFILES_PER_RUN instead, same remedy as
+        metrics_wp."""
+        assert "coach_profiles" not in IMMUTABLE_ONCE_FINAL
+
+    def test_player_overview_is_not_immutable_once_final(self):
+        """Opposite reasoning from coach_profiles: player_overview's data
+        genuinely IS immutable once a season is final -- which is exactly
+        why finished seasons are its entire duty cycle rather than an
+        exemption from one. The completed-season gate lives inside
+        run_player_overview_pipeline, not this frozenset."""
+        assert "player_overview" not in IMMUTABLE_ONCE_FINAL
+
+    def test_both_new_sources_are_real_sources(self):
+        assert IMMUTABLE_ONCE_FINAL <= set(SOURCE_ORDER)
+
+    def test_dry_run_includes_the_new_sources(self, capsys):
+        summary = load_season(
+            season=2024, sources=["coach_profiles", "player_overview"], dry_run=True
+        )
+
+        assert summary["dry_run"] is True
+        assert summary["estimated_calls"] == (
+            ESTIMATED_CALLS["coach_profiles"] + ESTIMATED_CALLS["player_overview"]
+        )
+        out = capsys.readouterr().out
+        assert "coach_profiles" in out
+        assert "player_overview" in out
+
+
 class TestSeasonIsFinal:
     """The daily workflow runs with no --season, so get_current_season()
     resolves to `year - 1` until August: every off-season run re-ingested the
@@ -336,12 +407,23 @@ class TestSourcesToSkip:
 
     def test_skipping_removes_the_bulk_of_the_daily_budget(self):
         """Quantifies the fix: the default daily source set drops to a small
-        fraction of its estimated calls once the season is finished."""
+        fraction of its estimated calls once the season is finished.
+
+        The floor is higher than it used to be (A4 unit, 2026-08-29):
+        coach_profiles and player_overview are both drainer CAPS
+        (MAX_COACH_PROFILES_PER_RUN=200, MAX_PLAYER_OVERVIEW_PER_RUN=250)
+        that stay eligible on a finished season by design -- see
+        IMMUTABLE_ONCE_FINAL's comment block -- so they add up to 450 to the
+        post-skip total on top of the pre-existing floor (reference,
+        coaches, conferences, metrics_wp). The invariant is still "skipping
+        removes most of the cost," just not to <15% now that two more
+        legitimately-non-skippable sources carry real per-run caps.
+        """
         default = [s for s in SOURCE_ORDER if s != "rosters"]
         before = sum(ESTIMATED_CALLS.get(s, 50) for s in default)
         skipped = sources_to_skip(default, season_final=True, allow_skip=True)
         after = sum(ESTIMATED_CALLS.get(s, 50) for s in default if s not in skipped)
-        assert after < before * 0.15, f"expected a large reduction, got {before} -> {after}"
+        assert after < before * 0.25, f"expected a large reduction, got {before} -> {after}"
 
 
 class TestWinProbabilityBacklogIsBounded:

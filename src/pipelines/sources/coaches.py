@@ -1,8 +1,9 @@
-"""Coaching data sources - season-by-season coaching records and tenures.
+"""Coaching data sources - season-by-season coaching records, tenures, profiles.
 
 Distinct from `ref.coaches` (reference.py's `/coaches`, first_name/last_name
-bio rows) -- these two load the richer coach-season and coach-tenure
-records from `/coaches/seasons` and `/coaches/tenures`.
+bio rows) -- these load the richer coach-season, coach-tenure, and
+coach-profile records from `/coaches/seasons`, `/coaches/tenures`, and
+`/coaches/profile`.
 
 `coach_seasons` is year-driven like every other resource in this module, so
 it lives in `cfbd_coaches` and is cheap enough (one call per year) to run
@@ -15,6 +16,18 @@ than returning it from `metrics_source`, `coach_tenures` gets its own
 `cfbd_coaches` -- so the daily/incremental path never pays for it, and a
 caller that wants it opts in explicitly (see
 `run.py::run_coach_tenures_pipeline`, backfill/preseason only).
+
+`coach_profile` (A4 unit, 2026-08-29) requires a `coachId` parameter --
+there is no bulk or year-level query -- so it is a per-coach-id fan-out,
+same shape as `coach_tenures` but keyed on coach id rather than team. It
+gets its own `cfbd_coach_profiles` source function for the same reason:
+the candidate set (every coach id ever seen in `ref.coach_seasons`) is
+large and grows slowly, so a caller drains it as a bounded backlog rather
+than fetching all of it every run -- see
+`run.py::run_coach_profiles_pipeline`, which IS in
+`scripts/load_season.py`'s `SOURCE_ORDER` (unlike `coach_tenures`) because
+the backlog empties and then stays cheap (~0-2 new hires/day), not because
+it is cheap up front.
 """
 
 import logging
@@ -172,6 +185,86 @@ def coach_tenures_resource(teams: list[str]) -> Iterator[dict]:
                     logger.warning(f"Coach tenure row for {team} missing id, skipping: {row}")
                     continue
                 yield row
+
+    finally:
+        client.close()
+
+
+@dlt.source(name="cfbd_coach_profiles")
+def coach_profiles_source(coach_ids: list[int]) -> DltSource:
+    """Source for coach profiles (canonical identity + career totals).
+
+    `/coaches/profile` requires a `coachId` parameter -- a bare call 400s --
+    so, like `coach_tenures_source` above, this is a per-entity fan-out with
+    its own source function rather than a resource returned from
+    `cfbd_coaches`. See `run.py::run_coach_profiles_pipeline` for the
+    drainer that resolves `coach_ids` from `ref.coach_seasons` minus ids
+    already present in `ref.coach_profiles`.
+
+    Args:
+        coach_ids: CFBD coach ids to fetch profiles for.
+    """
+    if not coach_ids:
+        raise ValueError(
+            "coach_ids parameter is required. Provide a list of CFBD coach ids, "
+            "e.g., coach_ids=[103, 203]"
+        )
+
+    return [
+        coach_profiles_resource(coach_ids),
+    ]
+
+
+@dlt.resource(
+    name="coach_profiles",
+    write_disposition="merge",
+    primary_key=["id"],
+)
+def coach_profiles_resource(coach_ids: list[int]) -> Iterator[dict]:
+    """Load coach profiles, one call per coach id via `?coachId=<id>`.
+
+    The live `CoachProfile` response (per the CFBD OpenAPI spec) is a
+    single object, not a list, carrying its own top-level, globally unique
+    `id` -- used directly as the primary key; nothing else is stamped. It
+    nests `currentTeam` ({id, school, conference}, nullable), `career`
+    ({games, wins, losses, ties, winPercentage, seasons, teams, firstYear,
+    lastYear}, required), and `almaMater` ({id, school}, nullable) -- dlt
+    flattens these into `current_team__id`, `career__wins`,
+    `alma_mater__school`, etc.; none of them contain nested arrays, so no
+    child table is expected.
+
+    Coded defensively against the response arriving wrapped in a
+    single-item list (some CFBD endpoints do this inconsistently) even
+    though the OpenAPI spec declares a bare object.
+
+    A 400 (validation error) or 404 (`CoachNotFound`) for a given id is
+    logged and skipped rather than aborting the whole batch -- callers may
+    pass ids CFBD has no profile for.
+
+    Args:
+        coach_ids: CFBD coach ids to fetch profiles for.
+    """
+    client = get_client()
+    try:
+        for coach_id in coach_ids:
+            logger.info(f"Loading coach profile for coach {coach_id}...")
+
+            try:
+                data = make_request(client, "/coaches/profile", params={"coachId": coach_id})
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code in (400, 404):
+                    logger.warning(
+                        f"No coach profile for coach {coach_id} "
+                        f"({e.response.status_code} response), skipping"
+                    )
+                    continue
+                raise
+
+            row = data[0] if isinstance(data, list) else data
+            if not row or row.get("id") is None:
+                logger.warning(f"Coach profile row for coach {coach_id} missing id, skipping")
+                continue
+            yield row
 
     finally:
         client.close()

@@ -239,3 +239,350 @@ class TestCoachTenuresResource:
             schema = resource.compute_table_schema()
             pk_columns = {name for name, col in schema["columns"].items() if col.get("primary_key")}
             assert pk_columns == {"id"}
+
+
+class TestCoachProfilesSource:
+    def test_requires_coach_ids(self):
+        from src.pipelines.sources.coaches import coach_profiles_source
+
+        with pytest.raises(ValueError, match="coach_ids parameter is required"):
+            coach_profiles_source(coach_ids=[])
+
+    def test_returns_coach_profiles_resource(self):
+        from src.pipelines.sources.coaches import coach_profiles_source
+
+        with patch("src.pipelines.sources.coaches.get_client") as mock_get_client:
+            mock_get_client.return_value = MagicMock()
+
+            source = coach_profiles_source(coach_ids=[101])
+
+            assert set(source.resources.keys()) == {"coach_profiles"}
+
+
+class TestCoachProfilesResource:
+    def test_one_call_per_coach_id_with_coach_id_param(self):
+        from src.pipelines.sources.coaches import coach_profiles_resource
+
+        with (
+            patch("src.pipelines.sources.coaches.get_client") as mock_get_client,
+            patch("src.pipelines.sources.coaches.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.return_value = {"id": 101}
+
+            list(coach_profiles_resource(coach_ids=[101, 202]))
+
+            assert mock_make_request.call_count == 2
+            calls = mock_make_request.call_args_list
+            assert calls[0].args[1] == "/coaches/profile"
+            assert calls[0].kwargs["params"] == {"coachId": 101}
+            assert calls[1].kwargs["params"] == {"coachId": 202}
+
+    def test_yields_the_bare_object_response(self):
+        """CoachProfile per the OpenAPI spec is a single object, not a list."""
+        from src.pipelines.sources.coaches import coach_profiles_resource
+
+        row = {
+            "id": 101,
+            "firstName": "Ryan",
+            "lastName": "Day",
+            "displayName": "Ryan Day",
+            "currentTeam": {"id": 333, "school": "Ohio State", "conference": "Big Ten"},
+            "career": {
+                "games": 90,
+                "wins": 80,
+                "losses": 10,
+                "ties": 0,
+                "winPercentage": 0.889,
+                "seasons": 7,
+                "teams": 1,
+                "firstYear": 2019,
+                "lastYear": 2026,
+            },
+            "birthDate": None,
+            "almaMater": {"id": 55, "school": "New Hampshire"},
+            "graduationYear": None,
+            "wikidataId": None,
+            "hallOfFameYear": None,
+        }
+
+        with (
+            patch("src.pipelines.sources.coaches.get_client") as mock_get_client,
+            patch("src.pipelines.sources.coaches.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.return_value = row
+
+            results = list(coach_profiles_resource(coach_ids=[101]))
+
+            assert len(results) == 1
+            assert results[0]["id"] == 101
+            assert results[0]["currentTeam"]["school"] == "Ohio State"
+
+    def test_response_wrapped_in_a_single_item_list_is_also_accepted(self):
+        from src.pipelines.sources.coaches import coach_profiles_resource
+
+        with (
+            patch("src.pipelines.sources.coaches.get_client") as mock_get_client,
+            patch("src.pipelines.sources.coaches.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.return_value = [{"id": 101}]
+
+            results = list(coach_profiles_resource(coach_ids=[101]))
+
+            assert len(results) == 1
+            assert results[0]["id"] == 101
+
+    def test_row_missing_id_is_skipped(self):
+        from src.pipelines.sources.coaches import coach_profiles_resource
+
+        with (
+            patch("src.pipelines.sources.coaches.get_client") as mock_get_client,
+            patch("src.pipelines.sources.coaches.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.return_value = {"firstName": "No", "lastName": "Id"}
+
+            assert list(coach_profiles_resource(coach_ids=[101])) == []
+
+    def test_400_response_skips_coach_and_continues(self):
+        from src.pipelines.sources.coaches import coach_profiles_resource
+
+        with (
+            patch("src.pipelines.sources.coaches.get_client") as mock_get_client,
+            patch("src.pipelines.sources.coaches.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [_http_error(400), {"id": 202}]
+
+            results = list(coach_profiles_resource(coach_ids=[101, 202]))
+
+            assert len(results) == 1
+            assert results[0]["id"] == 202
+
+    def test_404_response_skips_coach_and_continues(self):
+        from src.pipelines.sources.coaches import coach_profiles_resource
+
+        with (
+            patch("src.pipelines.sources.coaches.get_client") as mock_get_client,
+            patch("src.pipelines.sources.coaches.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [_http_error(404), {"id": 202}]
+
+            results = list(coach_profiles_resource(coach_ids=[101, 202]))
+
+            assert len(results) == 1
+            assert results[0]["id"] == 202
+
+    def test_other_status_errors_are_not_swallowed(self):
+        from dlt.extract.exceptions import ResourceExtractionError
+
+        from src.pipelines.sources.coaches import coach_profiles_resource
+
+        with (
+            patch("src.pipelines.sources.coaches.get_client") as mock_get_client,
+            patch("src.pipelines.sources.coaches.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = _http_error(500)
+
+            with pytest.raises(ResourceExtractionError) as exc_info:
+                list(coach_profiles_resource(coach_ids=[101]))
+
+            assert isinstance(exc_info.value.__cause__, httpx.HTTPStatusError)
+            assert exc_info.value.__cause__.response.status_code == 500
+
+    def test_merge_disposition_and_primary_key(self):
+        from src.pipelines.sources.coaches import coach_profiles_resource
+
+        with patch("src.pipelines.sources.coaches.get_client") as mock_get_client:
+            mock_get_client.return_value = MagicMock()
+
+            resource = coach_profiles_resource(coach_ids=[101])
+
+            assert resource.write_disposition == "merge"
+            schema = resource.compute_table_schema()
+            pk_columns = {name for name, col in schema["columns"].items() if col.get("primary_key")}
+            assert pk_columns == {"id"}
+
+
+# ---------------------------------------------------------------------------
+# run_coach_profiles_pipeline (src/pipelines/run.py) -- mocked psycopg2/
+# rate-limiter/dlt, no DB, no network. Mirrors
+# test_sources/test_metrics_wp.py's TestRunMetricsWpPipelineBatching /
+# TestRunMetricsWpPipelineBudgetGuard split, since coach_profiles is the
+# same DB-set-difference-drainer shape as metrics_wp.
+# ---------------------------------------------------------------------------
+
+
+def _mock_coach_profiles_conn(candidate_ids, existing_ids=None, existing_raises=None):
+    """Build a MagicMock psycopg2 connection matching
+    run_coach_profiles_pipeline's `with conn.cursor() as cur:` usage, with
+    the candidates query returning `candidate_ids` and the existing-ids
+    query either returning `existing_ids` or raising `existing_raises`."""
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    if existing_raises is not None:
+        cur.fetchall.side_effect = [[(cid,) for cid in candidate_ids], existing_raises]
+    else:
+        cur.fetchall.side_effect = [
+            [(cid,) for cid in candidate_ids],
+            [(cid,) for cid in (existing_ids or [])],
+        ]
+    return conn
+
+
+class TestRunCoachProfilesPipelineBatching:
+    def test_chunks_missing_coaches_into_batches_of_50(self):
+        from src.pipelines.run import run_coach_profiles_pipeline
+
+        conn = _mock_coach_profiles_conn(candidate_ids=list(range(1, 121)), existing_ids=[])
+
+        mock_pipeline = MagicMock()
+        mock_pipeline.run.return_value = "load-info"
+
+        with (
+            patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
+            patch("psycopg2.connect", return_value=conn),
+            patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
+            patch("src.pipelines.run.coach_profiles_source") as mock_source,
+        ):
+            result = run_coach_profiles_pipeline(max_coaches=200)
+
+        assert result["missing"] == 120
+        assert result["batches"] == 3
+        assert mock_pipeline.run.call_count == 3
+        batch_sizes = [len(call.kwargs["coach_ids"]) for call in mock_source.call_args_list]
+        assert batch_sizes == [50, 50, 20]
+
+    def test_already_profiled_coaches_are_excluded(self):
+        from src.pipelines.run import run_coach_profiles_pipeline
+
+        conn = _mock_coach_profiles_conn(candidate_ids=[1, 2, 3], existing_ids=[1, 2])
+
+        mock_pipeline = MagicMock()
+
+        with (
+            patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
+            patch("psycopg2.connect", return_value=conn),
+            patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
+            patch("src.pipelines.run.coach_profiles_source") as mock_source,
+        ):
+            result = run_coach_profiles_pipeline()
+
+        assert result["candidates"] == 3
+        assert result["missing"] == 1
+        mock_source.assert_called_once()
+        assert mock_source.call_args.kwargs["coach_ids"] == [3]
+
+    def test_undefined_table_on_fresh_backfill_treated_as_empty(self):
+        """ref.coach_seasons/ref.coach_profiles don't exist until their
+        first successful load (dlt table-on-first-write) -- a fresh
+        backfill must treat that as 'nothing loaded yet', not crash."""
+        import psycopg2.errors
+
+        from src.pipelines.run import run_coach_profiles_pipeline
+
+        conn = _mock_coach_profiles_conn(
+            candidate_ids=[1, 2], existing_raises=psycopg2.errors.UndefinedTable()
+        )
+
+        mock_pipeline = MagicMock()
+
+        with (
+            patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
+            patch("psycopg2.connect", return_value=conn),
+            patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
+            patch("src.pipelines.run.coach_profiles_source") as mock_source,
+        ):
+            result = run_coach_profiles_pipeline()
+
+        assert result["missing"] == 2
+        mock_source.assert_called_once()
+
+    def test_no_missing_coaches_skips_pipeline_run(self):
+        from src.pipelines.run import run_coach_profiles_pipeline
+
+        conn = _mock_coach_profiles_conn(candidate_ids=[1], existing_ids=[1])
+
+        mock_pipeline = MagicMock()
+
+        with (
+            patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
+            patch("psycopg2.connect", return_value=conn),
+            patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
+        ):
+            result = run_coach_profiles_pipeline()
+
+        assert result["missing"] == 0
+        assert result["batches"] == 0
+        mock_pipeline.run.assert_not_called()
+
+    def test_cap_defers_the_rest_of_the_backlog(self):
+        from src.pipelines.run import run_coach_profiles_pipeline
+
+        conn = _mock_coach_profiles_conn(candidate_ids=list(range(1, 11)), existing_ids=[])
+
+        mock_pipeline = MagicMock()
+
+        with (
+            patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
+            patch("psycopg2.connect", return_value=conn),
+            patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
+            patch("src.pipelines.run.coach_profiles_source"),
+        ):
+            result = run_coach_profiles_pipeline(max_coaches=4)
+
+        assert result["missing"] == 10
+        assert result["loaded_this_run"] == 4
+        assert result["deferred"] == 6
+
+
+class TestRunCoachProfilesPipelineBudgetGuard:
+    def test_insufficient_budget_refuses_without_running_pipeline(self):
+        from src.pipelines.run import run_coach_profiles_pipeline
+
+        conn = _mock_coach_profiles_conn(candidate_ids=list(range(1, 11)), existing_ids=[])
+
+        mock_rate_limiter = MagicMock()
+        mock_rate_limiter.check_budget.return_value = False
+        mock_rate_limiter.remaining = 3
+
+        mock_pipeline = MagicMock()
+
+        with (
+            patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
+            patch("psycopg2.connect", return_value=conn),
+            patch("src.pipelines.run.get_rate_limiter", return_value=mock_rate_limiter),
+            patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
+        ):
+            result = run_coach_profiles_pipeline()
+
+        mock_rate_limiter.check_budget.assert_called_once_with(10)
+        mock_pipeline.run.assert_not_called()
+        assert result["batches"] == 0
+        assert "error" in result
+
+    def test_sufficient_budget_proceeds(self):
+        from src.pipelines.run import run_coach_profiles_pipeline
+
+        conn = _mock_coach_profiles_conn(candidate_ids=[1], existing_ids=[])
+
+        mock_rate_limiter = MagicMock()
+        mock_rate_limiter.check_budget.return_value = True
+
+        mock_pipeline = MagicMock()
+
+        with (
+            patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
+            patch("psycopg2.connect", return_value=conn),
+            patch("src.pipelines.run.get_rate_limiter", return_value=mock_rate_limiter),
+            patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
+            patch("src.pipelines.run.coach_profiles_source"),
+        ):
+            result = run_coach_profiles_pipeline()
+
+        assert result["batches"] == 1
+        mock_pipeline.run.assert_called_once()

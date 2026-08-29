@@ -122,7 +122,7 @@ class TestArgParsing:
 
 
 class TestDryRun:
-    def test_dry_run_prints_all_five_registry_sources_and_exits_zero(self, monkeypatch, capsys):
+    def test_dry_run_prints_all_registry_sources_and_exits_zero(self, monkeypatch, capsys):
         # No DB creds in this sandbox -- due-status lookups must degrade
         # gracefully rather than raising.
         monkeypatch.setattr(
@@ -134,7 +134,7 @@ class TestDryRun:
         rc = load_flat_files.main(["--dry-run"])
 
         assert rc == 0
-        assert len(REGISTRY) == 5
+        assert len(REGISTRY) == 9
         captured = capsys.readouterr()
         for name in REGISTRY:
             assert name in captured.out

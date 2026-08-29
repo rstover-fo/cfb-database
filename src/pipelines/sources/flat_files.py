@@ -6,8 +6,9 @@ This module is the contract surface for the flat-file subsystem
 - ``FlatFileSpec`` -- declarative registry entry per source (what to fetch, how
   to parse, where to load, on what cadence).
 - ``ParseContext`` -- everything a pure parser is allowed to know about a fetch.
-- ``REGISTRY`` -- the four launch sources: massey, nflverse_combine,
-  nflverse_draft, sbr, availability.
+- ``REGISTRY`` -- the five launch sources (massey, nflverse_combine,
+  nflverse_draft, sbr, availability) plus the sportsdataverse-data additions
+  (sdv_team_xwalk, sdv_game_xwalk, sdv_fpi_weekly, sdv_ratings_weekly).
 - ``build_flat_file_source()`` -- wraps parsed rows into a ``@dlt.source`` whose
   resources merge into pre-created tables (migration 041).
 
@@ -197,6 +198,68 @@ REGISTRY: dict[str, FlatFileSpec] = {
         primary_key=("sha256",),
         cadence="weekly",
         kind="archiver",
+    ),
+    # sportsdataverse-data (B2 items 1-2): nflverse-pattern clones -- single
+    # parquet, PK-verified, ParserStructureError on structural surprise -- but
+    # NOT cumulative like nflverse's combine/draft_picks: cfbfastR-cfb-data
+    # publishes one asset per season (`{dataset}_{season}.parquet`), so
+    # fetch_url below is season-pinned to 2025 (the latest published at write
+    # time) and will need a manual bump to `_2026` once that season's asset
+    # appears -- see flatfile_parsers/sportsdataverse.py's module docstring
+    # for the full finding, including why there is deliberately no
+    # `sdv_player_xwalk` entry (no such asset exists in the real release) and
+    # why none of these four use the team-name xwalk (ids already line up
+    # with CFBD's numeric id namespace -- verified against the live warehouse
+    # 2026-08-29: ref.teams.id 333=Alabama / 2483=Oregon match ESPN ids,
+    # 2024 core.games ids are ESPN event ids (incl. 401632103), and the
+    # ESPN-style athlete id 5083552 exists in core.roster).
+    "sdv_team_xwalk": FlatFileSpec(
+        name="sdv_team_xwalk",
+        parser="sportsdataverse.parse_team_xwalk",
+        schema="ref",
+        table="team_id_xwalk",
+        primary_key=("season", "norm_key"),
+        cadence="weekly",
+        fetch_url=(
+            "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/"
+            "cfb_crosswalk/cfb_teams_crosswalk_2025.parquet"
+        ),
+    ),
+    "sdv_game_xwalk": FlatFileSpec(
+        name="sdv_game_xwalk",
+        parser="sportsdataverse.parse_game_xwalk",
+        schema="ref",
+        table="game_id_xwalk",
+        primary_key=("season", "matchup_key", "yahoo_date"),
+        cadence="weekly",
+        fetch_url=(
+            "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/"
+            "cfb_crosswalk/cfb_schedule_crosswalk_2025.parquet"
+        ),
+    ),
+    "sdv_fpi_weekly": FlatFileSpec(
+        name="sdv_fpi_weekly",
+        parser="sportsdataverse.parse_fpi_weekly",
+        schema="ratings",
+        table="fpi_weekly",
+        primary_key=("season", "season_type", "week", "team_id"),
+        cadence="weekly",
+        fetch_url=(
+            "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/"
+            "cfb_fpi_weekly/cfb_fpi_weekly_2025.parquet"
+        ),
+    ),
+    "sdv_ratings_weekly": FlatFileSpec(
+        name="sdv_ratings_weekly",
+        parser="sportsdataverse.parse_ratings_weekly",
+        schema="ratings",
+        table="external_weekly",
+        primary_key=("season", "through_week", "team_id"),
+        cadence="weekly",
+        fetch_url=(
+            "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/"
+            "cfb_ratings_weekly/cfb_ratings_weekly_2025.parquet"
+        ),
     ),
 }
 

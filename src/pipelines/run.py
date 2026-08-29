@@ -8,10 +8,13 @@ from typing import NoReturn
 import dlt
 
 from .sources.betting import betting_source
+from .sources.coaches import coach_tenures_source, coaches_source
+from .sources.conferences import conferences_source
 from .sources.draft import draft_source
 from .sources.game_stats import game_stats_source
 from .sources.games import games_source
-from .sources.metrics import metrics_source, metrics_wp_source
+from .sources.metrics import metrics_ppa_predicted_source, metrics_source, metrics_wp_source
+from .sources.playoffs import playoffs_source
 from .sources.plays import plays_source
 from .sources.rankings import rankings_source
 from .sources.ratings import ratings_source
@@ -76,9 +79,14 @@ Examples:
             "draft",
             "metrics",
             "metrics_wp",
+            "metrics_ppa_predicted",
             "rankings",
             "rosters",
             "wepa",
+            "playoffs",
+            "coaches",
+            "coach_tenures",
+            "conferences",
             "all",
         ],
         help="Data source to load",
@@ -453,6 +461,142 @@ def run_metrics_pipeline(years: list[int] | None = None, mode: str = "incrementa
     )
 
     source = metrics_source(years=years, mode=mode)
+    info = pipeline.run(source)
+
+    print(f"\nLoad info: {info}")
+
+    return info
+
+
+def run_metrics_ppa_predicted_pipeline():
+    """Run the predicted-PPA down/distance lookup table load.
+
+    ~120 calls (4 downs x 30 distances) building a static lookup table --
+    NOT part of the daily `metrics` source (see metrics.py's module
+    docstring and docs/pipeline-manifest.md row 48) and NOT in
+    scripts/load_season.py's SOURCE_ORDER. Opt in explicitly via
+    `--source metrics_ppa_predicted`.
+    """
+    print("\n=== Loading Predicted PPA Lookup (down x distance) ===\n")
+
+    pipeline = dlt.pipeline(
+        pipeline_name="cfbd_metrics_ppa_predicted",
+        destination="postgres",
+        dataset_name="metrics",
+    )
+
+    source = metrics_ppa_predicted_source()
+    info = pipeline.run(source)
+
+    print(f"\nLoad info: {info}")
+
+    return info
+
+
+def run_playoffs_pipeline(years: list[int] | None = None, mode: str = "incremental"):
+    """Run the CFP bracket/games/participants pipeline."""
+    years_str = f"years={years}" if years else f"mode={mode}"
+    print(f"\n=== Loading Playoffs Data ({years_str}) ===\n")
+
+    pipeline = dlt.pipeline(
+        pipeline_name="cfbd_playoffs",
+        destination="postgres",
+        dataset_name="core",
+    )
+
+    source = playoffs_source(years=years, mode=mode)
+    info = pipeline.run(source)
+
+    print(f"\nLoad info: {info}")
+
+    return info
+
+
+def run_coaches_pipeline(years: list[int] | None = None, mode: str = "incremental"):
+    """Run the year-driven coach-seasons pipeline.
+
+    Does NOT invoke coach_tenures -- that endpoint is per-team fan-out and
+    is deliberately excluded from this runner and from
+    scripts/load_season.py's SOURCE_ORDER; see run_coach_tenures_pipeline.
+    """
+    years_str = f"years={years}" if years else f"mode={mode}"
+    print(f"\n=== Loading Coach Seasons Data ({years_str}) ===\n")
+
+    pipeline = dlt.pipeline(
+        pipeline_name="cfbd_coaches",
+        destination="postgres",
+        dataset_name="ref",
+    )
+
+    source = coaches_source(years=years, mode=mode)
+    info = pipeline.run(source)
+
+    print(f"\nLoad info: {info}")
+
+    return info
+
+
+def run_coach_tenures_pipeline(
+    teams: list[str] | None = None,
+    years: list[int] | None = None,
+):
+    """Run the per-team coach-tenures pipeline.
+
+    Backfill/preseason only -- NOT part of scripts/load_season.py's
+    SOURCE_ORDER (one call per team). `teams=None` resolves the team list
+    from the schedule via `scheduled_teams`, mirroring
+    `run_rosters_pipeline`; pass `teams` explicitly to override.
+    """
+    if teams is None:
+        if not years:
+            raise ValueError(
+                "coach_tenures needs either an explicit team list or years to resolve one"
+            )
+        import psycopg2
+
+        conn = psycopg2.connect(_metrics_wp_db_url())
+        try:
+            teams = scheduled_teams(conn, years)
+        finally:
+            conn.close()
+        if not teams:
+            raise RuntimeError(
+                f"No teams with scheduled games in {years}: core.games has no rows for "
+                f"{'that season' if len(years) == 1 else 'those seasons'}. "
+                "/coaches/tenures is requested per team, so there is nothing to ask for. "
+                f"Load the schedule first (--sources games --season {years[0]}), or pass "
+                "an explicit team list."
+            )
+        print(f"Resolved {len(teams)} teams with {years} games from core.games")
+
+    print(f"\n=== Loading Coach Tenures Data ({len(teams)} teams) ===\n")
+
+    pipeline = dlt.pipeline(
+        pipeline_name="cfbd_coach_tenures",
+        destination="postgres",
+        dataset_name="ref",
+    )
+
+    source = coach_tenures_source(teams=teams)
+    info = pipeline.run(source)
+
+    print(f"\nLoad info: {info}")
+
+    return info
+
+
+def run_conferences_pipeline(years: list[int] | None = None, mode: str = "incremental"):
+    """Run the conference affiliations/changes pipeline."""
+    years_str = f"years={years}" if years else f"mode={mode}"
+    print(f"\n=== Loading Conferences Data ({years_str}) ===\n")
+
+    pipeline = dlt.pipeline(
+        pipeline_name="cfbd_conferences",
+        destination="postgres",
+        dataset_name="ref",
+    )
+
+    source = conferences_source(years=years, mode=mode)
     info = pipeline.run(source)
 
     print(f"\nLoad info: {info}")
@@ -878,9 +1022,14 @@ def main() -> NoReturn:
         "draft": lambda: run_draft_pipeline(args.years, args.mode),
         "metrics": lambda: run_metrics_pipeline(args.years, args.mode),
         "metrics_wp": lambda: run_metrics_wp_pipeline(args.years, args.batch_size or 50),
+        "metrics_ppa_predicted": lambda: run_metrics_ppa_predicted_pipeline(),
         "rankings": lambda: run_rankings_pipeline(args.years, args.mode),
         "rosters": lambda: run_rosters_pipeline(args.teams, args.years, args.mode),
         "wepa": lambda: run_wepa_pipeline(args.years, args.mode),
+        "playoffs": lambda: run_playoffs_pipeline(args.years, args.mode),
+        "coaches": lambda: run_coaches_pipeline(args.years, args.mode),
+        "coach_tenures": lambda: run_coach_tenures_pipeline(args.teams, args.years),
+        "conferences": lambda: run_conferences_pipeline(args.years, args.mode),
     }
 
     if args.source == "all":

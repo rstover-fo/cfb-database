@@ -1,0 +1,170 @@
+[
+  {
+    "id": 31,
+    "bracketSlot": "FR1",
+    "round": "first_round",
+    "roundName": "First Round",
+    "roundOrder": 1,
+    "matchupOrder": 1,
+    "startDate": "2024-12-21T21:00:00.000Z",
+    "bowlName": "College Football Playoff First Round Presented by Allstate",
+    "slots": [
+      {
+        "position": 1,
+        "seed": 5,
+        "participant": {
+          "id": 251,
+          "school": "Texas",
+          "conference": "SEC"
+        },
+        "source": null
+      },
+      {
+        "position": 2,
+        "seed": 12,
+        "participant": {
+          "id": 228,
+          "school": "Clemson",
+          "conference": "ACC"
+        },
+        "source": null
+      }
+    ],
+    "game": {
+      "id": 401677176,
+      "startDate": "2024-12-21T21:00:00.000Z",
+      "completed": true,
+      "homeTeam": {
+        "id": 251,
+        "school": "Texas",
+        "conference": "SEC"
+      },
+      "homePoints": 38,
+      "awayTeam": {
+        "id": 228,
+        "school": "Clemson",
+        "conference": "ACC"
+      },
+      "awayPoints": 24,
+      "venueId": 3910,
+      "venue": "DKR-Texas Memorial Stadium"
+    },
+    "advancesTo": {
+      "matchupId": 36,
+      "bracketSlot": "QF2",
+      "position": 2
+    }
+  },
+  {
+    "id": 32,
+    "bracketSlot": "FR2",
+    "round": "first_round",
+    "roundName": "First Round",
+    "roundOrder": 1,
+    "matchupOrder": 2,
+    "startDate": "2024-12-21T17:00:00.000Z",
+    "bowlName": "College Football Playoff First Round Presented by Allstate",
+    "slots": [
+      {
+        "position": 1,
+        "seed": 6,
+        "participant": {
+          "id": 213,
+          "school": "Penn State",
+          "conference": "Big Ten"
+        },
+        "source": null
+      },
+      {
+        "position": 2,
+        "seed": 11,
+        "participant": {
+          "id": 2567,
+          "school": "SMU",
+          "conference": "ACC"
+        },
+        "source": null
+      }
+    ],
+    "game": {
+      "id": 401677178,
+      "startDate": "2024-12-21T17:00:00.000Z",
+      "completed": true,
+      "homeTeam": {
+        "id": 213,
+        "school": "Penn State",
+        "conference": "Big Ten"
+      },
+      "homePoints": 38,
+      "awayTeam": {
+        "id": 2567,
+        "school": "SMU",
+        "conference": "ACC"
+      },
+      "awayPoints": 10,
+      "venueId": 3632,
+      "venue": "Beaver Stadium"
+    },
+    "advancesTo": {
+      "matchupId": 38,
+      "bracketSlot": "QF4",
+      "position": 2
+    }
+  },
+  {
+    "id": 33,
+    "bracketSlot": "FR3",
+    "round": "first_round",
+    "roundName": "First Round",
+    "roundOrder": 1,
+    "matchupOrder": 3,
+    "startDate": "2024-12-21T01:00:00.000Z",
+    "bowlName": "College Football Playoff First Round Presented by Allstate",
+    "slots": [
+      {
+        "position": 1,
+        "seed": 7,
+        "participant": {
+          "id": 87,
+          "school": "Notre Dame",
+          "conference": "FBS Independents"
+        },
+        "source": null
+      },
+      {
+        "position": 2,
+        "seed": 10,
+        "participant": {
+          "id": 84,
+          "school": "Indiana",
+          "conference": "Big Ten"
+        },
+        "source": null
+      }
+    ],
+    "game": {
+      "id": 401677179,
+      "startDate": "2024-12-21T01:00:00.000Z",
+      "completed": true,
+      "homeTeam": {
+        "id": 87,
+        "school": "Notre Dame",
+        "conference": "FBS Independents"
+      },
+      "homePoints": 27,
+      "awayTeam": {
+        "id": 84,
+        "school": "Indiana",
+        "conference": "Big Ten"
+      },
+      "awayPoints": 17,
+      "venueId": 3855,
+      "venue": "Notre Dame Stadium"
+    },
+    "advancesTo": {
+      "matchupId": 37,
+      "bracketSlot": "QF3",
+      "position": 2
+    }
+  }
+]

@@ -1,0 +1,68 @@
+[
+  {
+    "season": 2024,
+    "seasonType": "regular",
+    "week": 5,
+    "gameId": 401632103,
+    "id": "4686606",
+    "name": "Isaiah Johnson",
+    "position": "RB",
+    "team": "Abilene Christian",
+    "conference": "UAC",
+    "opponent": "Utah Tech",
+    "passing": {
+      "plays": 0,
+      "successes": 0,
+      "successRate": null
+    },
+    "rushing": {
+      "plays": 13,
+      "successes": 7,
+      "successRate": 0.538
+    }
+  },
+  {
+    "season": 2024,
+    "seasonType": "regular",
+    "week": 5,
+    "gameId": 401632103,
+    "id": "4701592",
+    "name": "Jordon Vaughn",
+    "position": "RB",
+    "team": "Abilene Christian",
+    "conference": "UAC",
+    "opponent": "Utah Tech",
+    "passing": {
+      "plays": 0,
+      "successes": 0,
+      "successRate": null
+    },
+    "rushing": {
+      "plays": 4,
+      "successes": 0,
+      "successRate": 0
+    }
+  },
+  {
+    "season": 2024,
+    "seasonType": "regular",
+    "week": 5,
+    "gameId": 401632103,
+    "id": "4427966",
+    "name": "Maverick McIvor",
+    "position": "QB",
+    "team": "Abilene Christian",
+    "conference": "UAC",
+    "opponent": "Utah Tech",
+    "passing": {
+      "plays": 24,
+      "successes": 11,
+      "successRate": 0.458
+    },
+    "rushing": {
+      "plays": 2,
+      "successes": 2,
+      "successRate": 1
+    }
+  }
+]

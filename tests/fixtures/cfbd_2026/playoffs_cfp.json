@@ -1,0 +1,113 @@
+[
+  {
+    "season": 2024,
+    "competition": "cfp",
+    "format": "twelve_team_2024",
+    "teamCount": 12,
+    "status": "completed",
+    "participants": [
+      {
+        "team": {
+          "id": 2483,
+          "school": "Oregon",
+          "conference": "Big Ten"
+        },
+        "committeeRank": 1,
+        "seed": 1,
+        "bidType": "automatic",
+        "qualificationReason": "Conference champion automatic qualifier",
+        "conferenceChampion": true,
+        "qualifyingConference": "Big Ten",
+        "firstRoundBye": true,
+        "outcome": "eliminated",
+        "eliminatedRound": "quarterfinal"
+      },
+      {
+        "team": {
+          "id": 61,
+          "school": "Georgia",
+          "conference": "SEC"
+        },
+        "committeeRank": 2,
+        "seed": 2,
+        "bidType": "automatic",
+        "qualificationReason": "Conference champion automatic qualifier",
+        "conferenceChampion": true,
+        "qualifyingConference": "SEC",
+        "firstRoundBye": true,
+        "outcome": "eliminated",
+        "eliminatedRound": "quarterfinal"
+      }
+    ],
+    "rounds": [
+      {
+        "code": "first_round",
+        "name": "First Round",
+        "order": 1,
+        "matchups": [
+          {
+            "id": 31,
+            "bracketSlot": "FR1",
+            "round": "first_round",
+            "roundName": "First Round",
+            "roundOrder": 1,
+            "matchupOrder": 1,
+            "startDate": "2024-12-21T21:00:00.000Z",
+            "bowlName": "College Football Playoff First Round Presented by Allstate",
+            "slots": [
+              {
+                "position": 1,
+                "seed": 5,
+                "participant": {
+                  "id": 251,
+                  "school": "Texas",
+                  "conference": "SEC"
+                },
+                "source": null
+              },
+              {
+                "position": 2,
+                "seed": 12,
+                "participant": {
+                  "id": 228,
+                  "school": "Clemson",
+                  "conference": "ACC"
+                },
+                "source": null
+              }
+            ],
+            "game": {
+              "id": 401677176,
+              "startDate": "2024-12-21T21:00:00.000Z",
+              "completed": true,
+              "homeTeam": {
+                "id": 251,
+                "school": "Texas",
+                "conference": "SEC"
+              },
+              "homePoints": 38,
+              "awayTeam": {
+                "id": 228,
+                "school": "Clemson",
+                "conference": "ACC"
+              },
+              "awayPoints": 24,
+              "venueId": 3910,
+              "venue": "DKR-Texas Memorial Stadium"
+            },
+            "advancesTo": {
+              "matchupId": 36,
+              "bracketSlot": "QF2",
+              "position": 2
+            }
+          }
+        ]
+      }
+    ],
+    "champion": {
+      "id": 194,
+      "school": "Ohio State",
+      "conference": "Big Ten"
+    }
+  }
+]

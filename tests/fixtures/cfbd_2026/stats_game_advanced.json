@@ -1,0 +1,254 @@
+[
+  {
+    "gameId": 401628319,
+    "season": 2024,
+    "seasonType": "regular",
+    "week": 1,
+    "team": "Alabama",
+    "opponent": "Western Kentucky",
+    "offense": {
+      "plays": 65,
+      "drives": 14,
+      "ppa": 0.6713101824596565,
+      "totalPPA": 43.63516185987767,
+      "successRate": 0.49230769230769234,
+      "explosiveness": 1.8654192229517153,
+      "powerSuccess": 0.625,
+      "stuffRate": 0.14893617021276595,
+      "lineYards": 2.41063829787234,
+      "lineYardsTotal": 113,
+      "secondLevelYards": 1.2340425531914894,
+      "secondLevelYardsTotal": 58,
+      "openFieldYards": 3.7659574468085104,
+      "openFieldYardsTotal": 177,
+      "standardDowns": {
+        "ppa": 0.38577453313458526,
+        "successRate": 0.46,
+        "explosiveness": 1.4906035016209331
+      },
+      "passingDowns": {
+        "ppa": 1.6230956802098937,
+        "successRate": 0.6,
+        "explosiveness": 2.8232816219081585
+      },
+      "rushingPlays": {
+        "ppa": 0.445090994676674,
+        "totalPPA": 20.91927674980368,
+        "successRate": 0.425531914893617,
+        "explosiveness": 1.6798529499382475
+      },
+      "passingPlays": {
+        "ppa": 1.2619936172263326,
+        "totalPPA": 22.71588511007399,
+        "successRate": 0.6666666666666666,
+        "explosiveness": 2.1746963446408283
+      }
+    },
+    "defense": {
+      "plays": 67,
+      "drives": 14,
+      "ppa": -0.26030523640492104,
+      "totalPPA": -17.440450839129706,
+      "successRate": 0.14925373134328357,
+      "explosiveness": 1.3837925679195786,
+      "powerSuccess": 1,
+      "stuffRate": 0.34615384615384615,
+      "lineYards": 1.6461538461538463,
+      "lineYardsTotal": 43,
+      "secondLevelYards": 0.38461538461538464,
+      "secondLevelYardsTotal": 10,
+      "openFieldYards": 0,
+      "openFieldYardsTotal": 0,
+      "standardDowns": {
+        "ppa": -0.39319153989785816,
+        "successRate": 0.16129032258064516,
+        "explosiveness": 0.9933554798226493
+      },
+      "passingDowns": {
+        "ppa": -0.14587536395266956,
+        "successRate": 0.1388888888888889,
+        "explosiveness": 1.774229656016508
+      },
+      "rushingPlays": {
+        "ppa": -0.4157494347913279,
+        "totalPPA": -10.809485304574526,
+        "successRate": 0.11538461538461539,
+        "explosiveness": 0.8173898850207414
+      },
+      "passingPlays": {
+        "ppa": -0.16173086669646786,
+        "totalPPA": -6.630965534555182,
+        "successRate": 0.17073170731707318,
+        "explosiveness": 1.6265365748762233
+      }
+    }
+  },
+  {
+    "gameId": 401628319,
+    "season": 2024,
+    "seasonType": "regular",
+    "week": 1,
+    "team": "Western Kentucky",
+    "opponent": "Alabama",
+    "offense": {
+      "plays": 67,
+      "drives": 14,
+      "ppa": -0.26030523640492104,
+      "totalPPA": -17.440450839129706,
+      "successRate": 0.14925373134328357,
+      "explosiveness": 1.3837925679195786,
+      "powerSuccess": 1,
+      "stuffRate": 0.34615384615384615,
+      "lineYards": 1.6461538461538463,
+      "lineYardsTotal": 43,
+      "secondLevelYards": 0.38461538461538464,
+      "secondLevelYardsTotal": 10,
+      "openFieldYards": 0,
+      "openFieldYardsTotal": 0,
+      "standardDowns": {
+        "ppa": -0.39319153989785816,
+        "successRate": 0.16129032258064516,
+        "explosiveness": 0.9933554798226493
+      },
+      "passingDowns": {
+        "ppa": -0.14587536395266956,
+        "successRate": 0.1388888888888889,
+        "explosiveness": 1.774229656016508
+      },
+      "rushingPlays": {
+        "ppa": -0.4157494347913279,
+        "totalPPA": -10.809485304574526,
+        "successRate": 0.11538461538461539,
+        "explosiveness": 0.8173898850207414
+      },
+      "passingPlays": {
+        "ppa": -0.16173086669646786,
+        "totalPPA": -6.630965534555182,
+        "successRate": 0.17073170731707318,
+        "explosiveness": 1.6265365748762233
+      }
+    },
+    "defense": {
+      "plays": 65,
+      "drives": 14,
+      "ppa": 0.6713101824596565,
+      "totalPPA": 43.63516185987767,
+      "successRate": 0.49230769230769234,
+      "explosiveness": 1.8654192229517153,
+      "powerSuccess": 0.625,
+      "stuffRate": 0.14893617021276595,
+      "lineYards": 2.41063829787234,
+      "lineYardsTotal": 113,
+      "secondLevelYards": 1.2340425531914894,
+      "secondLevelYardsTotal": 58,
+      "openFieldYards": 3.7659574468085104,
+      "openFieldYardsTotal": 177,
+      "standardDowns": {
+        "ppa": 0.38577453313458526,
+        "successRate": 0.46,
+        "explosiveness": 1.4906035016209331
+      },
+      "passingDowns": {
+        "ppa": 1.6230956802098937,
+        "successRate": 0.6,
+        "explosiveness": 2.8232816219081585
+      },
+      "rushingPlays": {
+        "ppa": 0.445090994676674,
+        "totalPPA": 20.91927674980368,
+        "successRate": 0.425531914893617,
+        "explosiveness": 1.6798529499382475
+      },
+      "passingPlays": {
+        "ppa": 1.2619936172263326,
+        "totalPPA": 22.71588511007399,
+        "successRate": 0.6666666666666666,
+        "explosiveness": 2.1746963446408283
+      }
+    }
+  },
+  {
+    "gameId": 401628320,
+    "season": 2024,
+    "seasonType": "regular",
+    "week": 1,
+    "team": "Arkansas",
+    "opponent": "Arkansas-Pine Bluff",
+    "offense": {
+      "plays": 70,
+      "drives": 10,
+      "ppa": 0.7892002562904246,
+      "totalPPA": 55.24401794032972,
+      "successRate": 0.7428571428571429,
+      "explosiveness": 1.2402575527985085,
+      "powerSuccess": 0.75,
+      "stuffRate": 0.06060606060606061,
+      "lineYards": 4.618181818181818,
+      "lineYardsTotal": 152,
+      "secondLevelYards": 1.696969696969697,
+      "secondLevelYardsTotal": 56,
+      "openFieldYards": 2.696969696969697,
+      "openFieldYardsTotal": 89,
+      "standardDowns": {
+        "ppa": 0.666395729529824,
+        "successRate": 0.7413793103448276,
+        "explosiveness": 1.0811140753157065
+      },
+      "passingDowns": {
+        "ppa": 1.3827554689666608,
+        "successRate": 0.75,
+        "explosiveness": 2.0006097229941178
+      },
+      "rushingPlays": {
+        "ppa": 0.8534109998066075,
+        "totalPPA": 28.162562993618046,
+        "successRate": 0.7575757575757576,
+        "explosiveness": 1.22112870768137
+      },
+      "passingPlays": {
+        "ppa": 0.7319312147759912,
+        "totalPPA": 27.081454946711673,
+        "successRate": 0.7297297297297297,
+        "explosiveness": 1.2579694464254882
+      }
+    },
+    "defense": {
+      "plays": 46,
+      "drives": 11,
+      "ppa": -0.14565570751418078,
+      "totalPPA": -6.700162545652316,
+      "successRate": 0.2608695652173913,
+      "explosiveness": 1.4042679065159835,
+      "powerSuccess": 1,
+      "stuffRate": 0.42105263157894735,
+      "lineYards": 1.0789473684210527,
+      "lineYardsTotal": 21,
+      "secondLevelYards": 0.5789473684210527,
+      "secondLevelYardsTotal": 11,
+      "openFieldYards": 0.05263157894736842,
+      "openFieldYardsTotal": 1,
+      "standardDowns": {
+        "ppa": -0.4123138968620614,
+        "successRate": 0.2692307692307692,
+        "explosiveness": 0.8427342734349434
+      },
+      "passingDowns": {
+        "ppa": 0.20099993863806398,
+        "successRate": 0.25,
+        "explosiveness": 2.19041499282944
+      },
+      "rushingPlays": {
+        "ppa": -0.5124612068546105,
+        "totalPPA": -9.7367629302376,
+        "successRate": 0.2631578947368421,
+        "explosiveness": 0.5631754287562142
+      },
+      "passingPlays": {
+        "ppa": 0.11246668091056602,
+        "totalPPA": 3.0366003845852827,
+        "successRate": 0.25925925925925924,
+        "explosiveness": 2.0050482477729616
+      }
+    }
+  }
+]

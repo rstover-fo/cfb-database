@@ -1,0 +1,35 @@
+[
+  {
+    "teamId": 2000,
+    "team": "Abilene Christian",
+    "conferenceId": 272,
+    "conference": "Pre-classification Independents",
+    "conferenceAbbreviation": "IND-PC",
+    "classification": "ii/iii",
+    "conferenceDivision": null,
+    "startYear": 1919,
+    "endYear": 1924
+  },
+  {
+    "teamId": 2000,
+    "team": "Abilene Christian",
+    "conferenceId": 365,
+    "conference": "Texas Intercollegiate Athletic",
+    "conferenceAbbreviation": "TIAA",
+    "classification": "ii/iii",
+    "conferenceDivision": null,
+    "startYear": 1925,
+    "endYear": 1932
+  },
+  {
+    "teamId": 2000,
+    "team": "Abilene Christian",
+    "conferenceId": 364,
+    "conference": "Texas Conference",
+    "conferenceAbbreviation": null,
+    "classification": "ii/iii",
+    "conferenceDivision": null,
+    "startYear": 1933,
+    "endYear": 1942
+  }
+]

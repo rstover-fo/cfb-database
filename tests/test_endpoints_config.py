@@ -8,9 +8,12 @@ import pytest
 from src.pipelines.config.endpoints import (
     ALL_ENDPOINTS,
     BETTING_ENDPOINTS,
+    COACHES_ENDPOINTS,
+    CONFERENCES_ENDPOINTS,
     CORE_ENDPOINTS,
     DRAFT_ENDPOINTS,
     METRICS_ENDPOINTS,
+    PLAYOFFS_ENDPOINTS,
     RANKINGS_ENDPOINTS,
     RATINGS_ENDPOINTS,
     RECRUITING_ENDPOINTS,
@@ -203,6 +206,9 @@ class TestWriteDispositions:
             "draft": DRAFT_ENDPOINTS,
             "metrics": METRICS_ENDPOINTS,
             "rankings": RANKINGS_ENDPOINTS,
+            "playoffs": PLAYOFFS_ENDPOINTS,
+            "coaches": COACHES_ENDPOINTS,
+            "conferences": CONFERENCES_ENDPOINTS,
         }
         for group_name, group in non_ref.items():
             for name, config in group.items():

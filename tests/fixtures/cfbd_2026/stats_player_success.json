@@ -1,0 +1,56 @@
+[
+  {
+    "season": 2024,
+    "id": "5083552",
+    "name": "Blayne Taylor",
+    "position": "WR",
+    "team": "Abilene Christian",
+    "conference": "UAC",
+    "passing": {
+      "plays": 1,
+      "successes": 1,
+      "successRate": 1
+    },
+    "rushing": {
+      "plays": 0,
+      "successes": 0,
+      "successRate": null
+    }
+  },
+  {
+    "season": 2024,
+    "id": "4832789",
+    "name": "Carson Haggard",
+    "position": "QB",
+    "team": "Abilene Christian",
+    "conference": "UAC",
+    "passing": {
+      "plays": 35,
+      "successes": 17,
+      "successRate": 0.486
+    },
+    "rushing": {
+      "plays": 3,
+      "successes": 2,
+      "successRate": 0.667
+    }
+  },
+  {
+    "season": 2024,
+    "id": "4686606",
+    "name": "Isaiah Johnson",
+    "position": "RB",
+    "team": "Abilene Christian",
+    "conference": "UAC",
+    "passing": {
+      "plays": 0,
+      "successes": 0,
+      "successRate": null
+    },
+    "rushing": {
+      "plays": 113,
+      "successes": 56,
+      "successRate": 0.496
+    }
+  }
+]

@@ -9,6 +9,13 @@ queries return 400 -- so it cannot share the year-iterated shape every other
 resource in this module uses. See docs/pipeline-manifest.md row 47 and
 ``src/pipelines/run.py::run_metrics_wp_pipeline`` for the per-game loader that
 drives it from ``core.games``.
+
+``ppa_predicted`` (the down/distance predicted-points lookup) is likewise
+NOT loaded by ``metrics_source`` -- it is a static lookup table requiring a
+120-call down x distance fan-out (4 downs x 30 distances), not year-scoped
+data, so it lives in its own ``metrics_ppa_predicted_source`` below. See
+docs/pipeline-manifest.md row 48 and
+``src/pipelines/run.py::run_metrics_ppa_predicted_pipeline``.
 """
 
 import logging
@@ -53,7 +60,13 @@ def metrics_source(
         # src/pipelines/run.py::run_metrics_wp_pipeline for its game-id-driven
         # loader. Returning it from this year-driven source was dead code:
         # the endpoint requires gameId and always 400'd on a year-only query.
-        ppa_predicted_resource(),
+        #
+        # ppa_predicted (down x distance fan-out, ~120 calls) is ALSO
+        # intentionally not returned here -- see metrics_ppa_predicted_source
+        # below and docs/pipeline-manifest.md row 48. It is a static lookup
+        # table, not year-scoped data, so it has no place in a year-driven
+        # daily/incremental source: fine as a one-time/occasional backfill,
+        # wasteful to repeat on every run.
         fg_expected_points_resource(),
     ]
 
@@ -279,29 +292,71 @@ def win_probability_resource(
         client.close()
 
 
+@dlt.source(name="cfbd_metrics_ppa_predicted")
+def metrics_ppa_predicted_source() -> DltSource:
+    """Source for the predicted-PPA down/distance lookup table.
+
+    Kept separate from `metrics_source` for the same reason `win_probability`
+    is split into `metrics_wp_source`: `ppa_predicted_resource` fans out to
+    ~120 calls (4 downs x 30 distances) building a static lookup table that
+    doesn't change with the season -- fine once (or occasionally), wasteful
+    to repeat on every daily run. `metrics_source`'s default resource list
+    excludes it (see that source's docstring); opt in explicitly with
+    `--source metrics_ppa_predicted` (see
+    run.py::run_metrics_ppa_predicted_pipeline). Not part of
+    scripts/load_season.py's SOURCE_ORDER for the same reason.
+    """
+    return [ppa_predicted_resource()]
+
+
+# down 1-4, distance 1-30: realistic down/distance combinations per the
+# 2026-01-29 investigation note's recommendation (docs/pipeline-manifest.md
+# row 48) -- 120 calls total, one-time/occasional static lookup.
+PPA_PREDICTED_DOWNS = range(1, 5)
+PPA_PREDICTED_DISTANCES = range(1, 31)
+
+
 @dlt.resource(
     name="ppa_predicted",
     write_disposition="merge",
-    primary_key=["down", "distance"],
+    primary_key=["down", "distance", "yard_line"],
 )
 def ppa_predicted_resource() -> Iterator[dict]:
-    """Load predicted PPA values (static lookup table).
+    """Load predicted PPA (Predicted Points Added) values, one call per down/distance.
 
-    This is a reference/lookup endpoint that does not require year iteration.
-    Note: This endpoint may require specific parameters. Returns empty if unavailable.
+    `/ppa/predicted` requires both `down` and `distance` -- a parameterless
+    call always 400s (confirmed 2026-01-29 and again 2026-08-29; see
+    docs/pipeline-manifest.md row 48). This walks the full down x distance
+    combination space (PPA_PREDICTED_DOWNS x PPA_PREDICTED_DISTANCES = 120
+    calls) and stamps `down`/`distance` onto every returned row -- CFBD's
+    response for a given combination carries only `yardLine` and
+    `predictedPoints`, not the down/distance that produced it.
     """
     client = get_client()
     try:
-        logger.info("Loading predicted PPA lookup data...")
+        logger.info("Loading predicted PPA lookup (down x distance fan-out)...")
 
-        try:
-            data = make_request(client, "/ppa/predicted")
-            yield from data
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 400:
-                logger.warning("PPA predicted endpoint returned 400, skipping")
-                return
-            raise
+        for down in PPA_PREDICTED_DOWNS:
+            for distance in PPA_PREDICTED_DISTANCES:
+                try:
+                    data = make_request(
+                        client,
+                        "/ppa/predicted",
+                        params={"down": down, "distance": distance},
+                    )
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 400:
+                        logger.warning(
+                            f"No predicted PPA for down={down} distance={distance} "
+                            "(400 response), skipping"
+                        )
+                        continue
+                    raise
+
+                for row in data:
+                    row["down"] = down
+                    row["distance"] = distance
+                    yield row
 
     finally:
         client.close()

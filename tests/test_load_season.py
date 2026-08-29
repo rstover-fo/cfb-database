@@ -173,6 +173,79 @@ class FakeConn:
         return FakeCursor(self._row)
 
 
+class TestExpansionUnitWiring:
+    """A2 unit (2026-08-29): playoffs, coaches, conferences wired into
+    load_season.py's automated orchestration; coach_tenures deliberately is
+    not (per-team fan-out, backfill/preseason only)."""
+
+    def test_new_sources_are_in_source_order(self):
+        for src in ("conferences", "coaches", "playoffs"):
+            assert src in SOURCE_ORDER
+
+    def test_coach_tenures_is_not_a_source_order_member(self):
+        """Per-team fan-out -- reachable only via run.py --source
+        coach_tenures, never the automated daily/backfill path."""
+        assert "coach_tenures" not in SOURCE_ORDER
+
+    def test_playoffs_runs_after_games(self):
+        """CFP participants/games reference core.games rows conceptually
+        (though not via a DB FK); games loads first regardless."""
+        assert SOURCE_ORDER.index("games") < SOURCE_ORDER.index("playoffs")
+
+    def test_conferences_and_coaches_run_before_games(self):
+        assert SOURCE_ORDER.index("conferences") < SOURCE_ORDER.index("games")
+        assert SOURCE_ORDER.index("coaches") < SOURCE_ORDER.index("games")
+
+    def test_new_sources_have_estimated_calls(self):
+        assert ESTIMATED_CALLS["conferences"] == 2
+        assert ESTIMATED_CALLS["coaches"] == 1
+        assert ESTIMATED_CALLS["playoffs"] == 3
+
+    def test_ratings_estimate_includes_srs_expanded(self):
+        assert ESTIMATED_CALLS["ratings"] == 13
+
+    def test_stats_estimate_includes_the_three_new_resources(self):
+        assert ESTIMATED_CALLS["stats"] == 1_675
+
+    def test_playoffs_is_immutable_once_final(self):
+        """CFP results for a finished season cannot change."""
+        assert "playoffs" in IMMUTABLE_ONCE_FINAL
+
+    def test_coaches_and_conferences_are_deliberately_not_immutable(self):
+        """Coaching carousel and conference realignment both mutate
+        off-season, well after a prior season is "final" -- skipping them
+        would freeze data exactly when it changes. Same reasoning as the
+        existing `reference` exclusion."""
+        assert "coaches" not in IMMUTABLE_ONCE_FINAL
+        assert "conferences" not in IMMUTABLE_ONCE_FINAL
+
+    def test_new_immutable_source_is_a_real_source(self):
+        assert IMMUTABLE_ONCE_FINAL <= set(SOURCE_ORDER)
+
+    def test_new_sources_are_active_by_default(self):
+        """Only "rosters" is excluded from the default active-source list;
+        conferences/coaches/playoffs must not be excluded the same way."""
+        default_active = [s for s in SOURCE_ORDER if s != "rosters"]
+        for src in ("conferences", "coaches", "playoffs"):
+            assert src in default_active
+
+    def test_dry_run_includes_the_new_sources(self, capsys):
+        summary = load_season(
+            season=2024, sources=["conferences", "coaches", "playoffs"], dry_run=True
+        )
+
+        assert summary["dry_run"] is True
+        assert summary["estimated_calls"] == (
+            ESTIMATED_CALLS["conferences"]
+            + ESTIMATED_CALLS["coaches"]
+            + ESTIMATED_CALLS["playoffs"]
+        )
+        out = capsys.readouterr().out
+        assert "conferences" in out
+        assert "coaches" in out
+        assert "playoffs" in out
+
+
 class TestSeasonIsFinal:
     """The daily workflow runs with no --season, so get_current_season()
     resolves to `year - 1` until August: every off-season run re-ingested the

@@ -24,11 +24,14 @@ logger = logging.getLogger(__name__)
 # Source loading order matters: dependencies first
 SOURCE_ORDER = [
     "reference",  # Teams, conferences, venues (no year filter)
+    "conferences",  # Conference membership: affiliations (bulk) + changes (year-driven)
+    "coaches",  # Year-driven coach-season records (coach_tenures excluded, see below)
     "games",  # Game results
+    "playoffs",  # CFP bracket/games/participants, 2014+
     "game_stats",  # Team and player box scores
     "plays",  # Play-by-play (largest dataset)
     "stats",  # Aggregated season stats
-    "ratings",  # SP+, Elo, FPI, SRS, CORE
+    "ratings",  # SP+, Elo, FPI, SRS, CORE, SRS-expanded
     "rankings",  # AP, Coaches polls
     "recruiting",  # Recruits, team composites
     "betting",  # Betting lines
@@ -42,16 +45,31 @@ SOURCE_ORDER = [
 # Estimated API calls per source per season (rough averages)
 ESTIMATED_CALLS = {
     "reference": 10,
+    # conference_affiliations is one bulk unfiltered call (not year-scoped --
+    # counted here anyway since it costs something every source-grain run)
+    # + conference_changes, one call per year.
+    "conferences": 2,
+    # coach_seasons only: one call per year. coach_tenures (per-team fan-out)
+    # is deliberately excluded from this source's daily cost -- see
+    # IMMUTABLE_ONCE_FINAL's comment and coaches.py's module docstring.
+    "coaches": 1,
     "games": 15,
+    # cfp_bracket + cfp_games + cfp_participants, one call each per year
+    # (2014+ only; 0 calls for an earlier season -- see playoffs.py's
+    # CFP_START guard).
+    "playoffs": 3,
     "game_stats": 200,
     "plays": 400,
-    # NOT 20. Seven of the stats source's eight resources are one call per
-    # year, but play_stats issues one /plays/stats request PER GAME, so the
-    # source tracks the season's schedule (~1,640 games) rather than its
-    # resource count. The old estimate understated a daily run by ~80x and hid
-    # this source behind "plays" in every budget projection.
-    "stats": 1_650,
-    "ratings": 12,
+    # NOT 20. Most of the stats source's resources are one call per year, but
+    # play_stats issues one /plays/stats request PER GAME (~1,640 games),
+    # player_success_game walks ~20 weeks (regular 1-16 + postseason 1-4),
+    # and game_advanced makes 2 calls (regular+postseason) -- the source
+    # tracks the season's schedule rather than its resource count. The old
+    # estimate understated a daily run by ~80x and hid this source behind
+    # "plays" in every budget projection.
+    "stats": 1_675,
+    # sp/elo/fpi/srs/core/sp_conferences/srs_expanded: one call per year each.
+    "ratings": 13,
     "rankings": 20,
     "recruiting": 15,
     "betting": 5,
@@ -86,6 +104,15 @@ ESTIMATED_CALLS = {
 # NOT on this list, deliberately:
 #   reference   -- no year filter and ~10 calls; always cheap, always current.
 #
+#   coaches, conferences -- cheap (1-2 calls/season) AND their data mutates
+#                  off-season: a coaching change or conference realignment
+#                  lands well after a season is "final" by the games-completed
+#                  definition below, so skipping them for a finished season
+#                  would freeze coach_seasons/conference_affiliations exactly
+#                  when hires and realignment announcements happen. Same
+#                  reasoning as the `reference` exclusion above, just also
+#                  worth spelling out since both are new sources.
+#
 #   metrics_wp  -- NOT skipped, though it was briefly added here. The 2026-07-26
 #                  daily load showed why it looked like it belonged: it reported
 #
@@ -110,6 +137,7 @@ ESTIMATED_CALLS = {
 IMMUTABLE_ONCE_FINAL = frozenset(
     {
         "games",
+        "playoffs",
         "game_stats",
         "plays",
         "stats",
@@ -204,7 +232,9 @@ PRESEASON_INPUT_SOURCES = ("stats", "ratings", "recruiting")
 
 # What the off-season refresh above actually costs per day, as opposed to what
 # ESTIMATED_CALLS says a full source-grain run of the same names would cost.
-PRESEASON_ESTIMATED_CALLS = len(PRESEASON_STATS_RESOURCES) + 6 + 5
+# `ratings` runs whole at 7 calls/year (sp, elo, fpi, srs, core,
+# sp_conferences, srs_expanded); `recruiting` runs whole at 5.
+PRESEASON_ESTIMATED_CALLS = len(PRESEASON_STATS_RESOURCES) + 7 + 5
 
 
 # Sources whose runner accepts a resource filter. Only `stats` needs one so
@@ -307,12 +337,15 @@ def load_season(
     """
     from src.pipelines.run import (
         run_betting_pipeline,
+        run_coaches_pipeline,
+        run_conferences_pipeline,
         run_draft_pipeline,
         run_game_stats_pipeline,
         run_game_stats_weekly,
         run_games_pipeline,
         run_metrics_pipeline,
         run_metrics_wp_pipeline,
+        run_playoffs_pipeline,
         run_plays_pipeline,
         run_rankings_pipeline,
         run_ratings_pipeline,
@@ -435,7 +468,12 @@ def load_season(
     )
     runners = {
         "reference": lambda: run_reference_pipeline(),
+        "conferences": lambda: run_conferences_pipeline(years=[season]),
+        # coach_tenures (per-team fan-out) is deliberately not invoked here --
+        # backfill/preseason only, see run_coach_tenures_pipeline.
+        "coaches": lambda: run_coaches_pipeline(years=[season]),
         "games": lambda: run_games_pipeline(years=[season]),
+        "playoffs": lambda: run_playoffs_pipeline(years=[season]),
         "game_stats": game_stats_runner,
         "plays": lambda: run_plays_pipeline(years=[season]),
         "stats": lambda: run_stats_pipeline(years=[season], only=resource_filters.get("stats")),

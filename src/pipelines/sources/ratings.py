@@ -7,6 +7,7 @@ import logging
 from collections.abc import Iterator
 
 import dlt
+import httpx
 from dlt.sources import DltSource
 
 from ..config.years import YEAR_RANGES, get_current_season
@@ -44,6 +45,7 @@ def ratings_source(
         srs_ratings_resource(years),
         core_ratings_resource(years),
         sp_conference_ratings_resource(years),
+        srs_expanded_ratings_resource(years),
     ]
 
 
@@ -205,6 +207,52 @@ def sp_conference_ratings_resource(years: list[int]) -> Iterator[dict]:
             for rating in data:
                 rating["year"] = year
                 yield rating
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="srs_expanded",
+    write_disposition="merge",
+    primary_key=["year", "team"],
+)
+def srs_expanded_ratings_resource(years: list[int]) -> Iterator[dict]:
+    """Load expanded SRS (Simple Rating System) ratings.
+
+    Unlike `srs_ratings` (`/ratings/srs`), this includes classification,
+    conference, and division alongside the rating -- useful for filtering to
+    FBS/FCS or building conference rollups without a join. `year` is a
+    required top-level field on every returned row, so nothing is stamped.
+
+    A pre-2005 year has not been verified against the live API (the
+    2026-08-29 probe only confirmed 2005 onward, 235 rows). Both a 400 and
+    an empty-200 are treated as "nothing to load for this year" rather than
+    an error, so an unverified early year degrades safely instead of
+    failing the whole resource -- unlike CORE_RATINGS_START above, there is
+    no hardcoded skip year here because the boundary is unconfirmed.
+
+    Args:
+        years: List of years to load SRS-expanded ratings for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            logger.info(f"Loading expanded SRS ratings for {year}...")
+
+            try:
+                data = make_request(client, "/ratings/srs/expanded", params={"year": year})
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 400:
+                    logger.warning(f"No expanded SRS ratings for {year} (400 response), skipping")
+                    continue
+                raise
+
+            if not data:
+                logger.info(f"No expanded SRS ratings data for {year}, skipping")
+                continue
+
+            yield from data
 
     finally:
         client.close()

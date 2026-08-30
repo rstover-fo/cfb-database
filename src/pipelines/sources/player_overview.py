@@ -68,7 +68,18 @@ def player_overview_source(
 @dlt.resource(
     name="player_season_overview",
     write_disposition="merge",
-    primary_key=["season", "id"],
+    # team added 2026-08-30 pre-backfill for transfer safety and grain
+    # consistency with player_success_season/passing_player_season
+    # (cfb-app work-order task 1). CFBD normally returns one overview
+    # record per player-season with a single top-level team attribution --
+    # this is insurance against a per-team split (e.g. a mid-season
+    # transfer reported as two rows for the same player-season), not an
+    # observed one: merging on (season, id) alone would silently drop a
+    # stint under last-write-wins if CFBD ever does split. The candidate
+    # set-difference in run.py (run_player_overview_pipeline) still keys on
+    # (season, id) only, which stays correct -- it drains a candidate once
+    # per season regardless of team.
+    primary_key=["season", "id", "team"],
 )
 def player_season_overview_resource(
     player_seasons: list[tuple[int, str]],

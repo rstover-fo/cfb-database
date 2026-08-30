@@ -295,6 +295,11 @@ class TestPlayerSeasonOverviewResource:
             assert results == []
 
     def test_merge_write_disposition_and_compound_primary_key(self):
+        """team added 2026-08-30 pre-backfill for transfer safety and grain
+        consistency with player_success_season/passing_player_season
+        (cfb-app work-order task 1) -- CFBD normally returns one overview
+        record per player-season with a single team attribution, so this is
+        insurance against a per-team split, not an observed one."""
         from src.pipelines.sources.player_overview import player_season_overview_resource
 
         with patch("src.pipelines.sources.player_overview.get_client") as mock_get_client:
@@ -305,7 +310,7 @@ class TestPlayerSeasonOverviewResource:
             assert resource.write_disposition == "merge"
             schema = resource.compute_table_schema()
             pk_columns = {name for name, col in schema["columns"].items() if col.get("primary_key")}
-            assert pk_columns == {"season", "id"}
+            assert pk_columns == {"season", "id", "team"}
 
 
 # ---------------------------------------------------------------------------

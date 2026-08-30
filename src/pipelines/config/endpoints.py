@@ -232,7 +232,13 @@ STATS_ENDPOINTS = {
     "player_season_overview": EndpointConfig(
         path="/player/season/overview",
         table_name="player_season_overview",
-        primary_key=["season", "id"],
+        # team added 2026-08-30 pre-backfill for transfer safety and grain
+        # consistency with player_success_season/passing_player_season
+        # (cfb-app work-order task 1); see player_overview.py's resource
+        # decorator for the full rationale. CFBD normally returns one
+        # overview record per player-season with a single team
+        # attribution, so this is insurance, not an observed split.
+        primary_key=["season", "id", "team"],
         schema="stats",
         write_disposition="merge",
     ),

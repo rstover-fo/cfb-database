@@ -178,11 +178,14 @@ class TestSyncedEndpointPKs:
         assert config.path == "/coaches/profile"
 
     def test_player_season_overview_pk(self):
-        """player_season_overview keyed by season + id, the player-grain
-        join spine shared with stats.player_usage / metrics.ppa_players_season
-        (A4 unit, 2026-08-29)."""
+        """player_season_overview keyed by season + id + team (team added
+        2026-08-30 pre-backfill for transfer safety and grain consistency
+        with player_success_season/passing_player_season -- cfb-app
+        work-order task 1; CFBD normally returns one overview record per
+        player-season with a single team attribution, so this is insurance
+        against a per-team split, not an observed one)."""
         config = STATS_ENDPOINTS["player_season_overview"]
-        assert config.primary_key == ["season", "id"]
+        assert config.primary_key == ["season", "id", "team"]
         assert config.path == "/player/season/overview"
 
 

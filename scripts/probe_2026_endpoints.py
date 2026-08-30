@@ -1,27 +1,31 @@
 #!/usr/bin/env python3
-"""Probe CFBD spec v5.24.2's new/changed endpoints before building sources.
+"""Probe CFBD spec v5.24.2 -> v5.25.0's new/changed endpoints before building
+sources.
 
 CFBD added or reshaped a handful of endpoints (playoff bracket, coach
 tenure/season summaries, conference affiliation history, a new player
-"success rate" family, an expanded SRS view, a player season overview, and
-questions about whether two existing endpoints still accept a bare `year`).
-Before writing dlt source modules and RESTAPIConfig entries for any of them
-we need real response shapes -- field names, nesting, row grain, and which
-year-only calls actually work -- not assumptions from the changelog.
+"success rate" family, an expanded SRS view, a player season overview,
+questions about whether two existing endpoints still accept a bare `year`,
+and -- new in v5.25.0 -- a `/passing` family: play-level passing charting,
+player and team passing splits by game and by season). Before writing dlt
+source modules and RESTAPIConfig entries for any of them we need real
+response shapes -- field names, nesting, row grain, and which year-only
+calls actually work -- not assumptions from the changelog.
 
 This script is read-only: it never writes to the warehouse, and every
 request goes through the same rate-limited `CFBDClient` / `make_request`
 path the pipelines use (see the `cfbd-api` and `dlt-pipelines` skills), so
 calls are recorded against the monthly budget like any other pipeline call.
-It makes ~13 requests total across 13 probes (a couple issue a second,
-conditional request -- see PROBES below) -- narrow and logged, matching
-scripts/probe_offseason_availability.py and scripts/probe_metrics_wp.py.
+It makes ~24 requests total across 18 probes (several issue a second,
+conditional or comparison request -- see PROBES below) -- narrow and
+logged, matching scripts/probe_offseason_availability.py and
+scripts/probe_metrics_wp.py.
 
 Each probe is fail-soft: an exception is recorded on that probe and the
-sweep continues, so one dead endpoint never hides the other twelve. Exit
-status is 0 if any probe got a 200 back, 1 only if every single one failed
-(auth, network, or every endpoint genuinely gone) -- i.e. when this run told
-us nothing.
+sweep continues, so one dead endpoint never hides the others. Exit status
+is 0 if any probe got a 200 back, 1 only if every single one failed (auth,
+network, or every endpoint genuinely gone) -- i.e. when this run told us
+nothing.
 
 Auth: exactly like probe_offseason_availability.py -- `get_client()` reads
 `sources.cfbd.api_key` via dlt's provider chain (`.dlt/secrets.toml`
@@ -32,7 +36,7 @@ pipeline run alongside it), so `get_probe_client()` below falls back to
 reading that directly when dlt has nothing configured.
 
 Usage:
-    python scripts/probe_2026_endpoints.py                  # all 13 probes
+    python scripts/probe_2026_endpoints.py                  # all 18 probes
     python scripts/probe_2026_endpoints.py --only 4,9,12     # just these
     python scripts/probe_2026_endpoints.py --dry-run         # no network, no key needed
     python scripts/probe_2026_endpoints.py --out probe_output/
@@ -209,7 +213,7 @@ def do_call(client, path: str, params: dict | None, dry_run: bool) -> CallRecord
 
 
 # ---------------------------------------------------------------------------
-# The 13 probes
+# The 18 probes
 # ---------------------------------------------------------------------------
 # Each probe function takes (client, ctx, dry_run) and returns
 # (list[CallRecord], list[str] notes). `ctx` is a plain dict probes can use to
@@ -362,6 +366,72 @@ def probe_stats_game_advanced(client, ctx, dry_run):
     return calls, ["Check whether rows are per game-team in the sample."]
 
 
+def probe_passing_plays(client, ctx, dry_run):
+    call_year = do_call(client, "/passing/plays", {"year": 2024}, dry_run)
+    call_week5 = do_call(client, "/passing/plays", {"year": 2024, "week": 5}, dry_run)
+    call_team = do_call(client, "/passing/plays", {"year": 2024, "team": "Alabama"}, dry_run)
+    notes = [
+        "Volume probe: a season runs ~45-50k pass attempts, one week ~2,800 -- these "
+        "counts decide the resource's iteration grain (prefer year, fall back to week, "
+        "then team, in that order)."
+    ]
+    if not dry_run:
+        for label, call in (("year", call_year), ("week", call_week5), ("team", call_team)):
+            if looks_capped(call.count):
+                notes.append(
+                    f"CAP SUSPECTED: {label} call count={call.count} sits on/near a round number."
+                )
+    return [call_year, call_week5, call_team], notes
+
+
+def probe_passing_players_games(client, ctx, dry_run):
+    call_year = do_call(client, "/passing/players/games", {"year": 2024}, dry_run)
+    call_week5 = do_call(client, "/passing/players/games", {"year": 2024, "week": 5}, dry_run)
+    notes = []
+    if not dry_run and looks_capped(call_year.count):
+        notes.append(
+            f"CAP SUSPECTED: bare-year count={call_year.count} sits on/near a round number."
+        )
+    return [call_year, call_week5], notes
+
+
+def probe_passing_players_season(client, ctx, dry_run):
+    call_2024 = do_call(client, "/passing/players/season", {"year": 2024}, dry_run)
+    call_2014 = do_call(client, "/passing/players/season", {"year": 2014}, dry_run)
+    notes = [
+        "Historical-depth check for the whole /passing family (charting-derived data may "
+        "be shallow): year=2014 status/count above shows whether rows exist, come back "
+        "empty, or 400 that far back."
+    ]
+    return [call_2024, call_2014], notes
+
+
+def probe_passing_teams_games(client, ctx, dry_run):
+    calls = [do_call(client, "/passing/teams/games", {"year": 2024}, dry_run)]
+    notes = [
+        "Confirm nested offense/defense dict shape in the sample (~1,600 game-team rows "
+        "expected for a full season)."
+    ]
+    if not dry_run and looks_capped(calls[0].count):
+        notes.append(f"CAP SUSPECTED: count={calls[0].count} sits on/near a round number.")
+    return calls, notes
+
+
+def probe_passing_teams_season(client, ctx, dry_run):
+    call_year = do_call(client, "/passing/teams/season", {"year": 2024}, dry_run)
+    call_bulk = do_call(client, "/passing/teams/season", {}, dry_run)
+    notes = []
+    if not dry_run:
+        if call_bulk.status == 200 and call_bulk.count:
+            notes.append("No-params call worked -- bulk /passing/teams/season is supported.")
+        else:
+            notes.append(
+                f"No-params call did not return rows (status={call_bulk.status}, "
+                f"count={call_bulk.count}) -- /passing/teams/season needs year."
+            )
+    return [call_year, call_bulk], notes
+
+
 # (number, slug, function) -- number and slug drive both --only selection and
 # output filenames (NN_<slug>.json).
 PROBES: list[tuple[int, str, callable]] = [
@@ -378,6 +448,11 @@ PROBES: list[tuple[int, str, callable]] = [
     (11, "player_season_overview", probe_player_season_overview),
     (12, "game_box_advanced", probe_game_box_advanced),
     (13, "stats_game_advanced", probe_stats_game_advanced),
+    (14, "passing_plays", probe_passing_plays),
+    (15, "passing_players_games", probe_passing_players_games),
+    (16, "passing_players_season", probe_passing_players_season),
+    (17, "passing_teams_games", probe_passing_teams_games),
+    (18, "passing_teams_season", probe_passing_teams_season),
 ]
 PROBE_NUMBERS = {number for number, _, _ in PROBES}
 
@@ -484,13 +559,14 @@ def parse_only(raw: str | None) -> set[int] | None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Probe CFBD spec v5.24.2's new/changed endpoints (read-only, ~13 calls)"
+        description="Probe CFBD spec v5.24.2 -> v5.25.0's new/changed endpoints "
+        "(read-only, ~24 calls)"
     )
     parser.add_argument(
         "--only",
         type=str,
         default=None,
-        help="Comma-separated probe numbers to run, e.g. 4,9,12 (default: all 13)",
+        help="Comma-separated probe numbers to run, e.g. 4,9,12 (default: all 18)",
     )
     parser.add_argument(
         "--out",

@@ -177,7 +177,9 @@ def advanced_team_stats_resource(years: list[int]) -> Iterator[dict]:
     write_disposition="merge",
     primary_key=["game_id", "team"],
 )
-def advanced_game_stats_resource(game_ids: list[int]) -> Iterator[dict]:
+def advanced_game_stats_resource(
+    game_ids: list[int], *, misses: list[int] | None = None
+) -> Iterator[dict]:
     """Load advanced game-level box score stats, one call per explicit game id.
 
     BROKEN AS YEAR-SCOPED (confirmed 2026-08-29): CFBD dropped the `year`
@@ -202,6 +204,15 @@ def advanced_game_stats_resource(game_ids: list[int]) -> Iterator[dict]:
 
     Args:
         game_ids: Explicit CFBD game ids to load advanced box scores for.
+        misses: When given (not None), a suppressed 400 AND an empty 200
+            (`if not data`) for a game id append that id here -- the caller
+            (scripts/backfill_refresh.py) uses this to record that game as
+            'no_data' rather than 'refreshed' in meta.refresh_progress
+            (PR #75 F6: a suppressed per-game 400 was previously getting a
+            plain ledger row, permanently hiding a real miss from the
+            campaign's backlog). Unlike play_stats_resource, an empty 200
+            here IS a miss: every game with a completed box score has
+            advanced stats, so nothing back means the call didn't land.
     """
     client = get_client()
     try:
@@ -216,10 +227,17 @@ def advanced_game_stats_resource(game_ids: list[int]) -> Iterator[dict]:
                 if data:
                     total += len(data)
                     yield from data
+                else:
+                    logger.warning(f"No advanced box score for game {game_id} (empty response)")
+                    if misses is not None:
+                        misses.append(game_id)
                 if (i + 1) % 100 == 0:
                     logger.info(f"  Processed {i + 1}/{len(game_ids)} games, {total} records")
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 400:
+                    logger.warning(f"No advanced box score for game {game_id} (400 response)")
+                    if misses is not None:
+                        misses.append(game_id)
                     continue
                 raise
         logger.info(f"Loaded {total} total records from {len(game_ids)} games")
@@ -306,6 +324,8 @@ def player_returning_resource(years: list[int]) -> Iterator[dict]:
 def play_stats_resource(
     years: list[int] | None = None,
     game_ids: list[int] | None = None,
+    *,
+    misses: list[int] | None = None,
 ) -> Iterator[dict]:
     """Load play-level statistics (player associations for each play).
 
@@ -317,6 +337,15 @@ def play_stats_resource(
     Args:
         years: List of years to load play stats for (will fetch game IDs from API)
         game_ids: Explicit list of game IDs to load (overrides years if provided)
+        misses: game_ids mode only. When given (not None), a suppressed 400
+            for a game id appends that id here -- the caller
+            (scripts/backfill_refresh.py) uses this to record that game as
+            'no_data' rather than 'refreshed' (PR #75 F6). An empty 200 is
+            deliberately NOT treated as a miss here: zero player-stat
+            associations is a legitimate outcome for early-era or
+            lower-division games (mirrors the benign empty-week handling in
+            the year-mode branch below), so it is not appended. Ignored in
+            years mode.
     """
     if game_ids is None and years is None:
         raise ValueError("Must provide either years or game_ids")
@@ -340,6 +369,9 @@ def play_stats_resource(
                         logger.info(f"  Processed {i + 1}/{len(game_ids)} games, {total} records")
                 except httpx.HTTPStatusError as e:
                     if e.response.status_code == 400:
+                        logger.warning(f"No play stats for game {game_id} (400 response)")
+                        if misses is not None:
+                            misses.append(game_id)
                         continue
                     raise
             logger.info(f"Loaded {total} total records from {len(game_ids)} games")

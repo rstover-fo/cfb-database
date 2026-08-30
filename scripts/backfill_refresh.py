@@ -49,9 +49,39 @@ Mechanics:
     See STATS_PIPELINE_NAME/STATS_DATASET_NAME below and
     tests/test_backfill_refresh.py::test_pipeline_identity_matches_run_stats_pipeline,
     which asserts this pair against run_stats_pipeline's own source text.
-  - A run that loaded anything refreshes materialized views afterward
-    (scripts/refresh_marts.py) -- corrected play stats feed the EPA/adjusted
-    EPA chain. Skipped on --dry-run and on any run that loaded nothing.
+  - Per-game misses are recorded honestly, not silently dropped (PR #75 F6):
+    a suppressed per-game 400, and (advanced_game_stats only) an empty 200,
+    are recorded in meta.refresh_progress with status='no_data' instead of
+    'refreshed'. Both statuses still count as "done" for backlog purposes
+    (excluded by the primary key), but 'no_data' rows can be found and
+    requeued with `--requeue-no-data` once the underlying cause is fixed.
+    plays_stats' empty-200 is NOT a miss -- zero player-stat associations is
+    a legitimate outcome for early-era/lower-division games; see
+    play_stats_resource's docstring.
+  - Finalize (PR #75 F7 + F1): once a run has loaded new games, or finds
+    seasons left unfinalized by a prior run, it calls finalize_campaign --
+    scripts/compute_adjusted_epa.py's and scripts/compute_adjusted_epa_week.py's
+    compute_seasons() (adjusted-EPA refit, season and walk-forward-weekly)
+    plus scripts/refresh_marts.py's refresh_marts() -- over the seasons with
+    unfinalized 'refreshed' progress. All three return failure counts and
+    never raise; finalize_campaign treats ANY nonzero total as failure,
+    prints, and returns False WITHOUT advancing
+    meta.refresh_campaigns.last_finalized_at or marking the campaign
+    complete -- so a failed refresh is retried next run instead of silently
+    lost, and main() exits 1 (status "finalize_failed") so the workflow's
+    failure-issue step fires. On success, last_finalized_at advances to the
+    exact watermark (MAX(refresh_progress.refreshed_at) covered), not now(),
+    so the next run's set-difference against that watermark is race-free.
+    IMPORTANT nuance: this refit is cheap insurance, not the real
+    propagation path -- compute_adjusted_epa.py/compute_adjusted_epa_week.py
+    both fit from marts.play_epa <- core.plays, which this campaign never
+    touches. The corrections DO need to reach
+    analytics.player_game_epa_build (migration
+    022_player_epa_staged_build.sql's per-season loop over stats.play_stats,
+    seasons <=2025), but that rebuild stays a documented ONE-TIME manual
+    rerun after the campaign fully drains
+    (docs/plans/2026-08-29-cfbd-expansion-rollout.md step 7) -- NOT code in
+    this script. See finalize_campaign's docstring for why.
 
 Usage:
     # One-time: create the campaign (idempotent -- safe to repeat; a repeat
@@ -65,6 +95,11 @@ Usage:
     # Check progress without spending any calls
     python scripts/backfill_refresh.py --campaign 2026-08-upstream-corrections --status
 
+    # Requeue 'no_data' rows (suppressed 400s / empty box-score responses)
+    # back into the backlog, optionally scoped to specific tasks
+    python scripts/backfill_refresh.py --campaign 2026-08-upstream-corrections \\
+        --requeue-no-data [--tasks box_advanced]
+
     # Preview the plan. Connects to the database (read queries only -- never
     # writes meta.refresh_campaigns, meta.refresh_progress, and never calls
     # the CFBD API or refreshes marts) to compute the REAL backlog; there is
@@ -77,6 +112,8 @@ import argparse
 import logging
 import math
 import sys
+from collections.abc import Iterable
+from datetime import datetime
 
 import dlt
 
@@ -285,18 +322,33 @@ def eta_run_days(remaining_total: int, max_calls_per_run: int) -> float:
 
 
 _LEDGER_INSERT_SQL = """
-    INSERT INTO meta.refresh_progress (campaign, task, game_id, calls)
+    INSERT INTO meta.refresh_progress (campaign, task, game_id, calls, status)
     VALUES %s
     ON CONFLICT (campaign, task, game_id) DO NOTHING
 """
 
 
-def build_ledger_values(campaign: str, task: str, game_ids: list[int]) -> list[tuple]:
+def build_ledger_values(
+    campaign: str, task: str, game_ids: list[int], misses: Iterable[int] = ()
+) -> list[tuple]:
     """The row tuples `insert_ledger_rows` passes to `execute_values` --
     factored out so the idempotency shape (ON CONFLICT DO NOTHING against
-    exactly (campaign, task, game_id, calls) tuples) is testable without a
-    real cursor."""
-    return [(campaign, task, gid, 1) for gid in game_ids]
+    exactly (campaign, task, game_id, calls, status) tuples) is testable
+    without a real cursor.
+
+    `misses`: game_ids for which the call was spent but returned nothing
+    (a suppressed 400, or -- advanced_game_stats only -- an empty 200; see
+    the resources' docstrings in src/pipelines/sources/stats.py). Those rows
+    get status='no_data' instead of 'refreshed' (PR #75 F6) -- both still
+    count as "done" for backlog purposes (excluded by the primary key
+    alone), but 'no_data' can be found and requeued via `--requeue-no-data`
+    once the underlying cause (a real gap, a transient API issue, ...) is
+    understood.
+    """
+    miss_set = set(misses)
+    return [
+        (campaign, task, gid, 1, "no_data" if gid in miss_set else "refreshed") for gid in game_ids
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +374,7 @@ _MONTH_SPEND_QUERY = """
 """
 
 _CAMPAIGN_SELECT_QUERY = """
-    SELECT campaign, description, seasons, tasks, created_at, completed_at
+    SELECT campaign, description, seasons, tasks, created_at, completed_at, last_finalized_at
     FROM meta.refresh_campaigns WHERE campaign = %s
 """
 
@@ -336,6 +388,38 @@ _CAMPAIGN_COMPLETE_SQL = """
     UPDATE meta.refresh_campaigns SET completed_at = now()
     WHERE campaign = %s AND completed_at IS NULL
 """
+
+# Seasons with 'refreshed' progress rows newer than the campaign's
+# last_finalized_at watermark (NULL/never-finalized reads as '-infinity', so
+# a fresh campaign's entire history counts) -- what finalize_campaign still
+# needs to cover, plus (via fetch_unfinalized) the MAX(refreshed_at) among
+# them, which becomes the next watermark on success. status='refreshed' only
+# -- 'no_data' rows never move the needle on the EPA refit/mart refresh.
+_UNFINALIZED_SEASONS_QUERY = """
+    SELECT g.season, MAX(p.refreshed_at)
+    FROM meta.refresh_progress p
+    JOIN core.games g ON g.id = p.game_id
+    WHERE p.campaign = %s
+      AND p.status = 'refreshed'
+      AND p.refreshed_at > COALESCE(
+          (SELECT last_finalized_at FROM meta.refresh_campaigns WHERE campaign = %s),
+          '-infinity'
+      )
+    GROUP BY g.season
+    ORDER BY g.season
+"""
+
+_NO_DATA_COUNTS_QUERY = """
+    SELECT task, COUNT(*) FROM meta.refresh_progress
+    WHERE campaign = %s AND status = 'no_data'
+    GROUP BY task
+"""
+
+_REQUEUE_NO_DATA_SQL = """
+    DELETE FROM meta.refresh_progress WHERE campaign = %s AND status = 'no_data'
+"""
+
+_REQUEUE_NO_DATA_SQL_WITH_TASKS = _REQUEUE_NO_DATA_SQL + " AND task = ANY(%s)"
 
 
 def fetch_candidate_games(conn, seasons: list[int]) -> list[tuple[int, int, int]]:
@@ -370,7 +454,50 @@ def get_campaign(conn, campaign: str) -> dict | None:
         "tasks": list(row[3]),
         "created_at": row[4],
         "completed_at": row[5],
+        "last_finalized_at": row[6],
     }
+
+
+def fetch_unfinalized(conn, campaign: str) -> tuple[list[int], datetime | None]:
+    """Seasons with 'refreshed' progress rows newer than `campaign`'s
+    last_finalized_at watermark, plus the overall MAX(refreshed_at) among
+    them -- the watermark finalize_campaign advances to on success.
+
+    ([], None) when there's nothing pending: a fresh campaign with no
+    progress yet, or one whose last successful finalize already covers
+    every 'refreshed' row.
+    """
+    with conn.cursor() as cur:
+        cur.execute(_UNFINALIZED_SEASONS_QUERY, (campaign, campaign))
+        rows = cur.fetchall()
+    if not rows:
+        return [], None
+    seasons = [row[0] for row in rows]
+    watermark = max(row[1] for row in rows)
+    return seasons, watermark
+
+
+def fetch_no_data_counts(conn, campaign: str) -> dict[str, int]:
+    """Per-task count of status='no_data' ledger rows for `campaign` --
+    surfaced by --status so an operator can see how many suppressed
+    400s/empty responses accumulated (and are requeue-able) per task."""
+    with conn.cursor() as cur:
+        cur.execute(_NO_DATA_COUNTS_QUERY, (campaign,))
+        return {row[0]: row[1] for row in cur.fetchall()}
+
+
+def requeue_no_data(conn, campaign: str, tasks: list[str] | None = None) -> int:
+    """Delete 'no_data' ledger rows for `campaign` (optionally restricted to
+    `tasks`), returning those game_ids to the backlog so the next drain run
+    retries them. Returns the number of rows deleted."""
+    with conn.cursor() as cur:
+        if tasks:
+            cur.execute(_REQUEUE_NO_DATA_SQL_WITH_TASKS, (campaign, tasks))
+        else:
+            cur.execute(_REQUEUE_NO_DATA_SQL, (campaign,))
+        rowcount = cur.rowcount
+    conn.commit()
+    return rowcount
 
 
 def get_or_create_campaign(
@@ -416,8 +543,12 @@ def mark_campaign_complete(conn, campaign: str) -> None:
     conn.commit()
 
 
-def insert_ledger_rows(conn, campaign: str, task: str, game_ids: list[int]) -> None:
-    """Record a successfully-loaded batch, one row per game.
+def insert_ledger_rows(
+    conn, campaign: str, task: str, game_ids: list[int], misses: Iterable[int] = ()
+) -> None:
+    """Record a successfully-run batch, one row per game -- status='no_data'
+    for any game_id in `misses` (a suppressed 400 or empty response; see
+    build_ledger_values), 'refreshed' otherwise.
 
     ON CONFLICT DO NOTHING makes this safe to replay: if a batch's
     `pipeline.run()` succeeded but the process died before this commit,
@@ -426,7 +557,7 @@ def insert_ledger_rows(conn, campaign: str, task: str, game_ids: list[int]) -> N
     """
     from psycopg2.extras import execute_values
 
-    values = build_ledger_values(campaign, task, game_ids)
+    values = build_ledger_values(campaign, task, game_ids, misses=misses)
     if not values:
         return
     with conn.cursor() as cur:
@@ -445,9 +576,93 @@ def build_stats_pipeline() -> dlt.Pipeline:
     )
 
 
-def run_batch(pipeline: dlt.Pipeline, task: str, game_ids: list[int]):
+def run_batch(pipeline: dlt.Pipeline, task: str, game_ids: list[int]) -> tuple[object, list[int]]:
+    """Run one batch through the task's resource, returning (load_info,
+    misses) -- `misses` is the list of game_ids the resource itself flagged
+    as a suppressed 400 or empty response (PR #75 F6), for the caller to
+    pass to insert_ledger_rows so those rows land as status='no_data'
+    instead of silently 'refreshed'."""
     resource_fn = TASK_RESOURCES[task]
-    return pipeline.run(resource_fn(game_ids=game_ids))
+    misses: list[int] = []
+    info = pipeline.run(resource_fn(game_ids=game_ids, misses=misses))
+    return info, misses
+
+
+def should_mark_complete(backlogs: dict[str, list[int]], unfinalized_seasons: list[int]) -> bool:
+    """True once every task's FULL backlog is empty AND finalize has nothing
+    left to cover -- the single completion predicate shared by every path
+    that might mark a campaign done (the top-of-run "already fully drained"
+    check, the pending-finalize-only fast path, and the end-of-run
+    auto-complete check after a batch loop). Before PR #75 F7, a campaign
+    could be marked complete purely on an empty per-game backlog even when a
+    finalize (adjusted-EPA refit + mart refresh) was still outstanding or
+    had failed -- this closes that gap.
+    """
+    return is_campaign_complete(backlogs) and not unfinalized_seasons
+
+
+def finalize_campaign(conn, campaign: str, seasons: list[int], watermark: datetime | None) -> bool:
+    """Refit adjusted EPA (season-level and walk-forward-weekly) over
+    `seasons` and refresh materialized views, then advance `campaign`'s
+    last_finalized_at watermark on full success.
+
+    Why this refit is cheap insurance, not the real correction-propagation
+    path (PR #75 F1): this campaign re-fetches stats.play_stats /
+    stats.advanced_game_stats, but scripts/compute_adjusted_epa.py and
+    scripts/compute_adjusted_epa_week.py both fit from marts.play_epa <-
+    core.plays -- a table this campaign never touches. Refitting here
+    guards against drift (an interrupted prior fit, coefficients that
+    predate this campaign's launch) rather than carrying the campaign's
+    corrections downstream.
+
+    The corrections DO eventually need to reach
+    analytics.player_game_epa_build (migration
+    022_player_epa_staged_build.sql's per-season loop over
+    stats.play_stats, seasons <=2025) -- but that rebuild stays a
+    documented ONE-TIME manual rerun after the campaign fully drains
+    (docs/plans/2026-08-29-cfbd-expansion-rollout.md step 7), not code in
+    this script: 022 loops all twelve seasons in a single hardcoded DO
+    block (it already timed out at 30 minutes doing exactly that, before
+    this campaign existed -- see 022's header) and folding a full rerun
+    into every per-run finalize would be enormously wasteful.
+
+    `compute_seasons()` in both compute scripts and `refresh_marts()` all
+    open their own DB connections (via each module's own `get_db_url()`)
+    and return a failure COUNT rather than raising -- verified against
+    their source 2026-08-30. finalize_campaign treats ANY nonzero total as
+    failure: it prints and returns False without advancing
+    last_finalized_at or committing anything, so the caller must not mark
+    the campaign complete and a failed finalize is retried whole on the
+    next run rather than silently skipped.
+
+    On success, last_finalized_at is set to `watermark` itself (the MAX
+    refresh_progress.refreshed_at fetch_unfinalized returned), never now()
+    -- race-free against progress rows written after this finalize's
+    queries ran but before its UPDATE commits.
+    """
+    from scripts.compute_adjusted_epa import compute_seasons as fit_adjusted_epa
+    from scripts.compute_adjusted_epa_week import compute_seasons as fit_adjusted_epa_week
+    from scripts.refresh_marts import refresh_marts
+
+    print(f"Finalizing campaign {campaign!r}: season(s) {seasons}...")
+    failures = fit_adjusted_epa(seasons) + fit_adjusted_epa_week(seasons)
+    failures += refresh_marts(concurrently=True)
+
+    if failures:
+        print(
+            f"Finalize FAILED: {failures} step(s)/season(s) reported failure. "
+            "last_finalized_at NOT advanced; will retry next run."
+        )
+        return False
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE meta.refresh_campaigns SET last_finalized_at = %s WHERE campaign = %s",
+            (watermark, campaign),
+        )
+    conn.commit()
+    print(f"Finalize OK. last_finalized_at advanced to {watermark}.")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -472,15 +687,24 @@ def print_status(conn, campaign: str, max_calls: int = 1000) -> dict:
     }
     total = sum(len(v) for v in backlogs.values())
     month_spend = get_month_spend(conn)
+    no_data_counts = fetch_no_data_counts(conn, campaign)
+    unfinalized_seasons, _watermark = fetch_unfinalized(conn, campaign)
 
     print(f"Seasons: {row['seasons']}")
     print(f"Tasks: {row['tasks']}")
     print(f"Created: {row['created_at']}")
     print(f"Completed: {row['completed_at'] or 'not yet'}")
+    print(f"Last finalized: {row['last_finalized_at'] or 'never'}")
     for t in task_order:
-        print(f"  {t}: {len(backlogs[t])} game(s) remaining")
+        no_data = no_data_counts.get(t, 0)
+        suffix = f" ({no_data} no_data, requeue-able)" if no_data else ""
+        print(f"  {t}: {len(backlogs[t])} game(s) remaining{suffix}")
     print(f"Total backlog: {total}")
     print(f"Month-to-date ledger spend: {month_spend}")
+    if unfinalized_seasons:
+        print(f"Pending finalize: season(s) {unfinalized_seasons} refreshed since last finalize")
+    else:
+        print("Pending finalize: none")
     eta = eta_run_days(total, max_calls)
     print(f"ETA to fully drain at --max-calls {max_calls}/run: ~{eta} run(s)")
 
@@ -490,6 +714,9 @@ def print_status(conn, campaign: str, max_calls: int = 1000) -> dict:
         "backlog": backlogs,
         "total_backlog": total,
         "month_spend": month_spend,
+        "no_data": no_data_counts,
+        "pending_finalize_seasons": unfinalized_seasons,
+        "last_finalized_at": row["last_finalized_at"],
     }
 
 
@@ -507,7 +734,17 @@ def run_campaign(
 ) -> dict:
     """Drain up to `max_calls` games' worth of backlog for `campaign`,
     respecting the month guard and (when not a dry run) the local rate
-    limiter, batching pipeline.run() calls at `batch_size` games."""
+    limiter, batching pipeline.run() calls at `batch_size` games.
+
+    Also runs finalize_campaign (adjusted-EPA refit + mart refresh) after
+    any run that loaded new games, or that finds season(s) left unfinalized
+    by a prior run -- see finalize_campaign's and the module's docstrings
+    for what finalize covers and what it deliberately does not (PR #75
+    F1/F7). A finalize failure returns status "finalize_failed" WITHOUT
+    marking the campaign complete, even when every per-game backlog is
+    already empty, so main() can exit 1 and the workflow's failure-issue
+    step fires instead of the run going silently green.
+    """
     requested_tasks = parse_tasks(tasks_spec)
     seasons = parse_seasons(seasons_spec) if seasons_spec else None
 
@@ -525,6 +762,7 @@ def run_campaign(
             "tasks": requested_tasks,
             "created_at": None,
             "completed_at": None,
+            "last_finalized_at": None,
         }
     else:
         row = get_or_create_campaign(
@@ -571,11 +809,46 @@ def run_campaign(
         print(f"  {t}: {len(full_backlogs[t])} game(s) remaining")
     print(f"Total backlog: {total_backlog_all}")
 
+    unfinalized_seasons, watermark = fetch_unfinalized(conn, campaign)
+    finalize_pending_before = bool(unfinalized_seasons)
+
     if is_campaign_complete(full_backlogs):
-        if not dry_run:
+        if not finalize_pending_before:
+            if not dry_run:
+                mark_campaign_complete(conn, campaign)
+            print("Backlog empty for every task in the campaign -- campaign complete.")
+            return {"campaign": campaign, "status": "complete", "backlog": full_backlogs}
+
+        print(
+            f"Backlog empty for every task, but season(s) {unfinalized_seasons} are pending "
+            "finalize (adjusted-EPA refit + mart refresh)."
+        )
+        if dry_run:
+            print("[DRY RUN] Would finalize; no computation performed.")
+            return {
+                "campaign": campaign,
+                "status": "dry_run",
+                "backlog": full_backlogs,
+                "pending_finalize_seasons": unfinalized_seasons,
+            }
+
+        # Backlog is already drained -- skip straight to finalize instead of
+        # spending any API work.
+        if not finalize_campaign(conn, campaign, unfinalized_seasons, watermark):
+            print("Finalize failed -- campaign NOT marked complete; will retry next run.")
+            return {"campaign": campaign, "status": "finalize_failed", "backlog": full_backlogs}
+
+        unfinalized_seasons, _watermark = fetch_unfinalized(conn, campaign)
+        if should_mark_complete(full_backlogs, unfinalized_seasons):
             mark_campaign_complete(conn, campaign)
-        print("Backlog empty for every task in the campaign -- campaign complete.")
-        return {"campaign": campaign, "status": "complete", "backlog": full_backlogs}
+            print("Finalize succeeded -- campaign complete.")
+            return {"campaign": campaign, "status": "complete", "backlog": full_backlogs}
+
+        print(
+            "Finalize succeeded, but new unfinalized season(s) appeared in the meantime; "
+            "will re-check next run."
+        )
+        return {"campaign": campaign, "status": "finalized", "backlog": full_backlogs}
 
     month_spend = get_month_spend(conn)
     print(f"Month-to-date ledger spend: {month_spend} (--monthly-cap {monthly_cap})")
@@ -583,6 +856,8 @@ def run_campaign(
         f"ETA to fully drain campaign backlog at --max-calls {max_calls}/run: "
         f"~{eta_run_days(total_backlog_all, max_calls)} run(s)"
     )
+    if finalize_pending_before:
+        print(f"Also pending finalize from a prior run: season(s) {unfinalized_seasons}.")
 
     run_backlogs = {t: full_backlogs[t] for t in run_task_order}
     allocation = allocate_calls(run_backlogs, run_task_order, max_calls)
@@ -607,6 +882,7 @@ def run_campaign(
             "backlog": full_backlogs,
             "allocation": allocation,
             "month_spend": month_spend,
+            "pending_finalize_seasons": unfinalized_seasons,
         }
 
     # Local, advisory rate-limiter guard. Its JSON state does not survive
@@ -632,6 +908,9 @@ def run_campaign(
     pipeline = build_stats_pipeline()
 
     loaded_total = 0
+    no_data_total = 0
+    per_task_no_data: dict[str, int] = {}
+    pacing_stop = False
     for i, (task, batch) in enumerate(batches, 1):
         if would_exceed_monthly_cap(month_spend, len(batch), monthly_cap):
             print(
@@ -639,29 +918,82 @@ def run_campaign(
                 f"{monthly_cap}. Stopping before batch {i}/{len(batches)} (pacing stop, not "
                 "an error); resume this campaign in a later run/month."
             )
+            pacing_stop = True
             break
 
         print(f"  [{i}/{len(batches)}] {task}: {len(batch)} game(s)")
-        run_batch(pipeline, task, batch)
-        insert_ledger_rows(conn, campaign, task, batch)
+        _info, misses = run_batch(pipeline, task, batch)
+        insert_ledger_rows(conn, campaign, task, batch, misses=misses)
         month_spend += len(batch)
         loaded_total += len(batch)
+        if misses:
+            no_data_total += len(misses)
+            per_task_no_data[task] = per_task_no_data.get(task, 0) + len(misses)
 
-    print(f"\nLoaded {loaded_total} game-task call(s) this run.")
+    no_data_suffix = f" ({no_data_total} no_data)" if no_data_total else ""
+    print(f"\nLoaded {loaded_total} game-task call(s) this run{no_data_suffix}.")
+    for t, n in per_task_no_data.items():
+        print(
+            f"  {t}: {n} no_data (suppressed 400 or empty response; see --status/--requeue-no-data)"
+        )
 
-    if loaded_total > 0:
-        print("Refreshing materialized views (corrected play stats feed the EPA chain)...")
-        from scripts.refresh_marts import refresh_marts
-
-        refresh_marts(concurrently=True)
+    # Finalize whenever this run added new 'refreshed' progress, or a prior
+    # run left seasons unfinalized (e.g. it loaded games but crashed/was
+    # killed before finalizing). Skipped entirely when neither is true --
+    # an all-no_data batch with nothing pending from before spends no extra
+    # compute on a refit over unchanged data (F1/F7).
+    if loaded_total > 0 or finalize_pending_before:
+        unfinalized_seasons, watermark = fetch_unfinalized(conn, campaign)
+        if unfinalized_seasons:
+            print(
+                "Finalizing (adjusted-EPA refit + mart refresh) -- corrected data feeds the "
+                "EPA chain..."
+            )
+            if not finalize_campaign(conn, campaign, unfinalized_seasons, watermark):
+                print("Finalize failed; will retry next run.")
+                return {
+                    "campaign": campaign,
+                    "status": "finalize_failed",
+                    "loaded": loaded_total,
+                    "no_data": no_data_total,
+                    "backlog": full_backlogs,
+                }
+        else:
+            print("Nothing new to finalize (this run's loads were all no_data).")
     else:
-        print("Nothing loaded this run; skipping mart refresh.")
+        print("Nothing loaded this run and no season pending finalize; skipping mart refresh.")
+
+    # End-of-run completion check: only when this run wasn't cut short by
+    # the month guard and didn't have to defer any of its requested backlog
+    # -- i.e. this run's --tasks are now fully drained through the point
+    # finalize just covered -- recompute the FULL (all-task) backlog and
+    # mark the campaign complete if it, and finalize, are both clean. Fixes
+    # the "one extra run" quirk: previously a campaign whose last batch
+    # drained the backlog needed a whole separate run just to notice.
+    final_backlogs = full_backlogs
+    if not pacing_stop and sum(deferred.values()) == 0:
+        final_backlogs = {
+            t: compute_task_backlog(candidate_games, fetch_done_ids(conn, campaign, t))
+            for t in all_task_order
+        }
+        recheck_unfinalized, _watermark = fetch_unfinalized(conn, campaign)
+        if should_mark_complete(final_backlogs, recheck_unfinalized):
+            mark_campaign_complete(conn, campaign)
+            print("Backlog empty for every task and finalize is current -- campaign complete.")
+            return {
+                "campaign": campaign,
+                "status": "complete",
+                "loaded": loaded_total,
+                "no_data": no_data_total,
+                "backlog": final_backlogs,
+            }
 
     return {
         "campaign": campaign,
         "status": "ok",
         "loaded": loaded_total,
-        "backlog": full_backlogs,
+        "no_data": no_data_total,
+        "backlog": final_backlogs,
     }
 
 
@@ -727,6 +1059,13 @@ Examples:
     parser.add_argument(
         "--status", action="store_true", help="Print campaign progress and exit; no API calls"
     )
+    parser.add_argument(
+        "--requeue-no-data",
+        action="store_true",
+        help="Delete status='no_data' ledger rows for --campaign (optionally scoped by "
+        "--tasks), returning those game_ids to the backlog for retry, then exit. No API "
+        "calls; makes no other writes.",
+    )
     return parser
 
 
@@ -738,11 +1077,17 @@ def main() -> None:
 
     conn = psycopg2.connect(get_db_url())
     try:
+        if args.requeue_no_data:
+            tasks_filter = parse_tasks(args.tasks) if args.tasks else None
+            rowcount = requeue_no_data(conn, args.campaign, tasks=tasks_filter)
+            print(f"Requeued {rowcount} no_data row(s) for campaign {args.campaign!r}.")
+            sys.exit(0)
+
         if args.status:
             print_status(conn, args.campaign, max_calls=args.max_calls)
             sys.exit(0)
 
-        run_campaign(
+        result = run_campaign(
             conn,
             campaign=args.campaign,
             create=args.create,
@@ -757,7 +1102,11 @@ def main() -> None:
     finally:
         conn.close()
 
-    sys.exit(0)
+    # A failed finalize (adjusted-EPA refit or mart refresh) must fail the
+    # run -- PR #75 F7: previously main() always exited 0, so a silently
+    # broken finalize was never retried and never surfaced to the workflow's
+    # failure-issue step.
+    sys.exit(1 if result.get("status") == "finalize_failed" else 0)
 
 
 if __name__ == "__main__":

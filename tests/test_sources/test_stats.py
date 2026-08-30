@@ -123,6 +123,59 @@ class TestPlayStatsSkipsUnplayedGames:
         assert requested == [11, 22]
 
 
+class TestPlayStatsGameIdsMissTracking:
+    """R1/F6: play_stats_resource's game_ids branch records a suppressed 400
+    in `misses`, but an empty 200 is deliberately NOT a miss -- zero
+    player-stat associations is a legitimate outcome for early-era or
+    lower-division games (pinned here to lock the decision)."""
+
+    def test_400_response_appends_to_misses(self):
+        from src.pipelines.sources.stats import play_stats_resource
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [_http_error(400), [{"gameId": 2}]]
+
+            misses: list[int] = []
+            results = list(play_stats_resource(game_ids=[1, 2], misses=misses))
+
+            assert len(results) == 1
+            assert misses == [1]
+
+    def test_empty_200_is_not_a_miss(self):
+        from src.pipelines.sources.stats import play_stats_resource
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.return_value = []
+
+            misses: list[int] = []
+            results = list(play_stats_resource(game_ids=[1], misses=misses))
+
+            assert results == []
+            assert misses == []
+
+    def test_misses_none_is_safe(self):
+        from src.pipelines.sources.stats import play_stats_resource
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [_http_error(400), []]
+
+            results = list(play_stats_resource(game_ids=[1, 2]))
+
+            assert results == []
+
+
 class TestStatsSourceResourceComposition:
     def test_default_resources_include_new_additions(self):
         from src.pipelines.sources.stats import stats_source
@@ -185,6 +238,74 @@ class TestAdvancedGameStatsResourceGameIdsMode:
 
             assert len(results) == 1
             assert results[0]["gameId"] == 2
+
+    def test_400_response_appends_to_misses(self):
+        """R1/F6: a suppressed 400 must be recorded in `misses` when the
+        caller passes a list, not just silently skipped."""
+        from src.pipelines.sources.stats import advanced_game_stats_resource
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [_http_error(400), [{"gameId": 2, "team": "X"}]]
+
+            misses: list[int] = []
+            results = list(advanced_game_stats_resource(game_ids=[1, 2], misses=misses))
+
+            assert len(results) == 1
+            assert misses == [1]
+
+    def test_empty_200_appends_to_misses(self):
+        """R1/F6: unlike play_stats, an empty response here IS a miss --
+        every game with a completed box score has advanced stats."""
+        from src.pipelines.sources.stats import advanced_game_stats_resource
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.return_value = []
+
+            misses: list[int] = []
+            results = list(advanced_game_stats_resource(game_ids=[1], misses=misses))
+
+            assert results == []
+            assert misses == [1]
+
+    def test_success_does_not_append_to_misses(self):
+        from src.pipelines.sources.stats import advanced_game_stats_resource
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.return_value = [{"gameId": 1, "team": "X"}]
+
+            misses: list[int] = []
+            results = list(advanced_game_stats_resource(game_ids=[1], misses=misses))
+
+            assert len(results) == 1
+            assert misses == []
+
+    def test_misses_none_is_safe(self):
+        """Default misses=None (the plain stats-load style call) must not
+        raise on either a 400 or an empty response."""
+        from src.pipelines.sources.stats import advanced_game_stats_resource
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [_http_error(400), []]
+
+            results = list(advanced_game_stats_resource(game_ids=[1, 2]))
+
+            assert results == []
 
     def test_merge_disposition_and_primary_key_unchanged(self):
         from src.pipelines.sources.stats import advanced_game_stats_resource

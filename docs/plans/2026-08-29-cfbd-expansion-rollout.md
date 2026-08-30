@@ -16,7 +16,13 @@
 - **Historical-refresh mechanism** (`scripts/backfill_refresh.py`,
   `meta.refresh_campaigns`/`refresh_progress`, `historical-refresh.yml`): resumable,
   1,000 calls/run and 30,000/month caps, plays_stats drains before box_advanced,
-  self-disables when complete.
+  self-disables when complete. **R1 amendment (PR #75 F1/F6/F7)**: `051_refresh_ledger.sql`
+  gained `refresh_progress.status` ('refreshed' vs 'no_data' — a suppressed per-game 400,
+  or an empty box-score response, no longer silently counts as a genuine refresh; requeue
+  via `--requeue-no-data`) and `refresh_campaigns.last_finalized_at` (a watermark so a
+  drained backlog only completes the campaign once a following adjusted-EPA refit + mart
+  refresh — `finalize_campaign` — has also succeeded; a failed finalize now exits 1 instead
+  of always exiting 0).
 - **16 flat-file sources, zero API cost**: 4 sportsdataverse (team/game ID
   crosswalks, `ratings.espn_fpi_weekly` 2005+, `ratings.sdv_ratings_weekly`),
   7 NCAA sub-FBS datasets (2013+, new UNGRANTED `ncaa` schema — ids re-issued
@@ -70,10 +76,27 @@ load precondition.
 7. [ ] **Launch the refresh campaign**: dispatch `historical-refresh.yml` with
        `create=true` (campaign `2026-08-upstream-corrections`, seasons 2014-2025,
        tasks `plays_stats,box_advanced`). ~38k calls at ≤1,000/day under the
-       30k/month cap → ~5-6 weeks. The daily cron keeps it draining; it
-       self-disables (green no-op) when complete — then remove the cron.
-       After each week, compare `marts.epa_crossvalidation` against the baseline
-       per the decision rule in the mart header.
+       30k/month cap → ~5-6 weeks. The daily cron keeps it draining; each run that
+       loads new games (or finds a prior run's finalize still pending) also refits
+       adjusted EPA and refreshes marts (`finalize_campaign`) — the campaign only
+       self-disables (green no-op) once BOTH the per-game backlog is empty AND that
+       finalize is current; a failed finalize fails the run (exit 1) instead of
+       silently marking the campaign done. After each week, compare
+       `marts.epa_crossvalidation` against the baseline per the decision rule in the
+       mart header.
+       **Once fully drained**, rerun the player-EPA staged build so the campaign's
+       corrections actually reach `analytics.player_game_epa_build` (the finalize
+       above does NOT do this — see `finalize_campaign`'s docstring): dispatch
+       `deploy-schema.yml` with `action=apply files=src/schemas/migrations/022_player_epa_staged_build.sql`.
+       This migration once timed out at 30 minutes doing all twelve seasons
+       (2014-2025) in a single hardcoded `DO $$ ... FOR yr IN 2014..2025 LOOP` block
+       (see 022's header) — **checked 2026-08-30: it does NOT support a season-scoped
+       dispatch as written** (the loop bounds are literals baked into the file, not a
+       parameter `run_migrations.py --file`/`deploy_schema.py` can pass in), so it
+       cannot be split across dispatches without first editing the migration (out of
+       scope here). If it times out again, that edit — parameterizing the loop
+       bounds so it can be dispatched per-season or in season chunks — is the
+       follow-up, not a re-dispatch of the same file.
 8. [ ] **player_overview backfill 2021-2025** (~23k calls — live counts run
        4-5.5k players/season, higher than the ~3k planning estimate): dispatch
        `backfill-sources.yml --sources player_overview` per season, or let the

@@ -3,12 +3,16 @@
 Covers backlog resolution (ordering + set-difference against the ledger),
 cross-task call allocation, the month-guard math, campaign-complete
 detection, season/task spec parsing, the ledger-insert idempotency shape,
-and the pipeline-identity guard that keeps game-id-driven writes merging
-into the SAME tables the normal `stats` source writes.
+the pipeline-identity guard that keeps game-id-driven writes merging into
+the SAME tables the normal `stats` source writes, and the PR #75 R1
+additions: per-game miss tracking (F6), finalize semantics (F7/F1), and the
+should_mark_complete/fetch_unfinalized/--requeue-no-data machinery that
+backs them.
 """
 
 import inspect
 import math
+from datetime import UTC, datetime
 
 import pytest
 
@@ -21,11 +25,14 @@ from scripts.backfill_refresh import (
     build_ledger_values,
     compute_task_backlog,
     eta_run_days,
+    finalize_campaign,
     is_campaign_complete,
     parse_seasons,
     parse_tasks,
     plan_batches,
     resolve_task_order,
+    run_batch,
+    should_mark_complete,
     sort_games_newest_first,
     would_exceed_monthly_cap,
 )
@@ -243,10 +250,34 @@ class TestEtaRunDays:
 class TestBuildLedgerValues:
     def test_row_shape(self):
         values = build_ledger_values("camp-1", "plays_stats", [10, 20])
-        assert values == [("camp-1", "plays_stats", 10, 1), ("camp-1", "plays_stats", 20, 1)]
+        assert values == [
+            ("camp-1", "plays_stats", 10, 1, "refreshed"),
+            ("camp-1", "plays_stats", 20, 1, "refreshed"),
+        ]
 
     def test_empty_game_ids_yields_empty_values(self):
         assert build_ledger_values("camp-1", "plays_stats", []) == []
+
+    def test_empty_misses_are_all_refreshed(self):
+        """Explicit empty misses behaves identically to the default."""
+        values = build_ledger_values("camp-1", "plays_stats", [10, 20], misses=[])
+        assert all(v[4] == "refreshed" for v in values)
+
+    def test_mixed_statuses(self):
+        """R1/F6: a game_id in `misses` gets status='no_data'; everything
+        else in the batch is 'refreshed' -- both still land with calls=1
+        (a suppressed 400 or empty response still spends the call)."""
+        values = build_ledger_values("camp-1", "plays_stats", [10, 20, 30], misses=[20])
+        assert values == [
+            ("camp-1", "plays_stats", 10, 1, "refreshed"),
+            ("camp-1", "plays_stats", 20, 1, "no_data"),
+            ("camp-1", "plays_stats", 30, 1, "refreshed"),
+        ]
+
+    def test_miss_not_in_game_ids_is_ignored(self):
+        """A miss id outside this batch's game_ids must not fabricate a row."""
+        values = build_ledger_values("camp-1", "plays_stats", [10], misses=[999])
+        assert values == [("camp-1", "plays_stats", 10, 1, "refreshed")]
 
 
 def test_ledger_insert_sql_uses_on_conflict_do_nothing():
@@ -259,6 +290,7 @@ def test_ledger_insert_sql_uses_on_conflict_do_nothing():
 
     assert "ON CONFLICT (campaign, task, game_id) DO NOTHING" in _LEDGER_INSERT_SQL
     assert "INSERT INTO meta.refresh_progress" in _LEDGER_INSERT_SQL
+    assert "status" in _LEDGER_INSERT_SQL
 
 
 def test_insert_ledger_rows_uses_execute_values_with_on_conflict(monkeypatch):
@@ -290,13 +322,16 @@ def test_insert_ledger_rows_uses_execute_values_with_on_conflict(monkeypatch):
 
     monkeypatch.setattr(psycopg2.extras, "execute_values", fake_execute_values)
 
-    insert_ledger_rows(FakeConn(), "camp-1", "plays_stats", [10, 20])
+    insert_ledger_rows(FakeConn(), "camp-1", "plays_stats", [10, 20], misses=[20])
 
     assert len(calls) == 2
     tag, sql, values = calls[0]
     assert tag == "execute_values"
     assert "ON CONFLICT (campaign, task, game_id) DO NOTHING" in sql
-    assert values == [("camp-1", "plays_stats", 10, 1), ("camp-1", "plays_stats", 20, 1)]
+    assert values == [
+        ("camp-1", "plays_stats", 10, 1, "refreshed"),
+        ("camp-1", "plays_stats", 20, 1, "no_data"),
+    ]
     assert calls[1] == "commit"
 
 
@@ -352,3 +387,240 @@ def test_resource_functions_accept_explicit_game_ids():
     for resource_fn in TASK_RESOURCES.values():
         sig = inspect.signature(resource_fn)
         assert "game_ids" in sig.parameters
+
+
+# ---------------------------------------------------------------------------
+# R1 (PR #75 F6): run_batch forwards a `misses` list into the resource and
+# returns it back to the caller.
+# ---------------------------------------------------------------------------
+
+
+class TestRunBatch:
+    def test_returns_info_and_forwards_misses(self, monkeypatch):
+        """run_batch must (1) create a fresh `misses` list, (2) pass it as
+        `misses=` to the task's resource function, and (3) return
+        (load_info, misses) so the caller can route it into
+        insert_ledger_rows."""
+        from scripts import backfill_refresh
+
+        captured_kwargs = {}
+
+        def fake_resource(game_ids, *, misses=None):
+            captured_kwargs["game_ids"] = game_ids
+            captured_kwargs["misses"] = misses
+            if misses is not None:
+                misses.append(game_ids[0])  # simulate one suppressed 400
+            return iter(["row"])
+
+        class FakePipeline:
+            def run(self, source):
+                # Consume the resource the same way pipeline.run() would.
+                return {"loaded": list(source)}
+
+        monkeypatch.setattr(backfill_refresh, "TASK_RESOURCES", {"plays_stats": fake_resource})
+
+        info, misses = run_batch(FakePipeline(), "plays_stats", [10, 20])
+
+        assert captured_kwargs["game_ids"] == [10, 20]
+        assert captured_kwargs["misses"] is misses
+        assert misses == [10]
+        assert info == {"loaded": ["row"]}
+
+
+# ---------------------------------------------------------------------------
+# R1 (PR #75 F7): fetch_unfinalized / finalize_campaign / should_mark_complete
+# ---------------------------------------------------------------------------
+
+
+class _FakeCursor:
+    def __init__(self, rows):
+        self._rows = rows
+        self.executed = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+
+class _FakeConn:
+    def __init__(self, rows):
+        self._rows = rows
+        self.commits = 0
+        self.cursors = []
+
+    def cursor(self):
+        cur = _FakeCursor(self._rows)
+        self.cursors.append(cur)
+        return cur
+
+    def commit(self):
+        self.commits += 1
+
+
+class TestUnfinalizedSeasonsQueryShape:
+    def test_contains_status_refreshed_and_coalesce_negative_infinity(self):
+        """Pins the two clauses that make this query correct: only
+        status='refreshed' rows count toward "unfinalized" (a 'no_data' row
+        never triggers a refit), and a NULL last_finalized_at (never
+        finalized) reads as '-infinity' so a fresh campaign's entire history
+        is picked up rather than silently excluded by a NULL comparison."""
+        from scripts.backfill_refresh import _UNFINALIZED_SEASONS_QUERY
+
+        assert "status = 'refreshed'" in _UNFINALIZED_SEASONS_QUERY
+        assert "'-infinity'" in _UNFINALIZED_SEASONS_QUERY
+        assert "last_finalized_at" in _UNFINALIZED_SEASONS_QUERY
+
+
+class TestFetchUnfinalized:
+    def test_rows_yield_seasons_and_max_watermark(self):
+        from scripts.backfill_refresh import fetch_unfinalized
+
+        t1 = datetime(2026, 8, 1, tzinfo=UTC)
+        t2 = datetime(2026, 8, 15, tzinfo=UTC)
+        conn = _FakeConn(rows=[(2024, t1), (2025, t2)])
+
+        seasons, watermark = fetch_unfinalized(conn, "camp-1")
+
+        assert seasons == [2024, 2025]
+        assert watermark == t2
+
+    def test_empty_is_none_watermark(self):
+        from scripts.backfill_refresh import fetch_unfinalized
+
+        conn = _FakeConn(rows=[])
+
+        seasons, watermark = fetch_unfinalized(conn, "camp-1")
+
+        assert seasons == []
+        assert watermark is None
+
+
+class TestFinalizeCampaign:
+    def test_all_zero_advances_watermark_and_commits(self, monkeypatch):
+        from scripts import compute_adjusted_epa, compute_adjusted_epa_week, refresh_marts
+
+        monkeypatch.setattr(compute_adjusted_epa, "compute_seasons", lambda seasons: 0)
+        monkeypatch.setattr(compute_adjusted_epa_week, "compute_seasons", lambda seasons: 0)
+        monkeypatch.setattr(refresh_marts, "refresh_marts", lambda **kwargs: 0)
+
+        conn = _FakeConn(rows=[])
+        watermark = datetime(2026, 8, 15, tzinfo=UTC)
+
+        result = finalize_campaign(conn, "camp-1", [2024, 2025], watermark)
+
+        assert result is True
+        assert conn.commits == 1
+        sql, params = conn.cursors[0].executed[0]
+        assert "UPDATE meta.refresh_campaigns" in sql
+        assert "last_finalized_at" in sql
+        assert params == (watermark, "camp-1")
+
+    def test_any_nonzero_failure_skips_update_and_returns_false(self, monkeypatch):
+        from scripts import compute_adjusted_epa, compute_adjusted_epa_week, refresh_marts
+
+        monkeypatch.setattr(compute_adjusted_epa, "compute_seasons", lambda seasons: 0)
+        monkeypatch.setattr(compute_adjusted_epa_week, "compute_seasons", lambda seasons: 1)
+        monkeypatch.setattr(refresh_marts, "refresh_marts", lambda **kwargs: 0)
+
+        conn = _FakeConn(rows=[])
+        watermark = datetime(2026, 8, 15, tzinfo=UTC)
+
+        result = finalize_campaign(conn, "camp-1", [2024], watermark)
+
+        assert result is False
+        assert conn.commits == 0
+        assert conn.cursors == []
+
+    def test_mart_refresh_failure_also_fails(self, monkeypatch):
+        from scripts import compute_adjusted_epa, compute_adjusted_epa_week, refresh_marts
+
+        monkeypatch.setattr(compute_adjusted_epa, "compute_seasons", lambda seasons: 0)
+        monkeypatch.setattr(compute_adjusted_epa_week, "compute_seasons", lambda seasons: 0)
+        monkeypatch.setattr(refresh_marts, "refresh_marts", lambda **kwargs: 2)
+
+        conn = _FakeConn(rows=[])
+
+        result = finalize_campaign(conn, "camp-1", [2024], datetime.now(tz=UTC))
+
+        assert result is False
+        assert conn.commits == 0
+
+
+class TestShouldMarkComplete:
+    def test_empty_backlog_and_no_unfinalized_is_complete(self):
+        assert should_mark_complete({"plays_stats": [], "box_advanced": []}, []) is True
+
+    def test_empty_backlog_but_unfinalized_seasons_is_not_complete(self):
+        """F7: an empty per-game backlog alone must NOT be enough to
+        complete a campaign while a finalize is still outstanding."""
+        assert should_mark_complete({"plays_stats": [], "box_advanced": []}, [2025]) is False
+
+    def test_nonempty_backlog_is_not_complete_regardless_of_finalize(self):
+        assert should_mark_complete({"plays_stats": [1], "box_advanced": []}, []) is False
+
+
+# ---------------------------------------------------------------------------
+# R1: --requeue-no-data
+# ---------------------------------------------------------------------------
+
+
+class TestRequeueNoData:
+    def test_without_task_filter(self):
+        from scripts.backfill_refresh import requeue_no_data
+
+        conn = _FakeConn(rows=[])
+        conn._rows = []
+
+        class _CountingCursor(_FakeCursor):
+            rowcount = 7
+
+        conn.cursor = lambda: _CountingCursor([])
+
+        rowcount = requeue_no_data(conn, "camp-1")
+
+        assert rowcount == 7
+        assert conn.commits == 1
+
+    def test_with_task_filter_uses_the_scoped_sql(self):
+        from scripts.backfill_refresh import (
+            _REQUEUE_NO_DATA_SQL_WITH_TASKS,
+            requeue_no_data,
+        )
+
+        captured = {}
+
+        class _Cursor(_FakeCursor):
+            rowcount = 3
+
+            def execute(self, sql, params=None):
+                captured["sql"] = sql
+                captured["params"] = params
+
+        conn = _FakeConn(rows=[])
+        conn.cursor = lambda: _Cursor([])
+
+        rowcount = requeue_no_data(conn, "camp-1", tasks=["box_advanced"])
+
+        assert rowcount == 3
+        assert captured["sql"] == _REQUEUE_NO_DATA_SQL_WITH_TASKS
+        assert captured["params"] == ("camp-1", ["box_advanced"])
+
+    def test_sql_predicates_scope_to_campaign_and_no_data_status(self):
+        from scripts.backfill_refresh import _REQUEUE_NO_DATA_SQL, _REQUEUE_NO_DATA_SQL_WITH_TASKS
+
+        assert "DELETE FROM meta.refresh_progress" in _REQUEUE_NO_DATA_SQL
+        assert "status = 'no_data'" in _REQUEUE_NO_DATA_SQL
+        assert "campaign = %s" in _REQUEUE_NO_DATA_SQL
+        assert _REQUEUE_NO_DATA_SQL_WITH_TASKS.startswith(_REQUEUE_NO_DATA_SQL)
+        assert "task = ANY(%s)" in _REQUEUE_NO_DATA_SQL_WITH_TASKS

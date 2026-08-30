@@ -4,11 +4,21 @@
 -- Thin per-row mart over stats.passing_player_season (PK season, player_id,
 -- team) -- charting is player-season-grain already; nothing to aggregate.
 --
--- Column names verified against src/schemas/migrations/057_passing_grants_indexes.sql
--- (applied, column comments already live) and the 2026-08-30 probe fixture
--- tests/fixtures/cfbd_2026/passing_players_season.json -- NOT a fresh
--- pg_attribute read from this session (no DB access here). Re-verify at
--- deploy time per this repo's column-contract convention.
+-- Column names LIVE-VERIFIED 2026-08-30 via information_schema.columns
+-- against stats.passing_player_season (supersedes the prior
+-- migration-057/fixture-only check), including a check for dlt VARIANT
+-- (__v_double) twins on every bigint-typed column -- same pattern as
+-- src/schemas/009_variant_columns.sql / marts/032_player_usage.sql. Result:
+--   - total_air_yards, total_yards_after_catch: bigint, but integer-BY-NATURE
+--     (sums of whole charted yards) -- no twin is possible for these, and
+--     none exists live.
+--   - average_depth_of_target, completion_rate: natively double precision --
+--     no twin, read directly.
+--   - average_yards_after_catch: bigint base column WITH a __v_double twin
+--     -- live, 254/365 real (non-null) values are stranded in
+--     average_yards_after_catch__v_double alone. COALESCEd below; this
+--     mart's own NULL-means-"not charted" semantics (next paragraph) made
+--     the miss actively misreport charted plays as uncharted.
 --
 -- NULL/denominator semantics (mirrors migration 057's phrasing verbatim):
 -- NULL on total_air_yards/average_depth_of_target/total_yards_after_catch/
@@ -23,6 +33,14 @@
 -- charted). Data starts 2025 (PASSING_DATA_START in
 -- src/pipelines/sources/passing.py).
 --
+-- Sibling marts unaffected (reviewer-confirmed 2026-08-30):
+-- marts.passing_charting_target_season (046) computes its air-yards/YAC
+-- aggregates fresh via SUM()/AVG() over stats.passing_plays' plain bigint
+-- columns, which have no twin to miss; marts.passing_charting_team_season
+-- (047) flattens stats.passing_team_season's offense__/defense__ metric
+-- family, which are natively double precision on that table, same as this
+-- table's average_depth_of_target/completion_rate above.
+--
 -- `position` is joined from core.roster on (id, team, year) -- ALL THREE of
 -- core.roster's own primary-key columns (src/pipelines/sources/rosters.py),
 -- matched against passing_player_season's player_id/team/season -- so this
@@ -32,14 +50,16 @@
 -- probe fixture).
 --
 -- DEPLOY-ORDER CAVEAT (same shape as migration 057's guarded COMMENT
--- block): dlt omits a column entirely from a table's schema when every
--- value loaded for it so far was NULL. total_air_yards/
+-- block, kept for a future fresh/re-provisioned database, not a live
+-- concern today): dlt omits a column entirely from a table's schema when
+-- every value loaded for it so far was NULL. total_air_yards/
 -- average_depth_of_target/total_yards_after_catch/average_yards_after_catch
--- are the ones actually at risk of this (the two *_attempts_available
--- denominators are plain integers that are 0, not NULL, when nothing is
--- charted, so they always materialize). Per 057's header, deploy run 188
--- (post-backfill) already had all of these columns live, so apply this file
--- after that same passing-source load, not before.
+-- (plus average_yards_after_catch__v_double) are the ones that would be at
+-- risk of this (the two *_attempts_available denominators are plain
+-- integers that are 0, not NULL, when nothing is charted, so they always
+-- materialize). The 2026-08-30 live check above confirms every column this
+-- file reads already exists today; a fresh database must still apply this
+-- file after the passing source's first load, not before.
 DROP MATERIALIZED VIEW IF EXISTS marts.passing_charting_player_season CASCADE;
 
 CREATE MATERIALIZED VIEW marts.passing_charting_player_season AS
@@ -58,7 +78,12 @@ SELECT
     pps.average_depth_of_target,
     pps.air_yards_attempts_available,
     pps.total_yards_after_catch,
-    pps.average_yards_after_catch,
+    -- bigint base column WITH a dlt __v_double VARIANT twin on this table
+    -- (live-verified 2026-08-30: 254/365 real values stranded in the twin
+    -- alone) -- COALESCE per src/schemas/009_variant_columns.sql /
+    -- marts/032_player_usage.sql:56's codified pattern. See file header.
+    COALESCE(pps.average_yards_after_catch::double precision, pps.average_yards_after_catch__v_double)
+        AS average_yards_after_catch,
     pps.yards_after_catch_attempts_available
 FROM stats.passing_player_season pps
 LEFT JOIN core.roster r

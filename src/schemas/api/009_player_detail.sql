@@ -33,16 +33,22 @@
 --
 -- 2026-08-30 (expansion_views unit, task 6 -- additive): LEFT JOIN LATERAL a
 -- compact stats.player_season_overview payload (games, usage, PPA-overview).
--- Column names (season, id, team, usage__overall, usage__pass, usage__rush,
--- ppa__average__all, ppa__total__all) are verified against the CFBD OpenAPI
--- spec's PlayerSeasonOverview/PlayerUsage/PlayerSeasonOverviewPPA schemas
--- (fetched 2026-08-30) and src/pipelines/sources/player_overview.py's own
--- docstring -- NOT a live pg_attribute read (no DB access from this
--- session). usage__overall/usage__pass/usage__rush are individually
--- nullable but always-present keys per the spec's `required` list, so they
--- materialize as columns on first load; ppa__average__all/ppa__total__all
--- are required+non-nullable. VERIFY VIA pg_attribute AT DEPLOY TIME before
--- applying, per this repo's column-contract convention.
+-- Column names LIVE-VERIFIED 2026-08-30 via information_schema.columns
+-- against stats.player_season_overview, including a check for dlt VARIANT
+-- (__v_double) twins on every bigint-typed column -- the same pattern
+-- codified in src/schemas/009_variant_columns.sql and marts/032_player_usage.sql
+-- (dlt creates a `<col>__v_double` sibling when the API returns a float for
+-- a column it first inferred as bigint from an earlier integer value; the
+-- float-typed rows land in the twin and the base column reads NULL for
+-- them unless the two are COALESCEd). Result:
+--   - games: integer by nature (a games-played count), no twin possible.
+--   - usage__overall, usage__pass, ppa__average__all, ppa__total__all: all
+--     natively double precision on this table -- no twin exists, read
+--     directly.
+--   - usage__rush: bigint base column WITH a __v_double twin -- live,
+--     155/249 non-null values are stranded in usage__rush__v_double alone.
+--     COALESCEd below; reading the base column alone would have silently
+--     NULLed out the majority of non-null values.
 --
 -- The overview table's primary key is being changed to (season, id, team)
 -- in a parallel diff (src/pipelines/sources/player_overview.py, same day) --
@@ -176,7 +182,9 @@ WITH player_passing AS (
     -- Task 0 fix: one row per athlete_id (recruiting.recruits' PK is its own
     -- `id`, not athlete_id -- see file header). ORDER BY year DESC keeps the
     -- reclassified/authoritative entry when an athlete has more than one
-    -- recruiting-class row.
+    -- recruiting-class row. NULLS LAST is required: Postgres defaults DESC
+    -- to NULLS FIRST, so without it a recruiting row with a NULL year would
+    -- outrank a real recruit_class year instead of losing to it.
     SELECT DISTINCT ON (athlete_id)
         athlete_id,
         stars,
@@ -184,7 +192,7 @@ WITH player_passing AS (
         ranking,
         year
     FROM recruiting.recruits
-    ORDER BY athlete_id, year DESC
+    ORDER BY athlete_id, year DESC NULLS LAST
 )
 SELECT
     r.id AS player_id,
@@ -240,14 +248,26 @@ LEFT JOIN LATERAL (
         pso.games,
         pso.usage__overall AS usage_overall,
         pso.usage__pass AS usage_pass,
-        pso.usage__rush AS usage_rush,
+        -- usage__rush is bigint with a dlt __v_double VARIANT twin on this
+        -- table (live-verified 2026-08-30: 155/249 non-null values are
+        -- stranded in the twin alone) -- COALESCE per the repo's codified
+        -- pattern (src/schemas/009_variant_columns.sql,
+        -- marts/032_player_usage.sql:56). games/usage__overall/usage__pass/
+        -- ppa__average__all/ppa__total__all have no twin (see file header)
+        -- and are read directly.
+        COALESCE(pso.usage__rush::double precision, pso.usage__rush__v_double) AS usage_rush,
         pso.ppa__average__all AS ppa_overview_avg,
         pso.ppa__total__all AS ppa_overview_total,
         pso.team
     FROM stats.player_season_overview pso
     WHERE pso.id::text = r.id::text
       AND pso.season = r.year
-    ORDER BY (pso.team = r.team) DESC
+    -- Secondary tiebreaker (pso.team) makes the pick deterministic even
+    -- when two stints share the same team-match outcome (both matched, or
+    -- both didn't) -- without it, LIMIT 1 could return either row from run
+    -- to run since ORDER BY on the boolean match alone leaves ties
+    -- unordered.
+    ORDER BY (pso.team = r.team) DESC, pso.team
     LIMIT 1
 ) ov ON true;
 

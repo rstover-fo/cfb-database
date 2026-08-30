@@ -567,6 +567,11 @@ GAME_RECAPS_COLUMNS = {
 }
 
 COACH_RECORDS_COLUMNS = {
+    # Added 2026-08-30 (expansion_views unit, task 5a) -- ref.coach_seasons'
+    # coach__id matched by (first_name, last_name, team, year); NULL where
+    # ambiguous/unmatched. A subset check, so this makes the column
+    # load-bearing in CI (a regression that dropped it would fail here).
+    "coach_id",
     "coach_name",
     "first_name",
     "last_name",
@@ -628,6 +633,95 @@ TEAM_PENALTIES_COLUMNS = {
     "opponent_penalty_yards",
 }
 
+# expansion_views unit (2026-08-30): passing charting, coach tenures, and the
+# refresh-campaign status view.
+
+PASSING_CHARTING_PLAYER_SEASON_COLUMNS = {
+    "season",
+    "player_id",
+    "player",
+    "team",
+    "conference",
+    "position",
+    "attempts",
+    "completions",
+    "interceptions",
+    "completion_rate",
+    "total_air_yards",
+    "average_depth_of_target",
+    "air_yards_attempts_available",
+    "total_yards_after_catch",
+    "average_yards_after_catch",
+    "yards_after_catch_attempts_available",
+}
+
+PASSING_CHARTING_TARGET_SEASON_COLUMNS = {
+    "target_id",
+    "target",
+    "season",
+    "team_id",
+    "team",
+    "targets_charted",
+    "receptions",
+    "total_air_yards",
+    "average_depth_of_target",
+    "air_yards_charted_plays",
+    "total_yards_after_catch",
+    "average_yards_after_catch",
+    "yards_after_catch_charted_plays",
+    "target_share_charted",
+    "partial_share",
+}
+
+PASSING_CHARTING_TEAM_SEASON_COLUMNS = {
+    "season",
+    "team",
+    "conference",
+    "offense_total_air_yards",
+    "offense_average_depth_of_target",
+    "offense_air_yards_attempts_available",
+    "offense_total_yards_after_catch",
+    "offense_average_yards_after_catch",
+    "offense_yards_after_catch_attempts_available",
+    "defense_total_air_yards",
+    "defense_average_depth_of_target",
+    "defense_air_yards_attempts_available",
+    "defense_total_yards_after_catch",
+    "defense_average_yards_after_catch",
+    "defense_yards_after_catch_attempts_available",
+}
+
+# CFBD's own continuous coach-tenure record (distinct from api.coaching_history's
+# gap-detected marts.coaching_tenure). May be empty pre-backfill -- see
+# TestViewsExistAndReturnRows below, column check only.
+COACH_TENURES_COLUMNS = {
+    "coach_id",
+    "coach_name",
+    "team_id",
+    "team",
+    "tenure_start",
+    "tenure_end",
+    "hire_date",
+    "is_interim",
+    "record_games",
+    "record_wins",
+    "record_losses",
+    "record_ties",
+    "record_win_percentage",
+    "classification",
+}
+
+# Per-(campaign, season) progress against meta.refresh_campaigns/refresh_progress
+# (migration 051). May be empty until a correction campaign row exists.
+REFRESH_CAMPAIGN_STATUS_COLUMNS = {
+    "campaign",
+    "season",
+    "games_refreshed",
+    "games_no_data",
+    "completed_at",
+    "last_finalized_at",
+}
+
 # ---------------------------------------------------------------------------
 # Test: views exist and return rows
 # ---------------------------------------------------------------------------
@@ -685,6 +779,15 @@ class TestViewsExistAndReturnRows:
             # (2016-2025) = ~1,300+; conservative floor below the backfill,
             # 2026 in-season rows are upside.
             ("api.core_ratings", 1000),
+            # Passing charting (2025+ only). Floors are conservative fractions
+            # of src/pipelines/sources/passing.py's documented 2025 probe
+            # counts (820 player-seasons, 136 team-seasons, roughly FBS);
+            # target-season is aggregated per-receiver from stats.passing_plays,
+            # so it has more rows than either grain (many receivers per team).
+            # 2026 in-season rows are upside; not re-verified live this run.
+            ("api.passing_charting_player_season", 500),
+            ("api.passing_charting_target_season", 1000),
+            ("api.passing_charting_team_season", 100),
         ],
         ids=[
             "team_detail",
@@ -709,6 +812,9 @@ class TestViewsExistAndReturnRows:
             "season_outlook",
             "expected_points",
             "core_ratings",
+            "passing_charting_player_season",
+            "passing_charting_target_season",
+            "passing_charting_team_season",
         ],
     )
     def test_view_returns_rows(self, db_conn, view_name, min_rows):
@@ -756,6 +862,14 @@ class TestViewColumns:
             ("api.season_outlook", SEASON_OUTLOOK_COLUMNS),
             ("api.expected_points", EXPECTED_POINTS_COLUMNS),
             ("api.core_ratings", CORE_RATINGS_COLUMNS),
+            ("api.passing_charting_player_season", PASSING_CHARTING_PLAYER_SEASON_COLUMNS),
+            ("api.passing_charting_target_season", PASSING_CHARTING_TARGET_SEASON_COLUMNS),
+            ("api.passing_charting_team_season", PASSING_CHARTING_TEAM_SEASON_COLUMNS),
+            # coach_tenures/refresh_campaign_status may be empty pre-backfill /
+            # pre-campaign -- column check only, no row-count entry above
+            # (same treatment as game_recaps/scored_matchup_edges).
+            ("api.coach_tenures", COACH_TENURES_COLUMNS),
+            ("api.refresh_campaign_status", REFRESH_CAMPAIGN_STATUS_COLUMNS),
         ],
         ids=[
             "team_detail",
@@ -784,6 +898,11 @@ class TestViewColumns:
             "season_outlook",
             "expected_points",
             "core_ratings",
+            "passing_charting_player_season",
+            "passing_charting_target_season",
+            "passing_charting_team_season",
+            "coach_tenures",
+            "refresh_campaign_status",
         ],
     )
     def test_columns_present(self, db_conn, view_name, expected_columns):

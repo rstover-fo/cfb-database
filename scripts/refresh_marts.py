@@ -204,6 +204,16 @@ def refresh_marts(
     db_url = get_db_url()
     conn = psycopg2.connect(db_url)
 
+    # get_db_url() appends statement_timeout=0 as an `options=` STARTUP
+    # parameter, but Supabase's session pooler (Supavisor) silently ignores
+    # startup options -- the role-default 2-minute timeout still applied, and
+    # marts.play_epa (the one refresh that exceeds it under load) was
+    # cancelled at exactly ~120s in two runs on 2026-08-30. Setting it as a
+    # real session statement survives the pooler.
+    with conn.cursor() as _cur:
+        _cur.execute("SET statement_timeout = 0")
+    conn.commit()
+
     failures = 0
     try:
         for view in views:

@@ -160,7 +160,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 45 | `/ppa/games` | metrics.ppa_games | metrics.py | ppa_games_resource | YES | merge | game_id, team | 2014-2026 | WORKING |
 | 46 | `/ppa/players/games` | metrics.ppa_players_games | metrics.py | ppa_players_games_resource | YES | merge | id | 2014-2026 | WORKING |
 | 47 | `/metrics/wp` | metrics.win_probability | metrics.py | win_probability_resource (via metrics_wp_source) | YES | merge | game_id, play_id | 2014-2026 | WORKING (1,971,363 rows) |
-| 48 | `/ppa/predicted` | metrics.ppa_predicted | metrics.py | ppa_predicted_resource (via metrics_ppa_predicted_source, opt-in -- `--source metrics_ppa_predicted`) | YES | merge | down, distance, yard_line | — | WORKING (not yet backfilled -- see note) |
+| 48 | `/ppa/predicted` | metrics.ppa_predicted | metrics.py | ppa_predicted_resource (via metrics_ppa_predicted_source, opt-in -- `--source metrics_ppa_predicted`) | YES | merge | down, distance, yard_line | — | WORKING (loaded 2026-08-30 via backfill-sources.yml `runner=pipeline_run` -- 10,140 rows) |
 | 49 | `/metrics/fg/ep` | metrics.fg_expected_points | metrics.py | fg_expected_points_resource | YES | merge | distance | — | WORKING |
 
 ### Rankings
@@ -202,7 +202,7 @@ note and the summary note below.
 | 61 | `/playoffs/cfp/games` | core.cfp_games | playoffs.py | cfp_games_resource | YES | merge | season, id | 2014-2026 | WORKING (not yet backfilled) |
 | 62 | `/playoffs/cfp/participants` | core.cfp_participants | playoffs.py | cfp_participants_resource | YES | merge | season, team\_\_id | 2014-2026 | WORKING (not yet backfilled) |
 | 63 | `/coaches/seasons` | ref.coach_seasons | coaches.py | coach_seasons_resource | YES | merge | coach\_\_id, year, team\_\_id | 2000-2026 | WORKING (not yet backfilled -- every probe call 400'd; field names are from the OpenAPI spec, unverified live) |
-| 64 | `/coaches/tenures` | ref.coach_tenures | coaches.py | coach_tenures_resource | YES (backfill/preseason only -- `--source coach_tenures`, not in load_season.py's SOURCE_ORDER) | merge | id | current | WORKING (not yet backfilled) |
+| 64 | `/coaches/tenures` | ref.coach_tenures | coaches.py | coach_tenures_resource | YES (backfill/preseason only -- `--source coach_tenures`, not in load_season.py's SOURCE_ORDER) | merge | id | current | WORKING (loaded 2026-08-30 via backfill-sources.yml `runner=pipeline_run` -- 2,738 rows) |
 | 65 | `/conferences/affiliations` | ref.conference_affiliations | conferences.py | conference_affiliations_resource | YES | merge | team_id, conference_id, start_year | all (bulk) | WORKING (not yet backfilled) |
 | 66 | `/conferences/changes` | ref.conference_changes | conferences.py | conference_changes_resource | YES | merge | effective_year, team_id | 2000-2026 | WORKING (not yet backfilled) |
 
@@ -217,8 +217,8 @@ Rows 69-70 (A4 unit, 2026-08-29) are the two per-entity fan-out drainers left PE
 the A2 unit above -- see the summary note for why they needed a targeted loader rather
 than a year-fetch-all.
 
-| 69 | `/coaches/profile` | ref.coach_profiles | coaches.py | coach_profiles_resource | YES (drainer -- `run.py::run_coach_profiles_pipeline`, in `SOURCE_ORDER`, capped at 200 coach ids/run) | merge | id | current | WORKING (wired, not yet backfilled -- candidate coach ids come from ref.coach_seasons, itself not yet backfilled against the live database) |
-| 70 | `/player/season/overview` | stats.player_season_overview | player_overview.py | player_season_overview_resource | YES (drainer -- `run.py::run_player_overview_pipeline`, in `SOURCE_ORDER`, capped at 250 player-seasons/run) | merge | season, id | finished seasons only (completed-season gate) | WORKING (wired, not yet backfilled) |
+| 69 | `/coaches/profile` | ref.coach_profiles | coaches.py | coach_profiles_resource | YES (drainer -- `run.py::run_coach_profiles_pipeline`, in `SOURCE_ORDER`, capped at 200 coach ids/run) | merge | id | current | WORKING (drainer live -- 200 rows after its first capped run, draining daily) |
+| 70 | `/player/season/overview` | stats.player_season_overview | player_overview.py | player_season_overview_resource | YES (drainer -- `run.py::run_player_overview_pipeline`, in `SOURCE_ORDER`, capped at 250 player-seasons/run) | merge | season, id | finished seasons only (completed-season gate) | WORKING (drainer live -- 250 rows after its first capped run, draining daily) |
 
 ### Passing (spec v5.25.0, 2026-08-30)
 
@@ -408,10 +408,10 @@ above. Rationale: 120 calls building a static lookup table that doesn't
 change with the season is fine once (or occasionally) but wasteful to repeat
 on every daily `metrics` load, and unlike `metrics_wp` there is no
 set-difference check to make repeating it cheap. Not part of
-`scripts/load_season.py`'s `SOURCE_ORDER` for the same reason. Still not yet
-backfilled against the live database -- the first `--source
-metrics_ppa_predicted` run is what will create `metrics.ppa_predicted` and
-let 050_expansion_grants_indexes.sql's grants/comments apply.
+`scripts/load_season.py`'s `SOURCE_ORDER` for the same reason. Loaded
+2026-08-30 via `backfill-sources.yml`'s new `runner=pipeline_run` input
+(10,140 rows) -- `metrics.ppa_predicted` exists and
+050_expansion_grants_indexes.sql's grants/comments apply.
 
 ### `/game/box/advanced` (Advanced Game Box Score) — DEFERRED
 
@@ -555,6 +555,12 @@ First deploy (one-time, requires DB credentials):
 4. SBR backfill per season file: `python scripts/load_flat_files.py --source sbr --file
    <downloaded .xlsx>` (sportsbookreviewsonline now serves HTML tables; export/convert
    to .xlsx with the documented column layout, or load archived copies).
+
+**Status (2026-08-30):** `massey` is seeded, from the live `compare.csv` -- 131/131
+names mapped (90 exact, 24 abbrev/fuzzy auto, 17 manual corrections); the seed is
+committed at `src/schemas/migrations/seed/team_name_xwalk_seed_massey.sql`. `sbr`
+remains unseeded -- it has no fetchable source (`fetch_url=None`, manual source
+only) and is pending a real Excel file from the user.
 
 Notes: Massey no-ops (`status=no_op_offseason`) until its CSV rolls to the current
 season (typically preseason); SEC/Big 12/CFP availability reports are served through a

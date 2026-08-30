@@ -367,69 +367,92 @@ def probe_stats_game_advanced(client, ctx, dry_run):
 
 
 def probe_passing_plays(client, ctx, dry_run):
-    call_year = do_call(client, "/passing/plays", {"year": 2024}, dry_run)
-    call_week5 = do_call(client, "/passing/plays", {"year": 2024, "week": 5}, dry_run)
-    call_team = do_call(client, "/passing/plays", {"year": 2024, "team": "Alabama"}, dry_run)
+    # Live run 33320296004 (2024): bare year=2024 400'd "team or week is
+    # required" -- runtime validation on this endpoint is stricter than the
+    # spec's documented required-params list, which lists only `year`.
+    # year+week and year+team both came back 200 count=0 for 2024, so we
+    # sweep 2025 (charting shipped last season) and 2026 week 1 (this
+    # weekend) instead of repeating the proven-empty bare-year call.
+    call_2025_week5 = do_call(client, "/passing/plays", {"year": 2025, "week": 5}, dry_run)
+    call_2025_team = do_call(client, "/passing/plays", {"year": 2025, "team": "Alabama"}, dry_run)
+    call_2026_week1 = do_call(client, "/passing/plays", {"year": 2026, "week": 1}, dry_run)
     notes = [
-        "Volume probe: a season runs ~45-50k pass attempts, one week ~2,800 -- these "
-        "counts decide the resource's iteration grain (prefer year, fall back to week, "
-        "then team, in that order)."
+        "Bare year=2024 was proven 400 ('team or week is required') on the live run -- "
+        "dropped from this sweep. Volume probe: a season runs ~45-50k pass attempts, one "
+        "week ~2,800 -- the 2025 week-5 count is now the key cap signal for this "
+        "resource's iteration grain (week vs team)."
     ]
     if not dry_run:
-        for label, call in (("year", call_year), ("week", call_week5), ("team", call_team)):
+        for label, call in (
+            ("2025 week5", call_2025_week5),
+            ("2025 team", call_2025_team),
+            ("2026 week1", call_2026_week1),
+        ):
             if looks_capped(call.count):
                 notes.append(
                     f"CAP SUSPECTED: {label} call count={call.count} sits on/near a round number."
                 )
-    return [call_year, call_week5, call_team], notes
+    return [call_2025_week5, call_2025_team, call_2026_week1], notes
 
 
 def probe_passing_players_games(client, ctx, dry_run):
-    call_year = do_call(client, "/passing/players/games", {"year": 2024}, dry_run)
-    call_week5 = do_call(client, "/passing/players/games", {"year": 2024, "week": 5}, dry_run)
-    notes = []
-    if not dry_run and looks_capped(call_year.count):
+    # Live run: bare year=2024 400'd "passerId, team, or week is required" --
+    # same runtime-validation gap as passing/plays. Sweeping 2025/2026
+    # instead of repeating the proven-empty bare-year call.
+    call_2025_week5 = do_call(client, "/passing/players/games", {"year": 2025, "week": 5}, dry_run)
+    call_2026_week1 = do_call(client, "/passing/players/games", {"year": 2026, "week": 1}, dry_run)
+    notes = [
+        "Bare year=2024 was proven 400 ('passerId, team, or week is required') on the "
+        "live run -- dropped from this sweep."
+    ]
+    if not dry_run and looks_capped(call_2025_week5.count):
         notes.append(
-            f"CAP SUSPECTED: bare-year count={call_year.count} sits on/near a round number."
+            f"CAP SUSPECTED: 2025 week5 count={call_2025_week5.count} sits on/near a round number."
         )
-    return [call_year, call_week5], notes
+    return [call_2025_week5, call_2026_week1], notes
 
 
 def probe_passing_players_season(client, ctx, dry_run):
-    call_2024 = do_call(client, "/passing/players/season", {"year": 2024}, dry_run)
-    call_2014 = do_call(client, "/passing/players/season", {"year": 2014}, dry_run)
+    call_2025 = do_call(client, "/passing/players/season", {"year": 2025}, dry_run)
+    call_2026 = do_call(client, "/passing/players/season", {"year": 2026}, dry_run)
     notes = [
-        "Historical-depth check for the whole /passing family (charting-derived data may "
-        "be shallow): year=2014 status/count above shows whether rows exist, come back "
-        "empty, or 400 that far back."
+        "Historical-depth check for the whole /passing family: 2024 and 2014 already "
+        "probed empty (200 count=0) on the live run. If 2025 has rows here, treat "
+        "PASSING_DATA_START=2025 for the family; if both 2025 and 2026 are still empty, "
+        "the family has no data yet."
     ]
-    return [call_2024, call_2014], notes
+    return [call_2025, call_2026], notes
 
 
 def probe_passing_teams_games(client, ctx, dry_run):
-    calls = [do_call(client, "/passing/teams/games", {"year": 2024}, dry_run)]
+    # Live run: bare year=2024 400'd "team or week is required", matching the
+    # play/game-grain endpoints above.
+    call_2025_week5 = do_call(client, "/passing/teams/games", {"year": 2025, "week": 5}, dry_run)
+    call_2026_week1 = do_call(client, "/passing/teams/games", {"year": 2026, "week": 1}, dry_run)
     notes = [
-        "Confirm nested offense/defense dict shape in the sample (~1,600 game-team rows "
-        "expected for a full season)."
+        "Bare year=2024 was proven 400 ('team or week is required') on the live run -- "
+        "dropped from this sweep. Confirm nested offense/defense dict shape in the "
+        "sample (~1,600 game-team rows expected for a full season)."
     ]
-    if not dry_run and looks_capped(calls[0].count):
-        notes.append(f"CAP SUSPECTED: count={calls[0].count} sits on/near a round number.")
-    return calls, notes
+    if not dry_run and looks_capped(call_2025_week5.count):
+        notes.append(
+            f"CAP SUSPECTED: 2025 week5 count={call_2025_week5.count} sits on/near a round number."
+        )
+    return [call_2025_week5, call_2026_week1], notes
 
 
 def probe_passing_teams_season(client, ctx, dry_run):
-    call_year = do_call(client, "/passing/teams/season", {"year": 2024}, dry_run)
-    call_bulk = do_call(client, "/passing/teams/season", {}, dry_run)
-    notes = []
-    if not dry_run:
-        if call_bulk.status == 200 and call_bulk.count:
-            notes.append("No-params call worked -- bulk /passing/teams/season is supported.")
-        else:
-            notes.append(
-                f"No-params call did not return rows (status={call_bulk.status}, "
-                f"count={call_bulk.count}) -- /passing/teams/season needs year."
-            )
-    return [call_year, call_bulk], notes
+    # Live run: year=2024 200'd count=0; no-params 400'd "year required when
+    # team not specified" -- bulk (no params) is NOT supported, unlike some
+    # sibling /season endpoints. Dropped that call; sweeping 2025/2026 instead.
+    call_2025 = do_call(client, "/passing/teams/season", {"year": 2025}, dry_run)
+    call_2026 = do_call(client, "/passing/teams/season", {"year": 2026}, dry_run)
+    notes = [
+        "No-params call was proven 400 ('year required when team not specified') on the "
+        "live run -- dropped from this sweep. Bulk access requires team-or-year, not "
+        "supported bare."
+    ]
+    return [call_2025, call_2026], notes
 
 
 # (number, slug, function) -- number and slug drive both --only selection and

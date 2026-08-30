@@ -14,6 +14,7 @@ MARTS_VIEWS = [
     "_game_epa_calc",
     "adjusted_epa_week",
     "coach_record",
+    "coach_tenures",
     "coaching_tenure",
     "conference_comparison",
     "conference_era_summary",
@@ -24,6 +25,9 @@ MARTS_VIEWS = [
     "epa_crossvalidation",
     "matchup_edges",
     "matchup_history",
+    "passing_charting_player_season",
+    "passing_charting_target_season",
+    "passing_charting_team_season",
     "penalty_log",
     "play_epa",
     "player_comparison",
@@ -124,6 +128,12 @@ class TestMartViewsHaveData:
     EMPTY_OK = {
         ("marts", "scored_matchup_edges"),
         ("marts", "epa_crossvalidation"),
+        # ref.coach_tenures is a per-team fan-out resource, deliberately
+        # excluded from the daily/incremental path (coaches.py's
+        # cfbd_coach_tenures source) -- an environment that hasn't yet run
+        # the backfill (`--source coach_tenures`) legitimately has zero rows
+        # here. See marts/048_coach_tenures.sql's header.
+        ("marts", "coach_tenures"),
     }
 
     @pytest.mark.parametrize(

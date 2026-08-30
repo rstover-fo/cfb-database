@@ -112,6 +112,15 @@ class TestHeightInches:
     def test_whitespace_only_string_returns_none(self):
         assert ncaa._height_inches("   ") is None
 
+    def test_blank_split_parts_return_none(self):
+        """The ACTUAL live failure shape (2026-08-30, second round): the
+        real 2025 file carries heights whose feet or inches PART is blank
+        after the dash split -- "6-", "-11", "-" -- which the whole-value
+        blank guard missed and float('') rejected."""
+        assert ncaa._height_inches("6-") is None
+        assert ncaa._height_inches("-11") is None
+        assert ncaa._height_inches("-") is None
+
 
 class TestParseDates:
     def test_parse_mmddyyyy(self):

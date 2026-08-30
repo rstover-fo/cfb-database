@@ -212,12 +212,18 @@ def _to_int(value) -> int | None:
 
 def _height_inches(value: str | None) -> float | None:
     """ "6-0" (feet-inches, stats.ncaa.org's roster height format) -> 72.0
-    inches. Tolerates None and blank strings (see ``_blank_to_none``)."""
+    inches. Tolerates None and blank strings (see ``_blank_to_none``), and
+    malformed heights whose SPLIT PARTS are blank -- the real 2025 file
+    carries values like "6-" and "-" (found live 2026-08-30), so a blank
+    feet or inches part means the height is unusable and coerces to None
+    rather than crashing float('')."""
     value = _blank_to_none(value)
     if value is None:
         return None
     if isinstance(value, str) and "-" in value:
         feet, _, inches = value.partition("-")
+        if feet.strip() == "" or inches.strip() == "":
+            return None
         return float(feet) * 12 + float(inches)
     return float(value)
 

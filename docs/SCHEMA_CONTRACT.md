@@ -861,7 +861,7 @@ These objects are implementation details. Do not depend on them from downstream 
 | Schema | Tables |
 |--------|--------|
 | `core` | `games`, `drives`, `plays` (partitioned: `plays_y2004`..`plays_y2026`), `roster`, `roster__recruit_ids`, `records`, `rankings`, `game_media`, `game_weather`, `game_player_stats` (+ nested `__teams`, `__categories`, `__types`, `__athletes`), `game_team_stats` (+ nested `__teams`, `__stats`), `games__home_line_scores`, `games__away_line_scores` |
-| `stats` | `team_season_stats`, `player_season_stats`, `advanced_team_stats`, `advanced_game_stats`, `game_havoc`, `play_stats`, `player_usage`, `player_returning` |
+| `stats` | `team_season_stats`, `player_season_stats`, `advanced_team_stats`, `advanced_game_stats`, `game_havoc`, `play_stats`, `player_usage`, `player_returning`, `passing_plays`, `passing_player_games`, `passing_team_games`, `passing_player_season`, `passing_team_season` |
 | `ratings` | `sp_ratings`, `sp_conference_ratings`, `elo_ratings`, `fpi_ratings`, `srs_ratings`, `core_ratings` |
 | `recruiting` | `recruits`, `team_recruiting`, `team_talent`, `transfer_portal`, `recruiting_groups` |
 | `betting` | `lines`, `team_ats`, `line_snapshots` (append-only line movement snapshots, no PK, `captured_at` stamped per run) |

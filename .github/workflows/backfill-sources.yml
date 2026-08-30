@@ -7,6 +7,15 @@ name: Backfill Sources
 # season costs only what the named sources cost (ratings: ~6 calls/season).
 # Marts refresh once at the end rather than once per season.
 #
+# Two sources -- coach_tenures (~350 per-team calls) and
+# metrics_ppa_predicted (~120 calls) -- are run.py-only: they are
+# deliberately excluded from load_season.py's SOURCE_ORDER (run.py:481-483,
+# :570-576) and so have no dispatch path through the default `runner`
+# below, which shells out to load_season.py and validates sources against
+# that same SOURCE_ORDER. Dispatching with `runner: pipeline_run` bypasses
+# that validation on purpose and calls src/pipelines/run.py directly for a
+# single `--source` once, with no per-season loop.
+#
 # Requires repo secrets:
 #   CFBD_API_KEY    - collegefootballdata.com API key
 #   SUPABASE_DB_URL - Supabase SESSION pooler URL (see daily-load.yml)
@@ -15,13 +24,25 @@ on:
   workflow_dispatch:
     inputs:
       seasons:
-        description: "Season years, space-separated (e.g. 2016 2017 2018)"
-        required: true
+        description: >-
+          Season years, space-separated (e.g. 2016 2017 2018). Required
+          when runner=load_season. Optional for runner=pipeline_run --
+          pass years to resolve coach_tenures' team list from core.games;
+          leave blank for metrics_ppa_predicted, which ignores years.
+        required: false
         type: string
       sources:
-        description: "Comma-separated sources for load_season.py --sources (e.g. ratings, or stats:player_returning)"
+        description: "Comma-separated sources for load_season.py --sources (e.g. ratings, or stats:player_returning); for runner=pipeline_run, a single run.py --source name (e.g. coach_tenures, metrics_ppa_predicted)"
         required: true
         type: string
+      runner:
+        description: "load_season: per-season loop via scripts/load_season.py (default). pipeline_run: single src.pipelines.run --source call, for run.py-only sources not in load_season's SOURCE_ORDER (coach_tenures, metrics_ppa_predicted)."
+        required: false
+        type: choice
+        default: load_season
+        options:
+          - load_season
+          - pipeline_run
 
 # Shares the daily load's concurrency group so a backfill never merges into
 # the same tables while the scheduled load is mid-run; it queues instead.
@@ -39,7 +60,7 @@ env:
 
 jobs:
   backfill:
-    name: Backfill ${{ inputs.sources }} for ${{ inputs.seasons }}
+    name: Backfill ${{ inputs.sources }} for ${{ inputs.seasons || 'no seasons' }} (${{ inputs.runner || 'load_season' }})
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -53,6 +74,7 @@ jobs:
         # dlt requires the postgres:// scheme (see .dlt/secrets.toml.example)
         run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
       - name: Load seasons
+        if: ${{ inputs.runner != 'pipeline_run' }}
         # Hardening (PR #75 review finding C): route workflow_dispatch inputs
         # through step-level env: vars (probe-endpoints.yml's pattern) rather
         # than interpolating ${{ inputs.* }} directly into the run: shell --
@@ -61,6 +83,13 @@ jobs:
           SEASONS_INPUT: ${{ inputs.seasons }}
           SOURCES_INPUT: ${{ inputs.sources }}
         run: |
+          # runner=load_season always needs seasons -- fail fast with a
+          # clear message rather than let the (empty) for-loop below
+          # silently no-op.
+          if [ -z "$SEASONS_INPUT" ]; then
+            echo "::error::seasons is required when runner=load_season (leave it set, or switch runner to pipeline_run)"
+            exit 1
+          fi
           # $SEASONS_INPUT is deliberately unquoted -- it is a
           # space-separated list of years and this loop relies on the
           # shell's word-splitting to iterate them individually.
@@ -69,5 +98,32 @@ jobs:
             python scripts/load_season.py --season "$season" --sources "$SOURCES_INPUT" --skip-refresh
             echo "::endgroup::"
           done
+      - name: Run pipeline source
+        if: ${{ inputs.runner == 'pipeline_run' }}
+        # run.py-only sources (coach_tenures, metrics_ppa_predicted) have no
+        # SOURCE_ORDER slot in load_season.py, so this calls
+        # src/pipelines/run.py directly, once, with no per-season loop --
+        # unlike the load_season path above, which loops --season per year.
+        env:
+          SEASONS_INPUT: ${{ inputs.seasons }}
+          SOURCES_INPUT: ${{ inputs.sources }}
+        run: |
+          # metrics_ppa_predicted's runner lambda takes no arguments and
+          # ignores years entirely, so it must run bare -- only append
+          # --years when the seasons input is non-empty. coach_tenures
+          # requires --years to resolve its team list from core.games via
+          # scheduled_teams when --teams is not given (run.py:577-597).
+          if [ -n "$SEASONS_INPUT" ]; then
+            # $SEASONS_INPUT is deliberately unquoted here too -- same
+            # space-separated word-splitting as the load_season loop above,
+            # this time feeding argparse's `--years` nargs="+".
+            python -m src.pipelines.run --source "$SOURCES_INPUT" --years $SEASONS_INPUT
+          else
+            python -m src.pipelines.run --source "$SOURCES_INPUT"
+          fi
       - name: Refresh marts
+        # Neither run.py-only source (coach_tenures, metrics_ppa_predicted)
+        # feeds any mart, so skip the refresh entirely on that path rather
+        # than pay for a no-op refresh.
+        if: ${{ inputs.runner != 'pipeline_run' }}
         run: python scripts/refresh_marts.py

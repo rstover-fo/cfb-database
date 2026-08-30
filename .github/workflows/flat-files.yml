@@ -48,10 +48,19 @@ jobs:
         # dlt requires the postgres:// scheme (see .dlt/secrets.toml.example)
         run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
       - name: Load flat-file sources
+        # Hardening (PR #75 review finding C): route the workflow_dispatch
+        # `source` input through a step-level env: var (probe-endpoints.yml's
+        # pattern) instead of interpolating ${{ inputs.source }} directly
+        # into the run: shell -- see historical-refresh.yml's Drain backlog
+        # step for the rationale.
+        env:
+          SOURCE_INPUT: ${{ inputs.source }}
         run: |
-          if [ -n "${{ inputs.source }}" ]; then
-            SOURCES="${{ inputs.source }}"
-            python scripts/load_flat_files.py $(printf -- '--source %s ' $SOURCES)
+          if [ -n "$SOURCE_INPUT" ]; then
+            # Deliberately unquoted: SOURCE_INPUT is a space-separated list
+            # of registry names, and word-splitting is how each one becomes
+            # its own --source flag below.
+            python scripts/load_flat_files.py $(printf -- '--source %s ' $SOURCE_INPUT)
           else
             python scripts/load_flat_files.py --due
           fi

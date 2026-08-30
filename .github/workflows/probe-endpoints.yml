@@ -1,0 +1,78 @@
+name: Probe 2026 Endpoints
+
+# One-off, manually dispatched probe of CFBD spec v5.24.2's new/changed
+# endpoints (playoff bracket, coach seasons/tenures, conference affiliation
+# history, player success rate, expanded SRS, player season overview, and
+# whether two existing endpoints still accept a bare `year`). Read-only,
+# ~13 calls total -- see scripts/probe_2026_endpoints.py for the full list.
+# No schedule: run it by hand when a response shape needs to be confirmed
+# before writing the corresponding dlt source module.
+#
+# The push trigger exists because workflow_dispatch resolves workflow files
+# against the default branch, and this workflow lives only on its feature
+# branch until merged: it fires only for pushes to that branch that touch
+# the probe files themselves, so ordinary source-work pushes never spend
+# API calls. Remove the push trigger once the file reaches main.
+#
+# Requires repo secret:
+#   CFBD_API_KEY - collegefootballdata.com API key
+
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Comma-separated probe numbers to run, e.g. 4,9,12 (default: all 13)"
+        required: false
+        type: string
+  push:
+    branches:
+      - claude/cfbd-cfb-package-updates-7iabg2
+    paths:
+      - .github/workflows/probe-endpoints.yml
+      - scripts/probe_2026_endpoints.py
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  probe:
+    name: Probe endpoints
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e .
+      - name: Run endpoint probe
+        env:
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+          ONLY_INPUT: ${{ inputs.only }}
+        run: |
+          if [ -n "$ONLY_INPUT" ]; then
+            python scripts/probe_2026_endpoints.py --only "$ONLY_INPUT" | tee probe_stdout.txt
+          else
+            python scripts/probe_2026_endpoints.py | tee probe_stdout.txt
+          fi
+      - name: Append summary to job summary
+        if: always()
+        run: |
+          {
+            echo '### CFBD endpoint probe results'
+            echo '```'
+            cat probe_stdout.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload probe output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-output
+          path: probe_output/
+          retention-days: 7
+          if-no-files-found: warn

@@ -1,0 +1,41 @@
+[
+  {
+    "teamId": 12,
+    "team": "Arizona",
+    "fromConferenceId": 9,
+    "fromConference": "Pac-12",
+    "fromConferenceAbbreviation": "PAC",
+    "fromClassification": "fbs",
+    "toConferenceId": 4,
+    "toConference": "Big 12",
+    "toConferenceAbbreviation": "B12",
+    "toClassification": "fbs",
+    "effectiveYear": 2024
+  },
+  {
+    "teamId": 9,
+    "team": "Arizona State",
+    "fromConferenceId": 9,
+    "fromConference": "Pac-12",
+    "fromConferenceAbbreviation": "PAC",
+    "fromClassification": "fbs",
+    "toConferenceId": 4,
+    "toConference": "Big 12",
+    "toConferenceAbbreviation": "B12",
+    "toClassification": "fbs",
+    "effectiveYear": 2024
+  },
+  {
+    "teamId": 349,
+    "team": "Army",
+    "fromConferenceId": 18,
+    "fromConference": "FBS Independents",
+    "fromConferenceAbbreviation": "Ind",
+    "fromClassification": "fbs",
+    "toConferenceId": 151,
+    "toConference": "American Athletic",
+    "toConferenceAbbreviation": "AAC",
+    "toClassification": "fbs",
+    "effectiveYear": 2024
+  }
+]

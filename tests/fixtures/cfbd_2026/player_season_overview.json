@@ -1,0 +1,72 @@
+[
+  {
+    "season": 2024,
+    "id": "5083552",
+    "name": "Blayne Taylor",
+    "position": "WR",
+    "team": "Abilene Christian",
+    "conference": "UAC",
+    "games": 14,
+    "boxScoreStats": {
+      "categories": [
+        {
+          "name": "receiving",
+          "stats": [
+            {
+              "name": "LONG",
+              "value": "76"
+            },
+            {
+              "name": "REC",
+              "value": "73"
+            },
+            {
+              "name": "TD",
+              "value": "8"
+            },
+            {
+              "name": "YDS",
+              "value": "1117"
+            },
+            {
+              "name": "YPR",
+              "value": "15.3"
+            }
+          ]
+        }
+      ]
+    },
+    "usage": {
+      "overall": 0.079,
+      "pass": 0.138,
+      "rush": 0,
+      "firstDown": 0.047,
+      "secondDown": 0.082,
+      "thirdDown": 0.152,
+      "standardDowns": 0.053,
+      "passingDowns": 0.14
+    },
+    "ppa": {
+      "average": {
+        "all": 1.41,
+        "pass": 1.41,
+        "rush": null,
+        "firstDown": 0.617,
+        "secondDown": 1.264,
+        "thirdDown": 2.034,
+        "standardDowns": 0.824,
+        "passingDowns": 1.912
+      },
+      "total": {
+        "all": 109.954,
+        "pass": 109.954,
+        "rush": 0,
+        "firstDown": 12.955,
+        "secondDown": 32.86,
+        "thirdDown": 61.011,
+        "standardDowns": 29.671,
+        "passingDowns": 80.283
+      }
+    }
+  }
+]

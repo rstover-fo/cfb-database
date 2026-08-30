@@ -86,8 +86,15 @@ jobs:
           PY
       - name: Poll scoreboard
         if: steps.guard.outputs.has_games == 'true'
+        # Hardening (PR #75 review finding C): route the workflow_dispatch
+        # `dry_run` input through a step-level env: var (probe-endpoints.yml's
+        # pattern) instead of interpolating ${{ inputs.dry_run }} directly
+        # into the run: shell -- see historical-refresh.yml's Drain backlog
+        # step for the rationale.
+        env:
+          DRY_RUN_INPUT: ${{ inputs.dry_run }}
         run: |
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
+          if [ "$DRY_RUN_INPUT" = "true" ]; then
             python scripts/poll_scoreboard.py --dry-run
           else
             python scripts/poll_scoreboard.py

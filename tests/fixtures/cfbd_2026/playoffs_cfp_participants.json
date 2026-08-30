@@ -1,0 +1,50 @@
+[
+  {
+    "team": {
+      "id": 2483,
+      "school": "Oregon",
+      "conference": "Big Ten"
+    },
+    "committeeRank": 1,
+    "seed": 1,
+    "bidType": "automatic",
+    "qualificationReason": "Conference champion automatic qualifier",
+    "conferenceChampion": true,
+    "qualifyingConference": "Big Ten",
+    "firstRoundBye": true,
+    "outcome": "eliminated",
+    "eliminatedRound": "quarterfinal"
+  },
+  {
+    "team": {
+      "id": 61,
+      "school": "Georgia",
+      "conference": "SEC"
+    },
+    "committeeRank": 2,
+    "seed": 2,
+    "bidType": "automatic",
+    "qualificationReason": "Conference champion automatic qualifier",
+    "conferenceChampion": true,
+    "qualifyingConference": "SEC",
+    "firstRoundBye": true,
+    "outcome": "eliminated",
+    "eliminatedRound": "quarterfinal"
+  },
+  {
+    "team": {
+      "id": 68,
+      "school": "Boise State",
+      "conference": "Mountain West"
+    },
+    "committeeRank": 9,
+    "seed": 3,
+    "bidType": "automatic",
+    "qualificationReason": "Conference champion automatic qualifier",
+    "conferenceChampion": true,
+    "qualifyingConference": "Mountain West",
+    "firstRoundBye": true,
+    "outcome": "eliminated",
+    "eliminatedRound": "quarterfinal"
+  }
+]

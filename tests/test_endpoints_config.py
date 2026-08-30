@@ -8,9 +8,12 @@ import pytest
 from src.pipelines.config.endpoints import (
     ALL_ENDPOINTS,
     BETTING_ENDPOINTS,
+    COACHES_ENDPOINTS,
+    CONFERENCES_ENDPOINTS,
     CORE_ENDPOINTS,
     DRAFT_ENDPOINTS,
     METRICS_ENDPOINTS,
+    PLAYOFFS_ENDPOINTS,
     RANKINGS_ENDPOINTS,
     RATINGS_ENDPOINTS,
     RECRUITING_ENDPOINTS,
@@ -166,6 +169,21 @@ class TestSyncedEndpointPKs:
         config = STATS_ENDPOINTS["advanced_team_stats"]
         assert config.primary_key == ["season", "team"]
 
+    def test_coach_profile_pk(self):
+        """coach_profile keyed by id -- CoachProfile carries its own
+        globally unique top-level id (A4 unit, 2026-08-29)."""
+        config = COACHES_ENDPOINTS["coach_profile"]
+        assert config.primary_key == ["id"]
+        assert config.path == "/coaches/profile"
+
+    def test_player_season_overview_pk(self):
+        """player_season_overview keyed by season + id, the player-grain
+        join spine shared with stats.player_usage / metrics.ppa_players_season
+        (A4 unit, 2026-08-29)."""
+        config = STATS_ENDPOINTS["player_season_overview"]
+        assert config.primary_key == ["season", "id"]
+        assert config.path == "/player/season/overview"
+
 
 class TestPrimaryKeyFieldsAreStrings:
     """PK fields should be simple string column names, not nested/complex types."""
@@ -203,6 +221,9 @@ class TestWriteDispositions:
             "draft": DRAFT_ENDPOINTS,
             "metrics": METRICS_ENDPOINTS,
             "rankings": RANKINGS_ENDPOINTS,
+            "playoffs": PLAYOFFS_ENDPOINTS,
+            "coaches": COACHES_ENDPOINTS,
+            "conferences": CONFERENCES_ENDPOINTS,
         }
         for group_name, group in non_ref.items():
             for name, config in group.items():

@@ -6,7 +6,7 @@ description: CFBD (CollegeFootballData) API conventions, gotchas, and endpoint-s
 # CFBD API
 
 Sources: the CFBD AI Builder Pack canonical context (2026) merged with
-gotchas earned in the cfb-database warehouse. The complete 61-endpoint
+gotchas earned in the cfb-database warehouse. The complete 74-endpoint
 inventory lives in `cfb-database/docs/cfbd-api-endpoints.md`; this skill
 carries conventions and traps, not the endpoint list.
 

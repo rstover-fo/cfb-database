@@ -30,9 +30,18 @@ def stats_source(
         mode: "incremental" loads current season, "backfill" loads all historical.
         only: Resource names to run (default: all). The source is NOT uniformly
             priced -- play_stats issues one /plays/stats request PER GAME
-            (~1,640 for a full season) while every other resource here is a
-            single call per year. Anything that runs daily should name the
-            resources it needs instead of paying for the whole source.
+            (~1,640 for a full season), player_success_game walks ~20 weeks
+            (regular 1-16 + postseason 1-4) per year, game_advanced makes 2
+            calls per year (regular+postseason), and every other resource
+            here is a single call per year. Anything that runs daily should
+            name the resources it needs instead of paying for the whole
+            source.
+
+    Note: `advanced_game_stats_resource` (the old `/game/box/advanced`
+    resource) is intentionally NOT in this source's return list -- CFBD
+    dropped the `year` query parameter it depended on, so every year-scoped
+    call now 400s. It is retained in this module, game-id-driven, for a
+    future historical-refresh campaign; see its docstring.
     """
     if years is None:
         if mode == "incremental":
@@ -44,11 +53,13 @@ def stats_source(
         team_season_stats_resource(years),
         player_season_stats_resource(years),
         advanced_team_stats_resource(years),
-        advanced_game_stats_resource(years),
         player_usage_resource(years),
         player_returning_resource(years),
         play_stats_resource(years),
         game_havoc_resource(years),
+        player_success_season_resource(years),
+        player_success_game_resource(years),
+        game_advanced_resource(years),
     ]
 
     if only is None:
@@ -166,31 +177,70 @@ def advanced_team_stats_resource(years: list[int]) -> Iterator[dict]:
     write_disposition="merge",
     primary_key=["game_id", "team"],
 )
-def advanced_game_stats_resource(years: list[int]) -> Iterator[dict]:
-    """Load advanced game-level box score stats (EPA, success rates, etc).
+def advanced_game_stats_resource(
+    game_ids: list[int], *, misses: list[int] | None = None
+) -> Iterator[dict]:
+    """Load advanced game-level box score stats, one call per explicit game id.
 
-    Note: Data only available from ~2014+. Earlier years return 400 and are skipped.
+    BROKEN AS YEAR-SCOPED (confirmed 2026-08-29): CFBD dropped the `year`
+    query parameter from `/game/box/advanced` -- the live OpenAPI spec now
+    requires a single `id` (game id) per call, and every year-only call
+    always 400s. This resource previously iterated `years` and silently
+    no-op'd (one wasted 400 per requested year, every stats load) --
+    docs/pipeline-manifest.md row 12.
+
+    Reworked to explicit-id mode, mirroring play_stats_resource's game_ids
+    branch, and REMOVED from stats_source's default return list so a normal
+    stats load no longer spends that call. Year-scoped advanced game-team
+    stats are now served by `game_advanced_resource`
+    (stats.game_advanced_team_stats, `/stats/game/advanced`) below, which
+    still accepts `year`.
+
+    Kept importable for a future historical-refresh campaign that walks
+    core.games and backfills this table id-by-id -- one call per game, an
+    unbounded fan-out that must never run from a year-driven default path
+    (the same reasoning `play_stats_resource` and `metrics_wp_source`
+    document for their own per-game modes).
 
     Args:
-        years: List of years to load stats for
+        game_ids: Explicit CFBD game ids to load advanced box scores for.
+        misses: When given (not None), a suppressed 400 AND an empty 200
+            (`if not data`) for a game id append that id here -- the caller
+            (scripts/backfill_refresh.py) uses this to record that game as
+            'no_data' rather than 'refreshed' in meta.refresh_progress
+            (PR #75 F6: a suppressed per-game 400 was previously getting a
+            plain ledger row, permanently hiding a real miss from the
+            campaign's backlog). Unlike play_stats_resource, an empty 200
+            here IS a miss: every game with a completed box score has
+            advanced stats, so nothing back means the call didn't land.
     """
     client = get_client()
     try:
-        for year in years:
-            logger.info(f"Loading advanced game stats for {year}...")
-
+        total = 0
+        for i, game_id in enumerate(game_ids):
             try:
                 data = make_request(
                     client,
                     "/game/box/advanced",
-                    params={"year": year},
+                    params={"id": game_id},
                 )
-                yield from data
+                if data:
+                    total += len(data)
+                    yield from data
+                else:
+                    logger.warning(f"No advanced box score for game {game_id} (empty response)")
+                    if misses is not None:
+                        misses.append(game_id)
+                if (i + 1) % 100 == 0:
+                    logger.info(f"  Processed {i + 1}/{len(game_ids)} games, {total} records")
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 400:
-                    logger.warning(f"No advanced game stats for {year} (400 response), skipping")
+                    logger.warning(f"No advanced box score for game {game_id} (400 response)")
+                    if misses is not None:
+                        misses.append(game_id)
                     continue
                 raise
+        logger.info(f"Loaded {total} total records from {len(game_ids)} games")
 
     finally:
         client.close()
@@ -274,6 +324,8 @@ def player_returning_resource(years: list[int]) -> Iterator[dict]:
 def play_stats_resource(
     years: list[int] | None = None,
     game_ids: list[int] | None = None,
+    *,
+    misses: list[int] | None = None,
 ) -> Iterator[dict]:
     """Load play-level statistics (player associations for each play).
 
@@ -285,6 +337,15 @@ def play_stats_resource(
     Args:
         years: List of years to load play stats for (will fetch game IDs from API)
         game_ids: Explicit list of game IDs to load (overrides years if provided)
+        misses: game_ids mode only. When given (not None), a suppressed 400
+            for a game id appends that id here -- the caller
+            (scripts/backfill_refresh.py) uses this to record that game as
+            'no_data' rather than 'refreshed' (PR #75 F6). An empty 200 is
+            deliberately NOT treated as a miss here: zero player-stat
+            associations is a legitimate outcome for early-era or
+            lower-division games (mirrors the benign empty-week handling in
+            the year-mode branch below), so it is not appended. Ignored in
+            years mode.
     """
     if game_ids is None and years is None:
         raise ValueError("Must provide either years or game_ids")
@@ -308,6 +369,9 @@ def play_stats_resource(
                         logger.info(f"  Processed {i + 1}/{len(game_ids)} games, {total} records")
                 except httpx.HTTPStatusError as e:
                     if e.response.status_code == 400:
+                        logger.warning(f"No play stats for game {game_id} (400 response)")
+                        if misses is not None:
+                            misses.append(game_id)
                         continue
                     raise
             logger.info(f"Loaded {total} total records from {len(game_ids)} games")
@@ -415,6 +479,144 @@ def game_havoc_resource(years: list[int]) -> Iterator[dict]:
                     logger.warning(f"No game havoc data for {year} (400 response), skipping")
                     continue
                 raise
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="player_success_season",
+    write_disposition="merge",
+    primary_key=["season", "id", "team"],
+)
+def player_success_season_resource(years: list[int]) -> Iterator[dict]:
+    """Load player season success-rate splits (passing/rushing), one call per year.
+
+    Every field CFBD returns is already top-level (season, id, name,
+    position, team, conference) -- id/season/team/position, the player-grain
+    join spine, need no manual stamping. `passing`/`rushing` are nested
+    dicts (plays, successes, successRate) that dlt flattens into
+    `passing__plays`, etc.
+
+    Note: Data only available from ~2014+. Earlier years return 400 and are skipped.
+
+    Args:
+        years: List of years to load success-rate stats for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            logger.info(f"Loading player success rates for {year}...")
+
+            try:
+                data = make_request(client, "/stats/player/success", params={"year": year})
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 400:
+                    logger.warning(f"No player success data for {year} (400 response), skipping")
+                    continue
+                raise
+
+            yield from data
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="player_success_game",
+    write_disposition="merge",
+    primary_key=["game_id", "id"],
+)
+def player_success_game_resource(years: list[int]) -> Iterator[dict]:
+    """Load player game-level success-rate splits, iterating weeks per year.
+
+    `/stats/player/success/game` requires `week` unless `team` or
+    `playerId` is given -- a year-alone call 400s -- so this walks weeks
+    like game_stats.py's game_team_stats_resource: regular season weeks
+    1-16, postseason weeks 1-4. An empty week (byes, early postseason
+    rounds not yet played) is not an error and is skipped silently.
+
+    Every field CFBD returns is already top-level (season, seasonType,
+    week, gameId, id, name, position, team, conference, opponent) --
+    id/season/team/position, the player-grain join spine, need no manual
+    stamping.
+
+    Note: Data only available from ~2014+.
+
+    Args:
+        years: List of years to load success-rate stats for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            for season_type in ("regular", "postseason"):
+                max_week = 16 if season_type == "regular" else 4
+                for week in range(1, max_week + 1):
+                    logger.info(
+                        f"Loading player game success rates for {year} {season_type} week {week}..."
+                    )
+                    try:
+                        data = make_request(
+                            client,
+                            "/stats/player/success/game",
+                            params={"year": year, "seasonType": season_type, "week": week},
+                        )
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 400:
+                            logger.warning(
+                                f"No player game success data for {year} {season_type} "
+                                f"week {week} (400 response), skipping"
+                            )
+                            continue
+                        raise
+
+                    if not data:
+                        continue
+
+                    yield from data
+
+    finally:
+        client.close()
+
+
+@dlt.resource(
+    name="game_advanced",
+    table_name="game_advanced_team_stats",
+    write_disposition="merge",
+    primary_key=["game_id", "team"],
+)
+def game_advanced_resource(years: list[int]) -> Iterator[dict]:
+    """Load advanced game-level team stats (EPA, success rate, line yards).
+
+    Works year-scoped -- unlike the broken `/game/box/advanced` (see
+    advanced_game_stats_resource above), `/stats/game/advanced` still
+    accepts a bare `year`. Iterates seasonType regular+postseason.
+
+    Args:
+        years: List of years to load advanced game stats for
+    """
+    client = get_client()
+    try:
+        for year in years:
+            for season_type in ("regular", "postseason"):
+                logger.info(f"Loading advanced game stats for {year} {season_type}...")
+
+                try:
+                    data = make_request(
+                        client,
+                        "/stats/game/advanced",
+                        params={"year": year, "seasonType": season_type},
+                    )
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 400:
+                        logger.warning(
+                            f"No advanced game stats for {year} {season_type} "
+                            "(400 response), skipping"
+                        )
+                        continue
+                    raise
+
+                yield from data
 
     finally:
         client.close()

@@ -1,0 +1,29 @@
+[
+  {
+    "year": 2005,
+    "team": "USC",
+    "classification": "fbs",
+    "conference": "Pac-10",
+    "division": null,
+    "ranking": 1,
+    "rating": 27.9
+  },
+  {
+    "year": 2005,
+    "team": "Texas",
+    "classification": "fbs",
+    "conference": "Big 12",
+    "division": "South",
+    "ranking": 2,
+    "rating": 27
+  },
+  {
+    "year": 2005,
+    "team": "Ohio State",
+    "classification": "fbs",
+    "conference": "Big Ten",
+    "division": null,
+    "ranking": 3,
+    "rating": 23.9
+  }
+]

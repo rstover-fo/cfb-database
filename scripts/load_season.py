@@ -24,33 +24,62 @@ logger = logging.getLogger(__name__)
 # Source loading order matters: dependencies first
 SOURCE_ORDER = [
     "reference",  # Teams, conferences, venues (no year filter)
+    "conferences",  # Conference membership: affiliations (bulk) + changes (year-driven)
+    "coaches",  # Year-driven coach-season records (coach_tenures excluded, see below)
+    "coach_profiles",  # Per-coach-id drainer -- backlog then ~0-2 calls/day, see below
     "games",  # Game results
+    "playoffs",  # CFP bracket/games/participants, 2014+
     "game_stats",  # Team and player box scores
     "plays",  # Play-by-play (largest dataset)
     "stats",  # Aggregated season stats
-    "ratings",  # SP+, Elo, FPI, SRS, CORE
+    "ratings",  # SP+, Elo, FPI, SRS, CORE, SRS-expanded
     "rankings",  # AP, Coaches polls
     "recruiting",  # Recruits, team composites
     "betting",  # Betting lines
     "draft",  # NFL draft picks
     "metrics",  # PPA, pregame win probability
     "metrics_wp",  # In-game win probability -- game-id-driven, see run_metrics_wp_pipeline
+    "wepa",  # Year-keyed opponent-adjusted EPA metrics, 4 calls
+    "player_overview",  # Per-(season,player) drainer, finished seasons only -- see below
     "rosters",  # Team rosters
 ]
 
 # Estimated API calls per source per season (rough averages)
 ESTIMATED_CALLS = {
     "reference": 10,
+    # conference_affiliations is one bulk unfiltered call (not year-scoped --
+    # counted here anyway since it costs something every source-grain run)
+    # + conference_changes, one call per year.
+    "conferences": 2,
+    # coach_seasons only: one call per year. coach_tenures (per-team fan-out)
+    # is deliberately excluded from this source's daily cost -- see
+    # IMMUTABLE_ONCE_FINAL's comment and coaches.py's module docstring.
+    "coaches": 1,
+    # NOT an estimate of steady-state cost -- coach_profiles is a per-coach-id
+    # drainer (run.py::run_coach_profiles_pipeline, MAX_COACH_PROFILES_PER_RUN):
+    # this is its cap, so the backlog (every coach id ever seen in
+    # coach_seasons) drains at up to 200 calls/day until it empties, then
+    # costs ~0-2 calls/day (new head-coaching hires only). Mirrors
+    # metrics_wp's estimate being "a typical week," not a hard ceiling --
+    # here it's the reverse: the ceiling, not a typical day.
+    "coach_profiles": 200,
     "games": 15,
+    # cfp_bracket + cfp_games + cfp_participants, one call each per year
+    # (2014+ only; 0 calls for an earlier season -- see playoffs.py's
+    # CFP_START guard).
+    "playoffs": 3,
     "game_stats": 200,
     "plays": 400,
-    # NOT 20. Seven of the stats source's eight resources are one call per
-    # year, but play_stats issues one /plays/stats request PER GAME, so the
-    # source tracks the season's schedule (~1,640 games) rather than its
-    # resource count. The old estimate understated a daily run by ~80x and hid
-    # this source behind "plays" in every budget projection.
-    "stats": 1_650,
-    "ratings": 12,
+    # NOT 20. Most of the stats source's resources are one call per year, but
+    # play_stats issues one /plays/stats request PER GAME (~1,640 games),
+    # player_success_game walks ~20 weeks (regular 1-16 + postseason 1-4),
+    # and game_advanced makes 2 calls (regular+postseason) -- the source
+    # tracks the season's schedule rather than its resource count. The old
+    # estimate understated a daily run by ~80x and hid this source behind
+    # "plays" in every budget projection.
+    "stats": 1_675,
+    # sp/elo/fpi/srs/core/sp_conferences/srs_expanded: one call per year each.
+    "ratings": 13,
     "rankings": 20,
     "recruiting": 15,
     "betting": 5,
@@ -62,6 +91,14 @@ ESTIMATED_CALLS = {
     # backfill run resolves far more missing games and costs proportionally
     # more -- this estimate is for the dry-run printout, not a hard cap.
     "metrics_wp": 70,
+    "wepa": 4,
+    # NOT an estimate of steady-state cost -- player_overview is a
+    # per-(season,player) drainer (run.py::run_player_overview_pipeline,
+    # MAX_PLAYER_OVERVIEW_PER_RUN): this is its cap. Only finished seasons
+    # are eligible (the completed-season gate), so the backlog grows by one
+    # season's worth at a time (a few thousand players) each January rather
+    # than continuously, and drains at up to 250 calls/day in between.
+    "player_overview": 250,
     # One call per team, and the team list is the season's schedule -- both
     # sides, so FCS visitors count. 350 for 2026, not the 150 this said when
     # it meant "FBS only".
@@ -84,6 +121,15 @@ ESTIMATED_CALLS = {
 # NOT on this list, deliberately:
 #   reference   -- no year filter and ~10 calls; always cheap, always current.
 #
+#   coaches, conferences -- cheap (1-2 calls/season) AND their data mutates
+#                  off-season: a coaching change or conference realignment
+#                  lands well after a season is "final" by the games-completed
+#                  definition below, so skipping them for a finished season
+#                  would freeze coach_seasons/conference_affiliations exactly
+#                  when hires and realignment announcements happen. Same
+#                  reasoning as the `reference` exclusion above, just also
+#                  worth spelling out since both are new sources.
+#
 #   metrics_wp  -- NOT skipped, though it was briefly added here. The 2026-07-26
 #                  daily load showed why it looked like it belonged: it reported
 #
@@ -105,9 +151,32 @@ ESTIMATED_CALLS = {
 #                  per run (MAX_GAMES_PER_RUN) and logs what it deferred, so the
 #                  backlog drains at a bounded price instead of costing
 #                  everything or nothing.
+#
+#   coach_profiles -- same shape as metrics_wp, not the same reasoning as
+#                  coaches/conferences above: a coach profile (career totals,
+#                  current team, alma mater) is itself immutable-ish, but the
+#                  CANDIDATE SET (every coach id seen in coach_seasons) keeps
+#                  growing regardless of whether any one season is finished --
+#                  a coaching change is itself the event that adds a new id.
+#                  Skipping it for a finished season would stop the backlog
+#                  from draining for exactly the seasons most likely to have
+#                  produced new hires. Cost is bounded in the pipeline instead
+#                  (run.MAX_COACH_PROFILES_PER_RUN), same remedy as metrics_wp.
+#
+#   player_overview -- NOT skipped, but for the opposite reason from
+#                  coach_profiles: its data is immutable-once-final in the
+#                  literal sense (a finished season's box score/usage/PPA
+#                  cannot change), which is exactly why it belongs in
+#                  IMMUTABLE_ONCE_FINAL's opposite -- finished seasons are
+#                  its ENTIRE duty cycle, not an exemption from one. The
+#                  completed-season gate inside run_player_overview_pipeline
+#                  (not this frozenset) is what keeps an in-progress season's
+#                  mutating totals from being loaded early; putting it here
+#                  would skip the only seasons it is allowed to touch.
 IMMUTABLE_ONCE_FINAL = frozenset(
     {
         "games",
+        "playoffs",
         "game_stats",
         "plays",
         "stats",
@@ -117,6 +186,7 @@ IMMUTABLE_ONCE_FINAL = frozenset(
         "betting",
         "draft",
         "metrics",
+        "wepa",
         "rosters",
     }
 )
@@ -201,7 +271,9 @@ PRESEASON_INPUT_SOURCES = ("stats", "ratings", "recruiting")
 
 # What the off-season refresh above actually costs per day, as opposed to what
 # ESTIMATED_CALLS says a full source-grain run of the same names would cost.
-PRESEASON_ESTIMATED_CALLS = len(PRESEASON_STATS_RESOURCES) + 6 + 5
+# `ratings` runs whole at 7 calls/year (sp, elo, fpi, srs, core,
+# sp_conferences, srs_expanded); `recruiting` runs whole at 5.
+PRESEASON_ESTIMATED_CALLS = len(PRESEASON_STATS_RESOURCES) + 7 + 5
 
 
 # Sources whose runner accepts a resource filter. Only `stats` needs one so
@@ -304,12 +376,17 @@ def load_season(
     """
     from src.pipelines.run import (
         run_betting_pipeline,
+        run_coach_profiles_pipeline,
+        run_coaches_pipeline,
+        run_conferences_pipeline,
         run_draft_pipeline,
         run_game_stats_pipeline,
         run_game_stats_weekly,
         run_games_pipeline,
         run_metrics_pipeline,
         run_metrics_wp_pipeline,
+        run_player_overview_pipeline,
+        run_playoffs_pipeline,
         run_plays_pipeline,
         run_rankings_pipeline,
         run_ratings_pipeline,
@@ -317,6 +394,7 @@ def load_season(
         run_reference_pipeline,
         run_rosters_pipeline,
         run_stats_pipeline,
+        run_wepa_pipeline,
     )
     from src.pipelines.utils.rate_limiter import get_rate_limiter
 
@@ -431,7 +509,16 @@ def load_season(
     )
     runners = {
         "reference": lambda: run_reference_pipeline(),
+        "conferences": lambda: run_conferences_pipeline(years=[season]),
+        # coach_tenures (per-team fan-out) is deliberately not invoked here --
+        # backfill/preseason only, see run_coach_tenures_pipeline.
+        "coaches": lambda: run_coaches_pipeline(years=[season]),
+        # Season-independent by design -- a per-coach-id backlog drainer, not
+        # scoped to the season this load_season() call targets. See
+        # run_coach_profiles_pipeline and the IMMUTABLE_ONCE_FINAL comment above.
+        "coach_profiles": lambda: run_coach_profiles_pipeline(),
         "games": lambda: run_games_pipeline(years=[season]),
+        "playoffs": lambda: run_playoffs_pipeline(years=[season]),
         "game_stats": game_stats_runner,
         "plays": lambda: run_plays_pipeline(years=[season]),
         "stats": lambda: run_stats_pipeline(years=[season], only=resource_filters.get("stats")),
@@ -442,6 +529,12 @@ def load_season(
         "draft": lambda: run_draft_pipeline(years=[season]),
         "metrics": lambda: run_metrics_pipeline(years=[season]),
         "metrics_wp": lambda: run_metrics_wp_pipeline(seasons=[season]),
+        "wepa": lambda: run_wepa_pipeline(years=[season]),
+        # Season-independent by design -- the completed-season gate inside
+        # run_player_overview_pipeline decides which seasons are eligible,
+        # not the season this load_season() call targets. See
+        # run_player_overview_pipeline and the IMMUTABLE_ONCE_FINAL comment above.
+        "player_overview": lambda: run_player_overview_pipeline(),
         # Excluded from the default active set above (one call per team), so
         # this only runs when an operator asks for it by name:
         # --sources rosters. The team list resolves from the season's

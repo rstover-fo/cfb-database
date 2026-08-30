@@ -12,7 +12,7 @@
 --      coaching_tenure, recruiting_roi, conference_comparison
 --   5: matchup_edges, data_freshness
 --   6: house_elo, house_elo_game, team_adjusted_epa, scored_matchup_edges, prediction_accuracy
---   7: team_week_features, adjusted_epa_week
+--   7: team_week_features, adjusted_epa_week, epa_crossvalidation
 --
 -- Usage:
 --   SELECT * FROM marts.refresh_all();
@@ -213,7 +213,11 @@ BEGIN
     -- Layer 7: Tier 3 analytics (computed from play/feature builds, depends on Layer 6)
     v_views := ARRAY[
         'team_week_features',
-        'adjusted_epa_week'
+        'adjusted_epa_week',
+        -- Refresh-campaign plausibility harness: reads team_adjusted_epa
+        -- (layer 6) and team_epa_season (layer 2) against the external
+        -- ratings tables. Legitimately empty until an external anchor loads.
+        'epa_crossvalidation'
     ];
     v_layer := 7;
 
@@ -238,5 +242,5 @@ END;
 $$;
 
 COMMENT ON FUNCTION marts.refresh_all IS
-'Refreshes all 42 materialized views in the marts schema in dependency order (7 layers). '
+'Refreshes all 43 materialized views in the marts schema in dependency order (7 layers). '
 'Returns timing and status for each view. Errors are caught per-view so one failure does not abort the rest.';

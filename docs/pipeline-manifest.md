@@ -82,7 +82,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 9 | `/games/teams` | core.game_team_stats | game_stats.py | game_team_stats_resource | YES | merge | id | 2004-2026 | WORKING |
 | 10 | `/games/players` | core.game_player_stats | game_stats.py | game_player_stats_resource | YES | merge | id | 2004-2026 | WORKING |
 | 11 | `/games/weather` | core.game_weather | games.py | game_weather_resource | YES | merge | id | 2000-2026 | WORKING |
-| 12 | `/game/box/advanced` | stats.advanced_game_stats | stats.py | advanced_game_stats_resource | YES | merge | game_id, team | 2014-2026 | WORKING |
+| 12 | `/game/box/advanced` | stats.advanced_game_stats | stats.py | advanced_game_stats_resource | NO (game-id backfill only) | merge | game_id, team | 2014-2026 | DEFERRED (see 2026-08-29 note -- CFBD dropped `year`; use `/stats/game/advanced`, row 23, for year-scoped needs) |
 | 13 | `/calendar` | ref.calendar | reference.py | calendar_resource | YES | replace | season, week | current | WORKING |
 | 14 | `/records` | core.records | games.py | records_resource | YES | merge | year, team | 2000-2026 | WORKING |
 | 15 | `/scoreboard` | — | — | — | — | — | — | — | UNMAPPED |
@@ -103,7 +103,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 20 | `/stats/season` | stats.team_season_stats | stats.py | team_season_stats_resource | YES | merge | season, team, stat_name | 2004-2026 | WORKING |
 | 21 | `/stats/player/season` | stats.player_season_stats | stats.py | player_season_stats_resource | YES | merge | player_id, season, team, category, stat_type | 2004-2026 | WORKING |
 | 22 | `/stats/season/advanced` | stats.advanced_team_stats | stats.py | advanced_team_stats_resource | YES | merge | season, team | 2004-2026 | WORKING |
-| 23 | `/stats/game/advanced` | — | — | — | — | — | — | — | UNMAPPED |
+| 23 | `/stats/game/advanced` | stats.game_advanced_team_stats | stats.py | game_advanced_resource | YES | merge | game_id, team | 2014-2026 | WORKING (not yet backfilled) |
 | 24 | `/stats/game/havoc` | stats.game_havoc | stats.py | game_havoc_resource | YES | merge | game_id, team | 2014-2026 | WORKING |
 | 25 | `/stats/categories` | ref.stat_categories | reference.py | stat_categories_resource | YES | replace | name | — | WORKING |
 
@@ -117,6 +117,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 29 | `/ratings/srs` | ratings.srs_ratings | ratings.py | srs_ratings_resource | YES | merge | year, team | 2015-2026 | WORKING |
 | 30 | `/ratings/sp/conferences` | ratings.sp_conference_ratings | ratings.py | sp_conference_ratings_resource | YES | merge | year, conference | 2015-2026 | WORKING |
 | 30a | `/ratings/core` | ratings.core_ratings | ratings.py | core_ratings_resource | YES | merge | year, team | 2016-2026 | WORKING |
+| 30b | `/ratings/srs/expanded` | ratings.srs_expanded | ratings.py | srs_expanded_ratings_resource | YES | merge | year, team | 2005-2026 | WORKING (not yet backfilled) |
 
 ### Recruiting Data (merge disposition)
 
@@ -158,8 +159,8 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 44 | `/metrics/wp/pregame` | metrics.pregame_win_probability | metrics.py | pregame_wp_resource | YES | merge | season, game_id | 2014-2026 | WORKING |
 | 45 | `/ppa/games` | metrics.ppa_games | metrics.py | ppa_games_resource | YES | merge | game_id, team | 2014-2026 | WORKING |
 | 46 | `/ppa/players/games` | metrics.ppa_players_games | metrics.py | ppa_players_games_resource | YES | merge | id | 2014-2026 | WORKING |
-| 47 | `/metrics/wp` | metrics.win_probability | metrics.py | win_probability_resource (via metrics_wp_source) | YES | merge | game_id, play_id | 2014-2026 | PENDING_DEPLOY |
-| 48 | `/ppa/predicted` | — | — | — | — | — | down, distance, yard_line | — | DEFERRED |
+| 47 | `/metrics/wp` | metrics.win_probability | metrics.py | win_probability_resource (via metrics_wp_source) | YES | merge | game_id, play_id | 2014-2026 | WORKING (1,971,363 rows) |
+| 48 | `/ppa/predicted` | metrics.ppa_predicted | metrics.py | ppa_predicted_resource (via metrics_ppa_predicted_source, opt-in -- `--source metrics_ppa_predicted`) | YES | merge | down, distance, yard_line | — | WORKING (not yet backfilled -- see note) |
 | 49 | `/metrics/fg/ep` | metrics.fg_expected_points | metrics.py | fg_expected_points_resource | YES | merge | distance | — | WORKING |
 
 ### Rankings
@@ -187,20 +188,52 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 58 | `/wepa/team/season` | metrics.wepa_team_season | wepa.py | wepa_team_season_resource | YES | merge | year, team | 2014-2026 | WORKING |
 | 59 | `/wepa/players/kicking` | metrics.wepa_players_kicking | wepa.py | wepa_players_kicking_resource | YES | merge | id, year | 2014-2026 | WORKING |
 
+### Expansion Endpoints (A2 unit, 2026-08-29)
+
+12 endpoints new to the 74-count regeneration are now rowed here. The last two -- rows
+69-70, `/coaches/profile` and `/player/season/overview` (A4 unit, 2026-08-29) -- are
+per-entity fan-out drainers wired as a bounded backlog-draining slice per run (a cap, not
+a one-time backfill), unlike the year-fetch-all shape of the other ten; see each row's
+note and the summary note below.
+
+| # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
+|---|---|---|---|---|---|---|---|---|---|
+| 60 | `/playoffs/cfp` | core.cfp_bracket | playoffs.py | cfp_bracket_resource | YES | merge | season | 2014-2026 | WORKING (not yet backfilled) |
+| 61 | `/playoffs/cfp/games` | core.cfp_games | playoffs.py | cfp_games_resource | YES | merge | season, id | 2014-2026 | WORKING (not yet backfilled) |
+| 62 | `/playoffs/cfp/participants` | core.cfp_participants | playoffs.py | cfp_participants_resource | YES | merge | season, team\_\_id | 2014-2026 | WORKING (not yet backfilled) |
+| 63 | `/coaches/seasons` | ref.coach_seasons | coaches.py | coach_seasons_resource | YES | merge | coach\_\_id, year, team\_\_id | 2000-2026 | WORKING (not yet backfilled -- every probe call 400'd; field names are from the OpenAPI spec, unverified live) |
+| 64 | `/coaches/tenures` | ref.coach_tenures | coaches.py | coach_tenures_resource | YES (backfill/preseason only -- `--source coach_tenures`, not in load_season.py's SOURCE_ORDER) | merge | id | current | WORKING (not yet backfilled) |
+| 65 | `/conferences/affiliations` | ref.conference_affiliations | conferences.py | conference_affiliations_resource | YES | merge | team_id, conference_id, start_year | all (bulk) | WORKING (not yet backfilled) |
+| 66 | `/conferences/changes` | ref.conference_changes | conferences.py | conference_changes_resource | YES | merge | effective_year, team_id | 2000-2026 | WORKING (not yet backfilled) |
+
+See row 30b for `/ratings/srs/expanded` (ratings.srs_expanded) and rows 67-68 below for
+the two `/stats/player/success*` endpoints -- kept with their thematic groups above rather
+than renumbered into this section.
+
+| 67 | `/stats/player/success` | stats.player_success_season | stats.py | player_success_season_resource | YES | merge | season, id, team | 2014-2026 | WORKING (not yet backfilled) |
+| 68 | `/stats/player/success/game` | stats.player_success_game | stats.py | player_success_game_resource | YES | merge | game_id, id | 2014-2026 | WORKING (not yet backfilled) |
+
+Rows 69-70 (A4 unit, 2026-08-29) are the two per-entity fan-out drainers left PENDING by
+the A2 unit above -- see the summary note for why they needed a targeted loader rather
+than a year-fetch-all.
+
+| 69 | `/coaches/profile` | ref.coach_profiles | coaches.py | coach_profiles_resource | YES (drainer -- `run.py::run_coach_profiles_pipeline`, in `SOURCE_ORDER`, capped at 200 coach ids/run) | merge | id | current | WORKING (wired, not yet backfilled -- candidate coach ids come from ref.coach_seasons, itself not yet backfilled against the live database) |
+| 70 | `/player/season/overview` | stats.player_season_overview | player_overview.py | player_season_overview_resource | YES (drainer -- `run.py::run_player_overview_pipeline`, in `SOURCE_ORDER`, capped at 250 player-seasons/run) | merge | season, id | finished seasons only (completed-season gate) | WORKING (wired, not yet backfilled) |
+
 ---
 
 ## Summary
 
 | Status | Count |
 |---|---|
-| WORKING | 52 |
-| WORKING (note) | 1 |
+| WORKING | 51 |
+| WORKING (note) | 14 |
 | CONFIG_ONLY | 0 |
-| PENDING_DEPLOY | 1 |
+| PENDING_DEPLOY | 0 |
 | DEFERRED | 2 |
-| UNMAPPED | 3 |
+| UNMAPPED | 2 |
 | REMOVED | 1 |
-| **Total** | **60** |
+| **Total** | **70** |
 
 **2026-07-19 update:** The 5 "WORKING (PK bug)" entries (coaches, player_season_stats,
 transfer_portal, lines, draft_picks) were already fixed in the source modules — statuses
@@ -212,7 +245,47 @@ timeouts — `run.py --source game_stats --weekly` or `scripts/load_season.py --
 
 **Sprint 4 Progress:** Promoted 15 endpoints from UNMAPPED/CONFIG_ONLY to WORKING: `/game/box/advanced`, `/plays/stats`, `/stats/season/advanced`, `/stats/game/havoc`, `/ratings/sp/conferences`, `/player/usage`, `/player/returning`, `/teams/ats`, `/ppa/games`, `/ppa/players/games`, `/metrics/fg/ep`, `/wepa/players/passing`, `/wepa/players/rushing`, `/wepa/team/season`, `/wepa/players/kicking`. Removed `/player/search` (requires searchTerm; use core.rosters instead). Deleted dead code: `adjusted_metrics.py` (duplicate of `wepa.py`), `players.py` (broken source).
 
-**Note**: The API reference lists ~61 endpoints but some are variants of others (e.g., `/stats/season` vs `/stats/player/season` are listed as one "stats" category). This manifest counts distinct loadable endpoints.
+**2026-08-29 update:** `/metrics/wp` (row 47) verified against the live database
+(`SELECT COUNT(*) FROM metrics.win_probability` -> 1,971,363) and promoted
+PENDING_DEPLOY -> WORKING; see the dated addendum under its investigation note
+below. `/ppa/predicted` (row 48) is now returned from `metrics_source`'s
+resource list (src/pipelines/sources/metrics.py), so it graduates out of
+DEFERRED, but `pg_attribute` shows no `metrics.ppa_predicted` table exists in
+the live database -- the endpoint still 400s on the parameterless call the
+resource makes, so it has never loaded a row. See its investigation note's
+2026-08-29 addendum before treating this row as "data is loaded."
+
+**2026-08-29 update (A2 unit, later same day):** Two repairs plus ten new
+endpoints rowed.
+
+- R1: `/game/box/advanced` (row 12) is CONFIRMED BROKEN as year-scoped --
+  CFBD dropped the `year` query parameter; the live OpenAPI spec now requires
+  a single `id` (game id) and every year-only call 400s. `advanced_game_stats_resource`
+  (stats.py) was reworked to take explicit `game_ids` (mirroring
+  `play_stats_resource`'s explicit-ids mode) and REMOVED from `stats_source`'s
+  default return list -- it no longer burns a silent 400 per requested year.
+  Demoted WORKING -> DEFERRED (row 12); kept importable for a future
+  historical-refresh campaign. Year-scoped advanced game-team stats are now
+  served by `/stats/game/advanced` (row 23, NEW), which still accepts `year`.
+- R2: `/ppa/predicted` (row 48) -- see its investigation note's 2026-08-29
+  (continued) addendum below. The down x distance fan-out (~120 calls) is now
+  implemented, but `ppa_predicted_resource` was moved OUT of `metrics_source`'s
+  default resource list into its own `metrics_ppa_predicted_source` (opt-in
+  via `--source metrics_ppa_predicted`), mirroring how `win_probability` is
+  split into `metrics_wp_source` -- a 120-call static-lookup fan-out has no
+  place in a year-driven daily source. Still not yet backfilled.
+- 10 endpoints new to the 74-count regeneration are now rowed: CFP bracket/
+  games/participants (rows 60-62, playoffs.py), coach seasons/tenures (rows
+  63-64, coaches.py), conference affiliations/changes (rows 65-66,
+  conferences.py), expanded SRS ratings (row 30b, ratings.py), and player
+  success season/game (rows 67-68, stats.py). All are WORKING (wired, tested,
+  CLI-registered) but none have run against the live database yet -- see each
+  row's "(not yet backfilled)" note. `coaches/seasons` in particular was
+  never observed live during development (every probe call 400'd on a
+  parameterless request); its column names come from the CFBD OpenAPI spec,
+  not an inspected response -- verify via `pg_attribute` after the first load.
+
+**Note**: The API reference now lists 74 endpoints (see `docs/cfbd-api-endpoints.md`) but some are variants of others (e.g., `/stats/season` vs `/stats/player/season` are listed as one "stats" category). This manifest counts distinct loadable endpoints. All 12 endpoints new to the 74-count regeneration (2026-08-29) are now rowed: 10 in the A2 unit above, plus `/coaches/profile` and `/player/season/overview` (rows 69-70, A4 unit, 2026-08-29) -- the two that were PENDING here. Both needed a targeted loader rather than a year-fetch-all: `/coaches/profile` (requires `coachId`, one call per coach) is drained by `run.py::run_coach_profiles_pipeline` from the coach ids seen in `ref.coach_seasons`, and `/player/season/overview` (requires `year` + `playerId`, one call per player per season -- a large, unbounded fan-out) is drained by `run.py::run_player_overview_pipeline` from the player-seasons seen in `stats.player_usage`/`metrics.ppa_players_season`, gated to finished seasons only. Both are DB-set-difference drainers capped per run (200 and 250 respectively) and wired into `scripts/load_season.py`'s `SOURCE_ORDER`, not full backfills.
 
 ---
 
@@ -265,6 +338,10 @@ must still confirm (CFBD's WP model was reportedly rebuilt in 2025, so the
 `playId`/`down`/`distance`/`yardLine` field names this note originally
 recorded on 2026-01-29 are unverified against current live data).
 
+**Resolution (2026-08-29):** `SELECT COUNT(*) FROM metrics.win_probability`
+against the live database returns 1,971,363 -- the deploy sequence above has
+run. Status promoted PENDING_DEPLOY -> WORKING (row 47).
+
 ### `/ppa/predicted` (Predicted Points Lookup) — DEFERRED
 
 **Investigation Date:** 2026-01-29
@@ -280,6 +357,74 @@ While the total dataset is small (~10K records), the endpoint requires iterating
 
 **Recommendation:**
 If needed, implement a simple nested loop over realistic down/distance combinations (down 1-4, distance 1-30) to build the complete lookup table. This could be done in a single pipeline run with ~120 API calls.
+
+**Resolution (2026-08-29):** `ppa_predicted_resource` is now returned from
+`metrics_source`'s resource list and is CLI-registered via `--source
+metrics`, so it no longer meets DEFERRED's "not returned from source"
+bar and is promoted to WORKING (row 48) under this manifest's wiring
+criterion. That is not the same as "data is loaded": the resource still
+calls `/ppa/predicted` with no parameters and catches the 400 CFBD returns
+for that call (same finding as 2026-01-29) -- confirmed against the live
+database via `pg_attribute`, no `metrics.ppa_predicted` table exists, so the
+resource has never produced a row. The down/distance fan-out this note
+recommended (~120 calls) was never implemented.
+
+**Resolution (2026-08-29, continued -- R2, same day):** The down/distance
+fan-out is now implemented: `ppa_predicted_resource` walks
+`PPA_PREDICTED_DOWNS` (1-4) x `PPA_PREDICTED_DISTANCES` (1-30) = 120 calls
+to `/ppa/predicted?down=D&distance=X`, stamping `down`/`distance` onto every
+row (CFBD's response for a given combination carries only `yardLine` and
+`predictedPoints`, per the `PredictedPointsValue` OpenAPI schema -- it does
+not echo the down/distance back). PK is `(down, distance, yard_line)`.
+
+The resource is now correct but was moved OUT of `metrics_source`'s default
+return list into its own `metrics_ppa_predicted_source`
+(`src/pipelines/sources/metrics.py`), opt-in via `--source
+metrics_ppa_predicted` (`run.py::run_metrics_ppa_predicted_pipeline`) --
+mirroring exactly how `win_probability` is split into `metrics_wp_source`
+above. Rationale: 120 calls building a static lookup table that doesn't
+change with the season is fine once (or occasionally) but wasteful to repeat
+on every daily `metrics` load, and unlike `metrics_wp` there is no
+set-difference check to make repeating it cheap. Not part of
+`scripts/load_season.py`'s `SOURCE_ORDER` for the same reason. Still not yet
+backfilled against the live database -- the first `--source
+metrics_ppa_predicted` run is what will create `metrics.ppa_predicted` and
+let 050_expansion_grants_indexes.sql's grants/comments apply.
+
+### `/game/box/advanced` (Advanced Game Box Score) — DEFERRED
+
+**Investigation Date:** 2026-08-29
+
+**Findings:**
+- `advanced_game_stats_resource` (stats.py) had iterated `?year=Y` since its
+  original implementation and was marked WORKING (row 12) on that basis.
+- Confirmed BROKEN as year-scoped: the live OpenAPI spec now requires a
+  single `id` (game id) query parameter, not `year` -- every year-only call
+  400s ("id required"). This was silent: the resource caught the 400,
+  logged a warning, and continued, so a normal `stats` load appeared to
+  succeed while burning one wasted call per requested year and loading zero
+  rows.
+- `/stats/game/advanced` (a different endpoint, row 23) still accepts a bare
+  `year` and returns the same game-team grain (gameId, season, seasonType,
+  week, team, opponent, offense{...}, defense{...}) -- confirmed via the
+  2026-08-29 probe (3,112 rows for 2024 regular season).
+
+**Why Deferred:**
+Reworking the endpoint's contract (year -> id) rather than removing the
+resource preserves it for a future one-off historical-refresh campaign, but
+a per-game fan-out (one call per game, unbounded) has no place in a
+year-driven default path -- the same reasoning `play_stats_resource` and
+`metrics_wp_source` already document for their own per-game modes.
+
+**Resolution (2026-08-29, same day -- R1):** `advanced_game_stats_resource`
+now takes explicit `game_ids: list[int]` and calls `/game/box/advanced?id=<gameId>`
+once per id, mirroring `play_stats_resource`'s explicit-ids branch. REMOVED
+from `stats_source`'s default return list -- a normal stats load no longer
+spends the wasted 400. Status demoted WORKING -> DEFERRED (row 12); the
+function stays importable, game-id-driven, for a future historical-refresh
+campaign that walks `core.games` and backfills id-by-id. Year-scoped
+advanced game-team stats are now served by `game_advanced_resource`
+(stats.game_advanced_team_stats, row 23, NEW this same unit).
 
 ### `/teams/matchup` (Historical Matchups) — DEFERRED
 
@@ -337,6 +482,41 @@ The table was successfully loaded via `game_stats_source`'s week-by-week loading
 | nflverse_draft | draft.nflverse_draft_picks | Parquet (nflverse) | Annual | Built (awaiting first load) |
 | sbr | betting.sbr_historical | Excel (manual backfill) | Manual | Built (awaiting first load) |
 | availability | raw.availability_reports | PDF archive (conf reports) | Weekly | Built (awaiting first load) |
+| sdv_team_xwalk | ref.team_id_xwalk | Parquet (sportsdataverse-data, per-season) | Weekly | Built (awaiting first load) |
+| sdv_game_xwalk | ref.game_id_xwalk | Parquet (sportsdataverse-data, per-season) | Weekly | Built (awaiting first load) |
+| sdv_fpi_weekly | ratings.espn_fpi_weekly | Parquet (sportsdataverse-data, per-season) | Weekly | Built (awaiting first load) |
+| sdv_ratings_weekly | ratings.sdv_ratings_weekly | Parquet (sportsdataverse-data, per-season) | Weekly | Built (awaiting first load) |
+| ncaa_schedule | ncaa.schedule | Parquet (sportsdataverse-data ncaa_mfb_schedule, per-season) | Weekly | Built (awaiting first load) |
+| ncaa_teams | ncaa.teams | Parquet (sportsdataverse-data ncaa_mfb_teams, per-season) | Annual | Built (awaiting first load) |
+| ncaa_rosters | ncaa.rosters | Parquet (sportsdataverse-data ncaa_mfb_rosters, per-season) | Annual | Built (awaiting first load) |
+| ncaa_linescores | ncaa.linescores | Parquet (sportsdataverse-data ncaa_mfb_linescore, per-season) | Weekly | Built (awaiting first load) |
+| ncaa_player_stats | ncaa.player_stats | Parquet (sportsdataverse-data ncaa_mfb_player_stats, per-season) | Weekly | Built (awaiting first load) |
+| ncaa_team_stats | ncaa.team_stats | Parquet (sportsdataverse-data ncaa_mfb_team_stats, per-season) | Weekly | Built (awaiting first load) |
+| ncaa_pbp | ncaa.pbp | Parquet (sportsdataverse-data ncaa_mfb_pbp, per-season) | Weekly | Built (awaiting first load) |
+| espn_player_passing | stats.espn_player_passing | Parquet (sportsdataverse-data espn_cfb_adv_passing, per-season) | Weekly | Built (awaiting first load) |
+| espn_player_rushing | stats.espn_player_rushing | Parquet (sportsdataverse-data espn_cfb_adv_rushing, per-season) | Weekly | Built (awaiting first load) |
+| espn_player_receiving | stats.espn_player_receiving | Parquet (sportsdataverse-data espn_cfb_adv_receiving, per-season) | Weekly | Built (awaiting first load) |
+| espn_player_defense | stats.espn_player_defense | Parquet (sportsdataverse-data espn_cfb_adv_defensive_players, per-season) | Weekly | Built (awaiting first load) |
+| espn_play_participants | stats.espn_play_participants | Parquet (sportsdataverse-data espn_cfb_play_participants, per-season) | Weekly | Built (awaiting first load) |
+
+`ncaa.*` lives in its own, deliberately ungranted Postgres schema (migration
+053): stats.ncaa.org ids (team/player/contest) are a disjoint id space from
+CFBD/ESPN with no verified crosswalk, so the schema is reachable only via the
+pipeline's service-role connection until a deliberate exposure decision.
+
+`espn_*` (B6b) lives in the existing, already-granted `stats` schema (migration
+055) -- ESPN's numeric ids are verified equal to CFBD's, so provenance is
+carried by the `espn_` table-name prefix, not schema isolation. Notable gaps,
+verified live rather than assumed: none of `espn_player_passing`/`_rushing`/
+`_receiving`/`_defense` carries an athlete id at all (player identity is a
+free-text name column only -- ESPN's advanced-stat text scrape, a different
+upstream path than the id-carrying `espn_play_participants`); none of the five
+tables carries a `position` column; `espn_play_participants` carries no team
+id/name column at all. `espn_pbp_2002_2003` (a proposed pre-CFBD 2002-03
+play-by-play gap-fill) was dropped from this unit -- the real
+`espn_cfb_pbp` release's minimum season is 2004 (verified via a live download:
+`play_by_play_2004.parquet` succeeds, `play_by_play_2002/2003.parquet` both
+404), so the dataset this table would have held does not exist upstream.
 
 First deploy (one-time, requires DB credentials):
 
@@ -358,3 +538,76 @@ Notes: Massey no-ops (`status=no_op_offseason`) until its CSV rolls to the curre
 season (typically preseason); SEC/Big 12/CFP availability reports are served through a
 JS-only widget and are recorded as gaps -- Big Ten archives now, the rest need a
 headless-browser follow-up.
+
+---
+
+## Historical Refresh Campaigns (unit A3)
+
+CFBD corrected historical data upstream (15k+ garbage-time reclassifications and
+other cleanups). The per-game endpoints behind `stats.py`'s `play_stats_resource`
+(`/plays/stats`) and `advanced_game_stats_resource` (`/game/box/advanced`, row 12
+above) need re-fetching for ~2014-2025 completed games -- up to ~1,600
+games/season x 12 seasons x up to 2 tasks, i.e. up to ~38,000 calls total. That is
+far more than any single run should spend against the 125,000/month budget the
+daily load also consumes, so `scripts/backfill_refresh.py` and
+`.github/workflows/historical-refresh.yml` spread it across many budget-capped,
+resumable runs instead of one backfill.
+
+**Mechanism:**
+
+- `src/schemas/migrations/051_refresh_ledger.sql` adds `meta.refresh_campaigns`
+  (one row per named campaign: its seasons, its tasks, when it completed) and
+  `meta.refresh_progress` (one row per `(campaign, task, game_id)` already
+  re-fetched -- the resumability primitive).
+- A run's backlog for a task = completed games (both scores non-null) in the
+  campaign's seasons, newest season then newest week first, MINUS the game_ids
+  already in `meta.refresh_progress` for that `(campaign, task)` -- the same
+  set-difference shape `src/pipelines/run.py`'s `run_metrics_wp_pipeline` uses
+  against `metrics.win_probability`.
+- Cross-task order: `plays_stats` drains completely before `box_advanced` starts
+  spending any of a run's `--max-calls` budget (it feeds the EPA/adjusted-EPA
+  chain that the rest of the compute pipeline depends on daily; `box_advanced`
+  does not yet have a downstream consumer).
+- Two independent, non-fatal budget guards run before any call: the
+  ledger-backed month guard (`SUM(calls)` in `meta.refresh_progress` since the
+  start of the current month vs. `--monthly-cap`, checked before every batch --
+  this is the one that actually holds on ephemeral CI runners), and the repo's
+  local `RateLimiter` (advisory only in CI, since its JSON state does not
+  survive an ephemeral runner -- meaningful only on a persistent local
+  machine). Either tripping prints a message and exits 0: a pacing stop, not an
+  error.
+- Every game-id-driven write uses the exact same dlt pipeline identity
+  (`pipeline_name="cfbd_stats"`, `dataset_name="stats"`) as
+  `run_stats_pipeline`'s normal year-driven load, so corrected rows MERGE into
+  the existing `stats.play_stats` / `stats.advanced_game_stats` tables rather
+  than standing up a parallel dlt schema.
+- A run that loads anything refreshes materialized views afterward
+  (`scripts/refresh_marts.py`) -- corrected play stats feed the EPA chain.
+
+**Running it:**
+
+```bash
+# One-time: create the campaign (idempotent)
+python scripts/backfill_refresh.py --campaign 2026-08-upstream-corrections \
+    --create --seasons 2014-2025 --tasks plays_stats,box_advanced
+
+# Subsequent runs: drain up to --max-calls games (default 1000)
+python scripts/backfill_refresh.py --campaign 2026-08-upstream-corrections
+
+# Check progress without spending any calls
+python scripts/backfill_refresh.py --campaign 2026-08-upstream-corrections --status
+```
+
+`.github/workflows/historical-refresh.yml` runs this daily at 12:00 UTC (sharing
+the daily load's `daily-season-load` concurrency group, so the two queue rather
+than race) and is also `workflow_dispatch`-able for a one-off `--create` or a
+larger `--max-calls`. Once a campaign's backlog fully drains the script becomes a
+permanent no-op ("already complete", exit 0) -- at that point disable or delete
+the workflow's `schedule:` trigger; a future upstream correction should get its
+own deliberately named campaign, not silently reuse a finished one's cron.
+
+**Call-count guidance:** a scheduled run at the default `--max-calls 1000` costs
+at most 1,000 calls/day (further bounded by `--monthly-cap`, default 30,000/month,
+tracked independently of the daily load's own budget). A full one-time backfill
+across both tasks for 2014-2025 is ~38,000 calls, draining in ~38 days at the
+default per-run cap (fewer with a larger `--max-calls` on a manual dispatch).

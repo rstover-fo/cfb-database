@@ -150,20 +150,6 @@ CORE_ENDPOINTS = {
         schema="core",
         write_disposition="merge",
     ),
-    "team_matchup": EndpointConfig(
-        path="/teams/matchup",
-        table_name="team_matchups",
-        primary_key=["team1", "team2"],
-        schema="core",
-        write_disposition="merge",
-    ),
-    "player_search": EndpointConfig(
-        path="/player/search",
-        table_name="players",
-        primary_key=["id"],
-        schema="core",
-        write_disposition="merge",
-    ),
 }
 
 # Stats endpoints (year-iterated, merge)
@@ -203,6 +189,27 @@ STATS_ENDPOINTS = {
         schema="stats",
         write_disposition="merge",
     ),
+    "player_success_season": EndpointConfig(
+        path="/stats/player/success",
+        table_name="player_success_season",
+        primary_key=["season", "id", "team"],
+        schema="stats",
+        write_disposition="merge",
+    ),
+    "player_success_game": EndpointConfig(
+        path="/stats/player/success/game",
+        table_name="player_success_game",
+        primary_key=["game_id", "id"],
+        schema="stats",
+        write_disposition="merge",
+    ),
+    "game_advanced": EndpointConfig(
+        path="/stats/game/advanced",
+        table_name="game_advanced_team_stats",
+        primary_key=["game_id", "team"],
+        schema="stats",
+        write_disposition="merge",
+    ),
     "player_usage": EndpointConfig(
         path="/player/usage",
         table_name="player_usage",
@@ -214,6 +221,18 @@ STATS_ENDPOINTS = {
         path="/player/returning",
         table_name="player_returning",
         primary_key=["season", "team"],
+        schema="stats",
+        write_disposition="merge",
+    ),
+    # Per-(year, playerId) fan-out (both required -- a bare call 400s), NOT
+    # part of stats_source -- lives in its own player_overview.py module and
+    # its own drainer (run.py::run_player_overview_pipeline) because its
+    # candidate set is drawn FROM player_usage and metrics.ppa_players_season
+    # via a DB set-difference. See player_overview.py's module docstring.
+    "player_season_overview": EndpointConfig(
+        path="/player/season/overview",
+        table_name="player_season_overview",
+        primary_key=["season", "id"],
         schema="stats",
         write_disposition="merge",
     ),
@@ -281,6 +300,13 @@ RATINGS_ENDPOINTS = {
         path="/ratings/sp/conferences",
         table_name="sp_conference_ratings",
         primary_key=["year", "conference"],
+        schema="ratings",
+        write_disposition="merge",
+    ),
+    "srs_expanded": EndpointConfig(
+        path="/ratings/srs/expanded",
+        table_name="srs_expanded",
+        primary_key=["year", "team"],
         schema="ratings",
         write_disposition="merge",
     ),
@@ -388,7 +414,7 @@ METRICS_ENDPOINTS = {
     "ppa_predicted": EndpointConfig(
         path="/ppa/predicted",
         table_name="ppa_predicted",
-        primary_key=["down", "distance"],
+        primary_key=["down", "distance", "yard_line"],
         schema="metrics",
         write_disposition="merge",
     ),
@@ -455,6 +481,79 @@ RANKINGS_ENDPOINTS = {
     ),
 }
 
+# Playoffs endpoints (year-iterated, merge). CFP_START (playoffs.py) = 2014.
+PLAYOFFS_ENDPOINTS = {
+    "cfp_bracket": EndpointConfig(
+        path="/playoffs/cfp",
+        table_name="cfp_bracket",
+        primary_key=["season"],
+        schema="core",
+        write_disposition="merge",
+    ),
+    "cfp_games": EndpointConfig(
+        path="/playoffs/cfp/games",
+        table_name="cfp_games",
+        primary_key=["season", "id"],
+        schema="core",
+        write_disposition="merge",
+    ),
+    "cfp_participants": EndpointConfig(
+        path="/playoffs/cfp/participants",
+        table_name="cfp_participants",
+        primary_key=["season", "team__id"],
+        schema="core",
+        write_disposition="merge",
+    ),
+}
+
+# Coaches endpoints. coach_seasons is year-iterated; coach_tenures and
+# coach_profile are both per-entity fan-outs (coachId/team required -- a bare
+# year or bare call 400s) and are deliberately NOT returned from
+# cfbd_coaches -- see coaches.py's module docstring.
+COACHES_ENDPOINTS = {
+    "coach_seasons": EndpointConfig(
+        path="/coaches/seasons",
+        table_name="coach_seasons",
+        primary_key=["coach__id", "year", "team__id"],
+        schema="ref",
+        write_disposition="merge",
+    ),
+    "coach_tenures": EndpointConfig(
+        path="/coaches/tenures",
+        table_name="coach_tenures",
+        primary_key=["id"],
+        schema="ref",
+        write_disposition="merge",
+    ),
+    "coach_profile": EndpointConfig(
+        path="/coaches/profile",
+        table_name="coach_profiles",
+        # CoachProfile carries its own globally unique top-level id.
+        primary_key=["id"],
+        schema="ref",
+        write_disposition="merge",
+    ),
+}
+
+# Conferences endpoints. conference_affiliations is a single unfiltered bulk
+# call; conference_changes is year-iterated (year is required).
+CONFERENCES_ENDPOINTS = {
+    "conference_affiliations": EndpointConfig(
+        path="/conferences/affiliations",
+        table_name="conference_affiliations",
+        primary_key=["team_id", "conference_id", "start_year"],
+        schema="ref",
+        write_disposition="merge",
+    ),
+    "conference_changes": EndpointConfig(
+        path="/conferences/changes",
+        table_name="conference_changes",
+        primary_key=["effective_year", "team_id"],
+        schema="ref",
+        write_disposition="merge",
+    ),
+}
+
 # All endpoints grouped by source
 ALL_ENDPOINTS = {
     "reference": REFERENCE_ENDPOINTS,
@@ -466,4 +565,7 @@ ALL_ENDPOINTS = {
     "draft": DRAFT_ENDPOINTS,
     "metrics": METRICS_ENDPOINTS,
     "rankings": RANKINGS_ENDPOINTS,
+    "playoffs": PLAYOFFS_ENDPOINTS,
+    "coaches": COACHES_ENDPOINTS,
+    "conferences": CONFERENCES_ENDPOINTS,
 }

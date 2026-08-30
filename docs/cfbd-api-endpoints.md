@@ -1,6 +1,6 @@
 # CFBD API Endpoints Reference
 
-**Total: 62 endpoints across 15 API categories**
+**Total: 74 endpoints across 18 API categories**
 
 Base URL: `https://api.collegefootballdata.com`
 Auth: API Key required (Bearer token)
@@ -21,15 +21,20 @@ Docs: https://api.collegefootballdata.com/
 |--------|----------|-------------|
 | GET | `/lines` | Betting lines and spreads |
 
-### CoachesApi (1 endpoint)
+### CoachesApi (4 endpoints)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/coaches` | Coach information and history |
+| GET | `/coaches/profile` | Coach profile with canonical identity and career totals |
+| GET | `/coaches/seasons` | Coach-season records with attributed results and team context |
+| GET | `/coaches/tenures` | Continuous head-coaching tenures and their attributed records |
 
-### ConferencesApi (1 endpoint)
+### ConferencesApi (3 endpoints)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/conferences` | Conference information |
+| GET | `/conferences/affiliations` | Historical team conference affiliations |
+| GET | `/conferences/changes` | Team conference changes by season |
 
 ### DraftApi (3 endpoints)
 | Method | Endpoint | Description |
@@ -56,6 +61,12 @@ Docs: https://api.collegefootballdata.com/
 | GET | `/records` | Team win/loss records |
 | GET | `/scoreboard` | Live scoreboard |
 
+### InfoApi (2 endpoints)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/info` | Authenticated user's Patreon tier and remaining API calls |
+| GET | `/info/usage` | Recent usage against the shared CFB/CBB call pool |
+
 ### MetricsApi (8 endpoints)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -68,13 +79,21 @@ Docs: https://api.collegefootballdata.com/
 | GET | `/metrics/wp/pregame` | Pregame win probability |
 | GET | `/metrics/wp` | In-game win probability |
 
-### PlayersApi (4 endpoints)
+### PlayersApi (5 endpoints)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/player/search` | Search players by name |
 | GET | `/player/usage` | Player usage rates |
 | GET | `/player/returning` | Returning production |
 | GET | `/player/portal` | Transfer portal entries |
+| GET | `/player/season/overview` | Player season overview: box score, usage, PPA |
+
+### PlayoffsApi (3 endpoints)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/playoffs/cfp` | Complete College Football Playoff bracket for a season |
+| GET | `/playoffs/cfp/games` | College Football Playoff matchups for a season |
+| GET | `/playoffs/cfp/participants` | College Football Playoff participants for a season |
 
 ### PlaysApi (5 endpoints)
 | Method | Endpoint | Description |
@@ -90,12 +109,13 @@ Docs: https://api.collegefootballdata.com/
 |--------|----------|-------------|
 | GET | `/rankings` | Poll rankings (AP, Coaches, CFP) |
 
-### RatingsApi (6 endpoints)
+### RatingsApi (7 endpoints)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/ratings/sp` | SP+ ratings |
 | GET | `/ratings/sp/conferences` | Conference SP+ |
 | GET | `/ratings/srs` | Simple Rating System |
+| GET | `/ratings/srs/expanded` | Expanded SRS ratings, including FCS teams |
 | GET | `/ratings/elo` | Elo ratings |
 | GET | `/ratings/fpi` | ESPN FPI ratings |
 | GET | `/ratings/core` | CORE (Context & Opponent-Relative Efficiency) ratings, 2016+ |
@@ -107,17 +127,19 @@ Docs: https://api.collegefootballdata.com/
 | GET | `/recruiting/teams` | Team recruiting rankings |
 | GET | `/recruiting/groups` | Recruiting by position group |
 
-### StatsApi (6 endpoints)
+### StatsApi (8 endpoints)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/stats/season` | Team season stats |
 | GET | `/stats/season/advanced` | Advanced team season stats |
 | GET | `/stats/player/season` | Player season stats |
+| GET | `/stats/player/success` | Player passing/rushing success rates by season |
+| GET | `/stats/player/success/game` | Player passing/rushing success rates by game |
 | GET | `/stats/game/advanced` | Advanced game stats |
 | GET | `/stats/game/havoc` | Havoc stats by game |
 | GET | `/stats/categories` | Available stat categories |
 
-### TeamsApi (7 endpoints)
+### TeamsApi (6 endpoints)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/teams` | Team info and conference history |
@@ -140,9 +162,9 @@ Docs: https://api.collegefootballdata.com/
   - Recruiting: ~2000+
   - Advanced metrics: ~2014+
 
-- **API Rate Limits** (Free tier):
-  - 1,000 calls/month
-  - Consider caching/incremental loads
+- **API rate limits**: account tier and monthly call budget are configured in
+  `.dlt/config.toml`, not hardcoded here -- access policies change. See that
+  file for the current budget this warehouse runs against.
 
 ## Key Entities for Schema Design
 

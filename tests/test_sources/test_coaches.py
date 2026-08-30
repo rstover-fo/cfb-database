@@ -258,6 +258,22 @@ class TestCoachProfilesSource:
 
             assert set(source.resources.keys()) == {"coach_profiles"}
 
+    def test_forwards_misses_collector_to_the_resource(self):
+        from src.pipelines.sources.coaches import coach_profiles_source
+
+        with (
+            patch("src.pipelines.sources.coaches.get_client") as mock_get_client,
+            patch("src.pipelines.sources.coaches.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = _http_error(404)
+
+            misses: list[tuple[str, int]] = []
+            source = coach_profiles_source(coach_ids=[101], misses=misses)
+            list(source.resources["coach_profiles"])
+
+            assert misses == [("101", 404)]
+
 
 class TestCoachProfilesResource:
     def test_one_call_per_coach_id_with_coach_id_param(self):
@@ -376,6 +392,72 @@ class TestCoachProfilesResource:
             assert len(results) == 1
             assert results[0]["id"] == 202
 
+    def test_400_appends_key_and_status_code_to_misses(self):
+        """PR #75 review finding A: without this collection, a terminal
+        400/404 was silently dropped and re-requested by the drainer every
+        run forever."""
+        from src.pipelines.sources.coaches import coach_profiles_resource
+
+        with (
+            patch("src.pipelines.sources.coaches.get_client") as mock_get_client,
+            patch("src.pipelines.sources.coaches.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [_http_error(400), {"id": 202}]
+
+            misses: list[tuple[str, int]] = []
+            list(coach_profiles_resource(coach_ids=[101, 202], misses=misses))
+
+            assert misses == [("101", 400)]
+
+    def test_404_appends_key_and_status_code_to_misses(self):
+        from src.pipelines.sources.coaches import coach_profiles_resource
+
+        with (
+            patch("src.pipelines.sources.coaches.get_client") as mock_get_client,
+            patch("src.pipelines.sources.coaches.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [_http_error(404), {"id": 202}]
+
+            misses: list[tuple[str, int]] = []
+            list(coach_profiles_resource(coach_ids=[101, 202], misses=misses))
+
+            assert misses == [("101", 404)]
+
+    def test_miss_key_is_stringified_id(self):
+        """meta.fanout_misses.key is text -- the collected key must be
+        str(coach_id), not the raw int."""
+        from src.pipelines.sources.coaches import coach_profiles_resource
+
+        with (
+            patch("src.pipelines.sources.coaches.get_client") as mock_get_client,
+            patch("src.pipelines.sources.coaches.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = _http_error(404)
+
+            misses: list[tuple[str, int]] = []
+            list(coach_profiles_resource(coach_ids=[555], misses=misses))
+
+            assert misses == [("555", 404)]
+            assert isinstance(misses[0][0], str)
+
+    def test_misses_none_is_safe(self):
+        """The default -- no collector passed -- must not raise."""
+        from src.pipelines.sources.coaches import coach_profiles_resource
+
+        with (
+            patch("src.pipelines.sources.coaches.get_client") as mock_get_client,
+            patch("src.pipelines.sources.coaches.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [_http_error(400), _http_error(404)]
+
+            results = list(coach_profiles_resource(coach_ids=[101, 202]))
+
+            assert results == []
+
     def test_other_status_errors_are_not_swallowed(self):
         from dlt.extract.exceptions import ResourceExtractionError
 
@@ -417,20 +499,25 @@ class TestCoachProfilesResource:
 # ---------------------------------------------------------------------------
 
 
-def _mock_coach_profiles_conn(candidate_ids, existing_ids=None, existing_raises=None):
+def _mock_coach_profiles_conn(
+    candidate_ids, existing_ids=None, existing_raises=None, recent_misses=None
+):
     """Build a MagicMock psycopg2 connection matching
-    run_coach_profiles_pipeline's `with conn.cursor() as cur:` usage, with
-    the candidates query returning `candidate_ids` and the existing-ids
-    query either returning `existing_ids` or raising `existing_raises`."""
+    run_coach_profiles_pipeline's `with conn.cursor() as cur:` usage: the
+    candidates query returns `candidate_ids`, the existing-ids query either
+    returns `existing_ids` or raises `existing_raises`, and (PR #75 review
+    finding A) the third guarded query -- _fetch_recent_fanout_misses,
+    reading meta.fanout_misses via _fetch_rows_or_empty -- returns
+    `recent_misses` (string keys, default none)."""
     conn = MagicMock()
     cur = conn.cursor.return_value.__enter__.return_value
+    effects = [[(cid,) for cid in candidate_ids]]
     if existing_raises is not None:
-        cur.fetchall.side_effect = [[(cid,) for cid in candidate_ids], existing_raises]
+        effects.append(existing_raises)
     else:
-        cur.fetchall.side_effect = [
-            [(cid,) for cid in candidate_ids],
-            [(cid,) for cid in (existing_ids or [])],
-        ]
+        effects.append([(cid,) for cid in (existing_ids or [])])
+    effects.append([(key,) for key in (recent_misses or [])])
+    cur.fetchall.side_effect = effects
     return conn
 
 
@@ -586,3 +673,220 @@ class TestRunCoachProfilesPipelineBudgetGuard:
 
         assert result["batches"] == 1
         mock_pipeline.run.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# meta.fanout_misses integration (PR #75 review finding A): recent-miss
+# exclusion from the candidate set, excluded-count reporting, per-batch
+# recording, and UndefinedTable degradation on both the read and write side.
+# ---------------------------------------------------------------------------
+
+
+class TestRunCoachProfilesPipelineFanoutMisses:
+    def test_recent_miss_excluded_from_missing(self):
+        from src.pipelines.run import run_coach_profiles_pipeline
+
+        conn = _mock_coach_profiles_conn(
+            candidate_ids=[1, 2, 3], existing_ids=[], recent_misses=["2"]
+        )
+
+        mock_pipeline = MagicMock()
+
+        with (
+            patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
+            patch("psycopg2.connect", return_value=conn),
+            patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
+            patch("src.pipelines.run.coach_profiles_source") as mock_source,
+        ):
+            result = run_coach_profiles_pipeline()
+
+        assert result["missing"] == 2
+        assert mock_source.call_args.kwargs["coach_ids"] == [1, 3]
+
+    def test_excluded_miss_count_is_reported(self):
+        from src.pipelines.run import run_coach_profiles_pipeline
+
+        conn = _mock_coach_profiles_conn(
+            candidate_ids=[1, 2, 3], existing_ids=[], recent_misses=["2", "3"]
+        )
+
+        mock_pipeline = MagicMock()
+
+        with (
+            patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
+            patch("psycopg2.connect", return_value=conn),
+            patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
+            patch("src.pipelines.run.coach_profiles_source"),
+        ):
+            result = run_coach_profiles_pipeline()
+
+        assert result["excluded_misses"] == 2
+        assert result["missing"] == 1
+
+    def test_excluded_misses_reported_even_when_nothing_to_load(self):
+        from src.pipelines.run import run_coach_profiles_pipeline
+
+        conn = _mock_coach_profiles_conn(candidate_ids=[1], existing_ids=[], recent_misses=["1"])
+
+        mock_pipeline = MagicMock()
+
+        with (
+            patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
+            patch("psycopg2.connect", return_value=conn),
+            patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
+        ):
+            result = run_coach_profiles_pipeline()
+
+        assert result["missing"] == 0
+        assert result["excluded_misses"] == 1
+        mock_pipeline.run.assert_not_called()
+
+    def test_record_fanout_misses_called_once_per_batch(self):
+        """coach_profiles_source is called with a `misses` collector; when
+        the resource populates it (simulated here by the fake source
+        implementation mutating the list it's handed), the pipeline must
+        persist it via _record_fanout_misses once per batch -- three
+        batches of 50/50/20 (mirroring TestRunCoachProfilesPipelineBatching's
+        chunking test), only the last id of each batch missing this time."""
+        from src.pipelines.run import run_coach_profiles_pipeline
+
+        conn = _mock_coach_profiles_conn(candidate_ids=list(range(1, 121)), existing_ids=[])
+
+        mock_pipeline = MagicMock()
+        recorded = []
+
+        def fake_source(coach_ids, *, misses=None):
+            if misses is not None:
+                misses.append((str(coach_ids[-1]), 404))
+            return MagicMock()
+
+        with (
+            patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
+            patch("psycopg2.connect", return_value=conn),
+            patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
+            patch("src.pipelines.run.coach_profiles_source", side_effect=fake_source),
+            patch(
+                "src.pipelines.run._record_fanout_misses",
+                side_effect=lambda source, misses: recorded.append((source, misses)),
+            ) as mock_record,
+        ):
+            result = run_coach_profiles_pipeline(max_coaches=200)
+
+        assert result["batches"] == 3
+        assert mock_record.call_count == 3
+        assert recorded == [
+            ("coach_profiles", [("50", 404)]),
+            ("coach_profiles", [("100", 404)]),
+            ("coach_profiles", [("120", 404)]),
+        ]
+
+    def test_record_fanout_misses_not_called_when_batch_has_no_misses(self):
+        from src.pipelines.run import run_coach_profiles_pipeline
+
+        conn = _mock_coach_profiles_conn(candidate_ids=[1], existing_ids=[])
+
+        mock_pipeline = MagicMock()
+
+        with (
+            patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
+            patch("psycopg2.connect", return_value=conn),
+            patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
+            patch("src.pipelines.run.coach_profiles_source"),
+            patch("src.pipelines.run._record_fanout_misses") as mock_record,
+        ):
+            run_coach_profiles_pipeline()
+
+        mock_record.assert_not_called()
+
+    def test_undefined_table_reading_fanout_misses_yields_no_exclusion(self):
+        """meta.fanout_misses not yet created (migration 056 not applied)
+        must degrade to 'no exclusion', not crash the drainer."""
+        import psycopg2.errors
+
+        from src.pipelines.run import run_coach_profiles_pipeline
+
+        conn = _mock_coach_profiles_conn(candidate_ids=[1, 2], existing_ids=[])
+        cur = conn.cursor.return_value.__enter__.return_value
+        # Override the third fetchall (recent-misses query) to raise instead
+        # of returning an empty list.
+        cur.fetchall.side_effect = [
+            [(1,), (2,)],
+            [],
+            psycopg2.errors.UndefinedTable(),
+        ]
+
+        mock_pipeline = MagicMock()
+
+        with (
+            patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
+            patch("psycopg2.connect", return_value=conn),
+            patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
+            patch("src.pipelines.run.coach_profiles_source") as mock_source,
+        ):
+            result = run_coach_profiles_pipeline()
+
+        assert result["missing"] == 2
+        assert result["excluded_misses"] == 0
+        mock_source.assert_called_once()
+
+    def test_undefined_table_writing_fanout_misses_warns_not_crashes(self, caplog):
+        """migration 056 not applied: _record_fanout_misses must swallow
+        UndefinedTable and log a warning, never propagate."""
+        import psycopg2.errors
+
+        from src.pipelines.run import _record_fanout_misses
+
+        write_conn = MagicMock()
+
+        with (
+            patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
+            patch("psycopg2.connect", return_value=write_conn),
+            patch(
+                "psycopg2.extras.execute_values",
+                side_effect=psycopg2.errors.UndefinedTable(),
+            ),
+            caplog.at_level("WARNING"),
+        ):
+            _record_fanout_misses("coach_profiles", [("101", 404)])
+
+        assert any("migration 056" in rec.message for rec in caplog.records)
+        write_conn.close.assert_called_once()
+
+    def test_record_fanout_misses_noop_on_empty_list(self):
+        """No misses to record -- must not even open a connection."""
+        from src.pipelines.run import _record_fanout_misses
+
+        with patch("psycopg2.connect") as mock_connect:
+            _record_fanout_misses("coach_profiles", [])
+
+        mock_connect.assert_not_called()
+
+
+class TestFanoutMissUpsertSqlDrift:
+    def test_upsert_sql_shape(self):
+        from src.pipelines.run import _FANOUT_MISS_UPSERT_SQL
+
+        sql = " ".join(_FANOUT_MISS_UPSERT_SQL.split())
+        assert "INSERT INTO meta.fanout_misses (source, key, status_code)" in sql
+        assert "ON CONFLICT (source, key) DO UPDATE SET" in sql
+        assert "attempts = meta.fanout_misses.attempts + 1" in sql
+        assert "status_code = EXCLUDED.status_code" in sql
+        assert "last_attempt_at = now()" in sql
+
+    def test_record_fanout_misses_uses_execute_values_with_upsert_sql(self):
+        from src.pipelines.run import _FANOUT_MISS_UPSERT_SQL, _record_fanout_misses
+
+        conn = MagicMock()
+
+        with (
+            patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
+            patch("psycopg2.connect", return_value=conn),
+            patch("psycopg2.extras.execute_values") as mock_execute_values,
+        ):
+            _record_fanout_misses("coach_profiles", [("101", 404), ("202", 400)])
+
+        mock_execute_values.assert_called_once()
+        args, _ = mock_execute_values.call_args
+        _, sql, values = args
+        assert sql == _FANOUT_MISS_UPSERT_SQL
+        assert values == [("coach_profiles", "101", 404), ("coach_profiles", "202", 400)]

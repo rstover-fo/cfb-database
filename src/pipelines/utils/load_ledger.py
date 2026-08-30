@@ -116,3 +116,46 @@ def last_success(source: str, db_url: str | None = None) -> datetime | None:
             return loaded_at
     finally:
         conn.close()
+
+
+def last_checked(source: str, db_url: str | None = None) -> datetime | None:
+    """Latest loaded_at counting as a freshness check for `source`: either a
+    real load (status='loaded') or a hash-skip (status='skipped', error IS
+    NULL). Drives cadence (``is_due``) ONLY -- it answers "when did we last
+    confirm this source's current bytes are in the warehouse", not "when did
+    we last change anything".
+
+    PR #75 review finding B: ``run_source`` (scripts/load_flat_files.py)
+    records a hash-skip (the fetched file's bytes match what's already
+    loaded) as ``status='skipped'`` with ``error IS NULL`` -- that's not a
+    failure, it's confirmation the source is current. ``last_success`` only
+    counts ``status='loaded'``, so an unchanged weekly/annual fallback file
+    looked perpetually stale to ``is_due``: due -> fetch -> hash-skip -> due
+    again the very next day, forever (and, for an annual nflverse-style
+    source once its 300-day-stale window is behind it, every day past that
+    point).
+
+    A stale-snapshot skip (``StaleSnapshotError`` -> ``status='skipped'``
+    WITH ``error`` set -- see ``run_source``) is deliberately EXCLUDED: that
+    skip means the fetched file was rejected as off-season/wrong-vintage
+    data, not confirmed-current data, so it must keep being retried on
+    cadence rather than being treated as a freshness check. A ``status=
+    'failed'`` row is excluded for the same reason -- a failed attempt
+    proves nothing about freshness.
+    """
+    dsn = db_url or get_db_url()
+    conn = psycopg2.connect(dsn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT MAX(loaded_at) FROM meta.flat_file_loads
+                WHERE source = %s
+                  AND (status = 'loaded' OR (status = 'skipped' AND error IS NULL))
+                """,
+                (source,),
+            )
+            (loaded_at,) = cur.fetchone()
+            return loaded_at
+    finally:
+        conn.close()

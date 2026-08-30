@@ -191,7 +191,11 @@ def coach_tenures_resource(teams: list[str]) -> Iterator[dict]:
 
 
 @dlt.source(name="cfbd_coach_profiles")
-def coach_profiles_source(coach_ids: list[int]) -> DltSource:
+def coach_profiles_source(
+    coach_ids: list[int],
+    *,
+    misses: list[tuple[str, int]] | None = None,
+) -> DltSource:
     """Source for coach profiles (canonical identity + career totals).
 
     `/coaches/profile` requires a `coachId` parameter -- a bare call 400s --
@@ -199,10 +203,18 @@ def coach_profiles_source(coach_ids: list[int]) -> DltSource:
     its own source function rather than a resource returned from
     `cfbd_coaches`. See `run.py::run_coach_profiles_pipeline` for the
     drainer that resolves `coach_ids` from `ref.coach_seasons` minus ids
-    already present in `ref.coach_profiles`.
+    already present in `ref.coach_profiles` and minus ids recently recorded
+    as a terminal miss in `meta.fanout_misses` (PR #75 review finding A).
 
     Args:
         coach_ids: CFBD coach ids to fetch profiles for.
+        misses: When given, a list the resource appends
+            (str(coach_id), status_code) to for every 400/404 hit --
+            forwarded straight through to `coach_profiles_resource`. The
+            caller persists it to `meta.fanout_misses` via
+            `run.py::_record_fanout_misses` so the next run's candidate
+            query can exclude a terminal miss instead of re-spending the
+            call forever.
     """
     if not coach_ids:
         raise ValueError(
@@ -211,7 +223,7 @@ def coach_profiles_source(coach_ids: list[int]) -> DltSource:
         )
 
     return [
-        coach_profiles_resource(coach_ids),
+        coach_profiles_resource(coach_ids, misses=misses),
     ]
 
 
@@ -220,7 +232,11 @@ def coach_profiles_source(coach_ids: list[int]) -> DltSource:
     write_disposition="merge",
     primary_key=["id"],
 )
-def coach_profiles_resource(coach_ids: list[int]) -> Iterator[dict]:
+def coach_profiles_resource(
+    coach_ids: list[int],
+    *,
+    misses: list[tuple[str, int]] | None = None,
+) -> Iterator[dict]:
     """Load coach profiles, one call per coach id via `?coachId=<id>`.
 
     The live `CoachProfile` response (per the CFBD OpenAPI spec) is a
@@ -239,10 +255,17 @@ def coach_profiles_resource(coach_ids: list[int]) -> Iterator[dict]:
 
     A 400 (validation error) or 404 (`CoachNotFound`) for a given id is
     logged and skipped rather than aborting the whole batch -- callers may
-    pass ids CFBD has no profile for.
+    pass ids CFBD has no profile for. When `misses` is given, the id
+    (stringified -- `meta.fanout_misses.key` is text) and status code are
+    appended to it so the caller can persist the miss (PR #75 review
+    finding A: without this, a terminal 400/404 was re-requested every run
+    forever).
 
     Args:
         coach_ids: CFBD coach ids to fetch profiles for.
+        misses: Keyword-only. Optional collector list; see
+            `coach_profiles_source`'s docstring. `None` (the default) is
+            safe -- no misses are collected.
     """
     client = get_client()
     try:
@@ -257,6 +280,8 @@ def coach_profiles_resource(coach_ids: list[int]) -> Iterator[dict]:
                         f"No coach profile for coach {coach_id} "
                         f"({e.response.status_code} response), skipping"
                     )
+                    if misses is not None:
+                        misses.append((str(coach_id), e.response.status_code))
                     continue
                 raise
 

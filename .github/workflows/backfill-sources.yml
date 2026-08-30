@@ -53,10 +53,20 @@ jobs:
         # dlt requires the postgres:// scheme (see .dlt/secrets.toml.example)
         run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
       - name: Load seasons
+        # Hardening (PR #75 review finding C): route workflow_dispatch inputs
+        # through step-level env: vars (probe-endpoints.yml's pattern) rather
+        # than interpolating ${{ inputs.* }} directly into the run: shell --
+        # see historical-refresh.yml's Drain backlog step for the rationale.
+        env:
+          SEASONS_INPUT: ${{ inputs.seasons }}
+          SOURCES_INPUT: ${{ inputs.sources }}
         run: |
-          for season in ${{ inputs.seasons }}; do
+          # $SEASONS_INPUT is deliberately unquoted -- it is a
+          # space-separated list of years and this loop relies on the
+          # shell's word-splitting to iterate them individually.
+          for season in $SEASONS_INPUT; do
             echo "::group::Season $season"
-            python scripts/load_season.py --season "$season" --sources "${{ inputs.sources }}" --skip-refresh
+            python scripts/load_season.py --season "$season" --sources "$SOURCES_INPUT" --skip-refresh
             echo "::endgroup::"
           done
       - name: Refresh marts

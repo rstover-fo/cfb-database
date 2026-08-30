@@ -111,15 +111,18 @@ class TestDueIsPerSeasonNotPerSource:
         today = date(2025, 9, 15)
         current_season = 2025
 
-        def fake_last_success(name: str):
+        def fake_last_checked(name: str):
             # Only the 2019 backfill has ever been recorded -- moments ago.
             if name == ledger_key(spec, 2019):
                 return datetime(2025, 9, 15, 0, 1)
             return None
 
-        monkeypatch.setattr(load_flat_files, "last_success", fake_last_success)
+        monkeypatch.setattr(load_flat_files, "last_checked", fake_last_checked)
 
-        current_last = load_flat_files._safe_last_success(ledger_key(spec, current_season))
+        # The 2019 backfill's key never appears among cadence_ledger_keys(spec,
+        # 2025)'s fallback candidates (2024, 2023, 2022) -- current_season's
+        # cadence lookup has nothing to find, requested or fallback.
+        current_last = load_flat_files._cadence_last_checked(spec, current_season)
         assert current_last is None
         assert load_flat_files.is_due(spec, current_last, today) is True
 
@@ -130,15 +133,123 @@ class TestDueIsPerSeasonNotPerSource:
         spec = _template_spec()
         today = date(2025, 9, 15)
 
-        def fake_last_success(name: str):
+        def fake_last_checked(name: str):
             if name == spec.name:  # the old, un-scoped behavior
                 return datetime(2025, 9, 15, 0, 1)
             return None
 
-        monkeypatch.setattr(load_flat_files, "last_success", fake_last_success)
+        monkeypatch.setattr(load_flat_files, "last_checked", fake_last_checked)
 
-        wrong_last = load_flat_files._safe_last_success(spec.name)
+        wrong_last = load_flat_files._safe_last_checked(spec.name)
         assert load_flat_files.is_due(spec, wrong_last, today) is False  # the bug
+
+
+# ---------------------------------------------------------------------------
+# cadence_ledger_keys / _cadence_last_checked (PR #75 review finding B):
+# cadence must consult every key a fallback fetch could actually resolve to,
+# but never let a fallback outrank the requested season's own history.
+# ---------------------------------------------------------------------------
+
+
+class TestCadenceLedgerKeys:
+    def test_single_file_spec_returns_bare_name_only(self):
+        spec = _single_file_spec()
+        assert load_flat_files.cadence_ledger_keys(spec, 2025) == ["toy_single"]
+        assert load_flat_files.cadence_ledger_keys(spec, 2099) == ["toy_single"]
+
+    def test_template_without_fallback_returns_requested_key_only(self):
+        spec = _template_spec(fallback_latest=False)
+        assert load_flat_files.cadence_ledger_keys(spec, 2025) == ["toy_seasoned:2025"]
+
+    def test_template_with_fallback_returns_requested_plus_max_steps_keys(self):
+        spec = _template_spec()
+        keys = load_flat_files.cadence_ledger_keys(spec, 2026)
+        assert keys == [
+            "toy_seasoned:2026",
+            "toy_seasoned:2025",
+            "toy_seasoned:2024",
+            "toy_seasoned:2023",
+        ]
+        assert len(keys) == 1 + FALLBACK_MAX_STEPS
+
+    def test_min_season_floor_stops_fallback_keys_early(self):
+        spec = _template_spec(min_season=2025)
+        keys = load_flat_files.cadence_ledger_keys(spec, 2026)
+        # step 1 -> 2025 (in bounds, included); step 2 -> 2024 < min_season, stop.
+        assert keys == ["toy_seasoned:2026", "toy_seasoned:2025"]
+
+
+class TestCadenceLastChecked:
+    def test_requested_key_present_wins_without_consulting_fallbacks(self, monkeypatch):
+        spec = _template_spec()
+        calls = []
+
+        def fake_last_checked(name):
+            calls.append(name)
+            if name == "toy_seasoned:2026":
+                return datetime(2026, 9, 1)
+            raise AssertionError(
+                "fallback keys must never be consulted once the requested key has history"
+            )
+
+        monkeypatch.setattr(load_flat_files, "last_checked", fake_last_checked)
+
+        result = load_flat_files._cadence_last_checked(spec, 2026)
+
+        assert result == datetime(2026, 9, 1)
+        assert calls == ["toy_seasoned:2026"]  # fallbacks never queried
+
+    def test_virgin_requested_key_with_recent_fallback_is_not_due(self, monkeypatch):
+        spec = _template_spec()
+
+        def fake_last_checked(name):
+            if name == "toy_seasoned:2025":
+                return datetime(2026, 8, 31)  # 1 day before `today` below
+            return None
+
+        monkeypatch.setattr(load_flat_files, "last_checked", fake_last_checked)
+
+        result = load_flat_files._cadence_last_checked(spec, 2026)
+        today = date(2026, 9, 1)
+
+        assert result == datetime(2026, 8, 31)
+        assert load_flat_files.is_due(spec, result, today) is False
+
+    def test_stale_fallback_seven_days_ago_is_due(self, monkeypatch):
+        spec = _template_spec()
+
+        def fake_last_checked(name):
+            if name == "toy_seasoned:2025":
+                return datetime(2026, 8, 25)  # 7 days before `today` below
+            return None
+
+        monkeypatch.setattr(load_flat_files, "last_checked", fake_last_checked)
+
+        result = load_flat_files._cadence_last_checked(spec, 2026)
+        today = date(2026, 9, 1)
+
+        assert load_flat_files.is_due(spec, result, today) is True
+
+    def test_2019_backfill_scenario_still_due(self, monkeypatch):
+        """Preserves TestDueIsPerSeasonNotPerSource's guarantee through the
+        fallback path too: a --season 2019 backfill recorded moments ago
+        must not make the CURRENT season (2025) look freshly-checked --
+        2019 isn't among 2025's fallback candidates (2024, 2023, 2022) at
+        all, so neither the requested key nor any fallback key has history."""
+        spec = _template_spec()
+        today = date(2025, 9, 15)
+
+        def fake_last_checked(name):
+            if name == ledger_key(spec, 2019):
+                return datetime(2025, 9, 15, 0, 1)
+            return None
+
+        monkeypatch.setattr(load_flat_files, "last_checked", fake_last_checked)
+
+        result = load_flat_files._cadence_last_checked(spec, 2025)
+
+        assert result is None
+        assert load_flat_files.is_due(spec, result, today) is True
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +504,7 @@ class TestMainThreadsSeasonExplicit:
             }
 
         monkeypatch.setattr(load_flat_files, "run_source", fake_run_source)
-        monkeypatch.setattr(load_flat_files, "_safe_last_success", lambda *a, **k: None)
+        monkeypatch.setattr(load_flat_files, "_cadence_last_checked", lambda *a, **k: None)
 
         load_flat_files.main(["--source", "sdv_team_xwalk"])
         assert captured["season_explicit"] is False

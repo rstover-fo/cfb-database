@@ -26,10 +26,31 @@ entries. This is a side-effect-free read of data dlt already computed.
 
 Ledger unavailability: ``--dry-run`` must work with no DB configured (used in
 CI/sandboxes with no Supabase credentials) -- due-status lookups swallow any
-``last_success()`` failure (including ``get_db_url``'s ``RuntimeError`` for
+``last_checked()`` failure (including ``get_db_url``'s ``RuntimeError`` for
 missing creds) and fall back to "never loaded". Real runs make no such
 allowance: a missing DB surfaces as a per-source ``status=failed`` result
 (via the same try/except that catches parser errors), never a driver crash.
+
+Cadence freshness (PR #75 review finding B): ``is_due`` is driven by
+``_cadence_last_checked``, not a bare ``last_success(ledger_key(spec,
+season))`` lookup -- two bugs, fixed together because the second only
+matters once the first is fixed. First, a fallback-eligible ``url_template``
+spec's *requested* season can 404 while an *older* season's file is what
+actually loaded; checking only the requested key made that spec look
+perpetually never-checked even the day after a successful fallback load.
+``cadence_ledger_keys`` enumerates every key ``_fetch_seasoned`` could have
+resolved to (requested key first, then each fallback season, mirroring its
+exact bounds) and ``_cadence_last_checked`` prefers the requested key's own
+stamp but falls back to the newest fallback stamp when the requested key has
+no history at all. Second, ``last_checked`` (not ``last_success``) is what
+either of those keys is checked against: a hash-skip (the fetched file's
+bytes are unchanged) is recorded as ``status='skipped'`` with ``error IS
+NULL`` -- confirmation the source is current, not a failure -- but
+``last_success`` only counts ``status='loaded'``, so an unchanged
+weekly/annual source looked stale every single day and was re-fetched
+needlessly (due -> fetch -> hash-skip -> due again tomorrow). See
+``load_ledger.last_checked``'s docstring for why a stale-snapshot skip is
+deliberately excluded from that definition.
 
 Per-season multi-file sources (B6a): see ``flat_files.py``'s module
 docstring for the full design (``url_template``, ``ledger_key()``,
@@ -64,7 +85,7 @@ from src.pipelines.sources.flat_files import (
     season_for_date,
 )
 from src.pipelines.utils.file_fetcher import FetchedFile, fetch_file
-from src.pipelines.utils.load_ledger import already_loaded, last_success, record_load
+from src.pipelines.utils.load_ledger import already_loaded, last_checked, record_load
 from src.pipelines.utils.team_xwalk import XwalkResolver
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -155,18 +176,67 @@ def is_due(spec: FlatFileSpec, last: datetime | None, today: date) -> bool:
     raise ValueError(f"{spec.name}: unknown cadence {spec.cadence!r}")
 
 
-def _safe_last_success(name: str) -> datetime | None:
-    """``last_success()`` tolerating a missing/unreachable DB.
+def cadence_ledger_keys(spec: FlatFileSpec, season: int) -> list[str]:
+    """Every ledger key relevant to `spec`'s cadence check for `season`:
+    the requested season's key first, then -- only for a `url_template` +
+    `fallback_latest` spec -- each fallback season `_fetch_seasoned` would
+    actually try on a 404, nearest first.
+
+    Pure (no DB). A single-file spec, and a `url_template` spec that did
+    not opt into fallback, has exactly one relevant key:
+    `[ledger_key(spec, season)]`. For a fallback-eligible spec the bounds
+    (`FALLBACK_MAX_STEPS`, `spec.min_season`) mirror `_fetch_seasoned`'s
+    exactly, so this list can never claim relevance for a season a real
+    fetch would not have tried.
+    """
+    requested_key = ledger_key(spec, season)
+    if not (spec.url_template and spec.fallback_latest):
+        return [requested_key]
+
+    keys = [requested_key]
+    for step in range(1, FALLBACK_MAX_STEPS + 1):
+        candidate = season - step
+        if spec.min_season is not None and candidate < spec.min_season:
+            break
+        keys.append(ledger_key(spec, candidate))
+    return keys
+
+
+def _safe_last_checked(name: str) -> datetime | None:
+    """``last_checked()`` tolerating a missing/unreachable DB.
 
     Used only for informational due-status (``--dry-run``, ``--due``
     selection) -- a real load's ledger calls are left to raise and fail that
     source loudly inside ``run_source``.
     """
     try:
-        return last_success(name)
+        return last_checked(name)
     except Exception as e:
-        logger.debug(f"{name}: last_success unavailable ({e}); treating as never loaded")
+        logger.debug(f"{name}: last_checked unavailable ({e}); treating as never loaded")
         return None
+
+
+def _cadence_last_checked(spec: FlatFileSpec, season: int) -> datetime | None:
+    """The timestamp ``is_due`` should treat as ``spec``'s last freshness
+    check for ``season`` (PR #75 review finding B).
+
+    The requested season's own key wins outright the moment it has ANY
+    history -- fallback keys are never even consulted in that case. This
+    preserves B6a's per-season due semantics: a historical backfill of some
+    other season must never make `season` look freshly-checked (see
+    ``TestDueIsPerSeasonNotPerSource``). Only when the requested key has no
+    history at all does the newest fallback key's timestamp stand in for
+    it, so a fallback-eligible spec that keeps resolving to last season's
+    file isn't re-fetched every single day while this season's own file
+    remains unpublished.
+    """
+    keys = cadence_ledger_keys(spec, season)
+    requested_stamp = _safe_last_checked(keys[0])
+    if requested_stamp is not None:
+        return requested_stamp
+
+    fallback_stamps = [s for s in (_safe_last_checked(k) for k in keys[1:]) if s is not None]
+    return max(fallback_stamps) if fallback_stamps else None
 
 
 def _safe_record_load(source: str, sha: str | None, **kwargs) -> None:
@@ -400,7 +470,7 @@ def _planned_sources(args: argparse.Namespace, today: date, season: int) -> list
         return [
             name
             for name, spec in REGISTRY.items()
-            if is_due(spec, _safe_last_success(ledger_key(spec, season)), today)
+            if is_due(spec, _cadence_last_checked(spec, season), today)
         ]
     return list(REGISTRY)
 
@@ -432,7 +502,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[DRY RUN] {len(names)} flat-file source(s) planned for season {season}")
         for name in names:
             spec = REGISTRY[name]
-            due = is_due(spec, _safe_last_success(ledger_key(spec, season)), today)
+            due = is_due(spec, _cadence_last_checked(spec, season), today)
             fetch_target = _fetch_target_display(spec, args.file, season)
             print(f"  {name:20s} cadence={spec.cadence:8s} due={due!s:5s} fetch={fetch_target}")
         return 0

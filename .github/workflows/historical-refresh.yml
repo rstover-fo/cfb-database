@@ -25,6 +25,16 @@ name: Historical Refresh
 # its own deliberate workflow_dispatch with --create rather than silently
 # reusing this cron.
 #
+# Finalize (R1, PR #75 F7/F1): a run that loads new games, or finds seasons
+# left unfinalized by a prior run, also refits adjusted EPA and refreshes
+# marts (scripts/backfill_refresh.py's finalize_campaign) -- and the script
+# now exits 1 (not always 0) when that finalize fails, so this workflow goes
+# red and the failure-issue step below fires instead of silently losing the
+# retry. The player-EPA staged build (migration
+# 022_player_epa_staged_build.sql) is NOT part of that finalize -- it stays
+# a one-time manual rerun after the campaign fully drains, per
+# docs/plans/2026-08-29-cfbd-expansion-rollout.md step 7.
+#
 # Requires repo secrets:
 #   CFBD_API_KEY    - collegefootballdata.com API key
 #   SUPABASE_DB_URL - Supabase SESSION pooler URL (see daily-load.yml)
@@ -89,11 +99,25 @@ jobs:
         # drained -- is a safe, script-level no-op (exit 0); the workflow
         # stays green either way. `create` only ever fires --create on a
         # deliberate workflow_dispatch.
+        #
+        # Hardening (PR #75 review finding C): route workflow_dispatch inputs
+        # through step-level env: vars (probe-endpoints.yml's pattern) rather
+        # than interpolating ${{ inputs.* }} directly into the run: shell --
+        # an input string interpolated inline is spliced into the script
+        # before the shell ever sees it, so it can inject arbitrary shell
+        # syntax. The `${VAR:-default}` shell substitutions below reproduce
+        # the original `${{ inputs.x || 'default' }}` fallback exactly --
+        # inputs.* is empty on a schedule fire, same as before.
+        env:
+          CAMPAIGN_INPUT: ${{ inputs.campaign }}
+          TASKS_INPUT: ${{ inputs.tasks }}
+          MAX_CALLS_INPUT: ${{ inputs.max_calls }}
+          CREATE_INPUT: ${{ inputs.create }}
         run: |
-          CAMPAIGN="${{ inputs.campaign || '2026-08-upstream-corrections' }}"
-          TASKS="${{ inputs.tasks || 'plays_stats,box_advanced' }}"
-          MAX_CALLS="${{ inputs.max_calls || '1000' }}"
-          if [ "${{ inputs.create }}" = "true" ]; then
+          CAMPAIGN="${CAMPAIGN_INPUT:-2026-08-upstream-corrections}"
+          TASKS="${TASKS_INPUT:-plays_stats,box_advanced}"
+          MAX_CALLS="${MAX_CALLS_INPUT:-1000}"
+          if [ "$CREATE_INPUT" = "true" ]; then
             python scripts/backfill_refresh.py --campaign "$CAMPAIGN" --create --seasons 2014-2025 \
               --tasks "$TASKS" --max-calls "$MAX_CALLS"
           else

@@ -62,18 +62,30 @@ jobs:
         # dlt requires the postgres:// scheme (see .dlt/secrets.toml.example)
         run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
       - name: Load season data (includes mart refresh)
+        # Hardening (PR #75 review finding C): route the workflow_dispatch
+        # `season` input through a step-level env: var (probe-endpoints.yml's
+        # pattern) instead of interpolating ${{ inputs.season }} directly into
+        # the run: shell -- see historical-refresh.yml's Drain backlog step
+        # for the full rationale. Behavior is unchanged: inputs.season is
+        # empty on a schedule fire, same as before.
+        env:
+          SEASON_INPUT: ${{ inputs.season }}
         run: |
-          if [ -n "${{ inputs.season }}" ]; then
-            python scripts/load_season.py --season "${{ inputs.season }}" --weekly
+          if [ -n "$SEASON_INPUT" ]; then
+            python scripts/load_season.py --season "$SEASON_INPUT" --weekly
           else
             python scripts/load_season.py --weekly
           fi
       - name: Update house Elo
         run: python scripts/compute_house_elo.py --incremental
       - name: Refit adjusted EPA
+        # Hardening (PR #75 review finding C): see the "Load season data"
+        # step above for the env-indirection rationale.
+        env:
+          SEASON_INPUT: ${{ inputs.season }}
         run: |
-          if [ -n "${{ inputs.season }}" ]; then
-            python scripts/compute_adjusted_epa.py --season "${{ inputs.season }}"
+          if [ -n "$SEASON_INPUT" ]; then
+            python scripts/compute_adjusted_epa.py --season "$SEASON_INPUT"
           else
             python scripts/compute_adjusted_epa.py --incremental
           fi
@@ -105,9 +117,13 @@ jobs:
       - name: Refresh Tier 2 + Tier 3 marts
         run: python scripts/refresh_marts.py --views marts.house_elo,marts.house_elo_game,marts.team_adjusted_epa,marts.scored_matchup_edges,marts.prediction_accuracy,marts.team_week_features,marts.adjusted_epa_week
       - name: Verify load
+        # Hardening (PR #75 review finding C): see the "Load season data"
+        # step above for the env-indirection rationale.
+        env:
+          SEASON_INPUT: ${{ inputs.season }}
         run: |
-          if [ -n "${{ inputs.season }}" ]; then
-            python scripts/verify_load.py --season "${{ inputs.season }}"
+          if [ -n "$SEASON_INPUT" ]; then
+            python scripts/verify_load.py --season "$SEASON_INPUT"
           else
             python scripts/verify_load.py
           fi
@@ -157,9 +173,13 @@ jobs:
           cache: pip
       - run: pip install -e ".[recaps]"
       - name: Generate recaps
+        # Hardening (PR #75 review finding C): see the "Load season data"
+        # step in the load job above for the env-indirection rationale.
+        env:
+          RECAP_LIMIT_INPUT: ${{ inputs.recap_limit }}
         run: |
-          if [ -n "${{ inputs.recap_limit }}" ]; then
-            python scripts/generate_recaps.py --limit "${{ inputs.recap_limit }}"
+          if [ -n "$RECAP_LIMIT_INPUT" ]; then
+            python scripts/generate_recaps.py --limit "$RECAP_LIMIT_INPUT"
           else
             python scripts/generate_recaps.py
           fi

@@ -630,8 +630,11 @@ def run_coach_profiles_pipeline(max_coaches: int = MAX_COACH_PROFILES_PER_RUN) -
 
     Returns:
         Summary dict: candidates, `missing` (the FULL backlog, not the
-        capped slice), `loaded_this_run`, `deferred`, batches, and the list
-        of dlt LoadInfo objects (one per batch).
+        capped slice), `excluded_misses` (candidates skipped because
+        meta.fanout_misses recorded a 400/404 for them within
+        FANOUT_MISS_RETRY_DAYS -- PR #75 review finding A), `loaded_this_run`,
+        `deferred`, batches, and the list of dlt LoadInfo objects (one per
+        batch).
     """
     import psycopg2
     import psycopg2.errors
@@ -655,10 +658,14 @@ def run_coach_profiles_pipeline(max_coaches: int = MAX_COACH_PROFILES_PER_RUN) -
             except psycopg2.errors.UndefinedTable:
                 logger.info("ref.coach_profiles does not exist yet; treating as empty")
                 existing_ids = set()
+
+            recent_misses = _fetch_recent_fanout_misses(cur, "coach_profiles")
     finally:
         conn.close()
 
-    missing = [cid for cid in candidate_ids if cid not in existing_ids]
+    not_yet_profiled = [cid for cid in candidate_ids if cid not in existing_ids]
+    excluded_misses = sum(1 for cid in not_yet_profiled if str(cid) in recent_misses)
+    missing = [cid for cid in not_yet_profiled if str(cid) not in recent_misses]
     total_missing = len(missing)
 
     # Bound the run. Reported, never silent -- see MAX_WP_GAMES_PER_RUN's
@@ -671,7 +678,8 @@ def run_coach_profiles_pipeline(max_coaches: int = MAX_COACH_PROFILES_PER_RUN) -
 
     print(
         f"  {len(candidate_ids)} known coach id(s) in ref.coach_seasons, "
-        f"{len(existing_ids)} already have a profile, {total_missing} missing"
+        f"{len(existing_ids)} already have a profile, {excluded_misses} recent "
+        f"terminal miss(es) excluded, {total_missing} missing"
     )
     if deferred:
         msg = (
@@ -686,6 +694,7 @@ def run_coach_profiles_pipeline(max_coaches: int = MAX_COACH_PROFILES_PER_RUN) -
         return {
             "candidates": len(candidate_ids),
             "missing": 0,
+            "excluded_misses": excluded_misses,
             "loaded_this_run": 0,
             "deferred": 0,
             "batches": 0,
@@ -702,6 +711,7 @@ def run_coach_profiles_pipeline(max_coaches: int = MAX_COACH_PROFILES_PER_RUN) -
         return {
             "candidates": len(candidate_ids),
             "missing": total_missing,
+            "excluded_misses": excluded_misses,
             "loaded_this_run": 0,
             "deferred": deferred,
             "batches": 0,
@@ -720,15 +730,20 @@ def run_coach_profiles_pipeline(max_coaches: int = MAX_COACH_PROFILES_PER_RUN) -
     all_info = []
     for i, id_batch in enumerate(batches, 1):
         print(f"\n  --- Batch {i}/{len(batches)}: {len(id_batch)} coach(es) ---")
-        source = coach_profiles_source(coach_ids=id_batch)
+        batch_misses: list[tuple[str, int]] = []
+        source = coach_profiles_source(coach_ids=id_batch, misses=batch_misses)
         info = pipeline.run(source)
         all_info.append(info)
         print(f"  Batch {i} complete: {info}")
+        if batch_misses:
+            _record_fanout_misses("coach_profiles", batch_misses)
+            print(f"  Recorded {len(batch_misses)} new/renewed miss(es) in meta.fanout_misses")
 
     print(f"\n=== Coach profiles load complete: {len(batches)} batches ===")
     return {
         "candidates": len(candidate_ids),
         "missing": total_missing,
+        "excluded_misses": excluded_misses,
         "loaded_this_run": len(missing),
         "deferred": deferred,
         "batches": len(batches),
@@ -1063,6 +1078,95 @@ def _fetch_rows_or_empty(cur, query: str, params: tuple, table_desc: str) -> lis
         return []
 
 
+# ---------------------------------------------------------------------------
+# meta.fanout_misses (src/schemas/migrations/056_fanout_miss_ledger.sql):
+# shared terminal-miss ledger for the coach_profiles and
+# player_season_overview drainers (PR #75 review finding A, P1 x2). Without
+# this, a 400/404 for a given id was logged and skipped by the resource
+# (coaches.py::coach_profiles_resource, player_overview.py::
+# player_season_overview_resource) but never persisted anywhere, so the same
+# id stayed in the "missing" set forever -- re-spending its API call every
+# run and, once a backlog is small, eventually crowding out real work behind
+# the 200/250-cap slices. Placed here, next to _fetch_rows_or_empty, because
+# _fetch_recent_fanout_misses is built directly on it.
+# ---------------------------------------------------------------------------
+
+# Days a recorded miss keeps excluding its key from a drainer's candidate
+# set. Bounded, not permanent: a coach profile or player overview CFBD has
+# not published YET is indistinguishable from one it will never publish, so
+# re-eligibility after a window lets late-published data self-heal instead
+# of being excluded forever.
+FANOUT_MISS_RETRY_DAYS = 30
+
+_FANOUT_RECENT_MISSES_QUERY = """
+    SELECT key FROM meta.fanout_misses
+    WHERE source = %s AND last_attempt_at > now() - make_interval(days => %s)
+"""
+
+
+def _fetch_recent_fanout_misses(cur, source: str) -> set[str]:
+    """Keys in meta.fanout_misses attempted within FANOUT_MISS_RETRY_DAYS for
+    `source` ('coach_profiles' | 'player_season_overview') -- excluded from
+    that drainer's candidate set so a terminal 400/404 isn't re-spent every
+    run. UndefinedTable (migration 056 not yet applied) degrades to an empty
+    set via _fetch_rows_or_empty, i.e. no exclusion -- a drainer must still
+    run normally before the migration lands.
+    """
+    rows = _fetch_rows_or_empty(
+        cur,
+        _FANOUT_RECENT_MISSES_QUERY,
+        (source, FANOUT_MISS_RETRY_DAYS),
+        "meta.fanout_misses",
+    )
+    return {row[0] for row in rows}
+
+
+_FANOUT_MISS_UPSERT_SQL = """
+    INSERT INTO meta.fanout_misses (source, key, status_code)
+    VALUES %s
+    ON CONFLICT (source, key) DO UPDATE SET
+        attempts = meta.fanout_misses.attempts + 1,
+        status_code = EXCLUDED.status_code,
+        last_attempt_at = now()
+"""
+
+
+def _record_fanout_misses(source: str, misses: list[tuple[str, int]]) -> None:
+    """Persist one batch's (key, status_code) misses to meta.fanout_misses.
+
+    Opens its own connection -- this module's existing per-call idiom (see
+    _metrics_wp_db_url's docstring for why run.py doesn't thread one
+    connection through every helper); the drainer's candidate-query
+    connection is already closed by the time a batch's pipeline.run()
+    completes. UndefinedTable (migration 056 not yet applied) is logged and
+    swallowed, not raised: a drainer must not crash because misses couldn't
+    be persisted, only lose the exclusion benefit on the next run.
+    """
+    if not misses:
+        return
+
+    import psycopg2
+    import psycopg2.errors
+    from psycopg2.extras import execute_values
+
+    conn = psycopg2.connect(_metrics_wp_db_url())
+    conn.autocommit = True  # each statement stands alone; no transaction to poison on error
+    try:
+        with conn.cursor() as cur:
+            try:
+                execute_values(
+                    cur,
+                    _FANOUT_MISS_UPSERT_SQL,
+                    [(source, key, code) for key, code in misses],
+                )
+            except psycopg2.errors.UndefinedTable:
+                logger.warning(
+                    "meta.fanout_misses missing; apply migration 056 -- misses not persisted"
+                )
+    finally:
+        conn.close()
+
+
 _PLAYER_OVERVIEW_USAGE_SEASONS_QUERY = "SELECT DISTINCT season FROM stats.player_usage"
 _PLAYER_OVERVIEW_PPA_SEASONS_QUERY = "SELECT DISTINCT season FROM metrics.ppa_players_season"
 
@@ -1133,8 +1237,10 @@ def run_player_overview_pipeline(
     Returns:
         Summary dict: `seasons` considered, `eligible_seasons` (post-gate),
         `missing` (the FULL backlog, not the capped slice),
-        `loaded_this_run`, `deferred`, batches, and the list of dlt LoadInfo
-        objects (one per batch).
+        `excluded_misses` (candidates skipped because meta.fanout_misses
+        recorded a 400/404 for them within FANOUT_MISS_RETRY_DAYS -- PR #75
+        review finding A), `loaded_this_run`, `deferred`, batches, and the
+        list of dlt LoadInfo objects (one per batch).
     """
     import psycopg2
 
@@ -1166,7 +1272,13 @@ def run_player_overview_pipeline(
 
             eligible_seasons = [s for s in candidate_seasons if _season_is_final(conn, s)]
 
+            # Fetched once, outside the per-season loop -- the ledger isn't
+            # scoped by season, so there's nothing to gain by re-querying it
+            # for every eligible season.
+            recent_misses = _fetch_recent_fanout_misses(cur, "player_season_overview")
+
             missing: list[tuple] = []
+            excluded_misses = 0
             for season in eligible_seasons:
                 usage_rows = _fetch_rows_or_empty(
                     cur,
@@ -1190,7 +1302,13 @@ def run_player_overview_pipeline(
                 )
                 existing_ids = {tuple(r) for r in existing_rows}
 
-                missing.extend(row for row in season_candidates if row not in existing_ids)
+                not_yet_loaded = [row for row in season_candidates if row not in existing_ids]
+                excluded_misses += sum(
+                    1 for row in not_yet_loaded if f"{row[0]}:{row[1]}" in recent_misses
+                )
+                missing.extend(
+                    row for row in not_yet_loaded if f"{row[0]}:{row[1]}" not in recent_misses
+                )
     finally:
         conn.close()
 
@@ -1207,6 +1325,7 @@ def run_player_overview_pipeline(
     print(
         f"  {len(candidate_seasons)} season(s) with player data, "
         f"{len(eligible_seasons)} completed and eligible {eligible_seasons}, "
+        f"{excluded_misses} recent terminal miss(es) excluded, "
         f"{total_missing} missing player-season(s)"
     )
     if deferred:
@@ -1223,6 +1342,7 @@ def run_player_overview_pipeline(
             "seasons": candidate_seasons,
             "eligible_seasons": eligible_seasons,
             "missing": 0,
+            "excluded_misses": excluded_misses,
             "loaded_this_run": 0,
             "deferred": 0,
             "batches": 0,
@@ -1240,6 +1360,7 @@ def run_player_overview_pipeline(
             "seasons": candidate_seasons,
             "eligible_seasons": eligible_seasons,
             "missing": total_missing,
+            "excluded_misses": excluded_misses,
             "loaded_this_run": 0,
             "deferred": deferred,
             "batches": 0,
@@ -1261,16 +1382,21 @@ def run_player_overview_pipeline(
     all_info = []
     for i, batch in enumerate(batches, 1):
         print(f"\n  --- Batch {i}/{len(batches)}: {len(batch)} player-season(s) ---")
-        source = player_overview_source(player_seasons=batch)
+        batch_misses: list[tuple[str, int]] = []
+        source = player_overview_source(player_seasons=batch, misses=batch_misses)
         info = pipeline.run(source)
         all_info.append(info)
         print(f"  Batch {i} complete: {info}")
+        if batch_misses:
+            _record_fanout_misses("player_season_overview", batch_misses)
+            print(f"  Recorded {len(batch_misses)} new/renewed miss(es) in meta.fanout_misses")
 
     print(f"\n=== Player season overview load complete: {len(batches)} batches ===")
     return {
         "seasons": candidate_seasons,
         "eligible_seasons": eligible_seasons,
         "missing": total_missing,
+        "excluded_misses": excluded_misses,
         "loaded_this_run": len(missing),
         "deferred": deferred,
         "batches": len(batches),

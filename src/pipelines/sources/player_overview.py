@@ -37,11 +37,22 @@ logger = logging.getLogger(__name__)
 
 
 @dlt.source(name="cfbd_player_overview")
-def player_overview_source(player_seasons: list[tuple[int, str]]) -> DltSource:
+def player_overview_source(
+    player_seasons: list[tuple[int, str]],
+    *,
+    misses: list[tuple[str, int]] | None = None,
+) -> DltSource:
     """Source for per-player, per-season box score/usage/PPA overviews.
 
     Args:
         player_seasons: List of (year, player_id) pairs to fetch.
+        misses: When given, a list the resource appends
+            (f"{year}:{player_id}", status_code) to for every 400/404 hit --
+            forwarded straight through to `player_season_overview_resource`.
+            The caller persists it to `meta.fanout_misses` via
+            `run.py::_record_fanout_misses` (PR #75 review finding A) so
+            the next run's candidate query can exclude a terminal miss
+            instead of re-spending the call forever.
     """
     if not player_seasons:
         raise ValueError(
@@ -50,7 +61,7 @@ def player_overview_source(player_seasons: list[tuple[int, str]]) -> DltSource:
         )
 
     return [
-        player_season_overview_resource(player_seasons),
+        player_season_overview_resource(player_seasons, misses=misses),
     ]
 
 
@@ -59,7 +70,11 @@ def player_overview_source(player_seasons: list[tuple[int, str]]) -> DltSource:
     write_disposition="merge",
     primary_key=["season", "id"],
 )
-def player_season_overview_resource(player_seasons: list[tuple[int, str]]) -> Iterator[dict]:
+def player_season_overview_resource(
+    player_seasons: list[tuple[int, str]],
+    *,
+    misses: list[tuple[str, int]] | None = None,
+) -> Iterator[dict]:
     """Load player season overviews, one call per (year, playerId).
 
     The live `PlayerSeasonOverview` response (per the CFBD OpenAPI spec) is
@@ -79,10 +94,18 @@ def player_season_overview_resource(player_seasons: list[tuple[int, str]]) -> It
     A 400 or 404 for a given (year, playerId) is logged and skipped rather
     than aborting the whole batch -- candidates come from a UNION of
     stats.player_usage and metrics.ppa_players_season, either of which may
-    include a player-season CFBD has no overview computed for.
+    include a player-season CFBD has no overview computed for. When
+    `misses` is given, the "{year}:{player_id}" key (matching
+    `meta.fanout_misses.key`'s format for this source) and status code are
+    appended to it so the caller can persist the miss (PR #75 review
+    finding A: without this, a terminal 400/404 was re-requested every run
+    forever).
 
     Args:
         player_seasons: List of (year, player_id) pairs to fetch.
+        misses: Keyword-only. Optional collector list; see
+            `player_overview_source`'s docstring. `None` (the default) is
+            safe -- no misses are collected.
     """
     client = get_client()
     try:
@@ -101,6 +124,8 @@ def player_season_overview_resource(player_seasons: list[tuple[int, str]]) -> It
                         f"No player season overview for {player_id} ({year}) "
                         f"({e.response.status_code} response), skipping"
                     )
+                    if misses is not None:
+                        misses.append((f"{year}:{player_id}", e.response.status_code))
                     continue
                 raise
 

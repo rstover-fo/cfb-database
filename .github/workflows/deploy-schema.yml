@@ -99,16 +99,33 @@ jobs:
         run: python scripts/deploy_schema.py --manifest deploy-manifest.json
       - name: Deploy via CLI flags (workflow_dispatch)
         if: github.event_name == 'workflow_dispatch'
+        # Hardening (PR #75 review finding C): route every workflow_dispatch
+        # input used below through a step-level env: var (probe-endpoints.yml's
+        # pattern) rather than interpolating ${{ inputs.* }} directly into the
+        # run: shell -- see historical-refresh.yml's Drain backlog step for
+        # the rationale. The ARGS+=() accumulation and "$VAR" quoting are
+        # unchanged; only where each value comes from moves.
+        env:
+          ACTION_INPUT: ${{ inputs.action }}
+          MARTS_FROM_INPUT: ${{ inputs.marts_from }}
+          MARTS_ONLY_INPUT: ${{ inputs.marts_only }}
+          FILES_INPUT: ${{ inputs.files }}
+          REFRESH_INPUT: ${{ inputs.refresh }}
+          BACKFILL_START_INPUT: ${{ inputs.backfill_start }}
+          BACKFILL_END_INPUT: ${{ inputs.backfill_end }}
+          SOURCES_INPUT: ${{ inputs.sources }}
+          COMPUTE_SCRIPT_INPUT: ${{ inputs.compute_script }}
+          COMPUTE_ARGS_INPUT: ${{ inputs.compute_args }}
         run: |
           set -euo pipefail
-          ARGS=(--action "${{ inputs.action }}")
-          if [ -n "${{ inputs.marts_from }}" ]; then ARGS+=(--marts-from "${{ inputs.marts_from }}"); fi
-          if [ -n "${{ inputs.marts_only }}" ]; then ARGS+=(--marts-only "${{ inputs.marts_only }}"); fi
-          if [ -n "${{ inputs.files }}" ]; then ARGS+=(--files "${{ inputs.files }}"); fi
-          if [ "${{ inputs.refresh }}" = "true" ]; then ARGS+=(--refresh); fi
-          if [ -n "${{ inputs.backfill_start }}" ]; then ARGS+=(--backfill-start "${{ inputs.backfill_start }}"); fi
-          if [ -n "${{ inputs.backfill_end }}" ]; then ARGS+=(--backfill-end "${{ inputs.backfill_end }}"); fi
-          if [ -n "${{ inputs.sources }}" ]; then ARGS+=(--sources "${{ inputs.sources }}"); fi
-          if [ -n "${{ inputs.compute_script }}" ]; then ARGS+=(--compute-script "${{ inputs.compute_script }}"); fi
-          if [ -n "${{ inputs.compute_args }}" ]; then ARGS+=(--compute-args "${{ inputs.compute_args }}"); fi
+          ARGS=(--action "$ACTION_INPUT")
+          if [ -n "$MARTS_FROM_INPUT" ]; then ARGS+=(--marts-from "$MARTS_FROM_INPUT"); fi
+          if [ -n "$MARTS_ONLY_INPUT" ]; then ARGS+=(--marts-only "$MARTS_ONLY_INPUT"); fi
+          if [ -n "$FILES_INPUT" ]; then ARGS+=(--files "$FILES_INPUT"); fi
+          if [ "$REFRESH_INPUT" = "true" ]; then ARGS+=(--refresh); fi
+          if [ -n "$BACKFILL_START_INPUT" ]; then ARGS+=(--backfill-start "$BACKFILL_START_INPUT"); fi
+          if [ -n "$BACKFILL_END_INPUT" ]; then ARGS+=(--backfill-end "$BACKFILL_END_INPUT"); fi
+          if [ -n "$SOURCES_INPUT" ]; then ARGS+=(--sources "$SOURCES_INPUT"); fi
+          if [ -n "$COMPUTE_SCRIPT_INPUT" ]; then ARGS+=(--compute-script "$COMPUTE_SCRIPT_INPUT"); fi
+          if [ -n "$COMPUTE_ARGS_INPUT" ]; then ARGS+=(--compute-args "$COMPUTE_ARGS_INPUT"); fi
           python scripts/deploy_schema.py "${ARGS[@]}"

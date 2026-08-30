@@ -10,6 +10,7 @@ import pytest
 import scripts.load_flat_files as load_flat_files
 import src.pipelines.sources.flat_files as flat_files_module
 from src.pipelines.sources.flat_files import REGISTRY, FlatFileSpec, StaleSnapshotError
+from src.pipelines.utils import load_ledger
 from src.pipelines.utils.file_fetcher import FetchedFile
 
 # ---------------------------------------------------------------------------
@@ -95,7 +96,7 @@ class TestIsDueUnknownCadence:
 
 class TestArgParsing:
     def test_source_and_due_mutually_exclusive(self, monkeypatch):
-        monkeypatch.setattr(load_flat_files, "last_success", lambda *a, **k: None)
+        monkeypatch.setattr(load_flat_files, "last_checked", lambda *a, **k: None)
         with pytest.raises(SystemExit):
             load_flat_files.main(["--source", "massey", "--due"])
 
@@ -112,7 +113,7 @@ class TestArgParsing:
     def test_file_with_exactly_one_source_is_accepted_by_parser(self, monkeypatch):
         # Only checking the arg-validation gate doesn't reject this combo --
         # short-circuit before any fetch/DB work happens via --dry-run.
-        monkeypatch.setattr(load_flat_files, "last_success", lambda *a, **k: None)
+        monkeypatch.setattr(load_flat_files, "last_checked", lambda *a, **k: None)
         rc = load_flat_files.main(["--file", "somefile.csv", "--source", "massey", "--dry-run"])
         assert rc == 0
 
@@ -127,7 +128,7 @@ class TestDryRun:
         # gracefully rather than raising.
         monkeypatch.setattr(
             load_flat_files,
-            "last_success",
+            "last_checked",
             lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no db creds")),
         )
 
@@ -151,7 +152,7 @@ class TestDryRun:
         monkeypatch.setattr(load_flat_files, "fetch_file", boom)
         monkeypatch.setattr(load_flat_files, "build_flat_file_source", boom)
         monkeypatch.setattr(load_flat_files, "record_load", boom)
-        monkeypatch.setattr(load_flat_files, "last_success", lambda *a, **k: None)
+        monkeypatch.setattr(load_flat_files, "last_checked", lambda *a, **k: None)
 
         rc = load_flat_files.main(["--dry-run"])
         assert rc == 0
@@ -357,3 +358,69 @@ class TestArchiverLedgerMarker:
         self._run_archiver(monkeypatch, record_calls)
         shas = [args[1] for args, _ in record_calls]
         assert len(shas) == 2 and shas[0] != shas[1]
+
+
+# ---------------------------------------------------------------------------
+# load_ledger.last_checked SQL drift (PR #75 review finding B): a hash-skip
+# (status='skipped', error IS NULL) must count as a freshness check; a
+# stale-snapshot skip (status='skipped', error set) and a failed attempt
+# must not. Asserted against the query text itself, no live DB, mirroring
+# how the rest of this driver is tested against mocked psycopg2.
+# ---------------------------------------------------------------------------
+
+
+class _FakeCursor:
+    def __init__(self, captured: dict):
+        self._captured = captured
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def execute(self, query, params):
+        self._captured["query"] = query
+        self._captured["params"] = params
+
+    def fetchone(self):
+        return (None,)
+
+
+class _FakeConn:
+    def __init__(self, captured: dict):
+        self._captured = captured
+
+    def cursor(self):
+        return _FakeCursor(self._captured)
+
+    def close(self):
+        pass
+
+
+class TestLastCheckedSqlDrift:
+    def _run(self, monkeypatch) -> dict:
+        captured: dict = {}
+        monkeypatch.setattr(load_ledger, "get_db_url", lambda: "postgres://fake")
+        monkeypatch.setattr(load_ledger.psycopg2, "connect", lambda dsn: _FakeConn(captured))
+        load_ledger.last_checked("massey")
+        return captured
+
+    def test_counts_loaded_status(self, monkeypatch):
+        captured = self._run(monkeypatch)
+        query = " ".join(captured["query"].split())
+        assert "status = 'loaded'" in query
+        assert captured["params"] == ("massey",)
+
+    def test_counts_skipped_with_null_error(self, monkeypatch):
+        captured = self._run(monkeypatch)
+        query = " ".join(captured["query"].split())
+        # The skipped branch must be gated by error IS NULL, not a bare
+        # status check -- a stale-snapshot skip also has status='skipped'
+        # but carries a non-NULL error and must NOT count.
+        assert "status = 'skipped' AND error IS NULL" in query
+
+    def test_does_not_count_failed(self, monkeypatch):
+        captured = self._run(monkeypatch)
+        query = " ".join(captured["query"].split())
+        assert "'failed'" not in query

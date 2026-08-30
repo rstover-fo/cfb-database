@@ -32,6 +32,7 @@ SOURCE_ORDER = [
     "game_stats",  # Team and player box scores
     "plays",  # Play-by-play (largest dataset)
     "stats",  # Aggregated season stats
+    "passing",  # /passing charting: air yards, aDOT, depth/direction/location, YAC (2025+)
     "ratings",  # SP+, Elo, FPI, SRS, CORE, SRS-expanded
     "rankings",  # AP, Coaches polls
     "recruiting",  # Recruits, team composites
@@ -78,6 +79,13 @@ ESTIMATED_CALLS = {
     # estimate understated a daily run by ~80x and hid this source behind
     # "plays" in every budget projection.
     "stats": 1_675,
+    # /passing charting (passing.py): 3 week-iterated resources
+    # (passing_plays, passing_player_games, passing_team_games) x ~20 calls
+    # each (regular weeks 1-16 + postseason weeks 1-4) + 2 season-grain
+    # resources (passing_player_season, passing_team_season) x 1 call each
+    # = 62. Zero calls for a season before PASSING_DATA_START (2025) --
+    # the era guard skips every resource before spending anything.
+    "passing": 62,
     # sp/elo/fpi/srs/core/sp_conferences/srs_expanded: one call per year each.
     "ratings": 13,
     "rankings": 20,
@@ -180,6 +188,12 @@ IMMUTABLE_ONCE_FINAL = frozenset(
         "game_stats",
         "plays",
         "stats",
+        # passing (passing.py): same immutable-once-final policy as stats --
+        # a finished season's charting is only immutable-ish, since
+        # parseStatus="partial" rows may be re-charted by CFBD's upstream
+        # vendor after the fact. Corrections ride explicit --season
+        # re-runs, not a daily re-ingest, same as stats/game_advanced.
+        "passing",
         "ratings",
         "rankings",
         "recruiting",
@@ -385,6 +399,7 @@ def load_season(
         run_games_pipeline,
         run_metrics_pipeline,
         run_metrics_wp_pipeline,
+        run_passing_pipeline,
         run_player_overview_pipeline,
         run_playoffs_pipeline,
         run_plays_pipeline,
@@ -522,6 +537,7 @@ def load_season(
         "game_stats": game_stats_runner,
         "plays": lambda: run_plays_pipeline(years=[season]),
         "stats": lambda: run_stats_pipeline(years=[season], only=resource_filters.get("stats")),
+        "passing": lambda: run_passing_pipeline(years=[season]),
         "ratings": lambda: run_ratings_pipeline(years=[season]),
         "rankings": lambda: run_rankings_pipeline(years=[season]),
         "recruiting": lambda: run_recruiting_pipeline(years=[season]),

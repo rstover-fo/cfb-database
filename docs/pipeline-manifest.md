@@ -220,6 +220,28 @@ than a year-fetch-all.
 | 69 | `/coaches/profile` | ref.coach_profiles | coaches.py | coach_profiles_resource | YES (drainer -- `run.py::run_coach_profiles_pipeline`, in `SOURCE_ORDER`, capped at 200 coach ids/run) | merge | id | current | WORKING (wired, not yet backfilled -- candidate coach ids come from ref.coach_seasons, itself not yet backfilled against the live database) |
 | 70 | `/player/season/overview` | stats.player_season_overview | player_overview.py | player_season_overview_resource | YES (drainer -- `run.py::run_player_overview_pipeline`, in `SOURCE_ORDER`, capped at 250 player-seasons/run) | merge | season, id | finished seasons only (completed-season gate) | WORKING (wired, not yet backfilled) |
 
+### Passing (spec v5.25.0, 2026-08-30)
+
+Five endpoints new to the 79-count regeneration: air yards, average depth of target
+(aDOT), pass depth/direction/location, and yards after catch (YAC), all manually
+charted from play film rather than derived from play-by-play parsing. Data starts
+2025 (`PASSING_DATA_START` in passing.py -- 2024/2014 both probed 200-with-zero-rows,
+2025 is fully populated). The three game-grain endpoints (rows 71-73) require `week`
+or `team`/`passerId` -- a bare year 400s, understating what the OpenAPI spec's
+required-params list claims -- so each walks weeks like `player_success_game_resource`
+(regular 1-16, postseason 1-4). The two season-grain endpoints (rows 74-75) take a
+bare year. Deliberately its own module/source (`cfbd_passing`), not folded into
+`stats.py` -- see passing.py's module docstring for why (stats.py's sibling-failure
+blast radius must not grow by five more resources).
+
+| # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
+|---|---|---|---|---|---|---|---|---|---|
+| 71 | `/passing/plays` | stats.passing_plays | passing.py | passing_plays_resource | YES | merge | game_id, play_id | 2025-2026 | WORKING (not yet backfilled) |
+| 72 | `/passing/players/games` | stats.passing_player_games | passing.py | passing_player_games_resource | YES | merge | game_id, player_id | 2025-2026 | WORKING (not yet backfilled) |
+| 73 | `/passing/teams/games` | stats.passing_team_games | passing.py | passing_team_games_resource | YES | merge | game_id, team | 2025-2026 | WORKING (not yet backfilled) |
+| 74 | `/passing/players/season` | stats.passing_player_season | passing.py | passing_player_season_resource | YES | merge | season, player_id, team | 2025-2026 | WORKING (not yet backfilled) |
+| 75 | `/passing/teams/season` | stats.passing_team_season | passing.py | passing_team_season_resource | YES | merge | season, team | 2025-2026 | WORKING (not yet backfilled) |
+
 ---
 
 ## Summary
@@ -285,7 +307,7 @@ endpoints rowed.
   parameterless request); its column names come from the CFBD OpenAPI spec,
   not an inspected response -- verify via `pg_attribute` after the first load.
 
-**Note**: The API reference now lists 74 endpoints (see `docs/cfbd-api-endpoints.md`) but some are variants of others (e.g., `/stats/season` vs `/stats/player/season` are listed as one "stats" category). This manifest counts distinct loadable endpoints. All 12 endpoints new to the 74-count regeneration (2026-08-29) are now rowed: 10 in the A2 unit above, plus `/coaches/profile` and `/player/season/overview` (rows 69-70, A4 unit, 2026-08-29) -- the two that were PENDING here. Both needed a targeted loader rather than a year-fetch-all: `/coaches/profile` (requires `coachId`, one call per coach) is drained by `run.py::run_coach_profiles_pipeline` from the coach ids seen in `ref.coach_seasons`, and `/player/season/overview` (requires `year` + `playerId`, one call per player per season -- a large, unbounded fan-out) is drained by `run.py::run_player_overview_pipeline` from the player-seasons seen in `stats.player_usage`/`metrics.ppa_players_season`, gated to finished seasons only. Both are DB-set-difference drainers capped per run (200 and 250 respectively) and wired into `scripts/load_season.py`'s `SOURCE_ORDER`, not full backfills.
+**Note**: The API reference now lists 79 endpoints (see `docs/cfbd-api-endpoints.md`) but some are variants of others (e.g., `/stats/season` vs `/stats/player/season` are listed as one "stats" category). This manifest counts distinct loadable endpoints. All 12 endpoints new to the 74-count regeneration (2026-08-29) are now rowed: 10 in the A2 unit above, plus `/coaches/profile` and `/player/season/overview` (rows 69-70, A4 unit, 2026-08-29) -- the two that were PENDING here. Both needed a targeted loader rather than a year-fetch-all: `/coaches/profile` (requires `coachId`, one call per coach) is drained by `run.py::run_coach_profiles_pipeline` from the coach ids seen in `ref.coach_seasons`, and `/player/season/overview` (requires `year` + `playerId`, one call per player per season -- a large, unbounded fan-out) is drained by `run.py::run_player_overview_pipeline` from the player-seasons seen in `stats.player_usage`/`metrics.ppa_players_season`, gated to finished seasons only. Both are DB-set-difference drainers capped per run (200 and 250 respectively) and wired into `scripts/load_season.py`'s `SOURCE_ORDER`, not full backfills. The 5 endpoints new to the 79-count regeneration (spec v5.25.0, 2026-08-30) are the `/passing/*` charting group -- rows 71-75 above -- all year-fetch-all (three week-iterated, two bare-year), wired into `SOURCE_ORDER` as a single `passing` source.
 
 ---
 

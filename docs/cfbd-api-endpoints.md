@@ -1,6 +1,6 @@
 # CFBD API Endpoints Reference
 
-**Total: 74 endpoints across 18 API categories**
+**Total: 79 endpoints across 19 API categories**
 
 Base URL: `https://api.collegefootballdata.com`
 Auth: API Key required (Bearer token)
@@ -78,6 +78,15 @@ Docs: https://api.collegefootballdata.com/
 | GET | `/metrics/fg/ep` | Field goal expected points |
 | GET | `/metrics/wp/pregame` | Pregame win probability |
 | GET | `/metrics/wp` | In-game win probability |
+
+### PassingApi (5 endpoints)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/passing/plays` | Play-grain pass charting: air yards, pass depth/direction/location, YAC |
+| GET | `/passing/players/games` | Player-game passing aggregates: attempts, air yards, aDOT, YAC |
+| GET | `/passing/teams/games` | Team-game passing aggregates (offense/defense) |
+| GET | `/passing/players/season` | Player season passing aggregates |
+| GET | `/passing/teams/season` | Team season passing aggregates (offense/defense) |
 
 ### PlayersApi (5 endpoints)
 | Method | Endpoint | Description |
@@ -161,6 +170,7 @@ Docs: https://api.collegefootballdata.com/
   - Play-by-play: ~2004+
   - Recruiting: ~2000+
   - Advanced metrics: ~2014+
+  - Passing charting (air yards, aDOT, depth/direction/location, YAC): 2025+
 
 - **API rate limits**: account tier and monthly call budget are configured in
   `.dlt/config.toml`, not hardcoded here -- access policies change. See that

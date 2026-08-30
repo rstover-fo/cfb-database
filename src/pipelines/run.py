@@ -14,6 +14,7 @@ from .sources.draft import draft_source
 from .sources.game_stats import game_stats_source
 from .sources.games import games_source
 from .sources.metrics import metrics_ppa_predicted_source, metrics_source, metrics_wp_source
+from .sources.passing import passing_source
 from .sources.player_overview import player_overview_source
 from .sources.playoffs import playoffs_source
 from .sources.plays import plays_source
@@ -84,6 +85,7 @@ Examples:
             "rankings",
             "rosters",
             "wepa",
+            "passing",
             "playoffs",
             "coaches",
             "coach_tenures",
@@ -489,6 +491,28 @@ def run_metrics_ppa_predicted_pipeline():
     )
 
     source = metrics_ppa_predicted_source()
+    info = pipeline.run(source)
+
+    print(f"\nLoad info: {info}")
+
+    return info
+
+
+def run_passing_pipeline(years: list[int] | None = None, mode: str = "incremental"):
+    """Run the /passing charting pipeline (air yards, aDOT, depth/direction/
+    location, YAC -- see passing.py's module docstring). Data starts 2025;
+    earlier years are skipped per-resource with zero calls.
+    """
+    years_str = f"years={years}" if years else f"mode={mode}"
+    print(f"\n=== Loading Passing Data ({years_str}) ===\n")
+
+    pipeline = dlt.pipeline(
+        pipeline_name="cfbd_passing",
+        destination="postgres",
+        dataset_name="stats",
+    )
+
+    source = passing_source(years=years, mode=mode)
     info = pipeline.run(source)
 
     print(f"\nLoad info: {info}")
@@ -1591,6 +1615,7 @@ def main() -> NoReturn:
         "rankings": lambda: run_rankings_pipeline(args.years, args.mode),
         "rosters": lambda: run_rosters_pipeline(args.teams, args.years, args.mode),
         "wepa": lambda: run_wepa_pipeline(args.years, args.mode),
+        "passing": lambda: run_passing_pipeline(args.years, args.mode),
         "playoffs": lambda: run_playoffs_pipeline(args.years, args.mode),
         "coaches": lambda: run_coaches_pipeline(args.years, args.mode),
         "coach_tenures": lambda: run_coach_tenures_pipeline(args.teams, args.years),

@@ -14,7 +14,11 @@ name: Backfill Sources
 # below, which shells out to load_season.py and validates sources against
 # that same SOURCE_ORDER. Dispatching with `runner: pipeline_run` bypasses
 # that validation on purpose and calls src/pipelines/run.py directly for a
-# single `--source` once, with no per-season loop.
+# single `--source` once, with no per-season loop -- and, because that path
+# skips the trailing mart refresh, its `sources` input is restricted by an
+# in-step allowlist to exactly coach_tenures and metrics_ppa_predicted;
+# anything in load_season's SOURCE_ORDER (ratings, recruiting, stats, wepa,
+# ...) must go through the default runner so its mart refresh still runs.
 #
 # Requires repo secrets:
 #   CFBD_API_KEY    - collegefootballdata.com API key
@@ -36,7 +40,7 @@ on:
         required: true
         type: string
       runner:
-        description: "load_season: per-season loop via scripts/load_season.py (default). pipeline_run: single src.pipelines.run --source call, for run.py-only sources not in load_season's SOURCE_ORDER (coach_tenures, metrics_ppa_predicted)."
+        description: "load_season: per-season loop via scripts/load_season.py (default). pipeline_run: single src.pipelines.run --source call, allowlisted to run.py-only sources not in load_season's SOURCE_ORDER (coach_tenures, metrics_ppa_predicted) -- any other source is rejected since this path skips the mart refresh."
         required: false
         type: choice
         default: load_season
@@ -108,6 +112,24 @@ jobs:
           SEASONS_INPUT: ${{ inputs.seasons }}
           SOURCES_INPUT: ${{ inputs.sources }}
         run: |
+          # Allowlist: everything in load_season.py's SOURCE_ORDER already
+          # has a correct dispatch path through the default runner (loops
+          # seasons, refreshes marts at the end); letting one of those
+          # sources through here would load data and leave its dependent
+          # matviews silently stale, since this path skips the refresh
+          # step unconditionally. Only coach_tenures and
+          # metrics_ppa_predicted are run.py-only with no SOURCE_ORDER
+          # slot -- and neither feeds any mart, which is what makes
+          # skipping the refresh on this path safe, as long as this
+          # allowlist holds. A future run.py-only source gets added here
+          # deliberately, not implicitly.
+          case "$SOURCES_INPUT" in
+            coach_tenures|metrics_ppa_predicted) ;;
+            *)
+              echo "::error::runner=pipeline_run only supports the run.py-only sources coach_tenures and metrics_ppa_predicted -- '$SOURCES_INPUT' should go through the default load_season runner, which loops seasons and refreshes marts"
+              exit 1
+              ;;
+          esac
           # metrics_ppa_predicted's runner lambda takes no arguments and
           # ignores years entirely, so it must run bare -- only append
           # --years when the seasons input is non-empty. coach_tenures

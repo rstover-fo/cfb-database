@@ -2,6 +2,14 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from src.pipelines.sources.wepa import (
+    wepa_players_kicking_resource,
+    wepa_players_passing_resource,
+    wepa_players_rushing_resource,
+)
+
 
 def test_wepa_team_season_resource_yields_data():
     """WEPA endpoint should yield opponent-adjusted EPA by team/season."""
@@ -80,6 +88,109 @@ def test_wepa_players_passing_resource_yields_data():
 
         assert len(results) == 1
         assert results[0]["id"] == 12345
+
+
+PLAYER_RESOURCES = [
+    wepa_players_passing_resource,
+    wepa_players_rushing_resource,
+    wepa_players_kicking_resource,
+]
+
+
+@pytest.mark.parametrize("resource_fn", PLAYER_RESOURCES, ids=lambda fn: fn.__name__)
+class TestPlayerIdCoalesce:
+    """CFBD renamed the player-id field on at least one /wepa/players/*
+    endpoint sometime after the existing 2014-2025 rows were loaded
+    (observed 2026-08-30, backfill run 33333482499: dlt's
+    UnboundColumnException on wepa_players_passing -- "id ... did not
+    receive any data" -- despite an HTTP 200 response). All three player
+    resources share the same fix, so these run against all three."""
+
+    def test_id_already_present_is_unchanged(self, resource_fn):
+        mock_response = [{"id": 12345, "name": "Player A"}]
+
+        with (
+            patch("src.pipelines.sources.wepa.get_client") as mock_get_client,
+            patch("src.pipelines.sources.wepa.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.return_value = mock_response
+
+            results = list(resource_fn(years=[2024]))
+
+        assert len(results) == 1
+        assert results[0]["id"] == 12345  # untouched -- still the original int
+
+    def test_player_id_field_is_coalesced_and_stamped_as_string(self, resource_fn):
+        mock_response = [{"playerId": 777, "name": "Player B"}]
+
+        with (
+            patch("src.pipelines.sources.wepa.get_client") as mock_get_client,
+            patch("src.pipelines.sources.wepa.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.return_value = mock_response
+
+            results = list(resource_fn(years=[2024]))
+
+        assert len(results) == 1
+        assert results[0]["id"] == "777"
+        assert isinstance(results[0]["id"], str)
+        assert results[0]["playerId"] == 777  # original renamed field kept too
+
+    def test_athlete_id_field_is_coalesced_and_stamped_as_string(self, resource_fn):
+        mock_response = [{"athleteId": 888, "name": "Player C"}]
+
+        with (
+            patch("src.pipelines.sources.wepa.get_client") as mock_get_client,
+            patch("src.pipelines.sources.wepa.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.return_value = mock_response
+
+            results = list(resource_fn(years=[2024]))
+
+        assert len(results) == 1
+        assert results[0]["id"] == "888"
+        assert isinstance(results[0]["id"], str)
+        assert results[0]["athleteId"] == 888
+
+    def test_nested_athlete_id_is_coalesced_and_stamped_as_string(self, resource_fn):
+        mock_response = [{"athlete": {"id": 999, "name": "Player D"}, "name": "Player D"}]
+
+        with (
+            patch("src.pipelines.sources.wepa.get_client") as mock_get_client,
+            patch("src.pipelines.sources.wepa.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.return_value = mock_response
+
+            results = list(resource_fn(years=[2024]))
+
+        assert len(results) == 1
+        assert results[0]["id"] == "999"
+        assert isinstance(results[0]["id"], str)
+        assert results[0]["athlete"] == {"id": 999, "name": "Player D"}  # preserved
+
+    def test_no_id_candidate_is_skipped_but_siblings_still_yielded(self, resource_fn, caplog):
+        mock_response = [
+            {"name": "No Id Player"},
+            {"playerId": 42, "name": "Has Id Player"},
+        ]
+
+        with (
+            patch("src.pipelines.sources.wepa.get_client") as mock_get_client,
+            patch("src.pipelines.sources.wepa.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.return_value = mock_response
+
+            with caplog.at_level("WARNING"):
+                results = list(resource_fn(years=[2024]))
+
+        assert len(results) == 1
+        assert results[0]["id"] == "42"
+        assert any("id" in record.message.lower() for record in caplog.records)
 
 
 def test_wepa_source_returns_all_resources():

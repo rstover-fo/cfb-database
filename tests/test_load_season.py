@@ -317,6 +317,58 @@ class TestFanoutDrainerWiring:
         assert "player_overview" in out
 
 
+class TestPassingWiring:
+    """Passing unit (spec v5.25.0, 2026-08-30): the five /passing charting
+    endpoints wired into load_season.py's automated orchestration the same
+    way the A2 unit's sources were -- SOURCE_ORDER, ESTIMATED_CALLS,
+    active-by-default, and IMMUTABLE_ONCE_FINAL membership (same policy as
+    `stats`, since parseStatus="partial" rows may be re-charted)."""
+
+    def test_passing_is_in_source_order(self):
+        assert "passing" in SOURCE_ORDER
+
+    def test_passing_runs_after_stats(self):
+        """Grouped with the other stats-domain aggregation sources -- not a
+        hard dependency, just documenting where it conceptually belongs."""
+        assert SOURCE_ORDER.index("stats") < SOURCE_ORDER.index("passing")
+
+    def test_passing_has_estimated_calls(self):
+        """3 week-iterated resources x ~20 calls + 2 season-grain x 1 call."""
+        assert ESTIMATED_CALLS["passing"] == 62
+
+    def test_passing_is_active_by_default(self):
+        """Only "rosters" is excluded from the default active-source list;
+        passing must not be excluded the same way."""
+        default_active = [s for s in SOURCE_ORDER if s != "rosters"]
+        assert "passing" in default_active
+
+    def test_passing_is_immutable_once_final(self):
+        """Same policy as stats -- a finished season's charting is only
+        immutable-ish (parseStatus="partial" rows may be re-charted), but it
+        rides explicit --season re-runs rather than a daily re-ingest."""
+        assert "passing" in IMMUTABLE_ONCE_FINAL
+
+    def test_passing_is_a_real_source(self):
+        assert IMMUTABLE_ONCE_FINAL <= set(SOURCE_ORDER)
+
+    def test_passing_is_not_in_preseason_or_resource_filterable(self):
+        """Passing data starts 2025 and is week-or-team validated, not a
+        preseason input, and has no per-resource cost skew like stats --
+        it must not be added to either set."""
+        from scripts.load_season import PRESEASON_INPUT_SOURCES, RESOURCE_FILTERABLE
+
+        assert "passing" not in PRESEASON_INPUT_SOURCES
+        assert "passing" not in RESOURCE_FILTERABLE
+
+    def test_dry_run_includes_passing(self, capsys):
+        summary = load_season(season=2025, sources=["passing"], dry_run=True)
+
+        assert summary["dry_run"] is True
+        assert summary["estimated_calls"] == ESTIMATED_CALLS["passing"]
+        out = capsys.readouterr().out
+        assert "passing" in out
+
+
 class TestSeasonIsFinal:
     """The daily workflow runs with no --season, so get_current_season()
     resolves to `year - 1` until August: every off-season run re-ingested the

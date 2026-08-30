@@ -13,6 +13,7 @@ from src.pipelines.config.endpoints import (
     CORE_ENDPOINTS,
     DRAFT_ENDPOINTS,
     METRICS_ENDPOINTS,
+    PASSING_ENDPOINTS,
     PLAYOFFS_ENDPOINTS,
     RANKINGS_ENDPOINTS,
     RATINGS_ENDPOINTS,
@@ -185,6 +186,38 @@ class TestSyncedEndpointPKs:
         assert config.path == "/player/season/overview"
 
 
+class TestPassingEndpointPKs:
+    """Passing endpoints (spec v5.25.0, 2026-08-30)."""
+
+    def test_passing_plays_pk(self):
+        config = PASSING_ENDPOINTS["passing_plays"]
+        assert config.primary_key == ["game_id", "play_id"]
+        assert config.path == "/passing/plays"
+
+    def test_passing_player_games_pk(self):
+        config = PASSING_ENDPOINTS["passing_player_games"]
+        assert config.primary_key == ["game_id", "player_id"]
+        assert config.path == "/passing/players/games"
+
+    def test_passing_team_games_pk(self):
+        config = PASSING_ENDPOINTS["passing_team_games"]
+        assert config.primary_key == ["game_id", "team"]
+        assert config.path == "/passing/teams/games"
+
+    def test_passing_player_season_pk_includes_team(self):
+        """Transfer safety -- same reasoning as player_season_stats /
+        player_success_season."""
+        config = PASSING_ENDPOINTS["passing_player_season"]
+        assert "team" in config.primary_key
+        assert config.primary_key == ["season", "player_id", "team"]
+        assert config.path == "/passing/players/season"
+
+    def test_passing_team_season_pk(self):
+        config = PASSING_ENDPOINTS["passing_team_season"]
+        assert config.primary_key == ["season", "team"]
+        assert config.path == "/passing/teams/season"
+
+
 class TestPrimaryKeyFieldsAreStrings:
     """PK fields should be simple string column names, not nested/complex types."""
 
@@ -224,6 +257,7 @@ class TestWriteDispositions:
             "playoffs": PLAYOFFS_ENDPOINTS,
             "coaches": COACHES_ENDPOINTS,
             "conferences": CONFERENCES_ENDPOINTS,
+            "passing": PASSING_ENDPOINTS,
         }
         for group_name, group in non_ref.items():
             for name, config in group.items():

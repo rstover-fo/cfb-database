@@ -1,27 +1,31 @@
 #!/usr/bin/env python3
-"""Probe CFBD spec v5.24.2's new/changed endpoints before building sources.
+"""Probe CFBD spec v5.24.2 -> v5.25.0's new/changed endpoints before building
+sources.
 
 CFBD added or reshaped a handful of endpoints (playoff bracket, coach
 tenure/season summaries, conference affiliation history, a new player
-"success rate" family, an expanded SRS view, a player season overview, and
-questions about whether two existing endpoints still accept a bare `year`).
-Before writing dlt source modules and RESTAPIConfig entries for any of them
-we need real response shapes -- field names, nesting, row grain, and which
-year-only calls actually work -- not assumptions from the changelog.
+"success rate" family, an expanded SRS view, a player season overview,
+questions about whether two existing endpoints still accept a bare `year`,
+and -- new in v5.25.0 -- a `/passing` family: play-level passing charting,
+player and team passing splits by game and by season). Before writing dlt
+source modules and RESTAPIConfig entries for any of them we need real
+response shapes -- field names, nesting, row grain, and which year-only
+calls actually work -- not assumptions from the changelog.
 
 This script is read-only: it never writes to the warehouse, and every
 request goes through the same rate-limited `CFBDClient` / `make_request`
 path the pipelines use (see the `cfbd-api` and `dlt-pipelines` skills), so
 calls are recorded against the monthly budget like any other pipeline call.
-It makes ~13 requests total across 13 probes (a couple issue a second,
-conditional request -- see PROBES below) -- narrow and logged, matching
-scripts/probe_offseason_availability.py and scripts/probe_metrics_wp.py.
+It makes ~24 requests total across 18 probes (several issue a second,
+conditional or comparison request -- see PROBES below) -- narrow and
+logged, matching scripts/probe_offseason_availability.py and
+scripts/probe_metrics_wp.py.
 
 Each probe is fail-soft: an exception is recorded on that probe and the
-sweep continues, so one dead endpoint never hides the other twelve. Exit
-status is 0 if any probe got a 200 back, 1 only if every single one failed
-(auth, network, or every endpoint genuinely gone) -- i.e. when this run told
-us nothing.
+sweep continues, so one dead endpoint never hides the others. Exit status
+is 0 if any probe got a 200 back, 1 only if every single one failed (auth,
+network, or every endpoint genuinely gone) -- i.e. when this run told us
+nothing.
 
 Auth: exactly like probe_offseason_availability.py -- `get_client()` reads
 `sources.cfbd.api_key` via dlt's provider chain (`.dlt/secrets.toml`
@@ -32,7 +36,7 @@ pipeline run alongside it), so `get_probe_client()` below falls back to
 reading that directly when dlt has nothing configured.
 
 Usage:
-    python scripts/probe_2026_endpoints.py                  # all 13 probes
+    python scripts/probe_2026_endpoints.py                  # all 18 probes
     python scripts/probe_2026_endpoints.py --only 4,9,12     # just these
     python scripts/probe_2026_endpoints.py --dry-run         # no network, no key needed
     python scripts/probe_2026_endpoints.py --out probe_output/
@@ -209,7 +213,7 @@ def do_call(client, path: str, params: dict | None, dry_run: bool) -> CallRecord
 
 
 # ---------------------------------------------------------------------------
-# The 13 probes
+# The 18 probes
 # ---------------------------------------------------------------------------
 # Each probe function takes (client, ctx, dry_run) and returns
 # (list[CallRecord], list[str] notes). `ctx` is a plain dict probes can use to
@@ -362,6 +366,95 @@ def probe_stats_game_advanced(client, ctx, dry_run):
     return calls, ["Check whether rows are per game-team in the sample."]
 
 
+def probe_passing_plays(client, ctx, dry_run):
+    # Live run 33320296004 (2024): bare year=2024 400'd "team or week is
+    # required" -- runtime validation on this endpoint is stricter than the
+    # spec's documented required-params list, which lists only `year`.
+    # year+week and year+team both came back 200 count=0 for 2024, so we
+    # sweep 2025 (charting shipped last season) and 2026 week 1 (this
+    # weekend) instead of repeating the proven-empty bare-year call.
+    call_2025_week5 = do_call(client, "/passing/plays", {"year": 2025, "week": 5}, dry_run)
+    call_2025_team = do_call(client, "/passing/plays", {"year": 2025, "team": "Alabama"}, dry_run)
+    call_2026_week1 = do_call(client, "/passing/plays", {"year": 2026, "week": 1}, dry_run)
+    notes = [
+        "Bare year=2024 was proven 400 ('team or week is required') on the live run -- "
+        "dropped from this sweep. Volume probe: a season runs ~45-50k pass attempts, one "
+        "week ~2,800 -- the 2025 week-5 count is now the key cap signal for this "
+        "resource's iteration grain (week vs team)."
+    ]
+    if not dry_run:
+        for label, call in (
+            ("2025 week5", call_2025_week5),
+            ("2025 team", call_2025_team),
+            ("2026 week1", call_2026_week1),
+        ):
+            if looks_capped(call.count):
+                notes.append(
+                    f"CAP SUSPECTED: {label} call count={call.count} sits on/near a round number."
+                )
+    return [call_2025_week5, call_2025_team, call_2026_week1], notes
+
+
+def probe_passing_players_games(client, ctx, dry_run):
+    # Live run: bare year=2024 400'd "passerId, team, or week is required" --
+    # same runtime-validation gap as passing/plays. Sweeping 2025/2026
+    # instead of repeating the proven-empty bare-year call.
+    call_2025_week5 = do_call(client, "/passing/players/games", {"year": 2025, "week": 5}, dry_run)
+    call_2026_week1 = do_call(client, "/passing/players/games", {"year": 2026, "week": 1}, dry_run)
+    notes = [
+        "Bare year=2024 was proven 400 ('passerId, team, or week is required') on the "
+        "live run -- dropped from this sweep."
+    ]
+    if not dry_run and looks_capped(call_2025_week5.count):
+        notes.append(
+            f"CAP SUSPECTED: 2025 week5 count={call_2025_week5.count} sits on/near a round number."
+        )
+    return [call_2025_week5, call_2026_week1], notes
+
+
+def probe_passing_players_season(client, ctx, dry_run):
+    call_2025 = do_call(client, "/passing/players/season", {"year": 2025}, dry_run)
+    call_2026 = do_call(client, "/passing/players/season", {"year": 2026}, dry_run)
+    notes = [
+        "Historical-depth check for the whole /passing family: 2024 and 2014 already "
+        "probed empty (200 count=0) on the live run. If 2025 has rows here, treat "
+        "PASSING_DATA_START=2025 for the family; if both 2025 and 2026 are still empty, "
+        "the family has no data yet."
+    ]
+    return [call_2025, call_2026], notes
+
+
+def probe_passing_teams_games(client, ctx, dry_run):
+    # Live run: bare year=2024 400'd "team or week is required", matching the
+    # play/game-grain endpoints above.
+    call_2025_week5 = do_call(client, "/passing/teams/games", {"year": 2025, "week": 5}, dry_run)
+    call_2026_week1 = do_call(client, "/passing/teams/games", {"year": 2026, "week": 1}, dry_run)
+    notes = [
+        "Bare year=2024 was proven 400 ('team or week is required') on the live run -- "
+        "dropped from this sweep. Confirm nested offense/defense dict shape in the "
+        "sample (~1,600 game-team rows expected for a full season)."
+    ]
+    if not dry_run and looks_capped(call_2025_week5.count):
+        notes.append(
+            f"CAP SUSPECTED: 2025 week5 count={call_2025_week5.count} sits on/near a round number."
+        )
+    return [call_2025_week5, call_2026_week1], notes
+
+
+def probe_passing_teams_season(client, ctx, dry_run):
+    # Live run: year=2024 200'd count=0; no-params 400'd "year required when
+    # team not specified" -- bulk (no params) is NOT supported, unlike some
+    # sibling /season endpoints. Dropped that call; sweeping 2025/2026 instead.
+    call_2025 = do_call(client, "/passing/teams/season", {"year": 2025}, dry_run)
+    call_2026 = do_call(client, "/passing/teams/season", {"year": 2026}, dry_run)
+    notes = [
+        "No-params call was proven 400 ('year required when team not specified') on the "
+        "live run -- dropped from this sweep. Bulk access requires team-or-year, not "
+        "supported bare."
+    ]
+    return [call_2025, call_2026], notes
+
+
 # (number, slug, function) -- number and slug drive both --only selection and
 # output filenames (NN_<slug>.json).
 PROBES: list[tuple[int, str, callable]] = [
@@ -378,6 +471,11 @@ PROBES: list[tuple[int, str, callable]] = [
     (11, "player_season_overview", probe_player_season_overview),
     (12, "game_box_advanced", probe_game_box_advanced),
     (13, "stats_game_advanced", probe_stats_game_advanced),
+    (14, "passing_plays", probe_passing_plays),
+    (15, "passing_players_games", probe_passing_players_games),
+    (16, "passing_players_season", probe_passing_players_season),
+    (17, "passing_teams_games", probe_passing_teams_games),
+    (18, "passing_teams_season", probe_passing_teams_season),
 ]
 PROBE_NUMBERS = {number for number, _, _ in PROBES}
 
@@ -484,13 +582,14 @@ def parse_only(raw: str | None) -> set[int] | None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Probe CFBD spec v5.24.2's new/changed endpoints (read-only, ~13 calls)"
+        description="Probe CFBD spec v5.24.2 -> v5.25.0's new/changed endpoints "
+        "(read-only, ~24 calls)"
     )
     parser.add_argument(
         "--only",
         type=str,
         default=None,
-        help="Comma-separated probe numbers to run, e.g. 4,9,12 (default: all 13)",
+        help="Comma-separated probe numbers to run, e.g. 4,9,12 (default: all 18)",
     )
     parser.add_argument(
         "--out",

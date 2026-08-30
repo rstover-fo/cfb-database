@@ -506,6 +506,50 @@ PLAYOFFS_ENDPOINTS = {
     ),
 }
 
+# Passing endpoints (spec v5.25.0, 2026-08-30): air yards, aDOT, pass
+# depth/direction/location, YAC. Data starts 2025 -- see passing.py's
+# PASSING_DATA_START. The three game-grain endpoints require week or team
+# (a bare year 400s); the two season-grain endpoints take a bare year.
+PASSING_ENDPOINTS = {
+    "passing_plays": EndpointConfig(
+        path="/passing/plays",
+        table_name="passing_plays",
+        primary_key=["game_id", "play_id"],
+        schema="stats",
+        write_disposition="merge",
+    ),
+    "passing_player_games": EndpointConfig(
+        path="/passing/players/games",
+        table_name="passing_player_games",
+        primary_key=["game_id", "player_id"],
+        schema="stats",
+        write_disposition="merge",
+    ),
+    "passing_team_games": EndpointConfig(
+        path="/passing/teams/games",
+        table_name="passing_team_games",
+        primary_key=["game_id", "team"],
+        schema="stats",
+        write_disposition="merge",
+    ),
+    "passing_player_season": EndpointConfig(
+        path="/passing/players/season",
+        table_name="passing_player_season",
+        # team is deliberately part of the PK -- transfer safety, same
+        # reasoning as stats.player_success_season.
+        primary_key=["season", "player_id", "team"],
+        schema="stats",
+        write_disposition="merge",
+    ),
+    "passing_team_season": EndpointConfig(
+        path="/passing/teams/season",
+        table_name="passing_team_season",
+        primary_key=["season", "team"],
+        schema="stats",
+        write_disposition="merge",
+    ),
+}
+
 # Coaches endpoints. coach_seasons is year-iterated; coach_tenures and
 # coach_profile are both per-entity fan-outs (coachId/team required -- a bare
 # year or bare call 400s) and are deliberately NOT returned from
@@ -568,4 +612,5 @@ ALL_ENDPOINTS = {
     "playoffs": PLAYOFFS_ENDPOINTS,
     "coaches": COACHES_ENDPOINTS,
     "conferences": CONFERENCES_ENDPOINTS,
+    "passing": PASSING_ENDPOINTS,
 }

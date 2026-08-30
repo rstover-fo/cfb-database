@@ -39,6 +39,23 @@ def _ctx(source: str, season: int = 2025) -> ParseContext:
 # ---------------------------------------------------------------------------
 
 
+class TestBlankToNone:
+    def test_passes_through_none(self):
+        assert ncaa._blank_to_none(None) is None
+
+    def test_empty_string_becomes_none(self):
+        assert ncaa._blank_to_none("") is None
+
+    def test_whitespace_only_string_becomes_none(self):
+        assert ncaa._blank_to_none("   ") is None
+
+    def test_non_blank_string_passes_through(self):
+        assert ncaa._blank_to_none("6-0") == "6-0"
+
+    def test_non_string_passes_through(self):
+        assert ncaa._blank_to_none(7) == 7
+
+
 class TestToFloat:
     def test_passes_through_none(self):
         assert ncaa._to_float(None) is None
@@ -52,6 +69,31 @@ class TestToFloat:
     def test_casts_native_number(self):
         assert ncaa._to_float(7) == 7.0
 
+    def test_empty_string_returns_none(self):
+        """Live crash: ncaa_mfb_rosters_2025 shipped '' for some numeric-ish
+        fields -- float('') raises ValueError without this guard."""
+        assert ncaa._to_float("") is None
+
+    def test_whitespace_only_string_returns_none(self):
+        assert ncaa._to_float("   ") is None
+
+
+class TestToInt:
+    def test_passes_through_none(self):
+        assert ncaa._to_int(None) is None
+
+    def test_casts_numeric_string(self):
+        assert ncaa._to_int("42") == 42
+
+    def test_casts_native_number(self):
+        assert ncaa._to_int(42) == 42
+
+    def test_empty_string_returns_none(self):
+        assert ncaa._to_int("") is None
+
+    def test_whitespace_only_string_returns_none(self):
+        assert ncaa._to_int("  ") is None
+
 
 class TestHeightInches:
     def test_passes_through_none(self):
@@ -60,6 +102,15 @@ class TestHeightInches:
     def test_parses_feet_inches(self):
         assert ncaa._height_inches("6-0") == 72.0
         assert ncaa._height_inches("5-11") == 71.0
+
+    def test_empty_string_returns_none(self):
+        """Exact live failure: ledger row ncaa_rosters:2025 --
+        `could not convert string to float: ''` from ``float('')`` on a
+        blank height value."""
+        assert ncaa._height_inches("") is None
+
+    def test_whitespace_only_string_returns_none(self):
+        assert ncaa._height_inches("   ") is None
 
 
 class TestParseDates:
@@ -127,6 +178,52 @@ class TestParseSchedule:
         with pytest.raises(ParserStructureError, match="missing column.*contest_id"):
             list(ncaa.parse_schedule(buf.getvalue(), _ctx("ncaa_schedule")))
 
+    def test_blank_contest_id_dropped_as_null_pk_component(self, caplog):
+        schema = pa.schema(
+            [
+                ("team_id", pa.string()),
+                ("contest_id", pa.string()),
+                ("season", pa.int64()),
+            ]
+        )
+        buf = io.BytesIO()
+        pyarrow.parquet.write_table(
+            pa.table({"team_id": ["1"], "contest_id": [""], "season": [2025]}, schema=schema),
+            buf,
+        )
+        with caplog.at_level(logging.INFO):
+            rows = list(ncaa.parse_schedule(buf.getvalue(), _ctx("ncaa_schedule")))
+        assert rows == []
+        assert "dropped 1" in caplog.text
+
+    def test_blank_espn_game_id_parses_to_none_no_exception(self):
+        """espn_game_id is not a PK component -- blank is a null value, kept
+        (not dropped), same _to_int() idiom as everywhere else."""
+        schema = pa.schema(
+            [
+                ("team_id", pa.string()),
+                ("contest_id", pa.string()),
+                ("espn_game_id", pa.string()),
+                ("season", pa.int64()),
+            ]
+        )
+        buf = io.BytesIO()
+        pyarrow.parquet.write_table(
+            pa.table(
+                {
+                    "team_id": ["1"],
+                    "contest_id": ["100"],
+                    "espn_game_id": [""],
+                    "season": [2025],
+                },
+                schema=schema,
+            ),
+            buf,
+        )
+        rows = list(ncaa.parse_schedule(buf.getvalue(), _ctx("ncaa_schedule")))
+        assert len(rows) == 1
+        assert rows[0]["espn_game_id"] is None
+
 
 # ---------------------------------------------------------------------------
 # parse_teams
@@ -184,6 +281,88 @@ class TestParseRosters:
         )
         with pytest.raises(ParserStructureError, match="missing column.*player_id"):
             list(ncaa.parse_rosters(buf.getvalue(), _ctx("ncaa_rosters")))
+
+    def test_empty_string_height_parses_to_none_no_exception(self):
+        """Reproduces the live ncaa_rosters:2025 failure
+        (`could not convert string to float: ''`) -- the checked-in fixture
+        slice happens not to contain a blank height row, so this is built
+        in-test. A blank height is a null value, not a dropped row (height
+        is not a PK component)."""
+        schema = pa.schema(
+            [
+                ("team_id", pa.string()),
+                ("player_id", pa.string()),
+                ("player_name", pa.string()),
+                ("height", pa.string()),
+                ("season", pa.int64()),
+            ]
+        )
+        buf = io.BytesIO()
+        pyarrow.parquet.write_table(
+            pa.table(
+                {
+                    "team_id": ["605986"],
+                    "player_id": ["9999999"],
+                    "player_name": ["Blank Height Player"],
+                    "height": [""],
+                    "season": [2025],
+                },
+                schema=schema,
+            ),
+            buf,
+        )
+        rows = list(ncaa.parse_rosters(buf.getvalue(), _ctx("ncaa_rosters")))
+        assert len(rows) == 1
+        assert rows[0]["height_inches"] is None
+
+    def test_whitespace_only_height_parses_to_none_no_exception(self):
+        schema = pa.schema(
+            [
+                ("team_id", pa.string()),
+                ("player_id", pa.string()),
+                ("player_name", pa.string()),
+                ("height", pa.string()),
+                ("season", pa.int64()),
+            ]
+        )
+        buf = io.BytesIO()
+        pyarrow.parquet.write_table(
+            pa.table(
+                {
+                    "team_id": ["605986"],
+                    "player_id": ["9999998"],
+                    "player_name": ["Whitespace Height Player"],
+                    "height": ["   "],
+                    "season": [2025],
+                },
+                schema=schema,
+            ),
+            buf,
+        )
+        rows = list(ncaa.parse_rosters(buf.getvalue(), _ctx("ncaa_rosters")))
+        assert len(rows) == 1
+        assert rows[0]["height_inches"] is None
+
+    def test_blank_team_id_dropped_as_null_pk_component(self, caplog):
+        """A blank string is a null value -- but team_id is a PK component,
+        so it follows the existing null-PK-drop convention (drop + log
+        count) rather than loading with a null ncaa_team_id."""
+        schema = pa.schema(
+            [
+                ("team_id", pa.string()),
+                ("player_id", pa.string()),
+                ("season", pa.int64()),
+            ]
+        )
+        buf = io.BytesIO()
+        pyarrow.parquet.write_table(
+            pa.table({"team_id": [""], "player_id": ["1"], "season": [2025]}, schema=schema),
+            buf,
+        )
+        with caplog.at_level(logging.INFO):
+            rows = list(ncaa.parse_rosters(buf.getvalue(), _ctx("ncaa_rosters")))
+        assert rows == []
+        assert "dropped 1" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +467,59 @@ class TestParsePlayerStats:
         with pytest.raises(ParserStructureError, match="missing column.*category"):
             list(ncaa.parse_player_stats(buf.getvalue(), _ctx("ncaa_player_stats")))
 
+    def test_empty_string_stat_value_parses_to_none_no_exception(self):
+        """Same _to_float() idiom as parse_rosters' height -- hardened
+        identically even though the live run loaded this parser's data
+        fine (no blank rows in that day's file)."""
+        schema = pa.schema(
+            [
+                ("contest_id", pa.string()),
+                ("team_id", pa.string()),
+                ("category", pa.string()),
+                ("pass_eff", pa.string()),
+                ("season", pa.int64()),
+            ]
+        )
+        buf = io.BytesIO()
+        pyarrow.parquet.write_table(
+            pa.table(
+                {
+                    "contest_id": ["1"],
+                    "team_id": ["1"],
+                    "category": ["passing"],
+                    "pass_eff": [""],
+                    "season": [2025],
+                },
+                schema=schema,
+            ),
+            buf,
+        )
+        rows = list(ncaa.parse_player_stats(buf.getvalue(), _ctx("ncaa_player_stats")))
+        assert len(rows) == 1
+        assert rows[0]["pass_eff"] is None
+
+    def test_blank_contest_id_dropped_as_null_pk_component(self, caplog):
+        schema = pa.schema(
+            [
+                ("contest_id", pa.string()),
+                ("team_id", pa.string()),
+                ("category", pa.string()),
+                ("season", pa.int64()),
+            ]
+        )
+        buf = io.BytesIO()
+        pyarrow.parquet.write_table(
+            pa.table(
+                {"contest_id": [""], "team_id": ["1"], "category": ["passing"], "season": [2025]},
+                schema=schema,
+            ),
+            buf,
+        )
+        with caplog.at_level(logging.INFO):
+            rows = list(ncaa.parse_player_stats(buf.getvalue(), _ctx("ncaa_player_stats")))
+        assert rows == []
+        assert "dropped 1" in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # parse_team_stats
@@ -346,6 +578,36 @@ class TestParseTeamStats:
         )
         with pytest.raises(ParserStructureError, match="missing column.*stat"):
             list(ncaa.parse_team_stats(buf.getvalue(), _ctx("ncaa_team_stats")))
+
+    def test_empty_string_value_parses_to_none_no_exception(self):
+        schema = pa.schema(
+            [
+                ("contest_id", pa.string()),
+                ("category", pa.string()),
+                ("stat", pa.string()),
+                ("period", pa.string()),
+                ("away_value", pa.string()),
+                ("season", pa.int64()),
+            ]
+        )
+        buf = io.BytesIO()
+        pyarrow.parquet.write_table(
+            pa.table(
+                {
+                    "contest_id": ["1"],
+                    "category": ["Rushing"],
+                    "stat": ["Yards"],
+                    "period": ["total"],
+                    "away_value": [""],
+                    "season": [2025],
+                },
+                schema=schema,
+            ),
+            buf,
+        )
+        rows = list(ncaa.parse_team_stats(buf.getvalue(), _ctx("ncaa_team_stats")))
+        assert len(rows) == 1
+        assert rows[0]["away_value"] is None
 
 
 # ---------------------------------------------------------------------------

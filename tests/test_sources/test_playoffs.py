@@ -126,6 +126,50 @@ class TestCfpBracketResource:
             assert len(results) == 1
             assert results[0]["season"] == 2025
 
+    def test_bare_dict_response_yields_one_row(self):
+        """The live 2025 response is a bare JSON object, not a one-element
+        array like 2024 -- `yield from data` on a dict iterates its string
+        keys, which is what broke the live 2025 backfill a second time
+        (`'str' object has no attribute 'get'`). A dict response must
+        normalize to a single yielded record."""
+        from src.pipelines.sources.playoffs import cfp_bracket_resource
+
+        fixture = _load("playoffs_cfp.json")
+        bare_object = dict(fixture[0])
+
+        with (
+            patch("src.pipelines.sources.playoffs.get_client") as mock_get_client,
+            patch("src.pipelines.sources.playoffs.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.return_value = bare_object
+
+            results = list(cfp_bracket_resource(years=[2025]))
+
+            assert len(results) == 1
+            assert results[0]["season"] == 2024  # API-provided value preserved
+            assert "participants" in results[0]
+            assert "rounds" in results[0]
+
+    def test_bare_dict_response_stamps_season_when_missing(self):
+        from src.pipelines.sources.playoffs import cfp_bracket_resource
+
+        fixture = _load("playoffs_cfp.json")
+        bare_object = dict(fixture[0])
+        del bare_object["season"]
+
+        with (
+            patch("src.pipelines.sources.playoffs.get_client") as mock_get_client,
+            patch("src.pipelines.sources.playoffs.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.return_value = bare_object
+
+            results = list(cfp_bracket_resource(years=[2025]))
+
+            assert len(results) == 1
+            assert results[0]["season"] == 2025
+
     def test_keeps_api_provided_season(self):
         """When the response does carry `season` (the 2024 shape), the API
         value wins over the request year -- the stamp is defensive only."""

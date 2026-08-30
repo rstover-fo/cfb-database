@@ -59,6 +59,19 @@ def cfp_bracket_resource(years: list[int]) -> Iterator[dict]:
     and `rounds` arrays (and `rounds`' nested `matchups`/`slots`) via the
     standard `_dlt_parent_id` mechanism -- no manual flattening needed here.
 
+    Response shape is not stable across seasons: the 2024 response is a
+    one-element JSON array wrapping the bracket document (with a top-level
+    `season` field), while the 2025 response is a bare JSON object -- no
+    wrapping array -- which also omits `season`. The array-vs-object
+    difference first broke `yield from data` (iterating a dict yields its
+    string keys, surfacing as `'str' object has no attribute 'get'` at
+    extract time); the missing `season` field separately left the primary
+    key unbound and failed normalize. Both are handled here: the response is
+    normalized to a list of records (a dict is wrapped as a one-element
+    list) before iterating, and `season` is stamped from the request year
+    whenever a record doesn't already carry one -- so both shapes load
+    correctly.
+
     Args:
         years: List of years to load the bracket for
     """
@@ -83,7 +96,26 @@ def cfp_bracket_resource(years: list[int]) -> Iterator[dict]:
                 logger.info(f"No CFP bracket data for {year}, skipping")
                 continue
 
-            yield from data
+            if isinstance(data, dict):
+                records = [data]
+            elif isinstance(data, list):
+                records = data
+            else:
+                logger.warning(
+                    f"Unexpected /playoffs/cfp response type {type(data).__name__} "
+                    f"for {year}, skipping"
+                )
+                continue
+
+            for record in records:
+                if not isinstance(record, dict):
+                    logger.warning(
+                        f"Skipping non-dict CFP bracket record ({type(record).__name__}) for {year}"
+                    )
+                    continue
+                if record.get("season") is None:
+                    record["season"] = year
+                yield record
 
     finally:
         client.close()

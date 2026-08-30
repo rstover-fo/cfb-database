@@ -172,12 +172,28 @@ PLAYER_STAT_COLUMNS = (
 )
 
 
+def _blank_to_none(value):
+    """Treat an empty or whitespace-only string as a missing value, same as
+    None. stats.ncaa.org's parquet exports ship ``''`` for some missing
+    numeric-ish fields (confirmed: ``ncaa_mfb_rosters_2025``'s ``height``
+    column has blank-string rows, which crashed ``float('')`` in
+    ``_height_inches`` -- ledger row ``ncaa_rosters:2025``) rather than a
+    proper null. Non-string values (including already-None) pass through
+    unchanged.
+    """
+    if isinstance(value, str) and value.strip() == "":
+        return None
+    return value
+
+
 def _to_float(value) -> float | None:
-    """Coerce a stats.ncaa.org numeric value to float, tolerating None.
+    """Coerce a stats.ncaa.org numeric value to float, tolerating None and
+    blank strings.
 
     Defensive against the observed comma-thousands-separator quirk (e.g.
     ``"1,043.20"``) -- strips commas from strings before casting.
     """
+    value = _blank_to_none(value)
     if value is None:
         return None
     if isinstance(value, str):
@@ -186,18 +202,28 @@ def _to_float(value) -> float | None:
 
 
 def _to_int(value) -> int | None:
-    """Coerce a stats.ncaa.org numeric-string id column to int, tolerating None."""
+    """Coerce a stats.ncaa.org numeric-string id column to int, tolerating
+    None and blank strings."""
+    value = _blank_to_none(value)
     if value is None:
         return None
     return int(value)
 
 
 def _height_inches(value: str | None) -> float | None:
-    """ "6-0" (feet-inches, stats.ncaa.org's roster height format) -> 72.0 inches."""
+    """ "6-0" (feet-inches, stats.ncaa.org's roster height format) -> 72.0
+    inches. Tolerates None and blank strings (see ``_blank_to_none``), and
+    malformed heights whose SPLIT PARTS are blank -- the real 2025 file
+    carries values like "6-" and "-" (found live 2026-08-30), so a blank
+    feet or inches part means the height is unusable and coerces to None
+    rather than crashing float('')."""
+    value = _blank_to_none(value)
     if value is None:
         return None
     if isinstance(value, str) and "-" in value:
         feet, _, inches = value.partition("-")
+        if feet.strip() == "" or inches.strip() == "":
+            return None
         return float(feet) * 12 + float(inches)
     return float(value)
 
@@ -277,7 +303,11 @@ def parse_schedule(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
     out = []
 
     for row in rows:
-        if row.get("contest_id") is None or row.get("team_id") is None or row.get("season") is None:
+        if (
+            _blank_to_none(row.get("contest_id")) is None
+            or _blank_to_none(row.get("team_id")) is None
+            or row.get("season") is None
+        ):
             dropped_count += 1
             continue
 
@@ -318,7 +348,7 @@ def parse_teams(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
     out = []
 
     for row in rows:
-        if row.get("team_id") is None or row.get("season") is None:
+        if _blank_to_none(row.get("team_id")) is None or row.get("season") is None:
             dropped_count += 1
             continue
 
@@ -344,6 +374,10 @@ def parse_rosters(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
     same as ``ncaa_team_id`` -- verified by cross-referencing 82 players
     common to Alabama's 2024 and 2025 rosters by name: every one carries a
     different id between the two seasons (see module docstring).
+
+    ``height`` ships blank (``""``) for some rows (confirmed live:
+    ``ncaa_mfb_rosters_2025``) rather than null -- ``_height_inches`` treats
+    a blank string as missing and yields ``None``, not a crash.
     """
     table = pyarrow.parquet.read_table(io.BytesIO(raw))
     schema_names = set(table.column_names)
@@ -354,7 +388,11 @@ def parse_rosters(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
     out = []
 
     for row in rows:
-        if row.get("team_id") is None or row.get("player_id") is None or row.get("season") is None:
+        if (
+            _blank_to_none(row.get("team_id")) is None
+            or _blank_to_none(row.get("player_id")) is None
+            or row.get("season") is None
+        ):
             dropped_count += 1
             continue
 
@@ -396,7 +434,7 @@ def parse_linescores(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
 
     for row in rows:
         if (
-            row.get("contest_id") is None
+            _blank_to_none(row.get("contest_id")) is None
             or row.get("team") is None
             or row.get("period") is None
             or row.get("season") is None
@@ -452,8 +490,8 @@ def parse_player_stats(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
 
     for row in rows:
         if (
-            row.get("contest_id") is None
-            or row.get("team_id") is None
+            _blank_to_none(row.get("contest_id")) is None
+            or _blank_to_none(row.get("team_id")) is None
             or row.get("category") is None
             or row.get("season") is None
         ):
@@ -511,7 +549,7 @@ def parse_team_stats(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
 
     for row in rows:
         if (
-            row.get("contest_id") is None
+            _blank_to_none(row.get("contest_id")) is None
             or row.get("category") is None
             or row.get("stat") is None
             or row.get("period") is None
@@ -571,7 +609,7 @@ def parse_pbp(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
 
     for row in rows:
         if (
-            row.get("contest_id") is None
+            _blank_to_none(row.get("contest_id")) is None
             or row.get("drive_number") is None
             or row.get("play_number") is None
             or row.get("season") is None

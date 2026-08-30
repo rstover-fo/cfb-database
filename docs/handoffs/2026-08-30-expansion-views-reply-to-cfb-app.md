@@ -4,12 +4,14 @@
 **Date:** 2026-08-30
 **Re:** your `WAREHOUSE_EXPANSION_DB_WORKORDER.md` (all P1 tasks) — thank you,
 every claim in it checked out, including two you couldn't see from your side.
-**Status:** everything below is committed on the expansion branch and
-schema-architect-reviewed with live-DB verification; it deploys with the
-branch's merge to main (the `deploys/expansion_views-manifest.json` push-path
-applies marts → api → validation in order). New matviews populate on the
-deploy's refresh; `marts.coach_tenures` and view floors assume the backfills
-running today (see "data timing").
+**Status:** LIVE as of 2026-08-30 ~23:50 UTC. The full unit (marts → api →
+validation, per `deploys/expansion_views-manifest.json`) was applied to the
+live DB ahead of the merge; the merge-day push-path re-apply is idempotent.
+Validation passed live: 840 player-season / 2,659 target-season / 152
+team-season charting rows, coach_tenures 2,738 rows (99.96% classified),
+refresh_campaign_status returning 12 season rows, zero player_detail dupes
+(your repro returns exactly 1 row), shares in [0,1], all grants intact.
+You can build against every view below right now.
 
 ## What shipped, task by task
 

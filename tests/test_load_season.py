@@ -1,6 +1,9 @@
 """Unit tests for load_season's season-selection helpers (no DB, no API)."""
 
+from pathlib import Path
+
 import pytest
+import yaml
 
 from scripts.load_season import (
     ESTIMATED_CALLS,
@@ -18,6 +21,9 @@ from scripts.load_season import (
     upcoming_schedule_season,
     validate_resource_filters,
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+WORKFLOWS_DIR = PROJECT_ROOT / ".github" / "workflows"
 
 
 class TestUpcomingScheduleSeason:
@@ -316,6 +322,67 @@ class TestFanoutDrainerWiring:
         assert "coach_profiles" in out
         assert "player_overview" in out
 
+    def test_player_overview_max_env_var_is_forwarded(self, monkeypatch):
+        """PLAYER_OVERVIEW_MAX_PER_RUN (wired from backfill-sources.yml's
+        player_overview_max input) raises the drainer's CAP only -- the
+        runner lambda must read it at call time (not bind a stale default
+        at import time) and forward it as max_players."""
+        captured = {}
+
+        def fake_run_player_overview_pipeline(**kwargs):
+            captured.update(kwargs)
+            return {"missing": 0}
+
+        monkeypatch.setattr(
+            "src.pipelines.run.run_player_overview_pipeline",
+            fake_run_player_overview_pipeline,
+        )
+        monkeypatch.setenv("PLAYER_OVERVIEW_MAX_PER_RUN", "9000")
+
+        load_season(season=2024, sources=["player_overview"], dry_run=False, skip_refresh=True)
+
+        assert captured == {"max_players": 9000}
+
+    def test_player_overview_max_defaults_when_env_absent(self, monkeypatch):
+        """No env var (the daily path) must stay byte-identical to today:
+        max_players=250."""
+        captured = {}
+
+        def fake_run_player_overview_pipeline(**kwargs):
+            captured.update(kwargs)
+            return {"missing": 0}
+
+        monkeypatch.setattr(
+            "src.pipelines.run.run_player_overview_pipeline",
+            fake_run_player_overview_pipeline,
+        )
+        monkeypatch.delenv("PLAYER_OVERVIEW_MAX_PER_RUN", raising=False)
+
+        load_season(season=2024, sources=["player_overview"], dry_run=False, skip_refresh=True)
+
+        assert captured == {"max_players": 250}
+
+    def test_player_overview_max_defaults_when_env_empty(self, monkeypatch):
+        """GitHub sets an empty-string env var for an unset workflow input
+        (backfill-sources.yml's player_overview_max defaults to ""), and
+        int("") would crash -- the empty case must fall back to 250 exactly
+        like the absent case, not raise."""
+        captured = {}
+
+        def fake_run_player_overview_pipeline(**kwargs):
+            captured.update(kwargs)
+            return {"missing": 0}
+
+        monkeypatch.setattr(
+            "src.pipelines.run.run_player_overview_pipeline",
+            fake_run_player_overview_pipeline,
+        )
+        monkeypatch.setenv("PLAYER_OVERVIEW_MAX_PER_RUN", "")
+
+        load_season(season=2024, sources=["player_overview"], dry_run=False, skip_refresh=True)
+
+        assert captured == {"max_players": 250}
+
 
 class TestPassingWiring:
     """Passing unit (spec v5.25.0, 2026-08-30): the five /passing charting
@@ -610,3 +677,26 @@ class TestMainExitCode:
             ["load_season.py", "--season", "2026", "--sources", "games", "--dry-run"],
         )
         assert main() is None
+
+
+class TestWorkflowYaml:
+    """Sanity checks on the two workflow files touched alongside the
+    player_overview cap override -- catches a YAML syntax error (bad
+    indentation, an unescaped `:` in a description) before it reaches CI,
+    where a broken workflow file fails silently until dispatched."""
+
+    def test_flat_files_workflow_parses(self):
+        doc = yaml.safe_load((WORKFLOWS_DIR / "flat-files.yml").read_text())
+
+        dispatch_inputs = doc[True]["workflow_dispatch"]["inputs"]
+        assert "seasons" in dispatch_inputs
+        assert dispatch_inputs["seasons"]["required"] is False
+        assert doc["jobs"]["load"]["timeout-minutes"] == 300
+
+    def test_backfill_sources_workflow_parses(self):
+        doc = yaml.safe_load((WORKFLOWS_DIR / "backfill-sources.yml").read_text())
+
+        dispatch_inputs = doc[True]["workflow_dispatch"]["inputs"]
+        assert "player_overview_max" in dispatch_inputs
+        assert dispatch_inputs["player_overview_max"]["required"] is False
+        assert doc["jobs"]["backfill"]["timeout-minutes"] == 300

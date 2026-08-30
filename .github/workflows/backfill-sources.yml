@@ -47,6 +47,17 @@ on:
         options:
           - load_season
           - pipeline_run
+      player_overview_max:
+        description: >-
+          Optional cap override for the player_overview drainer (raises
+          MAX_PLAYER_OVERVIEW_PER_RUN via PLAYER_OVERVIEW_MAX_PER_RUN), e.g.
+          9000. Only takes effect when sources includes player_overview via
+          runner=load_season; pipeline_run's allowlist excludes
+          player_overview (it has a SOURCE_ORDER slot and belongs on the
+          default runner), so this input has no effect there. Leave blank
+          to keep the drainer's default cap (250).
+        required: false
+        type: string
 
 # Shares the daily load's concurrency group so a backfill never merges into
 # the same tables while the scheduled load is mid-run; it queues instead.
@@ -66,7 +77,10 @@ jobs:
   backfill:
     name: Backfill ${{ inputs.sources }} for ${{ inputs.seasons || 'no seasons' }} (${{ inputs.runner || 'load_season' }})
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # A multi-thousand-call drainer dispatch (player_overview at a raised
+    # player_overview_max, e.g. ~9k calls) runs ~2.5-3h; 300 leaves headroom
+    # under GitHub-hosted runners' 360-minute ceiling.
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -86,6 +100,11 @@ jobs:
         env:
           SEASONS_INPUT: ${{ inputs.seasons }}
           SOURCES_INPUT: ${{ inputs.sources }}
+          # Only load_season.py reads this (its player_overview runner
+          # lambda); the pipeline_run path below never sets it -- its
+          # allowlist excludes player_overview entirely, so there is
+          # nothing there for the cap to raise.
+          PLAYER_OVERVIEW_MAX_PER_RUN: ${{ inputs.player_overview_max }}
         run: |
           # runner=load_season always needs seasons -- fail fast with a
           # clear message rather than let the (empty) for-loop below

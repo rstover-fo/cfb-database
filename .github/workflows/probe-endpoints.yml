@@ -8,12 +8,6 @@ name: Probe 2026 Endpoints
 # No schedule: run it by hand when a response shape needs to be confirmed
 # before writing the corresponding dlt source module.
 #
-# The push trigger exists because workflow_dispatch resolves workflow files
-# against the default branch, and this workflow lives only on its feature
-# branch until merged: it fires only for pushes to that branch that touch
-# the probe files themselves, so ordinary source-work pushes never spend
-# API calls. Remove the push trigger once the file reaches main.
-#
 # Requires repo secret:
 #   CFBD_API_KEY - collegefootballdata.com API key
 
@@ -24,12 +18,6 @@ on:
         description: "Comma-separated probe numbers to run, e.g. 4,9,12 (default: all 13)"
         required: false
         type: string
-  push:
-    branches:
-      - claude/cfbd-cfb-package-updates-7iabg2
-    paths:
-      - .github/workflows/probe-endpoints.yml
-      - scripts/probe_2026_endpoints.py
 
 permissions:
   contents: read

@@ -103,6 +103,50 @@ class TestCfpBracketResource:
 
             assert results == []
 
+    def test_stamps_season_when_missing_from_response(self):
+        """The 2025 /playoffs/cfp response evidently omits the top-level
+        `season` field the 2024 fixture carries -- this is what broke the
+        live 2025 backfill (UnboundColumnException on the `season` PK).
+        Stamp it from the request year when absent."""
+        from src.pipelines.sources.playoffs import cfp_bracket_resource
+
+        fixture = _load("playoffs_cfp.json")
+        record_without_season = dict(fixture[0])
+        del record_without_season["season"]
+
+        with (
+            patch("src.pipelines.sources.playoffs.get_client") as mock_get_client,
+            patch("src.pipelines.sources.playoffs.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.return_value = [record_without_season]
+
+            results = list(cfp_bracket_resource(years=[2025]))
+
+            assert len(results) == 1
+            assert results[0]["season"] == 2025
+
+    def test_keeps_api_provided_season(self):
+        """When the response does carry `season` (the 2024 shape), the API
+        value wins over the request year -- the stamp is defensive only."""
+        from src.pipelines.sources.playoffs import cfp_bracket_resource
+
+        fixture = _load("playoffs_cfp.json")
+        assert fixture[0]["season"] == 2024
+
+        with (
+            patch("src.pipelines.sources.playoffs.get_client") as mock_get_client,
+            patch("src.pipelines.sources.playoffs.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.return_value = fixture
+
+            # Request year deliberately differs from the fixture's own season
+            # to prove the API-provided value is preserved, not overwritten.
+            results = list(cfp_bracket_resource(years=[2025]))
+
+            assert results[0]["season"] == 2024
+
 
 class TestCfpGamesResource:
     def test_skips_pre_2014_years(self):

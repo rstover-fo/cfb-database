@@ -59,6 +59,11 @@ def cfp_bracket_resource(years: list[int]) -> Iterator[dict]:
     and `rounds` arrays (and `rounds`' nested `matchups`/`slots`) via the
     standard `_dlt_parent_id` mechanism -- no manual flattening needed here.
 
+    The 2024 response carried a top-level `season` field; the 2025 response
+    evidently omits it, which left `season` (the primary key) unbound and
+    failed normalize. `season` is stamped from the request year whenever
+    the record doesn't already carry one, so both shapes load correctly.
+
     Args:
         years: List of years to load the bracket for
     """
@@ -83,7 +88,10 @@ def cfp_bracket_resource(years: list[int]) -> Iterator[dict]:
                 logger.info(f"No CFP bracket data for {year}, skipping")
                 continue
 
-            yield from data
+            for record in data:
+                if record.get("season") is None:
+                    record["season"] = year
+                yield record
 
     finally:
         client.close()

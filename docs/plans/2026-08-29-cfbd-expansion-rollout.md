@@ -2,7 +2,9 @@
 
 **Date:** 2026-08-29
 **Branch:** `claude/cfbd-cfb-package-updates-7iabg2`
-**Status:** Built and reviewed; nothing below has been applied to the live database yet.
+**Status:** Built and reviewed. Steps 1-3, 6, 7 (launch) and 9 applied to the live
+database/workflows as of 2026-08-30; steps 4, 5 (historical dispatches), 7's
+"once fully drained" rerun, and 8 remain open — see checklist below.
 
 ## What shipped on the branch
 
@@ -46,21 +48,32 @@ Migrations 050-055 are `--file`-only (not in MIGRATION_ORDER). 050 and 054 apply
 AFTER the loads that create their tables (the 026 pattern); 051/053/055 have no
 load precondition.
 
-1. [ ] Apply `051_refresh_ledger.sql`, `053_ncaa_tables.sql`, `055_espn_tables.sql`
+1. [x] Apply `051_refresh_ledger.sql`, `053_ncaa_tables.sql`, `055_espn_tables.sql`
        (no preconditions). Apply `052_sportsdataverse_xwalk_ratings.sql` — it MUST
        land in an earlier deploy run than mart 044 (deploy_schema.py runs marts
        before `--files`; 044 fail-fasts if 052's tables are absent).
-2. [ ] **A2 backfills** via `backfill-sources.yml` dispatches (~800 calls total):
+       **Applied 2026-08-30.**
+2. [x] **A2 backfills** via `backfill-sources.yml` dispatches (~800 calls total):
        playoffs 2014-2025; ratings 2004-2025 (srs_expanded rides along);
        `stats:player_success_season+player_success_game+game_advanced` 2014-2025;
        coaches + conferences (bulk + `--source conferences --mode backfill` for
        changes history). One-time manual runs: `--source coach_tenures` (~350
        per-team calls), `--source metrics_ppa_predicted` (~120 calls).
-3. [ ] Let the daily load (or one manual `load_season.py` run) create
+       **Ran 2026-08-30** — the A2 dispatches (playoffs/ratings/stats/coaches/
+       conferences) completed; the two one-time manual runs (`--source
+       coach_tenures`, 2,738 rows; `--source metrics_ppa_predicted`, 10,140 rows)
+       ran the same day via the new `runner=pipeline_run` input added to
+       `backfill-sources.yml` on this branch (commit `0f92305`) — those two
+       sources are `run.py`-only and had no workflow dispatch path before it.
+3. [x] Let the daily load (or one manual `load_season.py` run) create
        `ref.coach_profiles` / `stats.player_season_overview` via the new capped
        drainers, then verify dlt column names via `pg_attribute` (coach endpoints
        were never observed live — every probe 400'd) and apply
        `050_expansion_grants_indexes.sql` and `054_fanout_grants_indexes.sql`.
+       **Drainers created both tables** — `ref.coach_profiles` (200 rows) and
+       `stats.player_season_overview` (250 rows) after their first capped runs;
+       column names verified live via `pg_attribute` (not from API docs).
+       `050`/`054` applied 2026-08-30.
 4. [ ] **Cheap corrected-data re-runs** (~4,900 calls): backfill-sources.yml
        dispatches, seasons 2025→2014, sources
        `metrics,wepa,recruiting,rosters,stats:advanced_team_stats+game_havoc+player_usage+player_returning+game_advanced`,
@@ -68,12 +81,16 @@ load precondition.
 5. [ ] **Flat-file first loads**: `flat-files.yml` picks the 16 new sources up via
        `--due`; historical seasons via explicit `--season` dispatches
        (ncaa 2013-2025, espn adv 2004-2025, participants 2014-2025 — ~190 fetches,
-       no API budget).
-6. [ ] Deploy mart `044_epa_crossvalidation.sql` (separate, later run than 052);
+       no API budget). **Partial: the `--due` first loads ran** (16 new sources
+       picked up on schedule); the historical `--season` dispatches for ncaa/espn
+       adv/participants have not been made yet.
+6. [x] Deploy mart `044_epa_crossvalidation.sql` (separate, later run than 052);
        refresh marts; confirm the `cfbd_fpi_season` anchor is NON-dark (it has
        data today — dark there means the team-name join broke). Snapshot the
        per-season Spearman columns — this is the "before" baseline.
-7. [ ] **Launch the refresh campaign**: dispatch `historical-refresh.yml` with
+       **Deployed 2026-08-30** — `cfbd_fpi_season` anchor confirmed non-dark;
+       baseline average Spearman 0.881.
+7. [x] **Launch the refresh campaign**: dispatch `historical-refresh.yml` with
        `create=true` (campaign `2026-08-upstream-corrections`, seasons 2014-2025,
        tasks `plays_stats,box_advanced`). ~38k calls at ≤1,000/day under the
        30k/month cap → ~5-6 weeks. The daily cron keeps it draining; each run that
@@ -84,10 +101,14 @@ load precondition.
        silently marking the campaign done. After each week, compare
        `marts.epa_crossvalidation` against the baseline per the decision rule in the
        mart header.
-       **Once fully drained**, rerun the player-EPA staged build so the campaign's
-       corrections actually reach `analytics.player_game_epa_build` (the finalize
-       above does NOT do this — see `finalize_campaign`'s docstring): dispatch
-       `deploy-schema.yml` with `action=apply files=src/schemas/migrations/022_player_epa_staged_build.sql`.
+       **Launched** — campaign `2026-08-upstream-corrections` is live and
+       self-driving on the 12:00 UTC cron; first scheduled run went green
+       2026-08-30.
+    - [ ] **Once fully drained** (still PENDING), rerun the player-EPA staged build so
+       the campaign's corrections actually reach `analytics.player_game_epa_build`
+       (the finalize above does NOT do this — see `finalize_campaign`'s docstring):
+       dispatch `deploy-schema.yml` with
+       `action=apply files=src/schemas/migrations/022_player_epa_staged_build.sql`.
        This migration once timed out at 30 minutes doing all twelve seasons
        (2014-2025) in a single hardcoded `DO $$ ... FOR yr IN 2014..2025 LOOP` block
        (see 022's header) — **checked 2026-08-30: it does NOT support a season-scoped
@@ -103,8 +124,9 @@ load precondition.
        daily drainer work at 250/day. Pace against the campaign so combined
        spend stays under ~30k/month of headroom. **2014-2020 (~30k more) is
        parked pending an explicit go-ahead.**
-9. [ ] On merge to main: remove the temporary `push:` trigger from
+9. [x] On merge to main: remove the temporary `push:` trigger from
        `probe-endpoints.yml` (workflow_dispatch works once it's on main).
+       **Done** — commit `d14823f`.
 
 ## Budget picture
 
@@ -121,6 +143,11 @@ Worst-case months stay ≈100k of the 125k Tier-4 budget with both paced streams
 active alongside the in-season daily load.
 
 ## Known parked items / follow-ups
+
+**2026-08-30 addendum (not an original checklist item):** the team-name crosswalk
+referenced in step 5's flat-file notes is now partially seeded — `massey` seeded
+2026-08-30 (131 mappings, reviewed); `sbr` remains unseeded, pending a
+user-supplied Excel file.
 
 - player_overview 2014-2020 (~30k calls) — explicit user go-ahead required.
 - `ncaa` schema exposure — deliberately ungranted until a crosswalk exists;

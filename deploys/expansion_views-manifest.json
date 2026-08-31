@@ -1,6 +1,7 @@
 {
   "action": "apply",
   "files": [
+    "src/schemas/migrations/058_wepa_player_id_column.sql",
     "src/schemas/marts/023_coaching_tenure.sql",
     "src/schemas/marts/045_passing_charting_player_season.sql",
     "src/schemas/marts/046_passing_charting_target_season.sql",

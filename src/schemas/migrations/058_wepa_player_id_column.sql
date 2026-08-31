@@ -16,16 +16,29 @@
 -- duplicating them.
 --
 -- Applied live 2026-08-30 (mcp migration wepa_player_id_column_backfill).
--- Idempotent: re-running is a no-op.
+-- Idempotent: re-running is a no-op. Guarded per table (PR #81 review:
+-- this file rides deploys/expansion_views-manifest.json so the unit is
+-- self-contained): on a fresh database the wepa player tables do not
+-- exist yet -- the first load creates them WITH id, so a missing table
+-- is skipped with a NOTICE rather than failing the manifest apply.
+-- A SET NOT NULL failure (athlete_id NULLs in some other environment)
+-- stays loud by design.
 
-alter table metrics.wepa_players_passing add column if not exists id text;
-update metrics.wepa_players_passing set id = athlete_id where id is null;
-alter table metrics.wepa_players_passing alter column id set not null;
-
-alter table metrics.wepa_players_rushing add column if not exists id text;
-update metrics.wepa_players_rushing set id = athlete_id where id is null;
-alter table metrics.wepa_players_rushing alter column id set not null;
-
-alter table metrics.wepa_players_kicking add column if not exists id text;
-update metrics.wepa_players_kicking set id = athlete_id where id is null;
-alter table metrics.wepa_players_kicking alter column id set not null;
+DO $$
+DECLARE
+    t text;
+BEGIN
+    FOREACH t IN ARRAY ARRAY[
+        'wepa_players_passing',
+        'wepa_players_rushing',
+        'wepa_players_kicking'
+    ] LOOP
+        IF to_regclass(format('metrics.%I', t)) IS NULL THEN
+            RAISE NOTICE '058: metrics.% does not exist -- skipping (a fresh load creates it with id already present)', t;
+            CONTINUE;
+        END IF;
+        EXECUTE format('ALTER TABLE metrics.%I ADD COLUMN IF NOT EXISTS id text', t);
+        EXECUTE format('UPDATE metrics.%I SET id = athlete_id WHERE id IS NULL', t);
+        EXECUTE format('ALTER TABLE metrics.%I ALTER COLUMN id SET NOT NULL', t);
+    END LOOP;
+END $$;

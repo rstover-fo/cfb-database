@@ -25,9 +25,11 @@ on:
           once with no --season, today's behavior. Non-empty loops the load
           once per season, appending --season "$season" to the same
           --source-flags-or---due invocation each time. Combining this with
-          an empty `source` (so the invocation is --due) makes little
-          sense: --due's cadence gating is bypassed by an explicit --season
-          anyway, same as it is by an explicit --source. An explicit-season
+          an empty `source` (so the invocation is --due) is a full
+          backfill: an explicit --season disables --due's cadence gating
+          and plans every non-manual source for that season -- cadence
+          freshness only describes the current season's file, and the
+          ledger hash-skip keeps the over-planning cheap. An explicit-season
           request for a year a source hasn't published yet reports
           not_published (see probe_offseason_availability.py's distinction)
           and does not fail the run.

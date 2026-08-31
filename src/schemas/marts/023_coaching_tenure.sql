@@ -12,13 +12,20 @@
 -- (cfb-app/src/lib/queries/coaches.ts:170-182), with a comment
 -- acknowledging that two same-named coaches would collide. Fix: match each
 -- coach-season row to ref.coach_seasons by (first_name, last_name, school,
--- year) via LEFT JOIN LATERAL ... ORDER BY coach__id LIMIT 1 (deterministic
--- tie-break, cannot fan out), then in tenure_agg collapse a tenure's
--- per-season matches to ONE coach_id only when every matched season agrees
--- on the same coach__id -- if two different ids appear across a tenure's
--- seasons (a same-named-coach collision) or zero seasons matched, coach_id
--- is NULL rather than a guessed value. Additive only -- no existing column
--- changed.
+-- year) via an aggregate LEFT JOIN LATERAL (an aggregate LATERAL always
+-- returns exactly one row, so ON true cannot fan out) that yields the
+-- season's coach__id only when exactly one distinct id matches -- a season
+-- whose (name, school, year) matches MORE than one distinct coach__id
+-- contributes NULL (ambiguity is never guessed away -- PR #81 Greptile P1;
+-- zero such groups exist live today, this is contract hardening). Then in
+-- tenure_agg collapse a tenure's per-season matches to ONE coach_id only
+-- when every matched season agrees on the same coach__id -- if two
+-- different ids appear across a tenure's seasons (a same-named-coach
+-- collision) or zero seasons matched, coach_id is NULL rather than a
+-- guessed value. coach_id is the single id every MATCHED season agrees on:
+-- seasons outside ref.coach_seasons' coverage (it has no pre-2014 depth)
+-- do NOT invalidate the match -- requiring full-span matches would NULL
+-- nearly every long tenure. Additive only -- no existing column changed.
 
 DROP MATERIALIZED VIEW IF EXISTS marts.coaching_tenure CASCADE;
 
@@ -41,14 +48,14 @@ WITH coach_seasons AS (
     FROM ref.coaches c
     JOIN ref.coaches__seasons cs ON cs._dlt_parent_id = c._dlt_id
     LEFT JOIN LATERAL (
-        SELECT rcs.coach__id AS coach_id
+        SELECT CASE
+            WHEN COUNT(DISTINCT rcs.coach__id) = 1 THEN MIN(rcs.coach__id)
+        END AS coach_id
         FROM ref.coach_seasons rcs
         WHERE rcs.coach__first_name = c.first_name
           AND rcs.coach__last_name = c.last_name
           AND rcs.team__school = cs.school
           AND rcs.year = cs.year
-        ORDER BY rcs.coach__id
-        LIMIT 1
     ) match ON true
     WHERE cs.school IS NOT NULL
 ),

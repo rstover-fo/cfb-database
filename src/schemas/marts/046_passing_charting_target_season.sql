@@ -8,10 +8,12 @@
 --
 -- Built from stats.passing_plays (PK game_id, play_id -- play-grain, not
 -- pre-aggregated), aggregated here to (season, target_id, team_id).
--- passing_plays has no `season` column IN ITS PRIMARY KEY, so season is
--- derived via a join to core.games on game_id -- the same
--- join-to-core.games-for-season idiom marts.penalty_log/team_penalty_box
--- already use for a play-grain source. offense_id (renamed team_id here)
+-- season is stamped on every stats.passing_plays row by
+-- passing_plays_resource (`row.setdefault("season", year)`; live-verified
+-- zero NULLs 2026-08-31) and is read directly here, so charted plays never
+-- depend on core.games having loaded that game -- the previous join to
+-- core.games for g.season silently DROPPED any charted play whose game was
+-- missing there (PR #81 review finding). offense_id (renamed team_id here)
 -- is the numeric CFBD/ESPN team id per stats.passing_plays.offense_id's own
 -- column COMMENT (migration 057): "Prefer this over the `offense` name
 -- string when joining to ref.teams(id) -- ref.teams has 35 legitimate
@@ -62,13 +64,12 @@ WITH plays_seasoned AS (
         pp.target_id,
         pp.target,
         pp.offense_id AS team_id,
-        g.season,
+        pp.season,
         pp.outcome,
         pp.parse_status,
         pp.air_yards,
         pp.yards_after_catch
     FROM stats.passing_plays pp
-    JOIN core.games g ON g.id = pp.game_id
     WHERE pp.target_id IS NOT NULL
 ),
 target_agg AS (

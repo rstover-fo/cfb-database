@@ -159,6 +159,69 @@ class TestDryRun:
 
 
 # ---------------------------------------------------------------------------
+# _planned_sources: explicit-season backfills must not be cadence-gated
+# (PR #81 review finding -- an off-season `--due --season 2016` used to plan
+# nothing weekly and exit 0)
+# ---------------------------------------------------------------------------
+
+
+def _parse(argv: list[str]):
+    return load_flat_files.build_arg_parser().parse_args(argv)
+
+
+class TestPlannedSources:
+    def test_explicit_season_with_due_plans_all_non_manual_sources(self, monkeypatch):
+        # Cadence must not even be consulted: an explicit season is a
+        # backfill request, and is_due describes only the current season.
+        def boom(*a, **k):
+            raise AssertionError("explicit-season --due must not consult cadence")
+
+        monkeypatch.setattr(load_flat_files, "is_due", boom)
+        monkeypatch.setattr(load_flat_files, "_cadence_last_checked", boom)
+
+        args = _parse(["--due", "--season", "2016"])
+        names = load_flat_files._planned_sources(args, OFF_SEASON_DAY, 2016, season_explicit=True)
+
+        expected = [name for name, spec in REGISTRY.items() if spec.cadence != "manual"]
+        assert names == expected
+        assert all(REGISTRY[name].cadence != "manual" for name in names)
+        # The registry has at least one manual source, so the exclusion is
+        # actually exercised, and the plan is never empty.
+        assert 0 < len(names) < len(REGISTRY)
+
+    def test_due_without_explicit_season_keeps_cadence_filter(self, monkeypatch):
+        consulted: list[str] = []
+
+        def fake_is_due(spec, last, today):
+            consulted.append(spec.name)
+            return spec.name == "massey"
+
+        monkeypatch.setattr(load_flat_files, "is_due", fake_is_due)
+        monkeypatch.setattr(load_flat_files, "_cadence_last_checked", lambda spec, season: None)
+
+        args = _parse(["--due"])
+        names = load_flat_files._planned_sources(args, IN_SEASON_DAY, 2025, season_explicit=False)
+
+        assert names == ["massey"]
+        assert set(consulted) == set(REGISTRY)
+
+    def test_explicit_source_wins_unchanged(self, monkeypatch):
+        def boom(*a, **k):
+            raise AssertionError("--source selection must not consult cadence")
+
+        monkeypatch.setattr(load_flat_files, "is_due", boom)
+        monkeypatch.setattr(load_flat_files, "_cadence_last_checked", boom)
+
+        args = _parse(["--source", "massey", "--season", "2016"])
+        names = load_flat_files._planned_sources(args, OFF_SEASON_DAY, 2016, season_explicit=True)
+        assert names == ["massey"]
+
+        args = _parse(["--source", "massey", "--source", "sbr"])
+        names = load_flat_files._planned_sources(args, IN_SEASON_DAY, 2025, season_explicit=False)
+        assert names == ["massey", "sbr"]
+
+
+# ---------------------------------------------------------------------------
 # run_source
 # ---------------------------------------------------------------------------
 

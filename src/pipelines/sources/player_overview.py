@@ -47,8 +47,9 @@ def player_overview_source(
     Args:
         player_seasons: List of (year, player_id) pairs to fetch.
         misses: When given, a list the resource appends
-            (f"{year}:{player_id}", status_code) to for every 400/404 hit --
-            forwarded straight through to `player_season_overview_resource`.
+            (f"{year}:{player_id}", status_code) to for every 400/404 hit
+            and every 5xx that survives api_client's retries -- forwarded
+            straight through to `player_season_overview_resource`.
             The caller persists it to `meta.fanout_misses` via
             `run.py::_record_fanout_misses` (PR #75 review finding A) so
             the next run's candidate query can exclude a terminal miss
@@ -105,12 +106,16 @@ def player_season_overview_resource(
     A 400 or 404 for a given (year, playerId) is logged and skipped rather
     than aborting the whole batch -- candidates come from a UNION of
     stats.player_usage and metrics.ppa_players_season, either of which may
-    include a player-season CFBD has no overview computed for. When
-    `misses` is given, the "{year}:{player_id}" key (matching
+    include a player-season CFBD has no overview computed for. A 5xx that
+    exhausts api_client's per-request retries is skipped the same way: one
+    player's transient gateway failure must not kill a multi-thousand-call
+    dispatch (backfill run 33351198599, 2026-08-30). When `misses` is
+    given, the "{year}:{player_id}" key (matching
     `meta.fanout_misses.key`'s format for this source) and status code are
     appended to it so the caller can persist the miss (PR #75 review
     finding A: without this, a terminal 400/404 was re-requested every run
-    forever).
+    forever); the ledger's FANOUT_MISS_RETRY_DAYS window ages a 5xx skip
+    back into eligibility rather than blacklisting it.
 
     Args:
         player_seasons: List of (year, player_id) pairs to fetch.
@@ -134,6 +139,28 @@ def player_season_overview_resource(
                     logger.warning(
                         f"No player season overview for {player_id} ({year}) "
                         f"({e.response.status_code} response), skipping"
+                    )
+                    if misses is not None:
+                        misses.append((f"{year}:{player_id}", e.response.status_code))
+                    continue
+                if e.response.status_code >= 500:
+                    # Already retried: a 5xx HTTPStatusError only reaches here
+                    # after api_client.get() has burned its full retry budget
+                    # (MAX_RETRIES backoff attempts) on this one call. One
+                    # player's flaky gateway must not kill the whole dispatch
+                    # -- backfill run 33351198599 (2026-08-30) lost ~5,600
+                    # planned calls when a single transient 502 for
+                    # (2024, 4879928) raised through dlt at batch 68/180.
+                    # Recorded in the same meta.fanout_misses ledger as a
+                    # 400/404, so FANOUT_MISS_RETRY_DAYS ages it back into
+                    # eligibility -- a skipped player is deferred, never
+                    # blacklisted. Rate-limit failures never take this path:
+                    # 429s surface as RateLimitExhausted/RateLimitCircuitOpen
+                    # (not HTTPStatusError) and still abort the run.
+                    logger.warning(
+                        f"Server error {e.response.status_code} for player season "
+                        f"overview {player_id} ({year}) after client retries; "
+                        f"recording miss and continuing"
                     )
                     if misses is not None:
                         misses.append((f"{year}:{player_id}", e.response.status_code))

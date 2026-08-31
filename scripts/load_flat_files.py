@@ -13,7 +13,10 @@ Usage:
     python scripts/load_flat_files.py --due                      # run whatever cadence says is due
     python scripts/load_flat_files.py --source massey            # force one source
     python scripts/load_flat_files.py --source sbr --file odds.xlsx  # feed a local file
-    python scripts/load_flat_files.py --season 2025 --due         # override the season hint
+    python scripts/load_flat_files.py --season 2025 --due         # backfill that season: every
+                                                                  # non-manual source, cadence
+                                                                  # gating off (hash-skip keeps
+                                                                  # it cheap)
 
 Row counting (kind="dlt"): ``build_flat_file_source`` already materializes the
 parsed rows into in-memory list resources, so re-iterating those resources
@@ -463,10 +466,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _planned_sources(args: argparse.Namespace, today: date, season: int) -> list[str]:
+def _planned_sources(
+    args: argparse.Namespace, today: date, season: int, *, season_explicit: bool
+) -> list[str]:
     if args.source:
         return list(args.source)
     if args.due:
+        if season_explicit:
+            # An explicit --season is a backfill request: cadence freshness
+            # describes only the current season's file, so gating a
+            # historical season on is_due would silently plan nothing (e.g.
+            # every weekly source off-season). Plan every non-manual source
+            # instead -- the ledger hash-skip makes over-planning free, and
+            # manual-cadence sources still need --file so they stay excluded.
+            return [name for name, spec in REGISTRY.items() if spec.cadence != "manual"]
         return [
             name
             for name, spec in REGISTRY.items()
@@ -496,7 +509,7 @@ def main(argv: list[str] | None = None) -> int:
     today = date.today()
     season_explicit = args.season is not None
     season = args.season if season_explicit else season_for_date(today)
-    names = _planned_sources(args, today, season)
+    names = _planned_sources(args, today, season, season_explicit=season_explicit)
 
     if args.dry_run:
         print(f"[DRY RUN] {len(names)} flat-file source(s) planned for season {season}")

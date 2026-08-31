@@ -5,6 +5,7 @@
 
 CREATE OR REPLACE VIEW api.coaching_history AS
 SELECT
+    coach_id,
     coach_name,
     first_name,
     last_name,
@@ -39,7 +40,14 @@ FROM marts.coaching_tenure;
 COMMENT ON VIEW api.coaching_history IS
 'Coaching history with tenure performance summaries. One row per coach-team-tenure. '
 'Filter by team, coach_name, last_name, is_active. '
-'talent_improvement = inherited_rank - year3_rank (positive = improved recruiting).';
+'talent_improvement = inherited_rank - year3_rank (positive = improved recruiting). '
+'coach_id (added 2026-08-30) is ref.coach_seasons'' coach__id, matched by (first_name, '
+'last_name, team, year) -- the single id every MATCHED season of the tenure agrees on. '
+'NULL when any season''s match is ambiguous (more than one distinct coach__id -- one '
+'ambiguous season poisons the entire tenure''s coach_id), when matched seasons disagree, '
+'or when zero seasons matched; seasons outside ref.coach_seasons'' '
+'coverage (it has no pre-2014 depth) do NOT invalidate the match. Use it instead of '
+'first_name+last_name to join to api.coach_records or api.coach_tenures.';
 
 -- Grants are part of the definition: an apply that DROPs/recreates the
 -- view would otherwise leave the PostgREST roles without read access

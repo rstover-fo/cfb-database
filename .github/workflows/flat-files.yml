@@ -19,6 +19,22 @@ on:
         description: "Registry source name(s), space-separated; empty = --due"
         required: false
         type: string
+      seasons:
+        description: >-
+          Season years, space-separated (e.g. 2013 2014 2015); empty = run
+          once with no --season, today's behavior. Non-empty loops the load
+          once per season, appending --season "$season" to the same
+          --source-flags-or---due invocation each time. Combining this with
+          an empty `source` (so the invocation is --due) is a full
+          backfill: an explicit --season disables --due's cadence gating
+          and plans every non-manual source for that season -- cadence
+          freshness only describes the current season's file, and the
+          ledger hash-skip keeps the over-planning cheap. An explicit-season
+          request for a year a source hasn't published yet reports
+          not_published (see probe_offseason_availability.py's distinction)
+          and does not fail the run.
+        required: false
+        type: string
 
 concurrency:
   group: flat-file-load
@@ -36,7 +52,12 @@ jobs:
   load:
     name: Load flat-file sources
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 is enough for a single --due/--source invocation, but a multi-season
+    # `seasons` backfill of the 7-source NCAA bundle (ncaa_schedule,
+    # ncaa_teams, ncaa_rosters, ncaa_linescores, ncaa_player_stats,
+    # ncaa_team_stats, ncaa_pbp -- the last a multi-hundred-thousand-row
+    # parquet load) across e.g. 12 seasons needs real headroom.
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -52,11 +73,29 @@ jobs:
         # `source` input through a step-level env: var (probe-endpoints.yml's
         # pattern) instead of interpolating ${{ inputs.source }} directly
         # into the run: shell -- see historical-refresh.yml's Drain backlog
-        # step for the rationale.
+        # step for the rationale. Same treatment for `seasons`.
         env:
           SOURCE_INPUT: ${{ inputs.source }}
+          SEASONS_INPUT: ${{ inputs.seasons }}
         run: |
-          if [ -n "$SOURCE_INPUT" ]; then
+          if [ -n "$SEASONS_INPUT" ]; then
+            # $SEASONS_INPUT is deliberately unquoted -- it is a
+            # space-separated list of years and this loop relies on the
+            # shell's word-splitting to iterate them individually (same
+            # pattern as backfill-sources.yml's per-season loop).
+            for season in $SEASONS_INPUT; do
+              echo "::group::Season $season"
+              if [ -n "$SOURCE_INPUT" ]; then
+                # Deliberately unquoted: SOURCE_INPUT is a space-separated
+                # list of registry names, and word-splitting is how each
+                # one becomes its own --source flag below.
+                python scripts/load_flat_files.py $(printf -- '--source %s ' $SOURCE_INPUT) --season "$season"
+              else
+                python scripts/load_flat_files.py --due --season "$season"
+              fi
+              echo "::endgroup::"
+            done
+          elif [ -n "$SOURCE_INPUT" ]; then
             # Deliberately unquoted: SOURCE_INPUT is a space-separated list
             # of registry names, and word-splitting is how each one becomes
             # its own --source flag below.

@@ -4,7 +4,7 @@
 > only depend on objects listed here as **public**. Everything else is internal and may change
 > without notice.
 
-Last updated: 2026-08-29
+Last updated: 2026-08-30
 
 > **Note on cfb-analytics:** the retired OU-only app (rstover-fo/cfb-analytics) was never a
 > warehouse consumer -- it ran its own DuckDB ingestion. Its unique features (rivals page,
@@ -14,6 +14,84 @@ Last updated: 2026-08-29
 ---
 
 ## Recent Contract Changes
+
+- **2026-08-30 — `expansion_views` unit: five new `api.*` views, `api.player_detail`
+  bug fix, `coach_id` added to two existing views (all per cfb-app's
+  2026-08-30 work order).** `deploys/expansion_views-manifest.json`.
+  - **`api.player_detail` dedupe (BUG FIX, pre-existing surface).** The
+    recruiting join fanned out for players carrying more than one
+    `recruiting.recruits` row (reclassifications) -- verified live,
+    e.g. player_id 5079720/season 2025 returned 2 rows differing only in
+    stars/recruit_rating/national_ranking/recruit_class. Under 1% of
+    players per season but concentrated in blue-chip cases, and
+    `SUM()`-style aggregation over the view silently double-counted them.
+    Fixed by collapsing the recruiting side to one row per athlete via
+    `DISTINCT ON`, keeping the highest (most authoritative) recruit-class
+    year. `api.player_detail` is now guaranteed one row per
+    `(player_id, season, team)`.
+  - **`api.player_detail` additive extension.** Six new columns from
+    `stats.player_season_overview`, joined `LEFT JOIN LATERAL ... ORDER BY
+    (overview.team = player_detail.team) DESC LIMIT 1` (fanout-proof
+    regardless of that table's own primary key): `games`, `usage_overall`,
+    `usage_pass`, `usage_rush`, `ppa_overview_avg`, `ppa_overview_total`.
+  - **`api.passing_charting_player_season` (new, `045`).** Passing charting
+    by player-season, 2025+: air yards, aDOT, YAC, plus attempts/
+    completions/interceptions/completion_rate/conference/position. Carries
+    **two** separate coverage denominators
+    (`air_yards_attempts_available`, `yards_after_catch_attempts_available`)
+    -- never merge them into one; 2025 charted only 407/820 player-seasons,
+    so a leaderboard without both denominators ranks on charting coverage,
+    not skill. NULL = not charted, 0 is a real value (mirrors migration
+    057's phrasing).
+  - **`api.passing_charting_target_season` (new, `046`) -- the highest-value
+    item in this batch.** Receiver-grain (target) passing charting by
+    season, 2025+, aggregated from `stats.passing_plays`. cfb-app had zero
+    receiver-grain analysis before this (`api.player_wepa_leaders` covers
+    passing/rushing/kicking only). Columns: `target_id`, `target`, `season`,
+    `team_id`, `team`, `targets_charted`, `receptions`, `total_air_yards`,
+    `average_depth_of_target`, `air_yards_charted_plays`,
+    `total_yards_after_catch`, `average_yards_after_catch`,
+    `yards_after_catch_charted_plays`, `target_share_charted`,
+    `partial_share`. **`target_share_charted` is a share of CHARTED targets
+    only** (deliberately not named `target_share`) -- never present it as a
+    true target share over every offensive snap. `partial_share` flags
+    plays with `parse_status='partial'` (charting fields may read NULL on
+    those).
+  - **`api.passing_charting_team_season` (new, `047`).** Team-season passing
+    charting, offense and defense sides, 2025+. Flattens
+    `stats.passing_team_season`'s raw `offense__*`/`defense__*` dlt shape to
+    `offense_*`/`defense_*` (Contract Rule 4: raw dlt shapes never reach the
+    api layer). **`defense_*` is this team's passing DEFENSE** (what
+    opposing offenses did against them), not the opponent's own offensive
+    row.
+  - **`coach_id` added to `api.coaching_history` and `api.coach_records`
+    (additive).** Both views previously carried only `first_name`/
+    `last_name` for coach identity, so cfb-app was joining them to each
+    other on name alone (`cfb-app/src/lib/queries/coaches.ts:170-182`,
+    with an acknowledged same-name-collision risk). `coach_id` is
+    `ref.coach_seasons`' `coach__id`, matched per season by
+    `(first_name, last_name, team, year)` with a deterministic tie-break;
+    NULL where no single `coach__id` unambiguously covers every one of the
+    relevant seasons (name collision, or no matching `ref.coach_seasons`
+    row at all).
+  - **`api.coach_tenures` (new, `048`).** CFBD's own continuous coach-tenure
+    record (`ref.coach_tenures`), distinct from `api.coaching_history`
+    (gap-detected from `ref.coaches__seasons`). Grain:
+    `(coach_id, team_id, tenure_start)`. Adds `is_interim` and
+    `classification`, retiring two cfb-app heuristics: a `DEFAULT_MIN_GAMES
+    = 24` floor used only to keep an interim's one-game record off win%
+    leaderboards, and an FBS filter pushed through a ~130-entry hardcoded
+    team-name list. **May be empty** in an environment where the
+    `coach_tenures` backfill (`--source coach_tenures`, a per-team fan-out,
+    not part of the daily path) has not yet run.
+  - **`api.refresh_campaign_status` (new, `049`, plain view -- no mart).**
+    Per-`(campaign, season)` progress against `meta.refresh_campaigns` +
+    `meta.refresh_progress` (migration 051's refresh ledger): games
+    refreshed/no-data for that season, plus the campaign's
+    `completed_at`/`last_finalized_at`. Lets a downstream consumer
+    scope-invalidate a cached historical answer for one season instead of
+    distrusting an entire in-progress corrections campaign's range. May be
+    empty if no campaign row exists yet.
 
 - **2026-08-29 — `marts.epa_crossvalidation` added (INTERNAL, not a public
   surface).** Mart 044 (`src/schemas/marts/044_epa_crossvalidation.sql`) is the
@@ -612,14 +690,19 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.team_penalties` | **Deployed** | ~42K | Official box-score penalty counts per (game, team) from totalPenaltiesYards. Columns: game_id, season, week, season_type, team, opponent, home_away, penalties, penalty_yards, opponent_penalties, opponent_penalty_yards. |
 | `api.recruit_lookup` | **Deployed** | 67,179 | Stable recruiting view for recruit data |
 | `api.player_season_leaders` | **Deployed** | 152,966 | Season stat leaders by category (passing, rushing, receiving, defensive). Columns: season, category, player_id, player_name, team, yards, touchdowns, interceptions, pct, attempts, completions, carries, yards_per_carry, receptions, yards_per_reception, longest, total_tackles, solo_tackles, sacks, tackles_for_loss, passes_defended, yards_rank |
-| `api.player_detail` | **Deployed** | 340,878 | Single player page: bio, recruiting, season stats, PPA. Columns: player_id, name, team, position, season, height, weight, jersey, home_city, home_state, stars, recruit_rating, national_ranking, recruit_class, pass_att, pass_cmp, pass_yds, pass_td, pass_int, pass_pct, rush_car, rush_yds, rush_td, rush_ypc, rec, rec_yds, rec_td, rec_ypr, tackles, sacks, tfl, pass_def, ppa_avg, ppa_total |
+| `api.player_detail` | **Deployed** | 340,878 | Single player page: bio, recruiting, season stats, PPA, and a compact season-overview payload. One row per (player_id, season, team) -- recruiting join deduped 2026-08-30 (was fanning out for reclassified players; see 2026-08-30 changelog entry). Columns: player_id, name, team, position, season, height, weight, jersey, home_city, home_state, stars, recruit_rating, national_ranking, recruit_class, pass_att, pass_cmp, pass_yds, pass_td, pass_int, pass_pct, rush_car, rush_yds, rush_td, rush_ypc, rec, rec_yds, rec_td, rec_ypr, tackles, sacks, tfl, pass_def, ppa_avg, ppa_total, games, usage_overall, usage_pass, usage_rush, ppa_overview_avg, ppa_overview_total (last six added 2026-08-30, from stats.player_season_overview via a fanout-proof LATERAL join) |
 | `api.player_comparison` | **Deployed** | 127,333 | Player stats with positional percentiles, backed by matview. Columns: all player_detail columns PLUS position_group, pass_yds_pctl, pass_td_pctl, pass_pct_pctl, rush_yds_pctl, rush_td_pctl, rush_ypc_pctl, rec_yds_pctl, rec_td_pctl, tackles_pctl, sacks_pctl, tfl_pctl, ppa_avg_pctl |
 | `api.game_player_leaders` | **Deployed** | 4,194,621 | Per-game player stats flattened from dlt hierarchy. Columns: game_id, season, team, conference, home_away, category, stat_type, player_id, player_name, stat |
 | `api.game_box_score` | **Deployed** | 1,178,727 | Per-game team stats in EAV format. Columns: game_id, season, team, home_away, category, stat_value |
 | `api.game_line_scores` | **Deployed** | 45,897 | Game line scores pivoted into Q1-Q4 columns with OT periods summed. Columns: game_id, season, home_q1, home_q2, home_q3, home_q4, home_ot, away_q1, away_q2, away_q3, away_q4, away_ot |
 | `api.team_playcalling_profile` | **Deployed** | 4,627 | Team playcalling identity with situational tendencies and percentile rankings. One row per team-season. Columns: team, season, conference, games_played, overall_run_rate, early_down_run_rate, third_down_pass_rate, red_zone_run_rate, overall_success_rate, overall_avg_epa, third_down_success_rate, red_zone_success_rate, leading_run_rate, trailing_run_rate, run_rate_delta, pace_plays_per_game, overall_run_rate_pctl, early_down_run_rate_pctl, third_down_pass_rate_pctl, overall_epa_pctl, third_down_success_pctl, red_zone_success_pctl, run_rate_delta_pctl, pace_pctl |
-| `api.coaching_history` | **Deployed** | 2,752 | Coaching tenure analytics: career spans, W-L records, talent metrics. One row per coach-team-tenure. Columns: first_name, last_name, team, tenure_start, tenure_end, seasons_count, total_wins, total_losses, win_pct, conf_wins, conf_losses, conf_win_pct, bowl_games, bowl_wins, inherited_talent_rank, year3_talent_rank, talent_improvement, is_active |
-| `api.coach_records` | **Pending deploy** | -- | Coach career record by school, straight-up and against-the-spread, for ranking coaches by win percentage. One row per coach-team (career-at-school grain, unlike `api.coaching_history`'s per-tenure grain). Columns: coach_name, first_name, last_name, team, first_season, last_season, seasons_count, games, wins, losses, ties, win_pct, ats_games, ats_wins, ats_losses, ats_pushes, ats_win_pct, seasons_with_ats_data. Coach attribution is whole-season (no mid-season splits); `ats_*` coverage is partial pre-lines-era -- see `seasons_with_ats_data` and the 2026-07-22 changelog entry. |
+| `api.coaching_history` | **Deployed** | 2,752 | Coaching tenure analytics: career spans, W-L records, talent metrics. One row per coach-team-tenure. Columns: coach_id, first_name, last_name, team, tenure_start, tenure_end, seasons_count, total_wins, total_losses, win_pct, conf_wins, conf_losses, conf_win_pct, bowl_games, bowl_wins, inherited_talent_rank, year3_talent_rank, talent_improvement, is_active (`coach_id` added 2026-08-30, additive -- `ref.coach_seasons`' coach__id matched by name+team+year, NULL where ambiguous/unmatched) |
+| `api.coach_records` | **Pending deploy** | -- | Coach career record by school, straight-up and against-the-spread, for ranking coaches by win percentage. One row per coach-team (career-at-school grain, unlike `api.coaching_history`'s per-tenure grain). Columns: coach_id, coach_name, first_name, last_name, team, first_season, last_season, seasons_count, games, wins, losses, ties, win_pct, ats_games, ats_wins, ats_losses, ats_pushes, ats_win_pct, seasons_with_ats_data. Coach attribution is whole-season (no mid-season splits); `ats_*` coverage is partial pre-lines-era -- see `seasons_with_ats_data` and the 2026-07-22 changelog entry. `coach_id` added 2026-08-30 (additive, same matching rule as `api.coaching_history`). |
+| `api.passing_charting_player_season` | **Pending deploy** | -- | Passing charting by player-season, 2025+: air yards, aDOT, YAC plus box-score passing columns. Columns: season, player_id, player, team, conference, position, attempts, completions, interceptions, completion_rate, total_air_yards, average_depth_of_target, air_yards_attempts_available, total_yards_after_catch, average_yards_after_catch, yards_after_catch_attempts_available. Two separate coverage denominators -- never merge them. Added 2026-08-30, see changelog entry. |
+| `api.passing_charting_target_season` | **Pending deploy** | -- | Receiver-grain (target) passing charting by season, 2025+ -- cfb-app's first receiving-analysis surface. Columns: target_id, target, season, team_id, team, targets_charted, receptions, total_air_yards, average_depth_of_target, air_yards_charted_plays, total_yards_after_catch, average_yards_after_catch, yards_after_catch_charted_plays, target_share_charted, partial_share. `target_share_charted` is a share of CHARTED targets only. Added 2026-08-30, see changelog entry. |
+| `api.passing_charting_team_season` | **Pending deploy** | -- | Team-season passing charting, offense and defense sides, 2025+. Columns: season, team, conference, offense_total_air_yards, offense_average_depth_of_target, offense_air_yards_attempts_available, offense_total_yards_after_catch, offense_average_yards_after_catch, offense_yards_after_catch_attempts_available, and the defense_ equivalents. `defense_*` is this team's passing DEFENSE, not the opponent's offense. Added 2026-08-30, see changelog entry. |
+| `api.coach_tenures` | **Pending deploy** | -- | CFBD's own continuous coach-tenure record, distinct from `api.coaching_history`. Grain: (coach_id, team_id, tenure_start). Columns: coach_id, coach_name, team_id, team, tenure_start, tenure_end (NULL = active), hire_date, is_interim, record_games, record_wins, record_losses, record_ties, record_win_percentage, classification. May be empty until the `coach_tenures` backfill has run. Added 2026-08-30, see changelog entry. |
+| `api.refresh_campaign_status` | **Pending deploy** | -- | Per-(campaign, season) progress against the migration-051 refresh ledger (`meta.refresh_campaigns`/`meta.refresh_progress`) -- scope-invalidate a cached historical answer for one season instead of an entire in-progress corrections campaign. Plain view, no mart. Columns: campaign, season, games_refreshed, games_no_data, completed_at, last_finalized_at. Added 2026-08-30, see changelog entry. |
 | `api.recruiting_roi` | **Deployed** | 1,324 | Recruiting investment vs on-field outcomes. 4-year rolling BCR, wins over expected, draft production. One row per team-season. Columns: team, season, conference, blue_chip_ratio, avg_recruit_rating, total_wins, win_pct, epa_per_play, players_drafted, wins_over_expected, recruiting_efficiency, win_pct_pctl, epa_pctl, recruiting_efficiency_pctl |
 | `api.transfer_portal_impact` | **Deployed** | 1,374 | Transfer portal activity correlated with team performance changes. Portal era (2021+). One row per team-season. Columns: team, season, conference, transfers_in, transfers_out, net_transfers, avg_transfer_stars, portal_dependency, win_delta, net_transfers_pctl, win_delta_pctl, portal_dependency_pctl |
 | `api.conference_comparison` | **Deployed** | 347 | Conference-level season analytics with percentile rankings. One row per conference-season. Columns: conference, season, member_count, avg_wins, avg_sp_rating, avg_epa, avg_recruiting_rank, non_conf_win_pct, avg_sp_pctl, avg_epa_pctl, avg_recruiting_pctl, non_conf_win_pct_pctl |
@@ -722,7 +805,11 @@ cfb-app for advanced features.
 | `marts.player_comparison` | Deployed | Player stats pivoted from EAV with positional percentiles (PERCENT_RANK). Indexes: (player_id, season) unique, (season, position_group) |
 | `marts.team_playcalling_tendencies` | Deployed | Team play-calling mix (run/pass rates) by situation: down, distance, field position, score state. ~492K rows. Grain: team + season + situation. |
 | `marts.team_situational_success` | Deployed | Team situational effectiveness (success rate, EPA, explosiveness) by context. ~492K rows. Min 10-play threshold for rate metrics. |
-| `marts.coaching_tenure` | Deployed | Coaching tenure analytics with gap detection. One row per coach-team-tenure. Includes W-L, bowl record, inherited vs recruited talent. 2,752 rows. |
+| `marts.coaching_tenure` | Deployed | Coaching tenure analytics with gap detection. One row per coach-team-tenure. Includes W-L, bowl record, inherited vs recruited talent. 2,752 rows. `coach_id` added 2026-08-30 (additive). |
+| `marts.coach_tenures` | Pending deploy | CFBD's own continuous coach-tenure record, passthrough of `ref.coach_tenures` joined to `ref.teams` for classification. Grain: `(coach_id, team_id, tenure_start)`. May be empty until the `coach_tenures` backfill has run. Added 2026-08-30. |
+| `marts.passing_charting_player_season` | Pending deploy | Passing charting by player-season (2025+), passthrough of `stats.passing_player_season` plus `position` joined from `core.roster` on its own primary key. Grain: `(season, player_id, team)`. Added 2026-08-30. |
+| `marts.passing_charting_target_season` | Pending deploy | Receiver-grain (target) passing charting by season (2025+), aggregated from `stats.passing_plays`. Grain: `(season, target_id, team_id)`. Added 2026-08-30. |
+| `marts.passing_charting_team_season` | Pending deploy | Team-season passing charting, offense/defense flattened from `stats.passing_team_season`'s dunder columns. Grain: `(season, team)`. Added 2026-08-30. |
 | `marts.recruiting_roi` | Deployed | 4-year rolling recruiting investment vs outcomes. Blue chip ratio, wins over expected, draft production, recruiting efficiency. 1,324 rows. |
 | `marts.transfer_portal_impact` | Deployed | Portal activity correlated with team performance changes. Portal era only (2021+). 1,374 rows. |
 | `marts.conference_comparison` | Deployed | Per-conference per-season aggregates with PERCENT_RANK percentiles. 347 rows. |

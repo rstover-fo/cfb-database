@@ -2,6 +2,34 @@
 -- Grain: Coach × Team × Tenure (contiguous seasons)
 -- Uses gap detection on ref.coaches__seasons to identify separate stints
 -- Includes inherited vs recruited talent comparison
+--
+-- 2026-08-30 (expansion_views unit, task 5a -- additive): coach_id.
+-- ref.coaches (bio: first_name/last_name only, no id) and ref.coaches__seasons
+-- (this mart's source) predate ref.coach_seasons (coaches.py's newer,
+-- richer /coaches/seasons load, PK coach__id/year/team__id) and share no
+-- surrogate key -- cfb-app was joining coaching_history to coach_records on
+-- first_name+last_name for lack of anything better
+-- (cfb-app/src/lib/queries/coaches.ts:170-182), with a comment
+-- acknowledging that two same-named coaches would collide. Fix: match each
+-- coach-season row to ref.coach_seasons by (first_name, last_name, school,
+-- year) via an aggregate LEFT JOIN LATERAL (an aggregate LATERAL always
+-- returns exactly one row, so ON true cannot fan out) that yields the
+-- season's coach__id only when exactly one distinct id matches -- a season
+-- whose (name, school, year) matches MORE than one distinct coach__id
+-- contributes NULL (ambiguity is never guessed away -- PR #81 Greptile P1;
+-- zero such groups exist live today, this is contract hardening). Then in
+-- tenure_agg collapse a tenure's per-season matches to ONE coach_id only
+-- when every matched season agrees on the same coach__id -- if two
+-- different ids appear across a tenure's seasons (a same-named-coach
+-- collision) or zero seasons matched, coach_id is NULL rather than a
+-- guessed value. coach_id is the single id every MATCHED season agrees on:
+-- seasons outside ref.coach_seasons' coverage (it has no pre-2014 depth)
+-- do NOT invalidate the match -- requiring full-span matches would NULL
+-- nearly every long tenure. An ambiguous season poisons the entire
+-- tenure's coach_id (NULL), while unmatched coverage-gap seasons still do
+-- not -- the two NULL causes are distinguished via an explicit per-season
+-- ambiguity flag (PR #81 Greptile round-2). Additive only -- no existing
+-- column changed.
 
 DROP MATERIALIZED VIEW IF EXISTS marts.coaching_tenure CASCADE;
 
@@ -19,9 +47,23 @@ WITH coach_seasons AS (
         cs.ties,
         cs.preseason_rank,
         cs.postseason_rank,
-        cs.sp_overall
+        cs.sp_overall,
+        match.coach_id AS season_coach_id,
+        match.ambiguous AS season_match_ambiguous
     FROM ref.coaches c
     JOIN ref.coaches__seasons cs ON cs._dlt_parent_id = c._dlt_id
+    LEFT JOIN LATERAL (
+        SELECT
+            CASE
+                WHEN COUNT(DISTINCT rcs.coach__id) = 1 THEN MIN(rcs.coach__id)
+            END AS coach_id,
+            COUNT(DISTINCT rcs.coach__id) > 1 AS ambiguous
+        FROM ref.coach_seasons rcs
+        WHERE rcs.coach__first_name = c.first_name
+          AND rcs.coach__last_name = c.last_name
+          AND rcs.team__school = cs.school
+          AND rcs.year = cs.year
+    ) match ON true
     WHERE cs.school IS NOT NULL
 ),
 gap_detect AS (
@@ -49,6 +91,16 @@ tenure_agg AS (
         MIN(season) AS tenure_start,
         MAX(season) AS tenure_end,
         COUNT(DISTINCT season) AS seasons_count,
+        -- One coach_id for the whole tenure only when every matched season
+        -- agrees AND no season's match was ambiguous; any ambiguous season
+        -- poisons the whole tenure (NULL), while unmatched coverage-gap
+        -- seasons do not. See coach_seasons CTE above for the per-season
+        -- LATERAL match and its explicit ambiguity flag.
+        CASE
+            WHEN COUNT(DISTINCT season_coach_id) FILTER (WHERE season_coach_id IS NOT NULL) = 1
+             AND NOT BOOL_OR(season_match_ambiguous)
+                THEN MIN(season_coach_id)
+        END AS coach_id,
         SUM(COALESCE(games, 0))::int AS total_games,
         SUM(COALESCE(wins, 0))::int AS total_wins,
         SUM(COALESCE(losses, 0))::int AS total_losses,
@@ -108,6 +160,7 @@ year3 AS (
     WHERE ta.seasons_count >= 3
 )
 SELECT
+    ta.coach_id,
     ta.coach_name,
     ta.first_name,
     ta.last_name,
@@ -191,7 +244,7 @@ LEFT JOIN year3 y3
     AND y3.last_name = ta.last_name
     AND y3.tenure_start = ta.tenure_start
 GROUP BY
-    ta.coach_name, ta.first_name, ta.last_name, ta.team,
+    ta.coach_id, ta.coach_name, ta.first_name, ta.last_name, ta.team,
     ta.tenure_id, ta.tenure_start, ta.tenure_end, ta.seasons_count,
     ta.total_games, ta.total_wins, ta.total_losses, ta.total_ties,
     ta.best_season_wins, ta.worst_season_wins,

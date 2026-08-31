@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import logging
+import os
 import sys
 import time
 
@@ -549,8 +550,21 @@ def load_season(
         # Season-independent by design -- the completed-season gate inside
         # run_player_overview_pipeline decides which seasons are eligible,
         # not the season this load_season() call targets. See
-        # run_player_overview_pipeline and the IMMUTABLE_ONCE_FINAL comment above.
-        "player_overview": lambda: run_player_overview_pipeline(),
+        # run_player_overview_pipeline and the IMMUTABLE_ONCE_FINAL comment
+        # above. PLAYER_OVERVIEW_MAX_PER_RUN (set by backfill-sources.yml's
+        # player_overview_max input) raises the drainer's CAP only -- it
+        # never widens scope, which stays newest-completed-season-first
+        # across every eligible season regardless of the cap. Read inside
+        # the lambda (not bound as a default arg) so each call picks up the
+        # env as it stands at call time rather than freezing it at import.
+        # GitHub sets an empty-string env for an unset input, and
+        # int(os.environ.get(...)) on "" would crash, so fall back to 250
+        # (today's default) unless the value is actually digits.
+        "player_overview": lambda: run_player_overview_pipeline(
+            max_players=int(v)
+            if (v := os.environ.get("PLAYER_OVERVIEW_MAX_PER_RUN", "")).isdigit()
+            else 250
+        ),
         # Excluded from the default active set above (one call per team), so
         # this only runs when an operator asks for it by name:
         # --sources rosters. The team list resolves from the season's

@@ -3,7 +3,9 @@
 -- Layers:
 --   1: _game_epa_calc, play_epa, player_comparison, conference_head_to_head, team_wepa_season,
 --      player_wepa_season, returning_production, player_usage, team_ats_records, core_ratings,
---      penalty_log, team_penalty_box (no mart dependencies)
+--      penalty_log, team_penalty_box, passing_charting_player_season,
+--      passing_charting_target_season, passing_charting_team_season, coach_tenures
+--      (no mart dependencies)
 --   2: team_epa_season, team_season_summary, player_game_epa, defensive_havoc, scoring_opportunities,
 --      team_playcalling_tendencies, team_situational_success
 --   3: situational_splits, player_season_epa, coach_record, matchup_history, recruiting_class,
@@ -45,7 +47,15 @@ BEGIN
         -- penalty_log/team_penalty_box were in scripts/refresh_marts.py but
         -- missing here (drift); repaired alongside the core_ratings addition.
         'penalty_log',
-        'team_penalty_box'
+        'team_penalty_box',
+        -- 2026-08-30 expansion_views unit: passing charting (stats.passing_*)
+        -- and coach_tenures (ref.coach_tenures) -- all read base tables only,
+        -- no mart dependencies. Registered in the same Layer-1 slot as
+        -- scripts/refresh_marts.py.
+        'passing_charting_player_season',
+        'passing_charting_target_season',
+        'passing_charting_team_season',
+        'coach_tenures'
     ];
     v_layer := 1;
 
@@ -242,5 +252,5 @@ END;
 $$;
 
 COMMENT ON FUNCTION marts.refresh_all IS
-'Refreshes all 43 materialized views in the marts schema in dependency order (7 layers). '
+'Refreshes all 47 materialized views in the marts schema in dependency order (7 layers). '
 'Returns timing and status for each view. Errors are caught per-view so one failure does not abort the rest.';

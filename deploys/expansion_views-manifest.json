@@ -1,0 +1,20 @@
+{
+  "action": "apply",
+  "files": [
+    "src/schemas/migrations/058_wepa_player_id_column.sql",
+    "src/schemas/marts/023_coaching_tenure.sql",
+    "src/schemas/marts/045_passing_charting_player_season.sql",
+    "src/schemas/marts/046_passing_charting_target_season.sql",
+    "src/schemas/marts/047_passing_charting_team_season.sql",
+    "src/schemas/marts/048_coach_tenures.sql",
+    "src/schemas/api/009_player_detail.sql",
+    "src/schemas/api/015_coaching_history.sql",
+    "src/schemas/api/038_coach_records.sql",
+    "src/schemas/api/045_passing_charting_player_season.sql",
+    "src/schemas/api/046_passing_charting_target_season.sql",
+    "src/schemas/api/047_passing_charting_team_season.sql",
+    "src/schemas/api/048_coach_tenures.sql",
+    "src/schemas/api/049_refresh_campaign_status.sql",
+    "src/schemas/api/validation_expansion_views.sql"
+  ]
+}

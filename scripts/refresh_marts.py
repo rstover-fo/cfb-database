@@ -44,6 +44,13 @@ MARTS_VIEWS = [
     "marts.core_ratings",
     "marts.penalty_log",
     "marts.team_penalty_box",
+    # 2026-08-30 expansion_views unit: passing charting (stats.passing_*) and
+    # coach_tenures (ref.coach_tenures) -- all read base tables only, no
+    # mart dependencies.
+    "marts.passing_charting_player_season",
+    "marts.passing_charting_target_season",
+    "marts.passing_charting_team_season",
+    "marts.coach_tenures",
     # Layer 2: Depends on Layer 1
     "marts.team_epa_season",
     "marts.team_season_summary",

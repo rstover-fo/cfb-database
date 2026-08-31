@@ -51,7 +51,10 @@
 -- collision) or unmatched (0) seasons yield NULL rather than a guessed
 -- value. Seasons outside ref.coach_seasons' coverage (it has no pre-2014
 -- depth) do NOT invalidate the match -- requiring full-span matches would
--- NULL nearly every long career.
+-- NULL nearly every long career. An ambiguous season poisons the entire
+-- career's coach_id (NULL), while unmatched coverage-gap seasons still do
+-- not -- the two NULL causes are distinguished via an explicit per-season
+-- ambiguity flag (PR #81 Greptile round-2).
 --
 -- PostgREST usage:
 --   GET /api/coach_records?team=eq.Alabama&order=win_pct.desc
@@ -74,13 +77,16 @@ WITH coach_seasons AS (
         cs.wins,
         cs.losses,
         cs.ties,
-        match.coach_id AS season_coach_id
+        match.coach_id AS season_coach_id,
+        match.ambiguous AS season_match_ambiguous
     FROM ref.coaches c
     JOIN ref.coaches__seasons cs ON cs._dlt_parent_id = c._dlt_id
     LEFT JOIN LATERAL (
-        SELECT CASE
-            WHEN COUNT(DISTINCT rcs.coach__id) = 1 THEN MIN(rcs.coach__id)
-        END AS coach_id
+        SELECT
+            CASE
+                WHEN COUNT(DISTINCT rcs.coach__id) = 1 THEN MIN(rcs.coach__id)
+            END AS coach_id,
+            COUNT(DISTINCT rcs.coach__id) > 1 AS ambiguous
         FROM ref.coach_seasons rcs
         WHERE rcs.coach__first_name = c.first_name
           AND rcs.coach__last_name = c.last_name
@@ -106,11 +112,13 @@ coach_seasons_ats AS (
 )
 SELECT
     -- One coach_id for the coach's whole career at this school only when
-    -- every matched season agrees; ambiguous (>1 distinct id) or unmatched
-    -- (0) -> NULL. See coach_seasons CTE above for the per-season LATERAL
-    -- match.
+    -- every matched season agrees AND no season's match was ambiguous; any
+    -- ambiguous season poisons the whole career (NULL), while unmatched
+    -- coverage-gap seasons do not. See coach_seasons CTE above for the
+    -- per-season LATERAL match and its explicit ambiguity flag.
     CASE
         WHEN COUNT(DISTINCT season_coach_id) FILTER (WHERE season_coach_id IS NOT NULL) = 1
+         AND NOT BOOL_OR(season_match_ambiguous)
             THEN MIN(season_coach_id)
     END AS coach_id,
     coach_name,
@@ -155,6 +163,6 @@ SELECT
 FROM coach_seasons_ats
 GROUP BY coach_name, first_name, last_name, team;
 
-COMMENT ON VIEW api.coach_records IS 'Coach career records at a school (coach x team grain), straight-up and against-the-spread. Columns: coach_id, coach_name, first_name, last_name, team, first_season, last_season, seasons_count, games, wins, losses, ties, win_pct, ats_games, ats_wins, ats_losses, ats_pushes, ats_win_pct, seasons_with_ats_data. Coach attribution is whole-season (mid-season coaching changes not splittable -- see ref.coaches__seasons). ATS columns are partial pre-lines-era coverage (LEFT JOIN to marts.team_ats_records); use seasons_with_ats_data to gauge coverage. coach_id (added 2026-08-30) is ref.coach_seasons'' coach__id, matched by (first_name, last_name, team, year) -- the single id every MATCHED season of the coach''s career at this school agrees on; NULL when any season''s match is ambiguous (more than one distinct coach__id), when matched seasons disagree, or when zero seasons matched. Seasons outside ref.coach_seasons'' coverage (it has no pre-2014 depth) do NOT invalidate the match. Backed by ref.coaches / ref.coaches__seasons and marts.team_ats_records.';
+COMMENT ON VIEW api.coach_records IS 'Coach career records at a school (coach x team grain), straight-up and against-the-spread. Columns: coach_id, coach_name, first_name, last_name, team, first_season, last_season, seasons_count, games, wins, losses, ties, win_pct, ats_games, ats_wins, ats_losses, ats_pushes, ats_win_pct, seasons_with_ats_data. Coach attribution is whole-season (mid-season coaching changes not splittable -- see ref.coaches__seasons). ATS columns are partial pre-lines-era coverage (LEFT JOIN to marts.team_ats_records); use seasons_with_ats_data to gauge coverage. coach_id (added 2026-08-30) is ref.coach_seasons'' coach__id, matched by (first_name, last_name, team, year) -- the single id every MATCHED season of the coach''s career at this school agrees on; NULL when any season''s match is ambiguous (more than one distinct coach__id -- one ambiguous season poisons the entire career''s coach_id), when matched seasons disagree, or when zero seasons matched. Seasons outside ref.coach_seasons'' coverage (it has no pre-2014 depth) do NOT invalidate the match. Backed by ref.coaches / ref.coaches__seasons and marts.team_ats_records.';
 
 GRANT SELECT ON api.coach_records TO anon, authenticated;

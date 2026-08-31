@@ -25,7 +25,11 @@
 -- guessed value. coach_id is the single id every MATCHED season agrees on:
 -- seasons outside ref.coach_seasons' coverage (it has no pre-2014 depth)
 -- do NOT invalidate the match -- requiring full-span matches would NULL
--- nearly every long tenure. Additive only -- no existing column changed.
+-- nearly every long tenure. An ambiguous season poisons the entire
+-- tenure's coach_id (NULL), while unmatched coverage-gap seasons still do
+-- not -- the two NULL causes are distinguished via an explicit per-season
+-- ambiguity flag (PR #81 Greptile round-2). Additive only -- no existing
+-- column changed.
 
 DROP MATERIALIZED VIEW IF EXISTS marts.coaching_tenure CASCADE;
 
@@ -44,13 +48,16 @@ WITH coach_seasons AS (
         cs.preseason_rank,
         cs.postseason_rank,
         cs.sp_overall,
-        match.coach_id AS season_coach_id
+        match.coach_id AS season_coach_id,
+        match.ambiguous AS season_match_ambiguous
     FROM ref.coaches c
     JOIN ref.coaches__seasons cs ON cs._dlt_parent_id = c._dlt_id
     LEFT JOIN LATERAL (
-        SELECT CASE
-            WHEN COUNT(DISTINCT rcs.coach__id) = 1 THEN MIN(rcs.coach__id)
-        END AS coach_id
+        SELECT
+            CASE
+                WHEN COUNT(DISTINCT rcs.coach__id) = 1 THEN MIN(rcs.coach__id)
+            END AS coach_id,
+            COUNT(DISTINCT rcs.coach__id) > 1 AS ambiguous
         FROM ref.coach_seasons rcs
         WHERE rcs.coach__first_name = c.first_name
           AND rcs.coach__last_name = c.last_name
@@ -85,10 +92,13 @@ tenure_agg AS (
         MAX(season) AS tenure_end,
         COUNT(DISTINCT season) AS seasons_count,
         -- One coach_id for the whole tenure only when every matched season
-        -- agrees; ambiguous (>1 distinct id) or unmatched (0) -> NULL.
-        -- See coach_seasons CTE above for the per-season LATERAL match.
+        -- agrees AND no season's match was ambiguous; any ambiguous season
+        -- poisons the whole tenure (NULL), while unmatched coverage-gap
+        -- seasons do not. See coach_seasons CTE above for the per-season
+        -- LATERAL match and its explicit ambiguity flag.
         CASE
             WHEN COUNT(DISTINCT season_coach_id) FILTER (WHERE season_coach_id IS NOT NULL) = 1
+             AND NOT BOOL_OR(season_match_ambiguous)
                 THEN MIN(season_coach_id)
         END AS coach_id,
         SUM(COALESCE(games, 0))::int AS total_games,

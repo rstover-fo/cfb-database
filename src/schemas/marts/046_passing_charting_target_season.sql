@@ -44,7 +44,12 @@
 --    volume. Same construction for total_yards_after_catch/
 --    average_yards_after_catch/yards_after_catch_charted_plays. NULL means
 --    not charted; 0 is a real observed value (mirrors migration 057's
---    phrasing).
+--    phrasing). CONTRACT (2026-08-31, cfb-app follow-up):
+--    yards_after_catch_charted_plays <= receptions by construction of the
+--    game -- YAC exists only on completions (play-level verified: zero
+--    YAC-charted plays with outcome <> 'completion' in 14,832) -- so the
+--    YAC coverage denominator is receptions, never targets_charted;
+--    air-yards coverage stays targets_charted-scoped.
 --  - target_share_charted = this target's targets_charted / the SUM of
 --    targets_charted across every target on that (season, team_id) --
 --    i.e. a share of CHARTED attempts only, named target_share_charted (not

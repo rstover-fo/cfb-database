@@ -37,8 +37,25 @@ BEGIN
             RAISE NOTICE '058: metrics.% does not exist -- skipping (a fresh load creates it with id already present)', t;
             CONTINUE;
         END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'metrics' AND table_name = t AND column_name = 'athlete_id'
+        ) THEN
+            -- A table the post-fix loader created after another upstream
+            -- rename would have id but no athlete_id -- nothing to backfill.
+            RAISE NOTICE '058: metrics.% has no athlete_id column -- skipping (loader-created shape)', t;
+            CONTINUE;
+        END IF;
         EXECUTE format('ALTER TABLE metrics.%I ADD COLUMN IF NOT EXISTS id text', t);
         EXECUTE format('UPDATE metrics.%I SET id = athlete_id WHERE id IS NULL', t);
         EXECUTE format('ALTER TABLE metrics.%I ALTER COLUMN id SET NOT NULL', t);
+        -- athlete_id's NOT NULL is a relic of the table's original merge key
+        -- (pre-rename era); the key is id now and athlete_id is a plain
+        -- passthrough payload column. CFBD's current payload still populates
+        -- it (verified live: 12 seasons re-ingested post-fix, zero NULLs),
+        -- but _stamp_player_id is deliberately shape-agnostic about the NEXT
+        -- upstream rename -- and a payload that stops carrying athleteId
+        -- must not be rejected on a stale constraint (PR #81 review).
+        EXECUTE format('ALTER TABLE metrics.%I ALTER COLUMN athlete_id DROP NOT NULL', t);
     END LOOP;
 END $$;

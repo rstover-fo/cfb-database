@@ -113,9 +113,12 @@ name-keyed marts — a coach_id rekeying of those views is a natural ask.
 
 ### 6. ESPN player splits + id crosswalks (sportsdataverse parquet)
 
-New `espn` schema: `espn.player_passing/rushing/receiving/defense` (EPA-grain
-advanced player splits, 2004+ — historical seasons loading today) and
-`espn.play_participants` (2014+). Joins to CFBD players directly by id.
+In the `stats` schema (correction 2026-08-31: an earlier draft said a
+separate `espn` schema — there is none): `stats.espn_player_passing/
+_rushing/_receiving/_defense` (EPA-grain advanced player splits, 2004+ —
+historical seasons loaded 2026-08-30, e.g. 57.8k passing / 369.9k receiving
+rows across 23 seasons) and `stats.espn_play_participants` (2014+, loading).
+Joins to CFBD players directly by id.
 `ref.player_id_xwalk` / `team_id_xwalk` / `game_id_xwalk` add Fox/Yahoo ids.
 
 ### 7. Explicitly NOT for consumption

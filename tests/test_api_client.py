@@ -119,6 +119,128 @@ class TestCFBDClient:
         client.close()
 
 
+class TestTransientRetries:
+    """Two incidents sized the transient budget; neither involved 429s.
+
+    - Daily run 33418953608 (2026-08-31): a ~90s CFBD-wide 502 outage
+      (17:20:31-17:22:01) killed reference/conferences/coaches/coach_profiles.
+      Each request burned "Retry 1/3..3/3" with ~6s of total backoff -- far
+      under the outage window -- while `games`, whose next attempt happened to
+      land at outage-end, got a 200.
+    - Backfill run 33347718722: advanced_team_stats/2014 died the same way on
+      three ~31s read-timeout retries.
+
+    So transient faults (5xx, connect/read timeouts) get 5 retries with
+    2/4/8/16/30s exponential backoff: ~60s of sleep plus request time, enough
+    to bridge a minute-plus outage. The 429 budget deliberately does NOT grow
+    with it -- against a spent monthly quota every extra attempt is waste."""
+
+    @staticmethod
+    def _server_error(code=502):
+        r = MagicMock()
+        r.status_code = code
+        return httpx.HTTPStatusError(str(code), request=MagicMock(), response=r)
+
+    @staticmethod
+    def _ok(payload=None):
+        r = MagicMock()
+        r.json.return_value = payload if payload is not None else [{"id": 1}]
+        r.raise_for_status = MagicMock()
+        return r
+
+    def test_backoff_schedule_bridges_a_minute_outage(self):
+        """The schedule is the contract: 5 retries, 2/4/8/16/30s, 60s total."""
+        assert CFBDClient.TRANSIENT_MAX_RETRIES == 5
+        assert CFBDClient.TRANSIENT_BACKOFF_SECONDS == (2.0, 4.0, 8.0, 16.0, 30.0)
+        assert sum(CFBDClient.TRANSIENT_BACKOFF_SECONDS) == 60.0
+
+    def test_502_outage_recovers_on_fifth_attempt(self):
+        """Four 502s then a 200 -- the shape of run 33418953608, which the old
+        3-retry budget could not survive."""
+        client = CFBDClient(api_key="test-key")
+        with patch.object(
+            client._client,
+            "get",
+            side_effect=[self._server_error(502)] * 4 + [self._ok()],
+        ) as mock_get:
+            with patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep:
+                assert client.get("/teams") == [{"id": 1}]
+        assert mock_get.call_count == 5
+        assert [c.args[0] for c in mock_sleep.call_args_list] == [2.0, 4.0, 8.0, 16.0]
+        client.close()
+
+    def test_502_outage_recovers_on_the_final_attempt(self):
+        """The full budget: five 502s then a 200, having slept all ~60s."""
+        client = CFBDClient(api_key="test-key")
+        with patch.object(
+            client._client,
+            "get",
+            side_effect=[self._server_error(502)] * 5 + [self._ok()],
+        ) as mock_get:
+            with patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep:
+                assert client.get("/teams") == [{"id": 1}]
+        assert mock_get.call_count == 6
+        assert [c.args[0] for c in mock_sleep.call_args_list] == [2.0, 4.0, 8.0, 16.0, 30.0]
+        client.close()
+
+    def test_timeouts_exhaust_all_retries_then_raise(self):
+        """Persistent read timeouts burn the whole budget and raise from INSIDE
+        the guarded loop -- exactly budget + 1 attempts, no extra unguarded
+        call after the final backoff."""
+        client = CFBDClient(api_key="test-key")
+        with patch.object(
+            client._client, "get", side_effect=httpx.ReadTimeout("read timed out")
+        ) as mock_get:
+            with patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep:
+                with pytest.raises(httpx.ReadTimeout):
+                    client.get("/stats/season/advanced", params={"year": 2014})
+        assert mock_get.call_count == CFBDClient.TRANSIENT_MAX_RETRIES + 1
+        assert [c.args[0] for c in mock_sleep.call_args_list] == [2.0, 4.0, 8.0, 16.0, 30.0]
+        client.close()
+
+    def test_connect_errors_use_the_same_transient_budget(self):
+        client = CFBDClient(api_key="test-key")
+        with patch.object(
+            client._client,
+            "get",
+            side_effect=[httpx.ConnectError("refused"), self._ok([])],
+        ) as mock_get:
+            with patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep:
+                assert client.get("/teams") == []
+        assert mock_get.call_count == 2
+        assert [c.args[0] for c in mock_sleep.call_args_list] == [2.0]
+        client.close()
+
+    def test_429_budget_is_untouched_by_the_transient_budget(self):
+        """Rate limiting keeps its own, smaller budget: 4 attempts total,
+        sleeps governed by Retry-After (not exponential backoff), then
+        RateLimitExhausted. The transient change must not leak into it."""
+        assert CFBDClient.MAX_RETRIES == 3
+        client = CFBDClient(api_key="test-key", breaker=RateLimitBreaker())
+        with patch.object(client._client, "get", side_effect=_rate_limit_error()) as mock_get:
+            with patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep:
+                with pytest.raises(RateLimitExhausted, match="all 4 attempt"):
+                    client.get("/plays/stats", params={"gameId": 401767542})
+        assert mock_get.call_count == CFBDClient.MAX_RETRIES + 1  # 4, not 6
+        # Retry-After ("1") governs every sleep -- no exponential schedule.
+        assert [c.args[0] for c in mock_sleep.call_args_list] == [1, 1, 1]
+        assert client._consecutive_rate_limited == CFBDClient.MAX_RETRIES + 1
+        client.close()
+
+    def test_4xx_is_never_retried(self):
+        client = CFBDClient(api_key="test-key")
+        r = MagicMock()
+        r.status_code = 404
+        err = httpx.HTTPStatusError("404", request=MagicMock(), response=r)
+        with patch.object(client._client, "get", side_effect=err) as mock_get:
+            with patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep:
+                with pytest.raises(httpx.HTTPStatusError):
+                    client.get("/nope")
+        assert mock_get.call_count == 1
+        mock_sleep.assert_not_called()
+        client.close()
+
+
 # dlt extract worker pool size (.dlt/config.toml: workers = 5). The shared
 # breaker sees all of them, so the circuit threshold has to clear this.
 DLT_EXTRACT_WORKERS = 5

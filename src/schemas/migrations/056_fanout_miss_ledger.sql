@@ -1,9 +1,13 @@
 -- Migration: 056_fanout_miss_ledger
 --
--- meta.fanout_misses: shared ledger of terminal (400/404) misses from the
--- per-entity fan-out drainers in coaches.py (coach_profiles_resource) and
--- player_overview.py (player_season_overview_resource) -- PR #75 review
--- finding A (P1 x2, unit R2, 2026-08-30).
+-- meta.fanout_misses: shared ledger of fan-out misses -- terminal (400/404)
+-- responses, plus 5xx failures that survived api_client's full retry budget
+-- (recorded by player_overview.py so one flaky gateway response cannot kill a
+-- multi-thousand-call dispatch) -- from the per-entity fan-out drainers in
+-- coaches.py (coach_profiles_resource) and player_overview.py
+-- (player_season_overview_resource) -- PR #75 review finding A (P1 x2, unit
+-- R2, 2026-08-30). The shared 30-day window means a 5xx skip is deferred,
+-- never blacklisted: it ages back into eligibility like a late-published id.
 --
 -- Without this, run.py's set-difference drainers (run_coach_profiles_pipeline
 -- ~line 661, run_player_overview_pipeline ~line 1193) re-select the SAME ids
@@ -52,14 +56,18 @@ CREATE TABLE IF NOT EXISTS meta.fanout_misses (
 );
 
 COMMENT ON TABLE meta.fanout_misses IS
-    'Terminal (400/404) misses from per-entity fan-out drainers, keyed by '
-    '(source, key), so a set-difference drainer (src/pipelines/run.py) can '
-    'exclude a recently-attempted miss instead of re-spending its API call '
-    'every run. source: ''coach_profiles'' | ''player_season_overview''. '
+    'Misses from per-entity fan-out drainers: terminal (400/404) responses, '
+    'plus 5xx failures that survived api_client''s full retry budget '
+    '(player_overview.py records these so one flaky gateway response cannot '
+    'kill a multi-thousand-call dispatch). Keyed by (source, key) so a '
+    'set-difference drainer (src/pipelines/run.py) can exclude a '
+    'recently-attempted miss instead of re-spending its API call every run. '
+    'source: ''coach_profiles'' | ''player_season_overview''. '
     'key: str(coach_id) for coach_profiles, ''{season}:{player_id}'' for '
     'player_season_overview. 30-day re-eligibility is enforced in run.py '
-    '(FANOUT_MISS_RETRY_DAYS), not here, so late-published CFBD data '
-    'self-heals instead of being excluded forever. PR #75 review finding A.';
+    '(FANOUT_MISS_RETRY_DAYS), not here, so late-published CFBD data -- and '
+    'a transient 5xx skip -- self-heals instead of being excluded forever. '
+    'PR #75 review finding A.';
 
 COMMENT ON COLUMN meta.fanout_misses.attempts IS
     'Incremented (not overwritten) on every re-encountered miss via the '

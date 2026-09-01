@@ -43,12 +43,16 @@ description: Schema-change workflow for this repo — migrations, grants/RLS, ma
   value. Counts may use guarded zeros only with an EXISTS check that the
   source data was actually loaded (the 047 draft-columns exception).
 
-## Grants, RLS, and SECURITY INVOKER (hard-won)
+## Grants, RLS, and view security (hard-won)
 
-- All API/public views are SECURITY INVOKER: they execute as the caller.
-  `anon`/`authenticated` need `USAGE` on every underlying schema and
-  `SELECT` on the tables a view touches — a new schema in a view chain
-  breaks cfb-app silently otherwise.
+- All API/public views are **owner-rights by design** (the Postgres
+  default — `security_invoker` is NOT set): they execute with the view
+  owner's privileges, so `anon`/`authenticated` need `USAGE` on the view's
+  schema and `SELECT` on the view itself, not on every underlying table.
+  The trap is on the write side: a recreate (`DROP`+`CREATE`) loses the
+  PostgREST roles' grants, and there is no `ALTER DEFAULT PRIVILEGES`
+  covering them here — every migration that recreates a view must
+  re-GRANT, or cfb-app breaks silently.
 - **Always test as the caller**: `SET ROLE anon;` then query. The MCP/
   superuser connection masks permission failures.
 - RLS on any user-facing table; `SET search_path = ''` plus fully-qualified

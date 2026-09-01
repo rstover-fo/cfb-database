@@ -172,8 +172,25 @@ class CFBDClient:
 
     BASE_URL = "https://api.collegefootballdata.com"
     DEFAULT_TIMEOUT = 30.0
+
+    # Rate-limit (429) retry budget. Deliberately small and SEPARATE from the
+    # transient budget below: against a spent monthly quota every extra
+    # attempt is pure waste, and the circuit-breaker arithmetic (threshold
+    # comments above, tests) is calibrated to MAX_RETRIES + 1 = 4 responses
+    # per fully-rate-limited request. Do not grow this alongside the
+    # transient budget.
     MAX_RETRIES = 3
-    RETRY_DELAY = 1.0
+
+    # Transient-fault budget: 5xx responses and connect/read timeouts.
+    # Exponential backoff summing to ~60s plus request time, sized to bridge
+    # a minute-plus CFBD-wide outage. Two incidents sized it: daily run
+    # 33418953608 (2026-08-31) hit a ~90s API-wide 502 window (17:20:31-
+    # 17:22:01) that the old 3-retry/1-2-3s budget (~6s of backoff) could not
+    # cross -- four sources died while `games`, whose next attempt landed at
+    # outage-end, succeeded -- and backfill run 33347718722 lost
+    # advanced_team_stats/2014 to three ~31s read-timeout retries.
+    TRANSIENT_BACKOFF_SECONDS = (2.0, 4.0, 8.0, 16.0, 30.0)
+    TRANSIENT_MAX_RETRIES = len(TRANSIENT_BACKOFF_SECONDS)  # 5 retries, 6 total attempts
 
     RATE_LIMIT_CIRCUIT_THRESHOLD = RATE_LIMIT_CIRCUIT_THRESHOLD
 
@@ -281,10 +298,26 @@ class CFBDClient:
     ) -> list[dict]:
         """Make a GET request to the API.
 
+        Two retry budgets, deliberately separate:
+
+        - **429 rate limits**: ``retries`` + 1 attempts, sleeping the parsed
+          ``Retry-After`` between them and feeding the circuit breaker. Kept
+          small -- against a spent quota, extra attempts are pure waste.
+        - **Transient faults** (5xx responses, connect/read timeouts):
+          ``TRANSIENT_MAX_RETRIES`` retries with ``TRANSIENT_BACKOFF_SECONDS``
+          exponential backoff (2/4/8/16/30s, ~60s total plus request time),
+          sized to bridge a minute-plus CFBD-wide outage. The final attempt
+          fails from inside the guarded loop -- there is no extra unguarded
+          attempt after the budget is spent.
+
+        Anything else (4xx included) raises immediately, with no retry.
+
         Args:
             endpoint: API endpoint path (e.g., "/teams")
             params: Query parameters
-            retries: Number of retries on failure
+            retries: Number of retries on 429 rate-limited responses.
+                Transient faults use the separate TRANSIENT_MAX_RETRIES
+                budget regardless of this value.
 
         Returns:
             JSON response as a list of dicts
@@ -296,6 +329,10 @@ class CFBDClient:
             RateLimitExhausted: this request was rate-limited on every attempt.
                 Deliberately raised rather than returning ``[]``, which the
                 caller cannot distinguish from a genuinely empty result.
+            httpx.HTTPStatusError: a non-429 HTTP error (5xx only after the
+                transient budget is exhausted).
+            httpx.RequestError: a network fault (connect/read timeout, etc.)
+                that outlasted the transient budget.
         """
         if self._breaker.is_open():
             raise RateLimitCircuitOpen(
@@ -305,7 +342,15 @@ class CFBDClient:
                 "further requests cannot succeed until the quota resets."
             )
 
-        for attempt in range(retries + 1):
+        # Per-class attempt counters. A `while True` with separate counters
+        # rather than one shared `for` loop: the budgets differ (429 vs
+        # transient), and a shared counter let one class silently eat the
+        # other's attempts. The loop can only be left by `return` or `raise`,
+        # so the empty-result bug this method was rewritten to remove cannot
+        # be reintroduced by a stray `continue`.
+        attempt = 0  # 429 responses retried so far
+        transient_failures = 0  # 5xx / network failures retried so far
+        while True:
             try:
                 response = self._client.get(endpoint, params=params)
                 response.raise_for_status()
@@ -345,26 +390,35 @@ class CFBDClient:
                         f"Rate limited on {endpoint}. Waiting {retry_after}s "
                         f"(attempt {attempt + 1}/{retries + 1})..."
                     )
+                    attempt += 1
                     time.sleep(retry_after)
                     continue
-                elif e.response.status_code >= 500 and attempt < retries:
+                elif (
+                    e.response.status_code >= 500
+                    and transient_failures < self.TRANSIENT_MAX_RETRIES
+                ):
+                    delay = self.TRANSIENT_BACKOFF_SECONDS[transient_failures]
+                    transient_failures += 1
                     logger.warning(
-                        f"Server error {e.response.status_code}. Retry {attempt + 1}/{retries}"
+                        f"Server error {e.response.status_code}. "
+                        f"Retry {transient_failures}/{self.TRANSIENT_MAX_RETRIES} in {delay:.0f}s"
                     )
-                    time.sleep(self.RETRY_DELAY * (attempt + 1))
+                    time.sleep(delay)
                     continue
+                # Non-retryable (4xx) or a 5xx past the transient budget: the
+                # final attempt fails HERE, inside the guarded loop.
                 raise
             except httpx.RequestError as e:
-                if attempt < retries:
-                    logger.warning(f"Request failed: {e}. Retry {attempt + 1}/{retries}")
-                    time.sleep(self.RETRY_DELAY * (attempt + 1))
+                if transient_failures < self.TRANSIENT_MAX_RETRIES:
+                    delay = self.TRANSIENT_BACKOFF_SECONDS[transient_failures]
+                    transient_failures += 1
+                    logger.warning(
+                        f"Request failed: {e}. "
+                        f"Retry {transient_failures}/{self.TRANSIENT_MAX_RETRIES} in {delay:.0f}s"
+                    )
+                    time.sleep(delay)
                     continue
                 raise
-
-        # Unreachable: every path above returns or raises. Kept as a guard so a
-        # future edit that adds a `continue` cannot silently reintroduce the
-        # empty-result bug this method was rewritten to remove.
-        raise AssertionError(f"retry loop for {endpoint} exited without returning or raising")
 
     def close(self):
         """Close the HTTP client."""

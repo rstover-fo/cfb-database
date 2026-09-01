@@ -1,8 +1,11 @@
 """Anonymous file fetcher for flat-file sources (T3).
 
-httpx GET with the retry posture of api_client.CFBDClient (429 Retry-After,
-5xx/RequestError backoff, MAX_RETRIES=3) minus auth and minus the CFBD rate
-limiter (public flat files have no call budget). Also accepts local filesystem
+httpx GET with a retry posture patterned on api_client.CFBDClient (429
+Retry-After, 5xx/RequestError backoff) minus auth and minus the CFBD rate
+limiter (public flat files have no call budget). Deliberately keeps its own
+small MAX_RETRIES=3 budget: CFBDClient's transient budget grew to bridge
+minute-plus CFBD outages, but a flat-file fetch is one cheap request behind a
+cadence ledger that simply retries next run. Also accepts local filesystem
 paths so ``--file`` overrides ride the same code path.
 """
 

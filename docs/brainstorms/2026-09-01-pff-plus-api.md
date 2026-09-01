@@ -211,6 +211,52 @@ relabeling). Plan:
   must be pinned by us at parse time (explicit allowlist per facet, fail loud
   on unknown keys we care about) — the vendor schema will not do it for us.
 
+## 5a. Export validation (2026-09-01, real 2025 data)
+
+A hand-exported **NCAA passing_summary CSV** (2025 season, By Position view)
+settled the §5 unknowns in the right direction:
+
+- **Stable IDs exist.** Every row carries `player_id` (PFF's player ID) and
+  `franchise_id` (PFF's team ID). The crosswalk is a build-once mapping table,
+  not a per-load name-matching problem.
+- **The export is FBS-scoped**: 560 rows, exactly 136 teams (the 2025 FBS
+  membership, Delaware and Missouri State included), even though the UI
+  banner says "957 Teams".
+- **Shape:** one row per player-season, 44 columns: identity
+  (`player`, `player_id`, `position`, `team_name`, `franchise_id`,
+  `player_game_count`), grades (`grades_offense`, `grades_pass`,
+  `grades_run`, `grades_hands_fumble`), and ~34 facet stats (aDOT,
+  time-to-throw, big-time throws, turnover-worthy plays, pressure-to-sack
+  rate, EPA, drop rate, ...). **No season column** — the season is implied by
+  the export filter and must be injected at load time (parser gets it from
+  `ParseContext`, same as other seasoned sources).
+- **Facet CSVs mix positions.** `passing_summary` includes every player with
+  a dropback: 408 QBs plus WR/HB/P/K trick-play rows. Facet tables must not
+  assume position purity; filter at query time, not load time.
+- **Team-name mapping is solved.** PFF uses ALL-CAPS abbreviations
+  (`BOWL GREEN`, `LA LAFAYET`, `NWESTERN`). All 136 resolve to CFBD school
+  names — mapping committed alongside this doc as
+  `2026-09-01-pff-team-name-map.json` (seed data for the future xwalk).
+- **Player matching is easy at QB.** Trial-matched the 176 QBs with ≥100
+  dropbacks against `api.roster_lookup` (current-season roster) on last name
+  + first initial + exact team: **169/176 (96%) matched**. All 7 misses are
+  name-shape artifacts, not identity problems: multi-token surnames
+  (Van Buren, Del Rio-Wilson) and suffix players (Barnett III, Fox Jr.)
+  where CFBD's `last_name` carries the suffix or particle. Suffix/particle
+  normalization on both sides should push this to ~100% at QB; expect worse
+  at deep-roster positions (OL, DB) where CFBD coverage and duplicate
+  names bite harder — that's the next thing to measure with a
+  defense/blocking export.
+- **Caveat:** the match ran against the *current* roster view while the CSV
+  is 2025; a same-season match can only do better.
+
+Implication for §5: the `pff` schema should mirror the export families —
+one wide table per facet (`pff.passing_summary`, `pff.receiving_summary`,
+`pff.blocking_summary`, ...), keyed `(player_id, season)` (plus `week` when
+weekly exports are in play), with `player_id → athlete_id` resolved through a
+`pff.player_xwalk` built from the ID-bearing rows. The CSV column names are
+already snake_case and can be taken verbatim as the column contract.
+
 ## 6. Cheap monitoring until the API ships
 
 The spec replaces itself in place when real ("replaces this file automatically

@@ -201,6 +201,11 @@ class TestPlayerSeasonOverviewResource:
             assert len(results) == 1
 
     def test_other_status_errors_are_not_swallowed(self):
+        """A 403 (tier/authorization) is neither a terminal per-player miss
+        (400/404) nor a transient server failure (5xx) -- it means every
+        remaining call in the batch is doomed the same way, so it must
+        still abort the run rather than burn one call per player recording
+        bogus misses."""
         from dlt.extract.exceptions import ResourceExtractionError
 
         from src.pipelines.sources.player_overview import player_season_overview_resource
@@ -210,13 +215,95 @@ class TestPlayerSeasonOverviewResource:
             patch("src.pipelines.sources.player_overview.make_request") as mock_make_request,
         ):
             mock_get_client.return_value = MagicMock()
-            mock_make_request.side_effect = _http_error(500)
+            mock_make_request.side_effect = _http_error(403)
 
+            misses: list[tuple[str, int]] = []
             with pytest.raises(ResourceExtractionError) as exc_info:
-                list(player_season_overview_resource(player_seasons=[(2024, "1")]))
+                list(player_season_overview_resource(player_seasons=[(2024, "1")], misses=misses))
 
             assert isinstance(exc_info.value.__cause__, httpx.HTTPStatusError)
-            assert exc_info.value.__cause__.response.status_code == 500
+            assert exc_info.value.__cause__.response.status_code == 403
+            assert misses == []
+
+    def test_5xx_after_retries_records_miss_and_continues(self):
+        """Backfill run 33351198599 (2026-08-30) died at batch 68/180
+        because ONE player's /player/season/overview call 502'd on the
+        initial attempt and all 3 api_client retries -- the resulting
+        HTTPStatusError killed the whole ~9,000-call dispatch with ~5,600
+        planned calls unspent, over a 502 that was transient (the next
+        dispatch sailed past the same player). A 5xx that survives
+        api_client's retry budget is recorded as a miss -- same ledger,
+        same key format, same FANOUT_MISS_RETRY_DAYS re-eligibility as a
+        400/404 -- and the loop moves to the next player."""
+        from src.pipelines.sources.player_overview import player_season_overview_resource
+
+        fixture = _load_fixture("player_season_overview.json")
+
+        with (
+            patch("src.pipelines.sources.player_overview.get_client") as mock_get_client,
+            patch("src.pipelines.sources.player_overview.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [_http_error(502), fixture]
+
+            misses: list[tuple[str, int]] = []
+            results = list(
+                player_season_overview_resource(
+                    player_seasons=[(2024, "4879928"), (2024, "5083552")], misses=misses
+                )
+            )
+
+            assert misses == [("2024:4879928", 502)]
+            # The healthy player AFTER the bad one still loads.
+            assert len(results) == 1
+            assert results[0]["id"] == "5083552"
+
+    def test_500_after_retries_with_no_collector_still_continues(self):
+        """The skip must not depend on a misses collector being passed --
+        misses=None (the default) loses only the ledger benefit, never the
+        rest of the batch."""
+        from src.pipelines.sources.player_overview import player_season_overview_resource
+
+        fixture = _load_fixture("player_season_overview.json")
+
+        with (
+            patch("src.pipelines.sources.player_overview.get_client") as mock_get_client,
+            patch("src.pipelines.sources.player_overview.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [_http_error(500), fixture]
+
+            results = list(
+                player_season_overview_resource(player_seasons=[(2024, "a"), (2024, "5083552")])
+            )
+
+            assert len(results) == 1
+            assert results[0]["id"] == "5083552"
+
+    def test_rate_limit_errors_are_not_recorded_as_misses(self):
+        """RateLimitExhausted/RateLimitCircuitOpen are NOT HTTPStatusError
+        (429s never reach the resource as one -- api_client raises its own
+        types), so the 5xx skip must not catch them: a spent quota aborting
+        the run is correct, and recording per-player misses for it would
+        poison the ledger with hundreds of keys that were never tried."""
+        from dlt.extract.exceptions import ResourceExtractionError
+
+        from src.pipelines.sources.player_overview import player_season_overview_resource
+        from src.pipelines.utils.api_client import RateLimitExhausted
+
+        with (
+            patch("src.pipelines.sources.player_overview.get_client") as mock_get_client,
+            patch("src.pipelines.sources.player_overview.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = RateLimitExhausted("rate limited on all attempts")
+
+            misses: list[tuple[str, int]] = []
+            with pytest.raises(ResourceExtractionError) as exc_info:
+                list(player_season_overview_resource(player_seasons=[(2024, "1")], misses=misses))
+
+            assert isinstance(exc_info.value.__cause__, RateLimitExhausted)
+            assert misses == []
 
     def test_400_appends_key_and_status_code_to_misses(self):
         """PR #75 review finding A: without this collection, a terminal
@@ -797,6 +884,55 @@ class TestRunPlayerOverviewPipelineFanoutMisses:
             ("player_season_overview", [("2024:100", 404)]),
             ("player_season_overview", [("2024:120", 404)]),
         ]
+
+    def test_skipped_miss_count_surfaced_in_summary(self):
+        """One bad player must not kill a multi-thousand-call dispatch
+        (backfill run 33351198599) -- but a skip must not be silent either:
+        the run summary carries how many player-seasons were
+        skipped-with-miss across all batches this run."""
+        from src.pipelines.run import run_player_overview_pipeline
+
+        usage_rows = [(2024, str(i)) for i in range(1, 121)]
+        conn = _mock_conn(usage_rows, [], [])
+
+        mock_pipeline = MagicMock()
+
+        def fake_source(player_seasons, *, misses=None):
+            if misses is not None:
+                season, player_id = player_seasons[-1]
+                misses.append((f"{season}:{player_id}", 502))
+            return MagicMock()
+
+        with (
+            patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
+            patch("psycopg2.connect", return_value=conn),
+            patch("src.pipelines.run._season_is_final", return_value=True),
+            patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
+            patch("src.pipelines.run.player_overview_source", side_effect=fake_source),
+            patch("src.pipelines.run._record_fanout_misses"),
+        ):
+            result = run_player_overview_pipeline(seasons=[2024], batch_size=50)
+
+        assert result["batches"] == 3
+        assert result["skipped_misses_this_run"] == 3
+
+    def test_skipped_miss_count_is_zero_when_nothing_missed(self):
+        from src.pipelines.run import run_player_overview_pipeline
+
+        conn = _mock_conn([(2024, "1")], [], [])
+
+        mock_pipeline = MagicMock()
+
+        with (
+            patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
+            patch("psycopg2.connect", return_value=conn),
+            patch("src.pipelines.run._season_is_final", return_value=True),
+            patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
+            patch("src.pipelines.run.player_overview_source"),
+        ):
+            result = run_player_overview_pipeline(seasons=[2024], batch_size=50)
+
+        assert result["skipped_misses_this_run"] == 0
 
     def test_record_fanout_misses_not_called_when_batch_has_no_misses(self):
         from src.pipelines.run import run_player_overview_pipeline

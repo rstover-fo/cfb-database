@@ -1111,8 +1111,12 @@ def _fetch_rows_or_empty(cur, query: str, params: tuple, table_desc: str) -> lis
 # player_season_overview_resource) but never persisted anywhere, so the same
 # id stayed in the "missing" set forever -- re-spending its API call every
 # run and, once a backlog is small, eventually crowding out real work behind
-# the 200/250-cap slices. Placed here, next to _fetch_rows_or_empty, because
-# _fetch_recent_fanout_misses is built directly on it.
+# the 200/250-cap slices. The player_season_overview drainer also records a
+# 5xx that survives api_client's retries as a miss (backfill run 33351198599:
+# one transient 502 killed a ~9,000-call dispatch at batch 68/180) -- not
+# terminal, but the retry window below ages it back in. Placed here, next to
+# _fetch_rows_or_empty, because _fetch_recent_fanout_misses is built directly
+# on it.
 # ---------------------------------------------------------------------------
 
 # Days a recorded miss keeps excluding its key from a drainer's candidate
@@ -1262,9 +1266,14 @@ def run_player_overview_pipeline(
         Summary dict: `seasons` considered, `eligible_seasons` (post-gate),
         `missing` (the FULL backlog, not the capped slice),
         `excluded_misses` (candidates skipped because meta.fanout_misses
-        recorded a 400/404 for them within FANOUT_MISS_RETRY_DAYS -- PR #75
-        review finding A), `loaded_this_run`, `deferred`, batches, and the
-        list of dlt LoadInfo objects (one per batch).
+        recorded a 400/404/5xx for them within FANOUT_MISS_RETRY_DAYS --
+        PR #75 review finding A), `loaded_this_run`,
+        `skipped_misses_this_run` (player-seasons attempted this run that
+        ended in a recorded miss instead of rows -- terminal 400/404s plus
+        5xxs that survived api_client's retries, which skip the one player
+        rather than killing the dispatch: backfill run 33351198599),
+        `deferred`, batches, and the list of dlt LoadInfo objects (one per
+        batch).
     """
     import psycopg2
 
@@ -1368,6 +1377,7 @@ def run_player_overview_pipeline(
             "missing": 0,
             "excluded_misses": excluded_misses,
             "loaded_this_run": 0,
+            "skipped_misses_this_run": 0,
             "deferred": 0,
             "batches": 0,
         }
@@ -1386,6 +1396,7 @@ def run_player_overview_pipeline(
             "missing": total_missing,
             "excluded_misses": excluded_misses,
             "loaded_this_run": 0,
+            "skipped_misses_this_run": 0,
             "deferred": deferred,
             "batches": 0,
             "error": msg,
@@ -1404,6 +1415,7 @@ def run_player_overview_pipeline(
     )
 
     all_info = []
+    skipped_misses = 0
     for i, batch in enumerate(batches, 1):
         print(f"\n  --- Batch {i}/{len(batches)}: {len(batch)} player-season(s) ---")
         batch_misses: list[tuple[str, int]] = []
@@ -1412,16 +1424,21 @@ def run_player_overview_pipeline(
         all_info.append(info)
         print(f"  Batch {i} complete: {info}")
         if batch_misses:
+            skipped_misses += len(batch_misses)
             _record_fanout_misses("player_season_overview", batch_misses)
             print(f"  Recorded {len(batch_misses)} new/renewed miss(es) in meta.fanout_misses")
 
-    print(f"\n=== Player season overview load complete: {len(batches)} batches ===")
+    print(
+        f"\n=== Player season overview load complete: {len(batches)} batches, "
+        f"{skipped_misses} player-season(s) skipped with a recorded miss ==="
+    )
     return {
         "seasons": candidate_seasons,
         "eligible_seasons": eligible_seasons,
         "missing": total_missing,
         "excluded_misses": excluded_misses,
         "loaded_this_run": len(missing),
+        "skipped_misses_this_run": skipped_misses,
         "deferred": deferred,
         "batches": len(batches),
         "info": all_info,

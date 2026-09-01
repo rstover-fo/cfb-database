@@ -4,7 +4,7 @@
 > only depend on objects listed here as **public**. Everything else is internal and may change
 > without notice.
 
-Last updated: 2026-08-30
+Last updated: 2026-08-31
 
 > **Note on cfb-analytics:** the retired OU-only app (rstover-fo/cfb-analytics) was never a
 > warehouse consumer -- it ran its own DuckDB ingestion. Its unique features (rivals page,
@@ -14,6 +14,18 @@ Last updated: 2026-08-30
 ---
 
 ## Recent Contract Changes
+
+- **2026-08-31 — `api.passing_charting_team_season` additive extension (per
+  cfb-app's follow-up request).** Five new columns: `team_id`,
+  `offense_attempts`, `offense_completions`, `defense_attempts`,
+  `defense_completions` — the coverage-ratio bases (air-yards coverage =
+  `*_air_yards_attempts_available / *_attempts`; per-catch YAC coverage =
+  `*_yards_after_catch_attempts_available / *_completions`) plus a numeric
+  join key. `team_id` joins `ref.teams(id)` and is derived from
+  `stats.passing_plays`' `(season, offense-name -> offense_id)` mapping —
+  never a `ref.teams` name join; NULL when that mapping is ambiguous
+  (never-guess; live 2026-08-31: 0 ambiguous, 152/152 team-seasons mapped).
+  Existing columns unchanged.
 
 - **2026-08-30 — `expansion_views` unit: five new `api.*` views, `api.player_detail`
   bug fix, `coach_id` added to two existing views (all per cfb-app's

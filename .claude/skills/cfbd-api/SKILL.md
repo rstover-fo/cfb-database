@@ -83,6 +83,26 @@ Classify before retrying: local validation, 400 invalid request, 401 auth,
 - Data depth varies: games 1869+, play-by-play ~2004+, recruiting ~2000+,
   advanced metrics (SP+/PPA) ~2014+.
 
+## Passing charting coverage (/passing endpoints, data 2025+)
+
+- **2025 is partial upstream, concentrated late-season**: air-yards
+  charting is ~0% for weeks 1-7, ~92-100% for weeks 9+ (as of 2026-08-31;
+  CFBD's own doc note confirms the partial backfill). Do not read the
+  early-week gap as an ingest bug.
+- **2026+ charts land near-complete same-day** (~98% for week 1).
+  `parse_status='partial'` there is an active re-charting queue that
+  resolves in about a day, plus a ~0.6% possibly-terminal residue
+  (low-information plays, e.g. NULL passer).
+- **Field-level gaps are expected policy**, not defects: the
+  `*_attempts_available` columns are the coverage denominators and are
+  permanent contract — every leaderboard or rate must carry or filter on
+  them, or it ranks on coverage rather than skill.
+- Finished-season charting improvements only reach the warehouse via
+  explicit `passing` re-pulls: the finished-season skip drops the source
+  on the unattended daily path, so upstream re-charting of a completed
+  season lands nothing until someone dispatches a backfill with
+  `--sources passing`.
+
 ## Endpoint discovery
 
 Endpoint names, params, and enums come from official docs/OpenAPI, the

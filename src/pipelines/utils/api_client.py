@@ -182,15 +182,23 @@ class CFBDClient:
     MAX_RETRIES = 3
 
     # Transient-fault budget: 5xx responses and connect/read timeouts.
-    # Exponential backoff summing to ~60s plus request time, sized to bridge
+    # Exponential backoff summing to ~120s plus request time, sized to bridge
     # a minute-plus CFBD-wide outage. Two incidents sized it: daily run
     # 33418953608 (2026-08-31) hit a ~90s API-wide 502 window (17:20:31-
     # 17:22:01) that the old 3-retry/1-2-3s budget (~6s of backoff) could not
     # cross -- four sources died while `games`, whose next attempt landed at
     # outage-end, succeeded -- and backfill run 33347718722 lost
     # advanced_team_stats/2014 to three ~31s read-timeout retries.
-    TRANSIENT_BACKOFF_SECONDS = (2.0, 4.0, 8.0, 16.0, 30.0)
-    TRANSIENT_MAX_RETRIES = len(TRANSIENT_BACKOFF_SECONDS)  # 5 retries, 6 total attempts
+    #
+    # The first fix (2/4/8/16/30s, ~60s total) still had a gap: attempts land
+    # at elapsed ~0/2/6/14/30/60s, so a request whose FIRST attempt lands at
+    # the start of a ~90s outage spends its entire budget inside the window --
+    # the final attempt at ~60s still 502s and the source dies. That schedule
+    # only bridged the outage for favorably-phased requests. Adding a sixth
+    # 60s step (elapsed ~0/2/6/14/30/60/120s) clears a ~90s outage even in the
+    # worst case, where the first attempt lands exactly at the outage's start.
+    TRANSIENT_BACKOFF_SECONDS = (2.0, 4.0, 8.0, 16.0, 30.0, 60.0)
+    TRANSIENT_MAX_RETRIES = len(TRANSIENT_BACKOFF_SECONDS)  # 6 retries, 7 total attempts
 
     RATE_LIMIT_CIRCUIT_THRESHOLD = RATE_LIMIT_CIRCUIT_THRESHOLD
 
@@ -305,10 +313,10 @@ class CFBDClient:
           small -- against a spent quota, extra attempts are pure waste.
         - **Transient faults** (5xx responses, connect/read timeouts):
           ``TRANSIENT_MAX_RETRIES`` retries with ``TRANSIENT_BACKOFF_SECONDS``
-          exponential backoff (2/4/8/16/30s, ~60s total plus request time),
-          sized to bridge a minute-plus CFBD-wide outage. The final attempt
-          fails from inside the guarded loop -- there is no extra unguarded
-          attempt after the budget is spent.
+          exponential backoff (2/4/8/16/30/60s, ~120s total plus request
+          time), sized to bridge a minute-plus CFBD-wide outage. The final
+          attempt fails from inside the guarded loop -- there is no extra
+          unguarded attempt after the budget is spent.
 
         Anything else (4xx included) raises immediately, with no retry.
 

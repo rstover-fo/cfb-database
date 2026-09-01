@@ -130,9 +130,12 @@ class TestTransientRetries:
     - Backfill run 33347718722: advanced_team_stats/2014 died the same way on
       three ~31s read-timeout retries.
 
-    So transient faults (5xx, connect/read timeouts) get 5 retries with
-    2/4/8/16/30s exponential backoff: ~60s of sleep plus request time, enough
-    to bridge a minute-plus outage. The 429 budget deliberately does NOT grow
+    So transient faults (5xx, connect/read timeouts) get 6 retries with
+    2/4/8/16/30/60s exponential backoff: ~120s of sleep plus request time,
+    enough to bridge a minute-plus outage even when the first attempt lands
+    exactly at the outage's start (elapsed ~0/2/6/14/30/60/120s) -- the
+    earlier 5-retry/~60s schedule only bridged a ~90s outage for
+    favorably-phased requests. The 429 budget deliberately does NOT grow
     with it -- against a spent monthly quota every extra attempt is waste."""
 
     @staticmethod
@@ -149,10 +152,10 @@ class TestTransientRetries:
         return r
 
     def test_backoff_schedule_bridges_a_minute_outage(self):
-        """The schedule is the contract: 5 retries, 2/4/8/16/30s, 60s total."""
-        assert CFBDClient.TRANSIENT_MAX_RETRIES == 5
-        assert CFBDClient.TRANSIENT_BACKOFF_SECONDS == (2.0, 4.0, 8.0, 16.0, 30.0)
-        assert sum(CFBDClient.TRANSIENT_BACKOFF_SECONDS) == 60.0
+        """The schedule is the contract: 6 retries, 2/4/8/16/30/60s, 120s total."""
+        assert CFBDClient.TRANSIENT_MAX_RETRIES == 6
+        assert CFBDClient.TRANSIENT_BACKOFF_SECONDS == (2.0, 4.0, 8.0, 16.0, 30.0, 60.0)
+        assert sum(CFBDClient.TRANSIENT_BACKOFF_SECONDS) == 120.0
 
     def test_502_outage_recovers_on_fifth_attempt(self):
         """Four 502s then a 200 -- the shape of run 33418953608, which the old
@@ -170,17 +173,48 @@ class TestTransientRetries:
         client.close()
 
     def test_502_outage_recovers_on_the_final_attempt(self):
-        """The full budget: five 502s then a 200, having slept all ~60s."""
+        """The full budget: six 502s then a 200, having slept all ~120s."""
         client = CFBDClient(api_key="test-key")
         with patch.object(
             client._client,
             "get",
-            side_effect=[self._server_error(502)] * 5 + [self._ok()],
+            side_effect=[self._server_error(502)] * 6 + [self._ok()],
         ) as mock_get:
             with patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep:
                 assert client.get("/teams") == [{"id": 1}]
-        assert mock_get.call_count == 6
-        assert [c.args[0] for c in mock_sleep.call_args_list] == [2.0, 4.0, 8.0, 16.0, 30.0]
+        assert mock_get.call_count == 7
+        assert [c.args[0] for c in mock_sleep.call_args_list] == [2.0, 4.0, 8.0, 16.0, 30.0, 60.0]
+        client.close()
+
+    def test_worst_case_phase_90s_outage_is_bridged_by_the_final_attempt(self):
+        """Regression for the finding on daily run 33418953608 (a ~90s
+        API-wide 502 window, 17:20:31-17:22:01): the OLD 5-retry/~60s
+        schedule bridged such an outage only for favorably-phased requests --
+        a request whose first attempt lands exactly at the outage's start
+        spends its entire budget inside the window (elapsed ~0/2/6/14/30/60s)
+        and the final attempt still 502s. Simulate that worst case with a
+        fake clock advanced by each slept amount: 502 while the outage is
+        still live, 200 once it has passed. The sixth backoff step (60s) is
+        what finally lands an attempt past the outage's end (elapsed 120s)."""
+        client = CFBDClient(api_key="test-key")
+        clock = [0.0]
+        call_clocks = []
+
+        def fake_sleep(seconds):
+            clock[0] += seconds
+
+        def fake_get(*args, **kwargs):
+            call_clocks.append(clock[0])
+            if clock[0] < 90.0:
+                raise self._server_error(502)
+            return self._ok([{"id": 1}])
+
+        with patch.object(client._client, "get", side_effect=fake_get):
+            with patch("src.pipelines.utils.api_client.time.sleep", side_effect=fake_sleep):
+                result = client.get("/teams")
+
+        assert result == [{"id": 1}]
+        assert call_clocks[-1] >= 90.0
         client.close()
 
     def test_timeouts_exhaust_all_retries_then_raise(self):
@@ -195,7 +229,7 @@ class TestTransientRetries:
                 with pytest.raises(httpx.ReadTimeout):
                     client.get("/stats/season/advanced", params={"year": 2014})
         assert mock_get.call_count == CFBDClient.TRANSIENT_MAX_RETRIES + 1
-        assert [c.args[0] for c in mock_sleep.call_args_list] == [2.0, 4.0, 8.0, 16.0, 30.0]
+        assert [c.args[0] for c in mock_sleep.call_args_list] == [2.0, 4.0, 8.0, 16.0, 30.0, 60.0]
         client.close()
 
     def test_connect_errors_use_the_same_transient_budget(self):

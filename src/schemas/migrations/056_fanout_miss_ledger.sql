@@ -1,13 +1,15 @@
 -- Migration: 056_fanout_miss_ledger
 --
 -- meta.fanout_misses: shared ledger of fan-out misses -- terminal (400/404)
--- responses, plus 5xx failures that survived api_client's full retry budget
--- (recorded by player_overview.py so one flaky gateway response cannot kill a
--- multi-thousand-call dispatch) -- from the per-entity fan-out drainers in
--- coaches.py (coach_profiles_resource) and player_overview.py
--- (player_season_overview_resource) -- PR #75 review finding A (P1 x2, unit
--- R2, 2026-08-30). The shared 30-day window means a 5xx skip is deferred,
--- never blacklisted: it ages back into eligibility like a late-published id.
+-- responses, plus 5xx failures and network faults (timeouts/connect errors,
+-- status_code 0) that survived api_client's full retry budget (recorded by
+-- player_overview.py so one flaky gateway response or transient CFBD
+-- instability window cannot kill a multi-thousand-call dispatch) -- from the
+-- per-entity fan-out drainers in coaches.py (coach_profiles_resource) and
+-- player_overview.py (player_season_overview_resource) -- PR #75 review
+-- finding A (P1 x2, unit R2, 2026-08-30). The shared 30-day window means a
+-- 5xx or network-fault skip is deferred, never blacklisted: it ages back
+-- into eligibility like a late-published id.
 --
 -- Without this, run.py's set-difference drainers (run_coach_profiles_pipeline
 -- ~line 661, run_player_overview_pipeline ~line 1193) re-select the SAME ids
@@ -57,23 +59,33 @@ CREATE TABLE IF NOT EXISTS meta.fanout_misses (
 
 COMMENT ON TABLE meta.fanout_misses IS
     'Misses from per-entity fan-out drainers: terminal (400/404) responses, '
-    'plus 5xx failures that survived api_client''s full retry budget '
-    '(player_overview.py records these so one flaky gateway response cannot '
-    'kill a multi-thousand-call dispatch). Keyed by (source, key) so a '
-    'set-difference drainer (src/pipelines/run.py) can exclude a '
-    'recently-attempted miss instead of re-spending its API call every run. '
+    'plus 5xx failures and network faults (timeouts/connect errors, '
+    'status_code 0) that survived api_client''s full retry budget '
+    '(player_overview.py records these so one flaky gateway response or '
+    'transient CFBD instability window cannot kill a multi-thousand-call '
+    'dispatch). Keyed by (source, key) so a set-difference drainer '
+    '(src/pipelines/run.py) can exclude a recently-attempted miss instead of '
+    're-spending its API call every run. '
     'source: ''coach_profiles'' | ''player_season_overview''. '
     'key: str(coach_id) for coach_profiles, ''{season}:{player_id}'' for '
     'player_season_overview. 30-day re-eligibility is enforced in run.py '
     '(FANOUT_MISS_RETRY_DAYS), not here, so late-published CFBD data -- and '
-    'a transient 5xx skip -- self-heals instead of being excluded forever. '
-    'PR #75 review finding A.';
+    'a transient 5xx or network-fault skip -- self-heals instead of being '
+    'excluded forever. PR #75 review finding A.';
+
+COMMENT ON COLUMN meta.fanout_misses.status_code IS
+    'HTTP status code of the miss (400/404/5xx), or the sentinel 0 for a '
+    'network fault (read/connect timeout, connection error) that survived '
+    'api_client''s full retry budget with no HTTP response to report -- this '
+    'column is NOT NULL, so 0 documents "no HTTP status" rather than a real '
+    'server response.';
 
 COMMENT ON COLUMN meta.fanout_misses.attempts IS
     'Incremented (not overwritten) on every re-encountered miss via the '
     'ON CONFLICT (source, key) DO UPDATE upsert in '
     'run.py::_record_fanout_misses -- a rising count is the operator signal '
-    'that a given id keeps 400/404ing rather than having been hit once.';
+    'that a given id keeps missing (400/404, 5xx, or network fault) rather '
+    'than having been hit once.';
 
 GRANT USAGE ON SCHEMA meta TO anon, authenticated;
 GRANT SELECT ON meta.fanout_misses TO anon, authenticated;

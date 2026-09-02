@@ -48,9 +48,11 @@ def player_overview_source(
         player_seasons: List of (year, player_id) pairs to fetch.
         misses: When given, a list the resource appends
             (f"{year}:{player_id}", status_code) to for every 400/404 hit
-            and every 5xx that survives api_client's retries -- forwarded
-            straight through to `player_season_overview_resource`.
-            The caller persists it to `meta.fanout_misses` via
+            and every 5xx or network fault (read/connect timeout, connection
+            error -- recorded with sentinel status_code 0) that survives
+            api_client's retries -- forwarded straight through to
+            `player_season_overview_resource`. The caller persists it to
+            `meta.fanout_misses` via
             `run.py::_record_fanout_misses` (PR #75 review finding A) so
             the next run's candidate query can exclude a terminal miss
             instead of re-spending the call forever.
@@ -106,16 +108,22 @@ def player_season_overview_resource(
     A 400 or 404 for a given (year, playerId) is logged and skipped rather
     than aborting the whole batch -- candidates come from a UNION of
     stats.player_usage and metrics.ppa_players_season, either of which may
-    include a player-season CFBD has no overview computed for. A 5xx that
-    exhausts api_client's per-request retries is skipped the same way: one
-    player's transient gateway failure must not kill a multi-thousand-call
-    dispatch (backfill run 33351198599, 2026-08-30). When `misses` is
-    given, the "{year}:{player_id}" key (matching
+    include a player-season CFBD has no overview computed for. A 5xx, or a
+    network fault (read/connect timeout, connection error), that exhausts
+    api_client's transient-fault retries is skipped the same way: one
+    player's flaky gateway or a passing CFBD instability window must not
+    kill a multi-thousand-call dispatch (backfill run 33351198599,
+    2026-08-30; drain #7 run 33515429442, 2026-09-01, where the failure
+    arrived as a post-retries httpx.ReadTimeout instead of a 5xx). When
+    `misses` is given, the "{year}:{player_id}" key (matching
     `meta.fanout_misses.key`'s format for this source) and status code are
     appended to it so the caller can persist the miss (PR #75 review
     finding A: without this, a terminal 400/404 was re-requested every run
-    forever); the ledger's FANOUT_MISS_RETRY_DAYS window ages a 5xx skip
-    back into eligibility rather than blacklisting it.
+    forever); a network fault is recorded with the sentinel status_code 0
+    (meta.fanout_misses.status_code is `int NOT NULL`, so there is no real
+    HTTP status to store). The ledger's FANOUT_MISS_RETRY_DAYS window ages
+    a 5xx or network-fault skip back into eligibility rather than
+    blacklisting it.
 
     Args:
         player_seasons: List of (year, player_id) pairs to fetch.
@@ -145,9 +153,10 @@ def player_season_overview_resource(
                     continue
                 if e.response.status_code >= 500:
                     # Already retried: a 5xx HTTPStatusError only reaches here
-                    # after api_client.get() has burned its full retry budget
-                    # (MAX_RETRIES backoff attempts) on this one call. One
-                    # player's flaky gateway must not kill the whole dispatch
+                    # after api_client.get() has burned its full transient-fault
+                    # retry budget (TRANSIENT_MAX_RETRIES backoff attempts) on
+                    # this one call. One player's flaky gateway must not kill
+                    # the whole dispatch
                     # -- backfill run 33351198599 (2026-08-30) lost ~5,600
                     # planned calls when a single transient 502 for
                     # (2024, 4879928) raised through dlt at batch 68/180.
@@ -166,6 +175,34 @@ def player_season_overview_resource(
                         misses.append((f"{year}:{player_id}", e.response.status_code))
                     continue
                 raise
+            except httpx.RequestError as e:
+                # Already retried: api_client.get() burns its full transient
+                # budget (TRANSIENT_MAX_RETRIES retries, ~120s of backoff) on
+                # 5xx responses AND connect/read timeouts alike before either
+                # can reach here. Drain #7 (run 33515429442, 2026-09-01) hit a
+                # ~4.5-minute CFBD instability window where 5xx and timeout
+                # retries alternated through the whole budget, and the final
+                # attempt ALSO timed out -- so this arrived as
+                # httpx.ReadTimeout (a RequestError), not HTTPStatusError. The
+                # 5xx-only skip above didn't catch it, the timeout escaped,
+                # and dlt discarded the remaining ~31 planned batches (~1,600
+                # calls) -- the same blast radius the 5xx hardening (batch
+                # 68/180, run 33351198599) was built to stop. Recorded in the
+                # same meta.fanout_misses ledger with status_code=0 -- the
+                # documented sentinel for "network fault, no HTTP status"
+                # (the column is `int NOT NULL`, so there is no real status to
+                # store) -- and FANOUT_MISS_RETRY_DAYS ages it back into
+                # eligibility exactly like a 5xx skip. RateLimitExhausted/
+                # RateLimitCircuitOpen are custom exceptions raised by
+                # api_client directly, never httpx.RequestError, so a spent
+                # quota still propagates and aborts the run.
+                logger.warning(
+                    f"Request failed for player season overview {player_id} ({year}) "
+                    f"after client retries ({e}); recording miss and continuing"
+                )
+                if misses is not None:
+                    misses.append((f"{year}:{player_id}", 0))
+                continue
 
             if isinstance(data, list):
                 rows = data

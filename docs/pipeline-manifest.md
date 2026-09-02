@@ -218,7 +218,7 @@ the A2 unit above -- see the summary note for why they needed a targeted loader 
 than a year-fetch-all.
 
 | 69 | `/coaches/profile` | ref.coach_profiles | coaches.py | coach_profiles_resource | YES (drainer -- `run.py::run_coach_profiles_pipeline`, in `SOURCE_ORDER`, capped at 200 coach ids/run) | merge | id | current | WORKING (drainer live -- 200 rows after its first capped run, draining daily) |
-| 70 | `/player/season/overview` | stats.player_season_overview | player_overview.py | player_season_overview_resource | YES (drainer -- `run.py::run_player_overview_pipeline`, in `SOURCE_ORDER`, capped at 250 player-seasons/run) | merge | season, id | finished seasons only (completed-season gate) | WORKING (drainer live -- 250 rows after its first capped run, draining daily) |
+| 70 | `/player/season/overview` | stats.player_season_overview | player_overview.py | player_season_overview_resource | YES (drainer -- `run.py::run_player_overview_pipeline`, in `SOURCE_ORDER`, capped at 250 player-seasons/run) | merge | season, id, team | finished seasons only (completed-season gate) | WORKING (drain complete 2026-09-02 -- 47,396 rows, seasons 2013-2025; 4 2014 player-seasons held in `meta.fanout_misses` as network-fault/502 skips, self-heal after 30 days) |
 
 ### Passing (spec v5.25.0, 2026-08-30)
 

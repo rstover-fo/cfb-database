@@ -679,6 +679,55 @@ class TestMainExitCode:
         assert main() is None
 
 
+class TestCountFailures:
+    """_count_failures backs the summary tally, the row icon, and (via
+    summary["errors"]) main()'s exit code -- all three must agree. Mart
+    refresh reports status "partial" when some matviews refresh and others
+    don't; that is not "ok" and must fail the run. Counting only
+    status == "error" let a run with every source "ok" and a partial mart
+    refresh print "[FAIL] _mart_refresh" plus "0 failed" and exit 0 -- a
+    green run hiding a stale mart layer (found by review, 2026-09-01)."""
+
+    def test_all_ok_is_zero_failures(self):
+        from scripts.load_season import _count_failures
+
+        results = {"games": {"status": "ok"}, "stats": {"status": "ok"}}
+
+        assert _count_failures(results) == 0
+
+    def test_partial_mart_refresh_counts_as_a_failure(self):
+        from scripts.load_season import _count_failures
+
+        results = {
+            "games": {"status": "ok"},
+            "_mart_refresh": {"status": "partial", "failures": 3},
+        }
+
+        assert _count_failures(results) == 1
+
+    def test_literal_error_status_still_counts(self):
+        from scripts.load_season import _count_failures
+
+        results = {"games": {"status": "ok"}, "stats": {"status": "error"}}
+
+        assert _count_failures(results) == 1
+
+    def test_matches_the_row_icons_fail_predicate(self):
+        """The tally and the printed [FAIL] icon must never disagree --
+        anything counted as a failure here must also print FAIL, and vice
+        versa."""
+        from scripts.load_season import _count_failures
+
+        results = {
+            "a": {"status": "ok"},
+            "b": {"status": "partial"},
+            "c": {"status": "error"},
+        }
+        icon_fail_count = sum(1 for r in results.values() if r["status"] != "ok")
+
+        assert _count_failures(results) == icon_fail_count == 2
+
+
 class TestWorkflowYaml:
     """Sanity checks on the two workflow files touched alongside the
     player_overview cap override -- catches a YAML syntax error (bad

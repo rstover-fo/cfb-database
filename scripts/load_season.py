@@ -365,6 +365,19 @@ def upcoming_schedule_season(season: int, month: int) -> int | None:
     return season + 1 if month < 8 else None
 
 
+def _count_failures(results: dict) -> int:
+    """Count every non-"ok" result as a failure for the summary tally.
+
+    Must stay in lockstep with the row icon's predicate (anything but "ok"
+    prints FAIL) and with main()'s exit-code check. _mart_refresh can report
+    status "partial" (some matviews failed to refresh, others didn't) --
+    that is not "ok" and must fail the run, or a stale mart layer behind N
+    failed refreshes prints "0 failed" and exits 0. Counting only
+    status == "error" was exactly that bug.
+    """
+    return sum(1 for r in results.values() if r["status"] != "ok")
+
+
 def load_season(
     season: int,
     sources: list[str] | None = None,
@@ -657,12 +670,12 @@ def load_season(
     print(f"Season {season} Load Summary")
     print(f"{'=' * 60}")
     successes = sum(1 for r in results.values() if r["status"] == "ok")
-    errors = sum(1 for r in results.values() if r["status"] == "error")
+    errors = _count_failures(results)
     for name, res in results.items():
         status_icon = "OK" if res["status"] == "ok" else "FAIL"
         print(f"  [{status_icon:4s}] {name:25s} {res['duration_s']:>8.1f}s")
     print(f"{'=' * 60}")
-    print(f"  Total: {total_elapsed:.1f}s | {successes} succeeded, {errors} failed")
+    print(f"  Total: {total_elapsed:.1f}s | {successes} succeeded, {errors} failed (incl. partial)")
 
     return {
         "season": season,
@@ -740,8 +753,11 @@ def main() -> None:
     )
 
     # Validation failures return {"error": str} (singular) before any source
-    # runs; per-source failures count up {"errors": int}. Both must exit
-    # nonzero or a mistyped --sources reports success having loaded nothing.
+    # runs; per-source failures count up {"errors": int} via _count_failures,
+    # which counts any non-"ok" status -- including _mart_refresh's "partial"
+    # -- not just literal status == "error". Both must exit nonzero, or a
+    # mistyped --sources (or a partially-failed mart refresh) reports success
+    # having loaded/refreshed nothing.
     if summary.get("error") or summary.get("errors", 0) > 0:
         sys.exit(1)
 

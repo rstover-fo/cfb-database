@@ -1266,14 +1266,15 @@ def run_player_overview_pipeline(
         Summary dict: `seasons` considered, `eligible_seasons` (post-gate),
         `missing` (the FULL backlog, not the capped slice),
         `excluded_misses` (candidates skipped because meta.fanout_misses
-        recorded a 400/404/5xx for them within FANOUT_MISS_RETRY_DAYS --
-        PR #75 review finding A), `loaded_this_run`,
+        recorded a 400/404/5xx/network-fault for them within
+        FANOUT_MISS_RETRY_DAYS -- PR #75 review finding A), `loaded_this_run`,
         `skipped_misses_this_run` (player-seasons attempted this run that
         ended in a recorded miss instead of rows -- terminal 400/404s plus
-        5xxs that survived api_client's retries, which skip the one player
-        rather than killing the dispatch: backfill run 33351198599),
-        `deferred`, batches, and the list of dlt LoadInfo objects (one per
-        batch).
+        5xxs and network faults (timeouts/connect errors, recorded with
+        sentinel status_code 0) that survived api_client's retries, which
+        skip the one player rather than killing the dispatch: backfill run
+        33351198599, drain #7 run 33515429442), `deferred`, batches, and the
+        list of dlt LoadInfo objects (one per batch).
     """
     import psycopg2
 

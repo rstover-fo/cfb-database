@@ -8,9 +8,8 @@ parity -- rushing uses rushingYardsAvailable/directionEligibleAttempts/
 directionAvailableAttempts/touchdownStatusAvailable instead).
 
 Fixtures at tests/fixtures/cfbd_2026/rushing_*.json are 2026-09-03 live
-probe captures (5 records each, real API responses) -- NOT spec-derived
-placeholders; the plan anticipated placeholders in case the probe hadn't
-landed yet, but it had by the time this module was written. One test
+probe captures (5 records each, real API responses), not spec-derived
+placeholders. One test
 below (`test_null_rusher_id_team_rush_is_yielded_not_dropped`) uses a
 synthetic in-test record instead of a fixture row because none of the 5
 captured plays happens to be a team-attributed (unattributed rusher) rush.

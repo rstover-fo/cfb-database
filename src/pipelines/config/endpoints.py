@@ -556,6 +556,51 @@ PASSING_ENDPOINTS = {
     ),
 }
 
+# Rushing endpoints (spec v5.26.0, 2026-09-03): rusher attribution, rush
+# direction, direction-eligible/available coverage. Data starts 2025 -- see
+# rushing.py's RUSHING_DATA_START. The three game-grain endpoints require
+# week or team (a bare year 400s); the two season-grain endpoints take a
+# bare year. rusher_id is nullable and deliberately never part of a key.
+RUSHING_ENDPOINTS = {
+    "rushing_plays": EndpointConfig(
+        path="/rushing/plays",
+        table_name="rushing_plays",
+        primary_key=["game_id", "play_id"],
+        schema="stats",
+        write_disposition="merge",
+    ),
+    "rushing_player_games": EndpointConfig(
+        path="/rushing/players/games",
+        table_name="rushing_player_games",
+        primary_key=["game_id", "player_id"],
+        schema="stats",
+        write_disposition="merge",
+    ),
+    "rushing_team_games": EndpointConfig(
+        path="/rushing/teams/games",
+        table_name="rushing_team_games",
+        primary_key=["game_id", "team"],
+        schema="stats",
+        write_disposition="merge",
+    ),
+    "rushing_player_season": EndpointConfig(
+        path="/rushing/players/season",
+        table_name="rushing_player_season",
+        # team is deliberately part of the PK -- transfer safety, same
+        # reasoning as passing.passing_player_season.
+        primary_key=["season", "player_id", "team"],
+        schema="stats",
+        write_disposition="merge",
+    ),
+    "rushing_team_season": EndpointConfig(
+        path="/rushing/teams/season",
+        table_name="rushing_team_season",
+        primary_key=["season", "team"],
+        schema="stats",
+        write_disposition="merge",
+    ),
+}
+
 # Coaches endpoints. coach_seasons is year-iterated; coach_tenures and
 # coach_profile are both per-entity fan-outs (coachId/team required -- a bare
 # year or bare call 400s) and are deliberately NOT returned from
@@ -619,4 +664,5 @@ ALL_ENDPOINTS = {
     "coaches": COACHES_ENDPOINTS,
     "conferences": CONFERENCES_ENDPOINTS,
     "passing": PASSING_ENDPOINTS,
+    "rushing": RUSHING_ENDPOINTS,
 }

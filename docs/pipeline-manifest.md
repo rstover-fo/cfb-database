@@ -236,11 +236,40 @@ blast radius must not grow by five more resources).
 
 | # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| 71 | `/passing/plays` | stats.passing_plays | passing.py | passing_plays_resource | YES | merge | game_id, play_id | 2025-2026 | WORKING (not yet backfilled) |
-| 72 | `/passing/players/games` | stats.passing_player_games | passing.py | passing_player_games_resource | YES | merge | game_id, player_id | 2025-2026 | WORKING (not yet backfilled) |
-| 73 | `/passing/teams/games` | stats.passing_team_games | passing.py | passing_team_games_resource | YES | merge | game_id, team | 2025-2026 | WORKING (not yet backfilled) |
-| 74 | `/passing/players/season` | stats.passing_player_season | passing.py | passing_player_season_resource | YES | merge | season, player_id, team | 2025-2026 | WORKING (not yet backfilled) |
-| 75 | `/passing/teams/season` | stats.passing_team_season | passing.py | passing_team_season_resource | YES | merge | season, team | 2025-2026 | WORKING (not yet backfilled) |
+| 71 | `/passing/plays` | stats.passing_plays | passing.py | passing_plays_resource | YES | merge | game_id, play_id | 2025-2026 | WORKING (2025 backfilled 2026-08-30; weekly 2025 re-pull cadence per `docs/handoffs/2026-09-01-charting-convergence-watch.md`) |
+| 72 | `/passing/players/games` | stats.passing_player_games | passing.py | passing_player_games_resource | YES | merge | game_id, player_id | 2025-2026 | WORKING (2025 backfilled 2026-08-30; weekly 2025 re-pull cadence per `docs/handoffs/2026-09-01-charting-convergence-watch.md`) |
+| 73 | `/passing/teams/games` | stats.passing_team_games | passing.py | passing_team_games_resource | YES | merge | game_id, team | 2025-2026 | WORKING (2025 backfilled 2026-08-30; weekly 2025 re-pull cadence per `docs/handoffs/2026-09-01-charting-convergence-watch.md`) |
+| 74 | `/passing/players/season` | stats.passing_player_season | passing.py | passing_player_season_resource | YES | merge | season, player_id, team | 2025-2026 | WORKING (2025 backfilled 2026-08-30; weekly 2025 re-pull cadence per `docs/handoffs/2026-09-01-charting-convergence-watch.md`) |
+| 75 | `/passing/teams/season` | stats.passing_team_season | passing.py | passing_team_season_resource | YES | merge | season, team | 2025-2026 | WORKING (2025 backfilled 2026-08-30; weekly 2025 re-pull cadence per `docs/handoffs/2026-09-01-charting-convergence-watch.md`) |
+
+### Rushing (spec v5.26.0, 2026-09-03)
+
+Five endpoints new to the 84-count regeneration: charted rushing with rusher
+attribution, rush direction (left/middle/right/unknown), PPA, success rate, line /
+second-level / open-field yards, stuff rate, power success, and explosiveness, with
+per-direction splits on every aggregate row. Data starts 2025 (`RUSHING_DATA_START` in
+rushing.py); CFBD announced 2025 as partially charted and 2026 as mostly full. Live
+probe 2026-09-03 (workflow run 33765658317): bare `year` 400s on the three game-grain
+endpoints ("team or week is required"), so rows 76-78 walk weeks exactly like passing;
+2025 week 5 returned 3,816 plays (all `parseStatus=partial` in the sample) and 2026
+week 1 returned 529 (`complete`); the season-grain endpoints (rows 79-80) take a bare
+year and returned 1,622 player-seasons and 136 team-seasons for 2025. Semantics that
+differ from passing: player totals include only individually attributed rushes and
+never sum to team totals (team totals add sacks, kneels, team-only, and unresolved
+attempts); `parse_status='invalid'` is its own bucket, never folded into `partial`;
+coverage denominators are `rushing_yards_available`, `direction_eligible_attempts`,
+`direction_available_attempts`, and `touchdown_status_available`. dlt flattens the
+nested `directions` object to `directions__<dir>__<metric>` (team rows:
+`offense__directions__<dir>__<metric>`). Own module/source (`cfbd_rushing`) for the
+same blast-radius reason as passing.
+
+| # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
+|---|---|---|---|---|---|---|---|---|---|
+| 76 | `/rushing/plays` | stats.rushing_plays | rushing.py | rushing_plays_resource | YES | merge | game_id, play_id | 2025-2026 | WORKING (backfill pending) |
+| 77 | `/rushing/players/games` | stats.rushing_player_games | rushing.py | rushing_player_games_resource | YES | merge | game_id, player_id | 2025-2026 | WORKING (backfill pending) |
+| 78 | `/rushing/teams/games` | stats.rushing_team_games | rushing.py | rushing_team_games_resource | YES | merge | game_id, team | 2025-2026 | WORKING (backfill pending) |
+| 79 | `/rushing/players/season` | stats.rushing_player_season | rushing.py | rushing_player_season_resource | YES | merge | season, player_id, team | 2025-2026 | WORKING (backfill pending) |
+| 80 | `/rushing/teams/season` | stats.rushing_team_season | rushing.py | rushing_team_season_resource | YES | merge | season, team | 2025-2026 | WORKING (backfill pending) |
 
 ---
 
@@ -307,7 +336,7 @@ endpoints rowed.
   parameterless request); its column names come from the CFBD OpenAPI spec,
   not an inspected response -- verify via `pg_attribute` after the first load.
 
-**Note**: The API reference now lists 79 endpoints (see `docs/cfbd-api-endpoints.md`) but some are variants of others (e.g., `/stats/season` vs `/stats/player/season` are listed as one "stats" category). This manifest counts distinct loadable endpoints. All 12 endpoints new to the 74-count regeneration (2026-08-29) are now rowed: 10 in the A2 unit above, plus `/coaches/profile` and `/player/season/overview` (rows 69-70, A4 unit, 2026-08-29) -- the two that were PENDING here. Both needed a targeted loader rather than a year-fetch-all: `/coaches/profile` (requires `coachId`, one call per coach) is drained by `run.py::run_coach_profiles_pipeline` from the coach ids seen in `ref.coach_seasons`, and `/player/season/overview` (requires `year` + `playerId`, one call per player per season -- a large, unbounded fan-out) is drained by `run.py::run_player_overview_pipeline` from the player-seasons seen in `stats.player_usage`/`metrics.ppa_players_season`, gated to finished seasons only. Both are DB-set-difference drainers capped per run (200 and 250 respectively) and wired into `scripts/load_season.py`'s `SOURCE_ORDER`, not full backfills. The 5 endpoints new to the 79-count regeneration (spec v5.25.0, 2026-08-30) are the `/passing/*` charting group -- rows 71-75 above -- all year-fetch-all (three week-iterated, two bare-year), wired into `SOURCE_ORDER` as a single `passing` source.
+**Note**: The API reference now lists 84 endpoints (see `docs/cfbd-api-endpoints.md`) but some are variants of others (e.g., `/stats/season` vs `/stats/player/season` are listed as one "stats" category). This manifest counts distinct loadable endpoints. All 12 endpoints new to the 74-count regeneration (2026-08-29) are now rowed: 10 in the A2 unit above, plus `/coaches/profile` and `/player/season/overview` (rows 69-70, A4 unit, 2026-08-29) -- the two that were PENDING here. Both needed a targeted loader rather than a year-fetch-all: `/coaches/profile` (requires `coachId`, one call per coach) is drained by `run.py::run_coach_profiles_pipeline` from the coach ids seen in `ref.coach_seasons`, and `/player/season/overview` (requires `year` + `playerId`, one call per player per season -- a large, unbounded fan-out) is drained by `run.py::run_player_overview_pipeline` from the player-seasons seen in `stats.player_usage`/`metrics.ppa_players_season`, gated to finished seasons only. Both are DB-set-difference drainers capped per run (200 and 250 respectively) and wired into `scripts/load_season.py`'s `SOURCE_ORDER`, not full backfills. The 5 endpoints new to the 79-count regeneration (spec v5.25.0, 2026-08-30) are the `/passing/*` charting group -- rows 71-75 above -- all year-fetch-all (three week-iterated, two bare-year), wired into `SOURCE_ORDER` as a single `passing` source. The 5 endpoints new to the 84-count regeneration (spec v5.26.0, 2026-09-03) are the `/rushing/*` charting group -- rows 76-80 above -- the same shape (three week-iterated, two bare-year), wired as a single `rushing` source.
 
 ---
 

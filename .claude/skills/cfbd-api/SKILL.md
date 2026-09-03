@@ -6,7 +6,7 @@ description: CFBD (CollegeFootballData) API conventions, gotchas, and endpoint-s
 # CFBD API
 
 Sources: the CFBD AI Builder Pack canonical context (2026) merged with
-gotchas earned in the cfb-database warehouse. The complete 74-endpoint
+gotchas earned in the cfb-database warehouse. The complete 84-endpoint
 inventory lives in `cfb-database/docs/cfbd-api-endpoints.md`; this skill
 carries conventions and traps, not the endpoint list.
 
@@ -102,6 +102,34 @@ Classify before retrying: local validation, 400 invalid request, 401 auth,
   on the unattended daily path, so upstream re-charting of a completed
   season lands nothing until someone dispatches a backfill with
   `--sources passing`.
+
+## Rushing charting coverage (/rushing endpoints, data 2025+)
+
+- **Same era and re-pull rules as passing**: data starts 2025, CFBD calls
+  2025 partial and 2026 mostly full (announced 2026-09-02); the finished-
+  season skip means 2025 improvements land only via `--sources rushing`
+  re-pulls. The 2026-09-03 probe saw 2025 week-5 plays all `partial` and
+  2026 week-1 plays `complete`.
+- **Four coverage denominators, all permanent contract**:
+  `rushing_yards_available` (yardage tiers), `direction_eligible_attempts`
+  and `direction_available_attempts` (direction splits — eligible attempts
+  can still have `unknown` direction, so both are needed), and
+  `touchdown_status_available` (touchdowns, team rows only). Every rate or
+  share must carry or filter on the matching denominator.
+- **`parse_status` has three values**: `complete`, `partial`, `invalid`.
+  `invalid` is its own bucket — never count it as charted and never fold it
+  into `partial` or a denominator.
+- **Player totals never reconcile to team totals by design**: the
+  `sacks`/`kneels`/`team_rushes`/`unattributed_attempts` counters exist on
+  both player and team rows. Player rows carry only individually attributed
+  rushes (`attribution_status = 'individual'`), so those counters are
+  typically 0 there — individually attributed sacks/kneels are folded into
+  the player's own `attempts` instead. Team rows additionally add sacks,
+  kneels, team-only and unresolved attempts via the same counters. Do not
+  present the two as summable.
+- **Direction rows include `unknown`**: keep it so direction coverage stays
+  visible; a team whose rushes are all `unknown` is a charting-coverage
+  fact, not a data bug.
 
 ## Endpoint discovery
 

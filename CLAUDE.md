@@ -46,7 +46,7 @@ The database uses multiple Postgres schemas organized by data domain:
 |--------|---------|---------|
 | `ref` | Reference/lookup data | teams, venues, conferences |
 | `core` | Normalized game data | roster, games, game_team_stats, line scores |
-| `stats` | Player/team statistics | player_stats, team_stats, passing_plays |
+| `stats` | Player/team statistics | player_stats, team_stats, passing_plays, rushing_plays |
 | `ratings` | Rankings and ratings | SP+, Elo, FPI, SRS |
 | `recruiting` | Recruiting data | recruits, team_recruiting |
 | `betting` | Betting lines | lines, spreads |
@@ -156,8 +156,8 @@ cfb-database/
 │   │   ├── config/               # RESTAPIConfig definitions
 │   │   │   ├── endpoints.py
 │   │   │   └── years.py
-│   │   ├── sources/              # 18 endpoint-specific source modules (incl. playoffs.py,
-│   │   │   │                     # coaches.py, conferences.py, player_overview.py, passing.py) + flat-file sources
+│   │   ├── sources/              # 19 endpoint-specific source modules (incl. playoffs.py,
+│   │   │   │                     # coaches.py, conferences.py, player_overview.py, passing.py, rushing.py) + flat-file sources
 │   │   │   ├── flat_files.py      # Flat-file source registry and orchestration
 │   │   │   └── flatfile_parsers/  # Parsers for CSV, parquet, PDF flat-file formats
 │   │   ├── utils/
@@ -250,7 +250,7 @@ Use this skill when building or debugging anything that calls the CFBD API:
 - **Failure classification**: empty-200 vs 403 semantics, Cloudflare burst 429s vs quota exhaustion, when auto-retry is wrong (one-off scripts) vs correct (the pipeline's Retry-After + circuit-breaker pattern)
 - **Data-shape traps**: nullable fields, v2 breaking changes, completed games with NULL scores, duplicate school names
 
-The complete 79-endpoint inventory stays in `docs/cfbd-api-endpoints.md`; the skill carries conventions and traps, not the endpoint list.
+The complete 84-endpoint inventory stays in `docs/cfbd-api-endpoints.md`; the skill carries conventions and traps, not the endpoint list.
 
 ### dlt REST API Reference
 Location: `docs/dlt-reference.md`

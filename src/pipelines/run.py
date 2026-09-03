@@ -1539,8 +1539,9 @@ def run_rosters_pipeline(
             # successful roster load that made zero /roster requests -- the
             # same silent-no-op shape as the finished-season skip turning a
             # backfill into nothing, and as `--sources rosters` logging "No
-            # runner for source" and exiting 0, which is why core.roster had
-            # no 2026 rows in the first place.
+            # runner for source" and exiting 0. (The 2026-09-03 "no 2026
+            # rosters" incident itself was a different silent no-op: the
+            # resource lacked table_name="roster" and loaded core.rosters.)
             raise RuntimeError(
                 f"No teams with scheduled games in {years}: core.games has no rows for "
                 f"{'that season' if len(years) == 1 else 'those seasons'}. /roster is "

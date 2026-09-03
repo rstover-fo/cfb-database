@@ -113,20 +113,23 @@ class TestAllowListsMatchMarts:
     by a mart but missing from EXPECTED_VARIANT_TWINS would mean the daily
     check doesn't actually cover it."""
 
-    def test_every_v_double_token_in_marts_is_expected_and_vice_versa(self):
-        found: set[str] = set()
-        for path in MART_TABLE_MAP:
-            found |= _v_double_tokens(path)
-
-        expected_union: set[str] = set()
-        for cols in EXPECTED_VARIANT_TWINS.values():
-            expected_union |= cols
-
-        assert found == expected_union, (
-            f"mart files and EXPECTED_VARIANT_TWINS disagree -- "
-            f"in marts but not expected: {found - expected_union}; "
-            f"expected but not in any mart: {expected_union - found}"
-        )
+    def test_each_marts_v_double_tokens_belong_to_a_table_it_reads(self):
+        """Attribution direction of the drift guard: every twin a mart
+        COALESCEs must be an expected twin of one of the source tables that
+        mart reads (per MART_TABLE_MAP). A global union of all marts against
+        all tables would still pass if a twin's COALESCE moved from the mart
+        that needs it to a mart that never reads that table; comparing per
+        mart, against only that mart's own tables, catches the move."""
+        for path, tables in MART_TABLE_MAP.items():
+            allowed: set[str] = set()
+            for table_key in tables:
+                allowed |= EXPECTED_VARIANT_TWINS[table_key]
+            found = _v_double_tokens(path)
+            assert found <= allowed, (
+                f"{path.name} COALESCEs twin(s) that are not expected on any table it "
+                f"reads ({tables}): {found - allowed} -- either the twin belongs to a "
+                f"different mart, or EXPECTED_VARIANT_TWINS is missing it"
+            )
 
     def test_every_expected_table_is_covered_by_a_mapped_mart(self):
         """MART_TABLE_MAP itself must not silently drop a tracked table --

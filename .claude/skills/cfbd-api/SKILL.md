@@ -103,6 +103,30 @@ Classify before retrying: local validation, 400 invalid request, 401 auth,
   season lands nothing until someone dispatches a backfill with
   `--sources passing`.
 
+## Rushing charting coverage (/rushing endpoints, data 2025+)
+
+- **Same era and re-pull rules as passing**: data starts 2025, CFBD calls
+  2025 partial and 2026 mostly full (announced 2026-09-02); the finished-
+  season skip means 2025 improvements land only via `--sources rushing`
+  re-pulls. The 2026-09-03 probe saw 2025 week-5 plays all `partial` and
+  2026 week-1 plays `complete`.
+- **Four coverage denominators, all permanent contract**:
+  `rushing_yards_available` (yardage tiers), `direction_eligible_attempts`
+  and `direction_available_attempts` (direction splits — eligible attempts
+  can still have `unknown` direction, so both are needed), and
+  `touchdown_status_available` (touchdowns, team rows only). Every rate or
+  share must carry or filter on the matching denominator.
+- **`parse_status` has three values**: `complete`, `partial`, `invalid`.
+  `invalid` is its own bucket — never count it as charted and never fold it
+  into `partial` or a denominator.
+- **Player totals never reconcile to team totals by design**: player rows
+  carry only individually attributed rushes (`attribution_status =
+  'individual'`); team rows add sacks, kneels, team-only and unresolved
+  attempts. Do not present the two as summable.
+- **Direction rows include `unknown`**: keep it so direction coverage stays
+  visible; a team whose rushes are all `unknown` is a charting-coverage
+  fact, not a data bug.
+
 ## Endpoint discovery
 
 Endpoint names, params, and enums come from official docs/OpenAPI, the

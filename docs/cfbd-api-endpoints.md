@@ -1,6 +1,6 @@
 # CFBD API Endpoints Reference
 
-**Total: 79 endpoints across 19 API categories**
+**Total: 84 endpoints across 20 API categories**
 
 Base URL: `https://api.collegefootballdata.com`
 Auth: API Key required (Bearer token)
@@ -87,6 +87,15 @@ Docs: https://api.collegefootballdata.com/
 | GET | `/passing/teams/games` | Team-game passing aggregates (offense/defense) |
 | GET | `/passing/players/season` | Player season passing aggregates |
 | GET | `/passing/teams/season` | Team season passing aggregates (offense/defense) |
+
+### RushingApi (5 endpoints)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/rushing/plays` | Play-grain rush charting: rusher attribution, direction, PPA, success, parse status |
+| GET | `/rushing/players/games` | Player-game rushing production with per-direction splits (individually attributed only) |
+| GET | `/rushing/teams/games` | Team-game rushing production (offense/defense) with per-direction splits |
+| GET | `/rushing/players/season` | Player season rushing production with per-direction splits |
+| GET | `/rushing/teams/season` | Team season rushing production (offense/defense) with per-direction splits |
 
 ### PlayersApi (5 endpoints)
 | Method | Endpoint | Description |

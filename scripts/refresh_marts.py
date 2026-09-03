@@ -51,6 +51,13 @@ MARTS_VIEWS = [
     "marts.passing_charting_target_season",
     "marts.passing_charting_team_season",
     "marts.coach_tenures",
+    # 2026-09-03 rushing-charting unit (U6): rushing charting
+    # (stats.rushing_player_season, stats.rushing_team_season) -- same shape
+    # as the passing charting marts above, all read base tables only, no
+    # mart dependencies.
+    "marts.rushing_charting_player_season",
+    "marts.rushing_charting_team_season",
+    "marts.rushing_charting_direction_season",
     # Layer 2: Depends on Layer 1
     "marts.team_epa_season",
     "marts.team_season_summary",

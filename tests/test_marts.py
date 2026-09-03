@@ -35,6 +35,9 @@ MARTS_VIEWS = [
     "player_season_epa",
     "recruiting_class",
     "recruiting_roi",
+    "rushing_charting_direction_season",
+    "rushing_charting_player_season",
+    "rushing_charting_team_season",
     "scoring_opportunities",
     "situational_splits",
     "team_adjusted_epa",
@@ -134,6 +137,15 @@ class TestMartViewsHaveData:
         # the backfill (`--source coach_tenures`) legitimately has zero rows
         # here. See marts/048_coach_tenures.sql's header.
         ("marts", "coach_tenures"),
+        # 2026-09-03 rushing-charting unit (U6), KTD8: these three marts are
+        # created fresh in this unit and must stay green on a pre-backfill
+        # database (Stage A's `rushing` source has not necessarily loaded
+        # yet on every environment that applies this file). Row-count floors
+        # replace this entry once the backfill is verified (U9). See
+        # marts/050_rushing_charting_player_season.sql's header.
+        ("marts", "rushing_charting_player_season"),
+        ("marts", "rushing_charting_team_season"),
+        ("marts", "rushing_charting_direction_season"),
     }
 
     @pytest.mark.parametrize(

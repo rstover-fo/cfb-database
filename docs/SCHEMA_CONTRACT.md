@@ -4,7 +4,7 @@
 > only depend on objects listed here as **public**. Everything else is internal and may change
 > without notice.
 
-Last updated: 2026-08-31
+Last updated: 2026-09-03
 
 > **Note on cfb-analytics:** the retired OU-only app (rstover-fo/cfb-analytics) was never a
 > warehouse consumer -- it ran its own DuckDB ingestion. Its unique features (rivals page,
@@ -14,6 +14,139 @@ Last updated: 2026-08-31
 ---
 
 ## Recent Contract Changes
+
+- **2026-09-03 — rushing charting unit: five `stats.rushing_*` raw tables
+  (Stage A, live), three `api.rushing_charting_*` views and a
+  `get_player_detail` extension (Stage B, deployed 2026-09-03).** CFBD's
+  `/rushing` charting family (spec v5.26.0, 2026-09-02/03), mirroring the
+  2026-08-30 passing-charting unit's structure with rushing-specific
+  divergence (attribution, direction, denominators). Stage A merged as PR
+  #107 (`dc6568d`); backfill run 33776170498 loaded 2025+2026 with no failed
+  jobs -- `stats.rushing_plays` 63,234 rows, `stats.rushing_player_games`
+  8,205, `stats.rushing_team_games` 1,758, `stats.rushing_player_season`
+  1,698, `stats.rushing_team_season` 152. Stage B (this entry) was applied
+  to production 2026-09-03 by Deploy Schema run 33783102034 -- migration
+  `059` applied, marts built (1,698 / 152 / 8,008 rows for
+  player_season/team_season/direction_season), validation passed.
+  - **`api.rushing_charting_player_season` (new, `050`).** Rushing charting
+    by player-season, 2025+: direction-eligible carries, yardage tiers
+    (line/second-level/open-field), success rate, PPA, stuff rate, power
+    success, explosiveness. Columns: season, player_id, player, team,
+    conference, position, attempts, rushing_yards_available,
+    individual_attempts, unattributed_attempts, sacks, kneels, team_rushes,
+    multi_carrier_attempts, direction_eligible_attempts,
+    direction_available_attempts, total_rushing_yards, yards_per_carry,
+    success_rate, ppa, total_ppa, line_yards, line_yards_total,
+    second_level_yards, second_level_yards_total, open_field_yards,
+    open_field_yards_total, stuff_rate, power_success, explosiveness.
+    Direction splits are NOT on this view -- see
+    `api.rushing_charting_direction_season`. Three separate coverage
+    denominators (`rushing_yards_available` for yardage tiers,
+    `direction_eligible_attempts`/`direction_available_attempts` for
+    direction splits) -- never merge or alias them. NULL on a rate/
+    yardage-tier metric means those carries were not charted; 0 is a real
+    value. **CONTRACT (R10, non-reconciliation):** this view's `attempts`
+    will NOT sum, across all players on a team, to that team's
+    `offense_attempts` in `api.rushing_charting_team_season` -- CFBD
+    attributes some carries to team-only/multi-carrier/unresolved buckets
+    that never attach to an individual player. `position` is joined from
+    `core.roster` on its own primary key (id, team, year), never a
+    name-string join. Data starts 2025.
+  - **`api.rushing_charting_team_season` (new, `051`).** Team-season rushing
+    charting, offense and defense sides, 2025+. Flattens
+    `stats.rushing_team_season`'s raw `offense__*`/`defense__*` dlt shape to
+    `offense_*`/`defense_*` (Contract Rule 4). Columns: season, team_id,
+    team, conference, offense_attempts, offense_rushing_yards_available,
+    offense_total_rushing_yards, offense_yards_per_carry,
+    offense_individual_attempts, offense_unattributed_attempts,
+    offense_sacks, offense_kneels, offense_team_rushes,
+    offense_multi_carrier_attempts, offense_direction_eligible_attempts,
+    offense_direction_available_attempts, offense_success_rate, offense_ppa,
+    offense_total_ppa, offense_line_yards, offense_line_yards_total,
+    offense_second_level_yards, offense_second_level_yards_total,
+    offense_open_field_yards, offense_open_field_yards_total,
+    offense_stuff_rate, offense_power_success, offense_explosiveness,
+    offense_touchdown_status_available, offense_rushing_touchdowns, and the
+    defense_ equivalents. **`defense_*` is this team's run DEFENSE** (what
+    opposing offenses did against them), not the opponent's own offensive
+    row. Four coverage denominators per side (`offense_rushing_yards_
+    available`/`defense_rushing_yards_available` for yardage tiers,
+    `offense_direction_eligible_attempts`/`offense_direction_available_
+    attempts` + defense equivalents for direction splits,
+    `offense_touchdown_status_available`/`defense_touchdown_status_
+    available` for rushing touchdowns) -- never merged or aliased. NULL on
+    a metric means those carries were not charted; 0 is a real value.
+    **CONTRACT (R10, non-reconciliation):** `offense_attempts` will NOT
+    equal the sum of `attempts` across every player on that team in
+    `api.rushing_charting_player_season`. `team_id` is numeric (joins
+    `ref.teams(id)`), derived from the (season, offense-name -> offense_id)
+    mapping in `stats.rushing_plays`; NULL when that mapping is ambiguous
+    (never-guess). Data starts 2025.
+  - **`api.rushing_charting_direction_season` (new, `052`).** The tall
+    direction-splits companion to the two views above -- product decision
+    "direction splits as tall rows in one view, not wide columns on the
+    headline views." Grain: `(season, entity_type, entity_id, team, side,
+    direction)`. `entity_type` is `player`/`team`; `side` is `offense`/
+    `defense` (players are offense only); `direction` is exactly one of
+    left/middle/right/unknown -- `unknown` is the UNRESOLVED remainder
+    (`direction_eligible_attempts - direction_available_attempts`), read
+    directly off the source rather than subtracted here, not a fourth
+    charted direction; it is always present as its own row so direction
+    coverage stays visible. **Fixed four-row guarantee:** every (entity, side) has
+    exactly 4 rows -- one per direction -- even when every metric is NULL; a
+    player-season row always melts to 4 offense rows, a team-season row to
+    8 (4 offense + 4 defense). Columns: season, entity_type, entity_id
+    (text), team, team_id (numeric, nullable on ambiguous mapping), side,
+    direction, carries, yards, yards_per_carry, success_rate, ppa,
+    total_ppa, line_yards, line_yards_total, second_level_yards,
+    second_level_yards_total, open_field_yards, open_field_yards_total,
+    stuff_rate, power_success, explosiveness, direction_eligible_attempts,
+    direction_available_attempts. `direction_eligible_attempts`/
+    `direction_available_attempts` ride on every row of an (entity, side)
+    block, constant across its 4 rows, as the direction-coverage
+    denominators -- different from the yardage-tier/touchdown denominators
+    on the two headline views. `available <= eligible` because
+    `eligible - available` IS `unknown`'s carries -- the unresolved
+    remainder, not a fourth charted direction. Shares are the consumer's to
+    compute: a direction's share of RESOLVED carries (left/middle/right
+    only, sums to 1) is `carries::numeric / NULLIF(direction_available_
+    attempts, 0)`; a direction's share of ELIGIBLE carries including the
+    unresolved remainder (all four rows, sums to 1) is `carries::numeric /
+    NULLIF(direction_eligible_attempts, 0)`. Never divide `unknown` by
+    `available` (yields >100%) -- `unknown / eligible` is the
+    direction-coverage GAP, not a share. NULL means no charted direction
+    coverage for that entity/side, not an error; the fixed four-row melt
+    guarantees rows with a zero denominator.
+    `entity_id` is text on every row:
+    player rows carry the CFBD athlete id as-is (never NULL); team rows
+    carry `COALESCE(team_id::text, team)` (never NULL even when `team_id`
+    is). **CONTRACT (R10, non-reconciliation):** summing a player entity's
+    carries across its 4 offense rows will NOT equal the matching team
+    entity's carries for the same (season, team).
+  - **`public.get_player_detail` additive extension (return-type
+    recreate).** Gains a LAST column, `rushing_charting jsonb` -- an
+    additive block for the requested (player, season, team) built from
+    `marts.rushing_charting_player_season`, joined team-aware on
+    `(player_id, season, team)` so a mid-season transfer's two team stints
+    each get their own block, never a duplicated or cross-team one. NULL
+    whenever the player-season has no rushing charting row; every
+    pre-existing column is unchanged. When present, the object carries the
+    headline metrics, the three player-grain coverage denominators
+    (`rushing_yards_available`, `direction_eligible_attempts`,
+    `direction_available_attempts`), the attribution counters
+    (`individual_attempts`, `unattributed_attempts`, `sacks`, `kneels`,
+    `team_rushes`, `multi_carrier_attempts`) as their own separate clause
+    -- not a fourth denominator -- and a nested `directions` object keyed
+    by `left`/`middle`/`right`/`unknown`, each holding 15 direction
+    metrics -- always all four keys once the block is non-NULL, per the
+    fixed four-row melt guarantee above. `touchdown_status_available` is a
+    team-season-only denominator (`api.rushing_charting_team_season`) and
+    does not appear on this player-grain block.
+  - Handoff: `docs/handoffs/2026-09-03-rushing-charting-for-cfb-app.md`.
+  - Five new raw tables (`stats.rushing_plays`, `stats.rushing_player_games`,
+    `stats.rushing_team_games`, `stats.rushing_player_season`,
+    `stats.rushing_team_season`) added to the internal Raw Data Tables
+    section's `stats` line.
 
 - **2026-08-31 — `api.passing_charting_team_season` additive extension (per
   cfb-app's follow-up request).** Five new columns: `team_id`,
@@ -715,6 +848,9 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.passing_charting_team_season` | **Pending deploy** | -- | Team-season passing charting, offense and defense sides, 2025+. Columns: season, team, conference, offense_total_air_yards, offense_average_depth_of_target, offense_air_yards_attempts_available, offense_total_yards_after_catch, offense_average_yards_after_catch, offense_yards_after_catch_attempts_available, and the defense_ equivalents. `defense_*` is this team's passing DEFENSE, not the opponent's offense. Added 2026-08-30, see changelog entry. |
 | `api.coach_tenures` | **Pending deploy** | -- | CFBD's own continuous coach-tenure record, distinct from `api.coaching_history`. Grain: (coach_id, team_id, tenure_start). Columns: coach_id, coach_name, team_id, team, tenure_start, tenure_end (NULL = active), hire_date, is_interim, record_games, record_wins, record_losses, record_ties, record_win_percentage, classification. May be empty until the `coach_tenures` backfill has run. Added 2026-08-30, see changelog entry. |
 | `api.refresh_campaign_status` | **Pending deploy** | -- | Per-(campaign, season) progress against the migration-051 refresh ledger (`meta.refresh_campaigns`/`meta.refresh_progress`) -- scope-invalidate a cached historical answer for one season instead of an entire in-progress corrections campaign. Plain view, no mart. Columns: campaign, season, games_refreshed, games_no_data, completed_at, last_finalized_at. Added 2026-08-30, see changelog entry. |
+| `api.rushing_charting_player_season` | **Deployed** | 1,698 | Rushing charting by player-season, 2025+: direction-eligible carries, yardage tiers, success rate, PPA, stuff rate, power success, explosiveness. Columns: season, player_id, player, team, conference, position, attempts, rushing_yards_available, individual_attempts, unattributed_attempts, sacks, kneels, team_rushes, multi_carrier_attempts, direction_eligible_attempts, direction_available_attempts, total_rushing_yards, yards_per_carry, success_rate, ppa, total_ppa, line_yards, line_yards_total, second_level_yards, second_level_yards_total, open_field_yards, open_field_yards_total, stuff_rate, power_success, explosiveness. NULL on a rate/yardage-tier metric means those carries were not charted (0 is a real value); `rushing_yards_available` (yardage tiers) and `direction_eligible_attempts`/`direction_available_attempts` (direction splits) are the coverage denominators and are never interchangeable. Direction splits live in `api.rushing_charting_direction_season`, not here. CONTRACT (R10): player totals never reconcile to team totals in `api.rushing_charting_team_season` -- CFBD attributes some carries to team-only/multi-carrier/unresolved buckets that never attach to a player. Added 2026-09-03, see changelog entry. |
+| `api.rushing_charting_team_season` | **Deployed** | 152 | Team-season rushing charting, offense and defense sides, 2025+. Columns: season, team_id, team, conference, offense_attempts, offense_rushing_yards_available, offense_total_rushing_yards, offense_yards_per_carry, offense_individual_attempts, offense_unattributed_attempts, offense_sacks, offense_kneels, offense_team_rushes, offense_multi_carrier_attempts, offense_direction_eligible_attempts, offense_direction_available_attempts, offense_success_rate, offense_ppa, offense_total_ppa, offense_line_yards, offense_line_yards_total, offense_second_level_yards, offense_second_level_yards_total, offense_open_field_yards, offense_open_field_yards_total, offense_stuff_rate, offense_power_success, offense_explosiveness, offense_touchdown_status_available, offense_rushing_touchdowns, and the defense_ equivalents. `defense_*` is this team's run DEFENSE (what opposing offenses did against them), not the opponent's own offensive row. NULL on a metric means those carries were not charted, 0 is a real value; the `*_rushing_yards_available`/`*_direction_eligible_attempts`/`*_direction_available_attempts`/`*_touchdown_status_available` columns per side are the charting-coverage denominators for their respective metric families. CONTRACT (R10): team totals never reconcile to the sum of `api.rushing_charting_player_season` rows for that team. `team_id` is numeric (joins `ref.teams(id)`), derived from the (season, offense-name -> offense_id) mapping in `stats.rushing_plays`; NULL when that mapping is ambiguous (never-guess). Added 2026-09-03, see changelog entry. |
+| `api.rushing_charting_direction_season` | **Deployed** | 8,008 | Rushing charting direction splits, 2025+, one row per (season, entity_type, entity_id, team, side, direction). Columns: season, entity_type (player\|team), entity_id (text), team, team_id (numeric, nullable on ambiguous name mapping), side (offense\|defense; players are offense only), direction (left\|middle\|right\|unknown), carries, yards, yards_per_carry, success_rate, ppa, total_ppa, line_yards, line_yards_total, second_level_yards, second_level_yards_total, open_field_yards, open_field_yards_total, stuff_rate, power_success, explosiveness, direction_eligible_attempts, direction_available_attempts. FIXED FOUR-ROW GUARANTEE: every (entity, side) has exactly 4 rows, one per direction, even when every metric is NULL -- a player-season row always melts to 4 offense rows, a team-season row to 8 (4 offense + 4 defense). `unknown` is the UNRESOLVED remainder (direction_eligible_attempts - direction_available_attempts), read directly off the source rather than subtracted here, not a fourth charted direction. `direction_eligible_attempts`/`direction_available_attempts` are the direction-coverage denominators, constant across an (entity, side) block's 4 rows, and are never interchangeable with the yardage-tier/touchdown denominators on the player-season/team-season views (`available <= eligible` because `eligible - available` IS `unknown`'s carries). Shares are the consumer's to compute: a direction's share of RESOLVED carries (left/middle/right only, sums to 1) is `carries::numeric / NULLIF(direction_available_attempts, 0)`; a direction's share of ELIGIBLE carries including the unresolved remainder (all four rows, sums to 1) is `carries::numeric / NULLIF(direction_eligible_attempts, 0)`; never divide `unknown` by `available` (yields >100%) -- `unknown / eligible` is the coverage gap, not a share. NULL means no charted direction coverage for that entity/side, not an error; the fixed four-row melt guarantees rows with a zero denominator. CONTRACT (R10): player-row carries never reconcile to team-row carries for the same (season, team, offense). Added 2026-09-03, see changelog entry. |
 | `api.recruiting_roi` | **Deployed** | 1,324 | Recruiting investment vs on-field outcomes. 4-year rolling BCR, wins over expected, draft production. One row per team-season. Columns: team, season, conference, blue_chip_ratio, avg_recruit_rating, total_wins, win_pct, epa_per_play, players_drafted, wins_over_expected, recruiting_efficiency, win_pct_pctl, epa_pctl, recruiting_efficiency_pctl |
 | `api.transfer_portal_impact` | **Deployed** | 1,374 | Transfer portal activity correlated with team performance changes. Portal era (2021+). One row per team-season. Columns: team, season, conference, transfers_in, transfers_out, net_transfers, avg_transfer_stars, portal_dependency, win_delta, net_transfers_pctl, win_delta_pctl, portal_dependency_pctl |
 | `api.conference_comparison` | **Deployed** | 347 | Conference-level season analytics with percentile rankings. One row per conference-season. Columns: conference, season, member_count, avg_wins, avg_sp_rating, avg_epa, avg_recruiting_rank, non_conf_win_pct, avg_sp_pctl, avg_epa_pctl, avg_recruiting_pctl, non_conf_win_pct_pctl |
@@ -822,6 +958,9 @@ cfb-app for advanced features.
 | `marts.passing_charting_player_season` | Pending deploy | Passing charting by player-season (2025+), passthrough of `stats.passing_player_season` plus `position` joined from `core.roster` on its own primary key. Grain: `(season, player_id, team)`. Added 2026-08-30. |
 | `marts.passing_charting_target_season` | Pending deploy | Receiver-grain (target) passing charting by season (2025+), aggregated from `stats.passing_plays`. Grain: `(season, target_id, team_id)`. Added 2026-08-30. |
 | `marts.passing_charting_team_season` | Pending deploy | Team-season passing charting, offense/defense flattened from `stats.passing_team_season`'s dunder columns. Grain: `(season, team)`. Added 2026-08-30. |
+| `marts.rushing_charting_player_season` | Deployed | Rushing charting by player-season (2025+), passthrough of `stats.rushing_player_season` plus `position` joined from `core.roster` on its own primary key. Direction splits excluded (see `marts.rushing_charting_direction_season`). Grain: `(season, player_id, team)`. Added 2026-09-03. |
+| `marts.rushing_charting_team_season` | Deployed | Team-season rushing charting, offense/defense flattened from `stats.rushing_team_season`'s dunder columns. Direction splits excluded. Grain: `(season, team)`. Added 2026-09-03. |
+| `marts.rushing_charting_direction_season` | Deployed | Tall rushing direction-split companion to the two marts above -- one row per (season, entity_type, entity_id, team, side, direction), fixed four rows per (entity, side). Grain: `(season, entity_type, entity_id, team, side, direction)`. Added 2026-09-03. |
 | `marts.recruiting_roi` | Deployed | 4-year rolling recruiting investment vs outcomes. Blue chip ratio, wins over expected, draft production, recruiting efficiency. 1,324 rows. |
 | `marts.transfer_portal_impact` | Deployed | Portal activity correlated with team performance changes. Portal era only (2021+). 1,374 rows. |
 | `marts.conference_comparison` | Deployed | Per-conference per-season aggregates with PERCENT_RANK percentiles. 347 rows. |
@@ -875,7 +1014,7 @@ Server-side functions callable via `supabase.rpc()`.
 | `get_conference_splits` | `public` | `(p_team, p_season)` | Performance vs conference, non-conference, ranked opponents (excludes garbage time as of 2026-07-19) |
 | `get_trajectory_averages` | `public` | `(p_conference, p_season_start?, p_season_end?)` | Conference and FBS average benchmarks. Omitted `p_season_end` resolves to the latest loaded season (changed 2026-07-19; previously pinned to 2025). |
 | `get_player_season_stats_pivoted` | `public` | `(p_team, p_season)` | Pivoted player stats (pass/rush/rec/def/kick in columns) |
-| `get_player_detail` | `public` | `(p_player_id, p_season?)` | Single player page: bio, recruiting, season stats, PPA. Gains `wepa_passing`, `wepa_rushing`, `paar` (opponent-adjusted EPA and kicker PAAR from `marts.player_wepa_season`), added 2026-07-19. |
+| `get_player_detail` | `public` | `(p_player_id, p_season?)` | Single player page: bio, recruiting, season stats, PPA. Gains `wepa_passing`, `wepa_rushing`, `paar` (opponent-adjusted EPA and kicker PAAR from `marts.player_wepa_season`), added 2026-07-19. **Deployed 2026-09-03:** gains a LAST column, `rushing_charting jsonb` (additive) -- headline rushing-charting metrics plus the three player-grain coverage denominators (`rushing_yards_available`, `direction_eligible_attempts`, `direction_available_attempts`), separate attribution counters (`individual_attempts`, `unattributed_attempts`, `sacks`, `kneels`, `team_rushes`, `multi_carrier_attempts`), and a nested `directions` object (left/middle/right/unknown, 15 metrics each) for the requested (player, season, team), from `marts.rushing_charting_player_season`. `touchdown_status_available` is a team-season-only denominator and does not appear here. NULL when the player-season has no rushing charting row; every pre-existing column unchanged. Added 2026-09-03, see changelog entry. |
 | `get_player_search` | `public` | `(p_query text, p_position?, p_team?, p_season?, p_limit? default 25)` | Fuzzy player name search using pg_trgm. Returns player_id, name, team, position, season, height, weight, jersey, stars, recruit_rating, similarity_score. Supports typo tolerance. |
 | `get_available_seasons` | `public` | `()` | List of seasons with data |
 | `get_available_weeks` | `public` | `(p_season)` | List of weeks for a given season |
@@ -960,7 +1099,7 @@ These objects are implementation details. Do not depend on them from downstream 
 | Schema | Tables |
 |--------|--------|
 | `core` | `games`, `drives`, `plays` (partitioned: `plays_y2004`..`plays_y2026`), `roster`, `roster__recruit_ids`, `records`, `rankings`, `game_media`, `game_weather`, `game_player_stats` (+ nested `__teams`, `__categories`, `__types`, `__athletes`), `game_team_stats` (+ nested `__teams`, `__stats`), `games__home_line_scores`, `games__away_line_scores` |
-| `stats` | `team_season_stats`, `player_season_stats`, `advanced_team_stats`, `advanced_game_stats`, `game_havoc`, `play_stats`, `player_usage`, `player_returning`, `passing_plays`, `passing_player_games`, `passing_team_games`, `passing_player_season`, `passing_team_season` |
+| `stats` | `team_season_stats`, `player_season_stats`, `advanced_team_stats`, `advanced_game_stats`, `game_havoc`, `play_stats`, `player_usage`, `player_returning`, `passing_plays`, `passing_player_games`, `passing_team_games`, `passing_player_season`, `passing_team_season`, `rushing_plays`, `rushing_player_games`, `rushing_team_games`, `rushing_player_season`, `rushing_team_season` |
 | `ratings` | `sp_ratings`, `sp_conference_ratings`, `elo_ratings`, `fpi_ratings`, `srs_ratings`, `core_ratings` |
 | `recruiting` | `recruits`, `team_recruiting`, `team_talent`, `transfer_portal`, `recruiting_groups` |
 | `betting` | `lines`, `team_ats`, `line_snapshots` (append-only line movement snapshots, no PK, `captured_at` stamped per run) |

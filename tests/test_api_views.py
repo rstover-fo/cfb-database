@@ -4,6 +4,8 @@ Verifies API views exist, return expected row counts,
 expose the correct columns, and respond to filtered queries.
 """
 
+import warnings
+
 import pytest
 
 
@@ -696,6 +698,134 @@ PASSING_CHARTING_TEAM_SEASON_COLUMNS = {
     "defense_yards_after_catch_attempts_available",
 }
 
+# 2026-09-03 rushing-charting unit (U6). Direction splits are deliberately
+# NOT on the player-season/team-season columns below -- they live in
+# RUSHING_CHARTING_DIRECTION_SEASON_COLUMNS (the tall companion view). See
+# src/schemas/marts/050_rushing_charting_player_season.sql's header for the
+# NULL/denominator/non-reconciliation semantics.
+RUSHING_CHARTING_PLAYER_SEASON_COLUMNS = {
+    "season",
+    "player_id",
+    "player",
+    "team",
+    "conference",
+    "position",
+    "attempts",
+    "rushing_yards_available",
+    "individual_attempts",
+    "unattributed_attempts",
+    "sacks",
+    "kneels",
+    "team_rushes",
+    "multi_carrier_attempts",
+    "direction_eligible_attempts",
+    "direction_available_attempts",
+    "total_rushing_yards",
+    "yards_per_carry",
+    "success_rate",
+    "ppa",
+    "total_ppa",
+    "line_yards",
+    "line_yards_total",
+    "second_level_yards",
+    "second_level_yards_total",
+    "open_field_yards",
+    "open_field_yards_total",
+    "stuff_rate",
+    "power_success",
+    "explosiveness",
+}
+
+RUSHING_CHARTING_TEAM_SEASON_COLUMNS = {
+    "season",
+    "team_id",
+    "team",
+    "conference",
+    "offense_attempts",
+    "offense_rushing_yards_available",
+    "offense_individual_attempts",
+    "offense_unattributed_attempts",
+    "offense_sacks",
+    "offense_kneels",
+    "offense_team_rushes",
+    "offense_multi_carrier_attempts",
+    "offense_direction_eligible_attempts",
+    "offense_direction_available_attempts",
+    "offense_total_rushing_yards",
+    "offense_yards_per_carry",
+    "offense_success_rate",
+    "offense_ppa",
+    "offense_total_ppa",
+    "offense_line_yards",
+    "offense_line_yards_total",
+    "offense_second_level_yards",
+    "offense_second_level_yards_total",
+    "offense_open_field_yards",
+    "offense_open_field_yards_total",
+    "offense_stuff_rate",
+    "offense_power_success",
+    "offense_explosiveness",
+    "offense_touchdown_status_available",
+    "offense_rushing_touchdowns",
+    "defense_attempts",
+    "defense_rushing_yards_available",
+    "defense_individual_attempts",
+    "defense_unattributed_attempts",
+    "defense_sacks",
+    "defense_kneels",
+    "defense_team_rushes",
+    "defense_multi_carrier_attempts",
+    "defense_direction_eligible_attempts",
+    "defense_direction_available_attempts",
+    "defense_total_rushing_yards",
+    "defense_yards_per_carry",
+    "defense_success_rate",
+    "defense_ppa",
+    "defense_total_ppa",
+    "defense_line_yards",
+    "defense_line_yards_total",
+    "defense_second_level_yards",
+    "defense_second_level_yards_total",
+    "defense_open_field_yards",
+    "defense_open_field_yards_total",
+    "defense_stuff_rate",
+    "defense_power_success",
+    "defense_explosiveness",
+    "defense_touchdown_status_available",
+    "defense_rushing_touchdowns",
+}
+
+# Tall direction-split view: one row per
+# (season, entity_type, entity_id, team, side, direction). 15 per-direction
+# metrics plus the two direction-coverage denominators, which ride on every
+# row of an (entity, side) block.
+RUSHING_CHARTING_DIRECTION_SEASON_COLUMNS = {
+    "season",
+    "entity_type",
+    "entity_id",
+    "team",
+    "team_id",
+    "side",
+    "direction",
+    "carries",
+    "yards",
+    "yards_per_carry",
+    "success_rate",
+    "ppa",
+    "total_ppa",
+    "line_yards",
+    "line_yards_total",
+    "second_level_yards",
+    "second_level_yards_total",
+    "open_field_yards",
+    "open_field_yards_total",
+    "stuff_rate",
+    "power_success",
+    "explosiveness",
+    "direction_eligible_attempts",
+    "direction_available_attempts",
+}
+
 # CFBD's own continuous coach-tenure record (distinct from api.coaching_history's
 # gap-detected marts.coaching_tenure). May be empty pre-backfill -- see
 # TestViewsExistAndReturnRows below, column check only.
@@ -875,6 +1005,13 @@ class TestViewColumns:
             # (same treatment as game_recaps/scored_matchup_edges).
             ("api.coach_tenures", COACH_TENURES_COLUMNS),
             ("api.refresh_campaign_status", REFRESH_CAMPAIGN_STATUS_COLUMNS),
+            # 2026-09-03 rushing-charting unit (U6), KTD8: columns-only entries
+            # -- no row-count floor yet (mirrors coach_tenures/
+            # refresh_campaign_status above). U9 adds row-count floors once
+            # the 2025 backfill is verified.
+            ("api.rushing_charting_player_season", RUSHING_CHARTING_PLAYER_SEASON_COLUMNS),
+            ("api.rushing_charting_team_season", RUSHING_CHARTING_TEAM_SEASON_COLUMNS),
+            ("api.rushing_charting_direction_season", RUSHING_CHARTING_DIRECTION_SEASON_COLUMNS),
         ],
         ids=[
             "team_detail",
@@ -908,6 +1045,9 @@ class TestViewColumns:
             "passing_charting_team_season",
             "coach_tenures",
             "refresh_campaign_status",
+            "rushing_charting_player_season",
+            "rushing_charting_team_season",
+            "rushing_charting_direction_season",
         ],
     )
     def test_columns_present(self, db_conn, view_name, expected_columns):
@@ -1932,3 +2072,476 @@ class TestSeasonOutlook:
             """,
         )
         assert not rows, f"full Ivy slates flagged short (re-run simulate_season.py?): {rows}"
+
+
+# ---------------------------------------------------------------------------
+# Rushing charting (2026-09-03 rushing-charting unit, U6)
+# ---------------------------------------------------------------------------
+#
+# All scenario tests below are DB-gated (db_conn skips without a live
+# connection -- see conftest.py) and additionally skip, rather than fail,
+# when the specific row they need does not exist yet -- the same tolerant
+# pattern TestSeasonOutlook uses above, appropriate pre-backfill or on a
+# team/season CFBD has not charted.
+
+
+class TestRushingChartingDirectionSeason:
+    """AE2 (R7, R8, R13): the tall direction view's fixed four/eight-row
+    melt guarantee -- every (entity, side) has exactly one row per
+    direction, even when metrics are NULL."""
+
+    def test_michigan_2025_offense_has_exactly_four_direction_rows(self, db_conn):
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT direction
+            FROM api.rushing_charting_direction_season
+            WHERE season = 2025 AND team = 'Michigan'
+              AND entity_type = 'team' AND side = 'offense'
+            """,
+        )
+        if not rows:
+            pytest.skip("Michigan 2025 offense has no rushing charting rows yet")
+        assert len(rows) == 4, f"expected 4 rows, got {len(rows)}: {rows}"
+        assert {r[0] for r in rows} == {"left", "middle", "right", "unknown"}
+
+    def test_a_player_season_row_melts_to_four_offense_rows(self, db_conn):
+        player_rows, _ = _fetch_all(
+            db_conn,
+            "SELECT player_id, team, season FROM api.rushing_charting_player_season LIMIT 1",
+        )
+        if not player_rows:
+            pytest.skip("no rushing charting player-season rows to test against")
+        player_id, team, season = player_rows[0]
+        direction_rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT side, direction
+            FROM api.rushing_charting_direction_season
+            WHERE entity_type = 'player' AND entity_id = %s AND team = %s AND season = %s
+            """,
+            (player_id, team, season),
+        )
+        assert len(direction_rows) == 4, (
+            f"player {player_id}/{team}/{season}: expected 4 rows, got {len(direction_rows)}"
+        )
+        assert all(r[0] == "offense" for r in direction_rows), direction_rows
+        assert {r[1] for r in direction_rows} == {"left", "middle", "right", "unknown"}
+
+    def test_a_team_season_row_melts_to_eight_rows(self, db_conn):
+        team_rows, _ = _fetch_all(
+            db_conn,
+            "SELECT team, season FROM api.rushing_charting_team_season LIMIT 1",
+        )
+        if not team_rows:
+            pytest.skip("no rushing charting team-season rows to test against")
+        team, season = team_rows[0]
+        direction_rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT side, direction
+            FROM api.rushing_charting_direction_season
+            WHERE entity_type = 'team' AND team = %s AND season = %s
+            """,
+            (team, season),
+        )
+        assert len(direction_rows) == 8, (
+            f"{team}/{season}: expected 8 rows, got {len(direction_rows)}"
+        )
+        assert {r[0] for r in direction_rows} == {"offense", "defense"}
+        for side in ("offense", "defense"):
+            dirs = {r[1] for r in direction_rows if r[0] == side}
+            assert dirs == {"left", "middle", "right", "unknown"}, f"{team}/{season} {side}: {dirs}"
+
+    def test_entity_id_is_never_null(self, db_conn):
+        """The mart's COALESCE(team_id::text, team) fallback must keep
+        entity_id non-null for every row -- the unique index on
+        (entity_type, entity_id, team, season, side, direction) depends on
+        it, so a NULL here would mean the fallback silently stopped
+        covering some row."""
+        total = _fetch_count(db_conn, "SELECT count(*) FROM api.rushing_charting_direction_season")
+        if total == 0:
+            pytest.skip("rushing_charting_direction_season is empty")
+        null_count = _fetch_count(
+            db_conn,
+            "SELECT count(*) FROM api.rushing_charting_direction_season WHERE entity_id IS NULL",
+        )
+        assert null_count == 0, f"{null_count} of {total} rows have a NULL entity_id"
+
+    def test_row_count_equals_4x_player_seasons_plus_8x_team_seasons(self, db_conn):
+        """Global row-count identity, not just the per-row samples above:
+        every player-season row melts to exactly 4 offense-only direction
+        rows (test_a_player_season_row_melts_to_four_offense_rows) and
+        every team-season row melts to exactly 8 offense+defense rows
+        (test_a_team_season_row_melts_to_eight_rows) -- so the direction
+        view's total count must equal that identity exactly."""
+        total = _fetch_count(db_conn, "SELECT count(*) FROM api.rushing_charting_direction_season")
+        if total == 0:
+            pytest.skip("rushing_charting_direction_season is empty")
+        player_seasons = _fetch_count(
+            db_conn, "SELECT count(*) FROM api.rushing_charting_player_season"
+        )
+        team_seasons = _fetch_count(
+            db_conn, "SELECT count(*) FROM api.rushing_charting_team_season"
+        )
+        expected = 4 * player_seasons + 8 * team_seasons
+        assert total == expected, (
+            f"direction_season has {total} rows, expected {expected} "
+            f"(4 * {player_seasons} player-seasons + 8 * {team_seasons} team-seasons)"
+        )
+
+
+class TestRushingChartingNonReconciliation:
+    """AE3 (R10): player-season totals never reconcile exactly to
+    team-season totals -- CFBD's attribution splits some carries into
+    team-only/multi-carrier/unresolved buckets that never attach to an
+    individual player row. The gap must never be negative (a player total
+    can never exceed its team's), and should be explained by those three
+    buckets -- if it is not exact, that itself is the documented,
+    upstream-by-design behavior called out on the mart/api headers."""
+
+    def test_team_offense_attempts_covers_summed_player_attempts(self, db_conn):
+        # Sampled deterministically as the team-season with the largest
+        # offense_attempts (rather than an arbitrary ORDER BY season, team
+        # row) so the gap being checked is drawn from a substantial sample,
+        # and the two round trips are merged into one query.
+        team_rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT ts.season, ts.team, ts.offense_attempts, ts.offense_team_rushes,
+                   ts.offense_multi_carrier_attempts, ts.offense_unattributed_attempts,
+                   COALESCE(SUM(ps.attempts), 0) AS player_sum
+            FROM api.rushing_charting_team_season ts
+            LEFT JOIN api.rushing_charting_player_season ps
+              ON ps.season = ts.season AND ps.team = ts.team
+            GROUP BY ts.season, ts.team, ts.offense_attempts, ts.offense_team_rushes,
+                     ts.offense_multi_carrier_attempts, ts.offense_unattributed_attempts
+            ORDER BY ts.offense_attempts DESC, ts.season, ts.team
+            LIMIT 1
+            """,
+        )
+        if not team_rows:
+            pytest.skip("no rushing charting team-season rows to test against")
+        season, team, offense_attempts, team_rushes, multi_carrier, unattributed, player_sum = (
+            team_rows[0]
+        )
+        gap = offense_attempts - player_sum
+        assert gap >= 0, (
+            f"{team} {season}: offense_attempts ({offense_attempts}) is less than summed "
+            f"player attempts ({player_sum}) -- a player total should never exceed the "
+            f"team total it is drawn from"
+        )
+        # NOT a hard invariant: R10 (see marts/051_rushing_charting_team_season.sql's
+        # header) documents that player-season totals never reconcile exactly to
+        # team-season totals -- CFBD's attribution splits can overlap in ways it
+        # does not document, so the bucket sum below is only an approximation of
+        # the gap. Surface a mismatch as informational rather than failing on it.
+        approx_bucket = (team_rushes or 0) + (multi_carrier or 0) + (unattributed or 0)
+        if gap != approx_bucket:
+            warnings.warn(
+                f"{team} {season}: gap between offense_attempts and summed player attempts "
+                f"({gap}) does not equal offense_team_rushes + offense_multi_carrier_attempts + "
+                f"offense_unattributed_attempts ({approx_bucket}). This is DOCUMENTED as not "
+                f"guaranteed (see marts/051_rushing_charting_team_season.sql's R10 comment) -- "
+                f"expected non-reconciliation, not necessarily a bug; verify against a fresh "
+                f"backfill before treating this as a regression.",
+                stacklevel=2,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Test: get_player_detail RPC (2026-09-03 rushing-charting unit, U7, R16)
+# ---------------------------------------------------------------------------
+
+# Frozen from src/schemas/functions/get_player_detail.sql's RETURNS TABLE as it
+# stood BEFORE this unit added rushing_charting -- the additive contract (R16,
+# AE5) is that this list, in this order, is unchanged; only rushing_charting is
+# appended after it.
+GET_PLAYER_DETAIL_COLUMNS_PRE_RUSHING = [
+    "player_id",
+    "name",
+    "team",
+    "position",
+    "jersey",
+    "height",
+    "weight",
+    "year",
+    "home_city",
+    "home_state",
+    "season",
+    "stars",
+    "recruit_rating",
+    "national_ranking",
+    "recruit_class",
+    "pass_att",
+    "pass_cmp",
+    "pass_yds",
+    "pass_td",
+    "pass_int",
+    "pass_pct",
+    "rush_car",
+    "rush_yds",
+    "rush_td",
+    "rush_ypc",
+    "rec",
+    "rec_yds",
+    "rec_td",
+    "rec_ypr",
+    "tackles",
+    "solo",
+    "sacks",
+    "tfl",
+    "pass_def",
+    "def_int",
+    "fg_made",
+    "fg_att",
+    "xp_made",
+    "xp_att",
+    "punt_yds",
+    "wepa_passing",
+    "wepa_rushing",
+    "paar",
+]
+
+# Non-rushing fields that map 1:1 onto marts.player_comparison columns of the
+# same name -- used by AE5 to prove the rushing block is additive and every
+# other field is untouched. Excludes the RPC's own hardcoded-NULL columns
+# (solo, def_int, fg_made, fg_att, xp_made, xp_att, punt_yds) and the WEPA/PAAR
+# and rushing_charting columns, which have no player_comparison counterpart.
+PLAYER_COMPARISON_DIRECT_FIELDS = [
+    "player_id",
+    "name",
+    "team",
+    "position",
+    "jersey",
+    "height",
+    "weight",
+    "season",
+    "home_city",
+    "home_state",
+    "stars",
+    "recruit_rating",
+    "national_ranking",
+    "recruit_class",
+    "pass_att",
+    "pass_cmp",
+    "pass_yds",
+    "pass_td",
+    "pass_int",
+    "pass_pct",
+    "rush_car",
+    "rush_yds",
+    "rush_td",
+    "rush_ypc",
+    "rec",
+    "rec_yds",
+    "rec_td",
+    "rec_ypr",
+    "tackles",
+    "sacks",
+    "tfl",
+    "pass_def",
+]
+
+
+class TestGetPlayerDetail:
+    """R16/KTD6/AE5: the additive rushing_charting jsonb block on
+    public.get_player_detail. rushing_charting is appended LAST to the
+    RETURNS TABLE and every pre-existing column and row-selection rule
+    (player_id + optional season, ORDER BY season DESC LIMIT 1) is preserved.
+    """
+
+    def test_columns_equal_previous_list_plus_rushing_charting_last(self, db_conn):
+        """Even with zero matching rows, a SELECT * from a SQL table function
+        still reports its full declared column shape via cursor.description --
+        no live player_id is needed for this check."""
+        _, columns = _fetch_all(
+            db_conn,
+            "SELECT * FROM public.get_player_detail(%s)",
+            ("__no_such_player_id__",),
+        )
+        assert columns == GET_PLAYER_DETAIL_COLUMNS_PRE_RUSHING + ["rushing_charting"]
+
+    def test_charted_2025_rusher_has_full_directions_block(self, db_conn):
+        """Covers: a charted 2025 rusher returns a non-NULL object with all
+        four direction keys present, each carrying all 15 per-direction
+        metrics (including a direction whose carries are zero, since the mart
+        guarantees a fixed four-row melt -- see
+        marts/052_rushing_charting_direction_season.sql)."""
+        # Sampled from the intersection with marts.player_comparison (not
+        # rushing_charting_player_season alone): get_player_detail joins
+        # against player_comparison, so a fixture with no matching row there
+        # would fail len(detail_rows) == 1 for a data reason unrelated to the
+        # rushing_charting feature under test.
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT r.player_id, r.team
+            FROM marts.rushing_charting_player_season r
+            JOIN marts.player_comparison pc
+              ON pc.player_id::text = r.player_id AND pc.season = r.season AND pc.team = r.team
+            WHERE r.season = 2025
+            ORDER BY r.player_id
+            LIMIT 1
+            """,
+        )
+        if not rows:
+            pytest.skip(
+                "no 2025 rushing charting player-season rows with a matching "
+                "player_comparison row to test against"
+            )
+        player_id, team = rows[0]
+
+        detail_rows, detail_columns = _fetch_all(
+            db_conn,
+            "SELECT * FROM public.get_player_detail(%s, %s)",
+            (player_id, 2025),
+        )
+        assert len(detail_rows) == 1
+        detail = dict(zip(detail_columns, detail_rows[0]))
+        assert detail["team"] == team
+
+        rc = detail["rushing_charting"]
+        assert rc is not None, f"expected a rushing_charting block for {player_id}/{team}/2025"
+        directions = rc["directions"]
+        assert directions is not None, (
+            f"rushing_charting['directions'] was null for {player_id}/{team}/2025 -- "
+            "a separate-refresh window between the player-season and direction-season "
+            "marts can yield this; not the AttributeError a bare rc['directions'].keys() "
+            "would raise"
+        )
+        assert set(directions.keys()) == {"left", "middle", "right", "unknown"}
+        for direction, metrics in directions.items():
+            assert len(metrics) == 15, (
+                f"{direction}: expected 15 metric keys, got {len(metrics)}: {sorted(metrics)}"
+            )
+
+    def test_no_rushing_charting_leaves_rushing_charting_null_and_other_fields_unchanged(
+        self, db_conn
+    ):
+        """AE5: a player-season with no rushing charting (rushing data starts
+        2025 -- RUSHING_DATA_START in src/pipelines/sources/rushing.py --
+        so any pre-2025 season is guaranteed to have none) returns
+        rushing_charting IS NULL, and every pre-existing field matches a
+        direct marts.player_comparison read."""
+        rows, _ = _fetch_all(
+            db_conn,
+            "SELECT player_id, season FROM marts.player_comparison WHERE season < 2025 LIMIT 1",
+        )
+        if not rows:
+            pytest.skip("no pre-2025 player_comparison rows to test against")
+        player_id, season = rows[0]
+
+        detail_rows, detail_columns = _fetch_all(
+            db_conn,
+            "SELECT * FROM public.get_player_detail(%s, %s)",
+            (player_id, season),
+        )
+        assert len(detail_rows) == 1
+        detail = dict(zip(detail_columns, detail_rows[0]))
+        assert detail["rushing_charting"] is None
+
+        direct_rows, _ = _fetch_all(
+            db_conn,
+            f"""
+            SELECT {", ".join(PLAYER_COMPARISON_DIRECT_FIELDS)}
+            FROM marts.player_comparison
+            WHERE player_id = %s AND season = %s
+            """,
+            (player_id, season),
+        )
+        assert len(direct_rows) == 1
+        direct = dict(zip(PLAYER_COMPARISON_DIRECT_FIELDS, direct_rows[0]))
+        for field, expected in direct.items():
+            assert detail[field] == expected, (
+                f"{field}: get_player_detail returned {detail[field]!r}, "
+                f"marts.player_comparison has {expected!r}"
+            )
+        assert detail["year"] == direct["season"]
+
+    def test_season_player_did_not_play_returns_no_rows(self, db_conn):
+        """Existing behavior preserved: the function filters
+        `pc.season = p_season` before the ORDER BY season DESC LIMIT 1, so a
+        season with no matching player_comparison row eliminates every
+        candidate row BEFORE the LIMIT applies -- the function returns zero
+        rows, not one row with a NULL block. Verified by reading the SQL
+        (src/schemas/functions/get_player_detail.sql), not assumed."""
+        rows, _ = _fetch_all(
+            db_conn,
+            "SELECT player_id FROM marts.player_comparison LIMIT 1",
+        )
+        if not rows:
+            pytest.skip("no player_comparison rows to test against")
+        player_id = rows[0][0]
+
+        detail_rows, _ = _fetch_all(
+            db_conn,
+            "SELECT * FROM public.get_player_detail(%s, %s)",
+            (player_id, 1875),  # before any CFBD season this player could have played
+        )
+        assert detail_rows == []
+
+    def test_two_2025_team_stints_return_one_row_with_matching_team_block(self, db_conn):
+        """A player with two 2025 team stints (a mid-season transfer) has two
+        rows in marts.rushing_charting_player_season -- one per team, keyed
+        (season, player_id, team) per KTD3. get_player_detail still returns
+        exactly one row per call (its own LIMIT 1 is unchanged), and the
+        team-aware join (rcps.team = pc.team) must attach the block for the
+        SAME team as the row it picked, never the other stint's team."""
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT player_id
+            FROM marts.rushing_charting_player_season
+            WHERE season = 2025
+            GROUP BY player_id
+            HAVING COUNT(DISTINCT team) > 1
+            LIMIT 1
+            """,
+        )
+        if not rows:
+            pytest.skip("no 2025 rushing-charted player with two team stints to test against")
+        player_id = rows[0][0]
+
+        detail_rows, detail_columns = _fetch_all(
+            db_conn,
+            "SELECT * FROM public.get_player_detail(%s, %s)",
+            (player_id, 2025),
+        )
+        assert len(detail_rows) == 1, (
+            f"expected exactly one row for a two-stint player+season, got {len(detail_rows)}"
+        )
+        detail = dict(zip(detail_columns, detail_rows[0]))
+        returned_team = detail["team"]
+
+        expected_rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT attempts FROM marts.rushing_charting_player_season
+            WHERE player_id = %s AND season = 2025 AND team = %s
+            """,
+            (player_id, returned_team),
+        )
+        assert expected_rows, f"no rushing charting mart row for {player_id}/{returned_team}/2025"
+        assert detail["rushing_charting"] is not None
+        assert detail["rushing_charting"]["attempts"] == expected_rows[0][0], (
+            "rushing_charting block's attempts does not match the mart row for the "
+            "SAME team the function returned -- the join may have crossed team stints"
+        )
+
+    def test_anon_role_can_execute(self, db_conn):
+        """No explicit GRANT EXECUTE exists on this function (repo convention
+        for src/schemas/functions/*.sql -- confirmed via
+        `grep -rn "GRANT EXECUTE" src/schemas/functions/`, which matches
+        nothing), so anon relies on Postgres's default PUBLIC execute grant.
+        This pins that default is still in effect."""
+        with db_conn.cursor() as cur:
+            cur.execute("SET ROLE anon")
+            try:
+                cur.execute(
+                    "SELECT * FROM public.get_player_detail(%s)",
+                    ("__no_such_player_id__",),
+                )
+                cur.fetchall()
+            finally:
+                cur.execute("RESET ROLE")

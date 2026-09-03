@@ -1,7 +1,8 @@
-# Handoff: passing-charting convergence watch — findings and follow-up
+# Handoff: passing/rushing-charting convergence watch — findings and follow-up
 
 **From:** cfb-database
-**Date:** 2026-09-01 (watch started 2026-08-31 ~04:15 UTC)
+**Date:** 2026-09-01 (watch started 2026-08-31 ~04:15 UTC); rushing frontier
+added 2026-09-03.
 **Audience:** cfb-app (bot answer/caching policy) + future cfb-database
 sessions running the 2025 re-pull cadence.
 **Question under test:** does `parse_status='partial'` in
@@ -70,11 +71,56 @@ recompute. Do **NOT** use `max(_dlt_load_id)`: merge rewrites rows on every
 re-pull even when values are identical, so load-id watermarks produce false
 invalidations.
 
+## Rushing 2025 frontier (baseline pending first read, 2026-09-03)
+
+Rushing charting (Stage A of the 2026-09-03 rushing-charting unit) is now
+live: `stats.rushing_plays` carries 63,234 rows across 2025+2026 combined
+(from the backfill presence check, Deploy Schema run 33778100985) -- the
+per-season split has **not yet been read**, so there is no rushing frontier
+baseline number yet, only the combined total. The baseline for this watch
+should be captured from the first Stage B validation run (or a standalone
+query) once rushing views deploy, using the same tuple shape as the passing
+baseline above:
+
+```sql
+SELECT
+  season,
+  count(*) AS plays,
+  count(*) FILTER (WHERE parse_status = 'partial') AS partial_count,
+  count(*) FILTER (WHERE parse_status = 'invalid') AS invalid_count,
+  count(*) FILTER (WHERE rush_direction IS NOT NULL) AS direction_charted_count
+FROM stats.rushing_plays
+GROUP BY season
+ORDER BY season;
+```
+
+`invalid` is rushing's own third `parse_status` bucket (passing only has
+`complete`/`partial`) -- track it separately from `partial` in every
+baseline and re-pull comparison; do not fold it into either "charted" or
+"not yet charted."
+
+A same-day live probe (earlier 2026-09-03, before the presence-check backfill
+completed) saw 2025 week-5 plays all `parse_status='partial'` and 2026 week-1
+`complete`, with season-grain row counts 1,622 player-seasons / 136
+team-seasons for 2025 and 76 / 16 (partial season) for 2026 -- consistent
+with passing's pattern of 2025 being an active in-progress re-charting queue
+rather than terminal-as-published.
+
+**Next action (owner: cfb-database):** fold rushing into the next dated
+2025 frontier re-pull, due **~2026-09-07** alongside the passing re-pull
+above -- dispatch `backfill-sources` on `main` with seasons `2025`, sources
+`passing,rushing` (~124 calls combined). Record the rushing tuple per season
+on that run as the first baseline, then apply the same rule as passing: two
+consecutive static reads => declare 2025 rushing terminal-as-stated.
+
 ## Related context
 
 - Charting coverage semantics (2025 partial-by-policy, permanent
   `*_attempts_available` denominators, finished-season skip implications):
-  `.claude/skills/cfbd-api/SKILL.md`, "Passing charting coverage".
+  `.claude/skills/cfbd-api/SKILL.md`, "Passing charting coverage" and
+  "Rushing charting coverage".
+- Rushing charting shape, denominators, and the R10 non-reconciliation rule:
+  `docs/handoffs/2026-09-03-rushing-charting-for-cfb-app.md`.
 - Finished-season skip means 2025 charting improvements reach the warehouse
-  **only** via explicit `--sources passing` re-pulls — the daily path will
-  never pick them up on its own.
+  **only** via explicit `--sources passing`/`--sources rushing` re-pulls —
+  the daily path will never pick them up on its own.

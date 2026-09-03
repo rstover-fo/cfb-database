@@ -265,11 +265,11 @@ same blast-radius reason as passing.
 
 | # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| 76 | `/rushing/plays` | stats.rushing_plays | rushing.py | rushing_plays_resource | YES | merge | game_id, play_id | 2025-2026 | WORKING (backfill pending) |
-| 77 | `/rushing/players/games` | stats.rushing_player_games | rushing.py | rushing_player_games_resource | YES | merge | game_id, player_id | 2025-2026 | WORKING (backfill pending) |
-| 78 | `/rushing/teams/games` | stats.rushing_team_games | rushing.py | rushing_team_games_resource | YES | merge | game_id, team | 2025-2026 | WORKING (backfill pending) |
-| 79 | `/rushing/players/season` | stats.rushing_player_season | rushing.py | rushing_player_season_resource | YES | merge | season, player_id, team | 2025-2026 | WORKING (backfill pending) |
-| 80 | `/rushing/teams/season` | stats.rushing_team_season | rushing.py | rushing_team_season_resource | YES | merge | season, team | 2025-2026 | WORKING (backfill pending) |
+| 76 | `/rushing/plays` | stats.rushing_plays | rushing.py | rushing_plays_resource | YES | merge | game_id, play_id | 2025-2026 | WORKING (2025+2026 backfilled 2026-09-03: 63,234 rows; weekly 2025 re-pull per `docs/handoffs/2026-09-01-charting-convergence-watch.md`) |
+| 77 | `/rushing/players/games` | stats.rushing_player_games | rushing.py | rushing_player_games_resource | YES | merge | game_id, player_id | 2025-2026 | WORKING (2025+2026 backfilled 2026-09-03: 8,205 rows; weekly 2025 re-pull per `docs/handoffs/2026-09-01-charting-convergence-watch.md`) |
+| 78 | `/rushing/teams/games` | stats.rushing_team_games | rushing.py | rushing_team_games_resource | YES | merge | game_id, team | 2025-2026 | WORKING (2025+2026 backfilled 2026-09-03: 1,758 rows; weekly 2025 re-pull per `docs/handoffs/2026-09-01-charting-convergence-watch.md`) |
+| 79 | `/rushing/players/season` | stats.rushing_player_season | rushing.py | rushing_player_season_resource | YES | merge | season, player_id, team | 2025-2026 | WORKING (2025+2026 backfilled 2026-09-03: 1,698 rows; weekly 2025 re-pull per `docs/handoffs/2026-09-01-charting-convergence-watch.md`) |
+| 80 | `/rushing/teams/season` | stats.rushing_team_season | rushing.py | rushing_team_season_resource | YES | merge | season, team | 2025-2026 | WORKING (2025+2026 backfilled 2026-09-03: 152 rows; weekly 2025 re-pull per `docs/handoffs/2026-09-01-charting-convergence-watch.md`) |
 
 ---
 

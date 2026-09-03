@@ -112,10 +112,14 @@ Classify before retrying: local validation, 400 invalid request, 401 auth,
   2026 week-1 plays `complete`.
 - **Four coverage denominators, all permanent contract**:
   `rushing_yards_available` (yardage tiers), `direction_eligible_attempts`
-  and `direction_available_attempts` (direction splits — eligible attempts
-  can still have `unknown` direction, so both are needed), and
-  `touchdown_status_available` (touchdowns, team rows only). Every rate or
-  share must carry or filter on the matching denominator.
+  and `direction_available_attempts` (direction splits — `available` is
+  eligible carries already resolved to left/middle/right; `unknown` is the
+  unresolved remainder, `eligible - available`, not a charted bucket, so
+  both denominators are needed to tell resolved share from eligible share),
+  and `touchdown_status_available` (touchdowns, team rows only). Every rate
+  or share must carry or filter on the matching denominator, and never
+  divide `unknown` by `available` (yields >100%) — `unknown / eligible` is
+  the coverage gap, not a share.
 - **`parse_status` has three values**: `complete`, `partial`, `invalid`.
   `invalid` is its own bucket — never count it as charted and never fold it
   into `partial` or a denominator.
@@ -127,9 +131,12 @@ Classify before retrying: local validation, 400 invalid request, 401 auth,
   the player's own `attempts` instead. Team rows additionally add sacks,
   kneels, team-only and unresolved attempts via the same counters. Do not
   present the two as summable.
-- **Direction rows include `unknown`**: keep it so direction coverage stays
-  visible; a team whose rushes are all `unknown` is a charting-coverage
-  fact, not a data bug.
+- **Direction rows include `unknown`**: it's the unresolved remainder
+  (`direction_eligible_attempts - direction_available_attempts`), not a
+  fourth charted direction alongside left/middle/right — keep the row so
+  the coverage gap stays visible instead of silently dropped; a team whose
+  rushes are all `unknown` has zero carries resolved to a direction so far,
+  a charting-coverage fact, not a data bug.
 
 ## Endpoint discovery
 

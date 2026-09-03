@@ -7,7 +7,8 @@ tenure/season summaries, conference affiliation history, a new player
 "success rate" family, an expanded SRS view, a player season overview,
 questions about whether two existing endpoints still accept a bare `year`,
 and -- new in v5.25.0 -- a `/passing` family: play-level passing charting,
-player and team passing splits by game and by season). Before writing dlt
+player and team passing splits by game and by season; then -- new in
+v5.26.0 -- a matching `/rushing` family, probes 19-23). Before writing dlt
 source modules and RESTAPIConfig entries for any of them we need real
 response shapes -- field names, nesting, row grain, and which year-only
 calls actually work -- not assumptions from the changelog.
@@ -16,7 +17,7 @@ This script is read-only: it never writes to the warehouse, and every
 request goes through the same rate-limited `CFBDClient` / `make_request`
 path the pipelines use (see the `cfbd-api` and `dlt-pipelines` skills), so
 calls are recorded against the monthly budget like any other pipeline call.
-It makes ~24 requests total across 18 probes (several issue a second,
+It makes ~35 requests total across 23 probes (several issue a second,
 conditional or comparison request -- see PROBES below) -- narrow and
 logged, matching scripts/probe_offseason_availability.py and
 scripts/probe_metrics_wp.py.
@@ -36,7 +37,7 @@ pipeline run alongside it), so `get_probe_client()` below falls back to
 reading that directly when dlt has nothing configured.
 
 Usage:
-    python scripts/probe_2026_endpoints.py                  # all 18 probes
+    python scripts/probe_2026_endpoints.py                  # all 23 probes
     python scripts/probe_2026_endpoints.py --only 4,9,12     # just these
     python scripts/probe_2026_endpoints.py --dry-run         # no network, no key needed
     python scripts/probe_2026_endpoints.py --out probe_output/
@@ -455,6 +456,118 @@ def probe_passing_teams_season(client, ctx, dry_run):
     return [call_2025, call_2026], notes
 
 
+def _rushing_shape_notes(label: str, call) -> list[str]:
+    """Rushing-specific shape checks on a call's raw sample (spec v5.26.0).
+
+    Reports whether `parseStatus == "invalid"` (a third enum value passing never
+    had) appears, and whether the per-direction `directions` block carries an
+    `unknown` key -- both decide how the rushing source and marts are built
+    (KTD4/KTD5 in docs/plans/2026-09-03-0833-feat-rushing-charting-plan.md).
+    """
+    sample = getattr(call, "sample_full", None) or []
+    if not sample:
+        return []
+    notes = []
+    statuses = {str(r.get("parseStatus")) for r in sample if isinstance(r, dict)}
+    if statuses:
+        notes.append(f"{label}: parseStatus values seen in sample = {sorted(statuses)}")
+    first = sample[0] if isinstance(sample[0], dict) else {}
+    directions = first.get("directions")
+    if directions is None and isinstance(first.get("offense"), dict):
+        directions = first["offense"].get("directions")
+    if isinstance(directions, dict):
+        notes.append(
+            f"{label}: directions keys = {sorted(directions)} "
+            f"(expect left/middle/right/unknown; dlt flattens to directions__<dir>__<metric>)"
+        )
+    return notes
+
+
+def probe_rushing_plays(client, ctx, dry_run):
+    # Spec v5.26.0 documents `year` as "Requires team or week" -- the same
+    # runtime rule /passing/plays enforces. One bare-year call is kept here
+    # deliberately to record the 400 (not repeated in the sweep otherwise).
+    call_bare = do_call(client, "/rushing/plays", {"year": 2025}, dry_run)
+    call_2025_week5 = do_call(client, "/rushing/plays", {"year": 2025, "week": 5}, dry_run)
+    call_2026_week1 = do_call(client, "/rushing/plays", {"year": 2026, "week": 1}, dry_run)
+    notes = [
+        "Bare year=2025 is expected to 400 ('team or week is required') -- recorded once to "
+        "confirm the week walk is required, as for /passing/plays. Volume: a season runs "
+        "~50k rush attempts; one week ~3,000. rusherId is nullable (team rushes, sacks, "
+        "kneels); attributionStatus and directionAnalysisEligible are the population flags."
+    ]
+    if not dry_run:
+        for label, call in (("2025 week5", call_2025_week5), ("2026 week1", call_2026_week1)):
+            if looks_capped(call.count):
+                notes.append(
+                    f"CAP SUSPECTED: {label} call count={call.count} sits on/near a round number."
+                )
+            notes.extend(_rushing_shape_notes(label, call))
+    return [call_bare, call_2025_week5, call_2026_week1], notes
+
+
+def probe_rushing_players_games(client, ctx, dry_run):
+    # Spec: "year -- Requires team or week; optional when rusherId is specified
+    # alone." Sweep week-scoped 2025/2026 like the passing sibling.
+    call_2025_week5 = do_call(client, "/rushing/players/games", {"year": 2025, "week": 5}, dry_run)
+    call_2026_week1 = do_call(client, "/rushing/players/games", {"year": 2026, "week": 1}, dry_run)
+    notes = [
+        "Player totals include only guarded rusher attribution and are NOT expected to sum "
+        "to team totals (spec description). Confirm the nested `directions` block shape."
+    ]
+    if not dry_run:
+        if looks_capped(call_2025_week5.count):
+            notes.append(
+                f"CAP SUSPECTED: 2025 week5 count={call_2025_week5.count} sits on/near a round number."
+            )
+        notes.extend(_rushing_shape_notes("2025 week5", call_2025_week5))
+    return [call_2025_week5, call_2026_week1], notes
+
+
+def probe_rushing_players_season(client, ctx, dry_run):
+    call_2025 = do_call(client, "/rushing/players/season", {"year": 2025}, dry_run)
+    call_2026 = do_call(client, "/rushing/players/season", {"year": 2026}, dry_run)
+    notes = [
+        "Historical-depth check for the /rushing family: CFBD announced partial 2025 and "
+        "mostly-full 2026 coverage (2026-09-02). If 2025 has rows, RUSHING_DATA_START=2025; "
+        "compare 2025 vs 2026 counts for the coverage gap."
+    ]
+    if not dry_run:
+        notes.extend(_rushing_shape_notes("2025", call_2025))
+    return [call_2025, call_2026], notes
+
+
+def probe_rushing_teams_games(client, ctx, dry_run):
+    # Spec: year required; "Either team or week is required."
+    call_2025_week5 = do_call(client, "/rushing/teams/games", {"year": 2025, "week": 5}, dry_run)
+    call_2026_week1 = do_call(client, "/rushing/teams/games", {"year": 2026, "week": 1}, dry_run)
+    notes = [
+        "Confirm nested offense/defense dicts each carrying the production block plus a "
+        "nested `directions` dict (three levels: offense.directions.left.carries -> "
+        "offense__directions__left__carries after dlt flattening)."
+    ]
+    if not dry_run:
+        if looks_capped(call_2025_week5.count):
+            notes.append(
+                f"CAP SUSPECTED: 2025 week5 count={call_2025_week5.count} sits on/near a round number."
+            )
+        notes.extend(_rushing_shape_notes("2025 week5", call_2025_week5))
+    return [call_2025_week5, call_2026_week1], notes
+
+
+def probe_rushing_teams_season(client, ctx, dry_run):
+    # Spec: "year -- Required unless team is specified." Bare year should work.
+    call_2025 = do_call(client, "/rushing/teams/season", {"year": 2025}, dry_run)
+    call_2026 = do_call(client, "/rushing/teams/season", {"year": 2026}, dry_run)
+    notes = [
+        "Team production adds touchdownStatusAvailable / rushingTouchdowns to the shared "
+        "block; ~136 FBS team rows expected per season."
+    ]
+    if not dry_run:
+        notes.extend(_rushing_shape_notes("2025", call_2025))
+    return [call_2025, call_2026], notes
+
+
 # (number, slug, function) -- number and slug drive both --only selection and
 # output filenames (NN_<slug>.json).
 PROBES: list[tuple[int, str, callable]] = [
@@ -476,6 +589,11 @@ PROBES: list[tuple[int, str, callable]] = [
     (16, "passing_players_season", probe_passing_players_season),
     (17, "passing_teams_games", probe_passing_teams_games),
     (18, "passing_teams_season", probe_passing_teams_season),
+    (19, "rushing_plays", probe_rushing_plays),
+    (20, "rushing_players_games", probe_rushing_players_games),
+    (21, "rushing_players_season", probe_rushing_players_season),
+    (22, "rushing_teams_games", probe_rushing_teams_games),
+    (23, "rushing_teams_season", probe_rushing_teams_season),
 ]
 PROBE_NUMBERS = {number for number, _, _ in PROBES}
 
@@ -589,7 +707,7 @@ def main(argv: list[str] | None = None) -> int:
         "--only",
         type=str,
         default=None,
-        help="Comma-separated probe numbers to run, e.g. 4,9,12 (default: all 18)",
+        help="Comma-separated probe numbers to run, e.g. 4,9,12 (default: all 23)",
     )
     parser.add_argument(
         "--out",

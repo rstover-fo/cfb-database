@@ -401,3 +401,94 @@ class TestBacktestFreshnessGate:
             "the daily backtest must run BARE so the script defaults stay "
             f"canonical; found: {invoked.strip()!r}"
         )
+
+
+class TestCheckVariantTwins:
+    """KTD7 tripwire wired into the daily verifier: check_variant_twins must
+    FAIL on an unexpected __v_double twin, WARN (never FAIL) on a missing
+    expected twin, and WARN (never crash) if the finder itself errors."""
+
+    def test_no_unexpected_no_missing_passes(self, monkeypatch):
+        from scripts.verify_load import Report, check_variant_twins
+
+        monkeypatch.setattr(
+            "src.pipelines.utils.variant_twins.find_unexpected_twins", lambda cur: {}
+        )
+        monkeypatch.setattr("src.pipelines.utils.variant_twins.find_missing_twins", lambda cur: {})
+
+        report = Report()
+        check_variant_twins(cur=object(), report=report)
+
+        assert report.failures == 0
+
+    def test_unexpected_twin_fails(self, monkeypatch, capsys):
+        from scripts.verify_load import Report, check_variant_twins
+
+        monkeypatch.setattr(
+            "src.pipelines.utils.variant_twins.find_unexpected_twins",
+            lambda cur: {"stats.rushing_player_season": ["new_metric__v_double"]},
+        )
+        monkeypatch.setattr("src.pipelines.utils.variant_twins.find_missing_twins", lambda cur: {})
+
+        report = Report()
+        check_variant_twins(cur=object(), report=report)
+
+        assert report.failures == 1
+        out = capsys.readouterr().out
+        assert "[FAIL] variant_twins:" in out
+        assert "stats.rushing_player_season" in out
+        assert "new_metric__v_double" in out
+
+    def test_missing_twin_warns_not_fails(self, monkeypatch, capsys):
+        from scripts.verify_load import Report, check_variant_twins
+
+        monkeypatch.setattr(
+            "src.pipelines.utils.variant_twins.find_unexpected_twins", lambda cur: {}
+        )
+        monkeypatch.setattr(
+            "src.pipelines.utils.variant_twins.find_missing_twins",
+            lambda cur: {"stats.passing_player_season": ["average_yards_after_catch__v_double"]},
+        )
+
+        report = Report()
+        check_variant_twins(cur=object(), report=report)
+
+        assert report.failures == 0
+        out = capsys.readouterr().out
+        assert "[WARN] variant_twins_missing:" in out
+        assert "stats.passing_player_season" in out
+
+    def test_finder_exception_warns_never_crashes(self, monkeypatch, capsys):
+        from scripts.verify_load import Report, check_variant_twins
+
+        def _boom(cur):
+            raise RuntimeError("relation does not exist")
+
+        monkeypatch.setattr("src.pipelines.utils.variant_twins.find_unexpected_twins", _boom)
+
+        report = Report()
+        check_variant_twins(cur=object(), report=report)  # must not raise
+
+        assert report.failures == 0
+        out = capsys.readouterr().out
+        assert "[WARN] variant_twins:" in out
+        assert "could not run" in out
+
+    def test_the_check_is_wired_into_the_run_after_freshness(self):
+        """A check that is never called is a comment -- and this one must run
+        after check_freshness per the module docstring's numbered list."""
+        import inspect
+
+        import scripts.verify_load as vl
+
+        src = inspect.getsource(vl.verify)
+        assert "check_freshness(cur, in_season, strict, report)" in src
+        assert "check_variant_twins(cur, report)" in src
+        assert src.index("check_freshness(cur, in_season, strict, report)") < src.index(
+            "check_variant_twins(cur, report)"
+        )
+
+    def test_docstring_lists_the_check(self):
+        import scripts.verify_load as vl
+
+        assert "variant" in vl.__doc__.lower()

@@ -79,6 +79,14 @@ Elo/adjusted EPA (including the as-of weekly EPA build), refits fitted_v1 when i
 model's upcoming scores, then runs post-load checks (`scripts/verify_load.py`). Failures
 open/update a rolling GitHub issue.
 
+- `verify_load.py` also runs the KTD7 variant-twin tripwire (`check_variant_twins`,
+  backed by `src/pipelines/utils/variant_twins.py`): dlt sometimes splits a
+  charting metric into a bigint base column plus a `<col>__v_double` twin, and
+  every mart reading `stats.rushing_*`/`stats.passing_player_season` COALESCEs
+  only the twins that existed when it was authored. A daily load that creates a
+  NEW twin now FAILs the run naming the column instead of silently going NULL
+  in the mart/api view/RPC until someone notices.
+
 **Finished-season skip:** on the unattended path (no `--season`, no `--sources`)
 `load_season.py` skips sources whose data cannot change once a season is complete
 (`IMMUTABLE_ONCE_FINAL` -- plays, game_stats, ratings, recruiting, draft, ...).

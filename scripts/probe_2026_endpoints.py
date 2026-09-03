@@ -518,7 +518,8 @@ def probe_rushing_players_games(client, ctx, dry_run):
     if not dry_run:
         if looks_capped(call_2025_week5.count):
             notes.append(
-                f"CAP SUSPECTED: 2025 week5 count={call_2025_week5.count} sits on/near a round number."
+                f"CAP SUSPECTED: 2025 week5 count={call_2025_week5.count} "
+                "sits on/near a round number."
             )
         notes.extend(_rushing_shape_notes("2025 week5", call_2025_week5))
     return [call_2025_week5, call_2026_week1], notes
@@ -549,7 +550,8 @@ def probe_rushing_teams_games(client, ctx, dry_run):
     if not dry_run:
         if looks_capped(call_2025_week5.count):
             notes.append(
-                f"CAP SUSPECTED: 2025 week5 count={call_2025_week5.count} sits on/near a round number."
+                f"CAP SUSPECTED: 2025 week5 count={call_2025_week5.count} "
+                "sits on/near a round number."
             )
         notes.extend(_rushing_shape_notes("2025 week5", call_2025_week5))
     return [call_2025_week5, call_2026_week1], notes

@@ -35,6 +35,14 @@ GATE_TABLES: list[tuple[str, str]] = [
     ("betting", "lines"),
     ("metrics", "wepa_team_season"),
     ("core", "game_player_stats"),
+    # Rushing charting tables (Stage A of the 2026-09-03 rushing plan): reported so
+    # the Stage B marts/views can be authored against live column names and any
+    # dlt __v_double variant twins, not the spec's camelCase field list.
+    ("stats", "rushing_plays"),
+    ("stats", "rushing_player_games"),
+    ("stats", "rushing_team_games"),
+    ("stats", "rushing_player_season"),
+    ("stats", "rushing_team_season"),
 ]
 
 # The subset --strict enforces must be present and non-empty (the Phase 0

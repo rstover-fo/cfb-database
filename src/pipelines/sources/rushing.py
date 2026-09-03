@@ -24,11 +24,15 @@ captures at tests/fixtures/cfbd_2026/rushing_*.json):
   through unchanged (KTD5).
 - `rusherId`/`rusher`/`rushDirection`/`rushingYards`/`rusherYards`/
   `isRushingTouchdown`/`ppa`/`success` are nullable on plays.
-- Player aggregate rows (player_games, player_season) count ONLY guarded
-  rusher attribution and do NOT sum to team totals -- team aggregate rows
-  (team_games, team_season) separately include sacks, kneels, team-only
-  attempts, and unresolved attribution via their own `sacks`/`kneels`/
-  `teamRushes`/`unattributedAttempts` counters.
+- Player aggregate rows (player_games, player_season) and team aggregate
+  rows (team_games, team_season) BOTH carry `sacks`/`kneels`/`teamRushes`/
+  `unattributedAttempts`/`multiCarrierAttempts` counters. Player rows count
+  ONLY guarded rusher attribution, so those counters are typically 0 there
+  -- individually attributed sacks/kneels are folded into the player's own
+  `attempts`/`individualAttempts` instead (observed: a player-game row with
+  `sacks=3` and `individualAttempts=10`). Team rows additionally add
+  team-only attempts and unresolved attribution via the same counters --
+  so player totals do NOT sum to team totals.
 - Aggregate rows (player and team grain) carry a nested `directions` object
   keyed unknown/right/middle/left, 15 metrics each (carries, yards,
   yardsPerCarry, successRate, ppa, totalPpa, lineYards, lineYardsTotal,
@@ -209,8 +213,11 @@ def rushing_player_games_resource(years: list[int]) -> Iterator[dict]:
     breakdown -- one row per player per game.
 
     Player totals count only guarded rusher attribution and do NOT sum to
-    team totals (see module docstring) -- team-only attempts, sacks, and
-    kneels live on rushing_team_games instead. The API already stamps
+    team totals (see module docstring) -- the `sacks`/`kneels`/`teamRushes`/
+    `unattributedAttempts` counters live on this resource too (typically 0
+    here, since team-only and unresolved attempts land on rushing_team_games
+    instead), and individually attributed sacks/kneels are folded into this
+    resource's own `attempts` count. The API already stamps
     `season`/`week`/`seasonType` on every row; `setdefault` below only
     guards the (unobserved) case where a row omits one.
 

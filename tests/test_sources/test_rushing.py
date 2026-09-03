@@ -57,6 +57,63 @@ def test_rushing_source_returns_five_resources():
     }
 
 
+class TestSourceModeDispatch:
+    """rushing_source(years=None) resolves years from `mode` before building
+    its five resources. Calling rushing_source(...) normally would build a
+    real DltSource, and a resource function patched to return a plain
+    MagicMock breaks dlt's pipe-construction (`InvalidResourceDataTypeMultiplePipes`)
+    -- so this drives the undecorated function via `__wrapped__` (dlt
+    decorators preserve it via functools.wraps) and patches each
+    `*_resource` function to capture the `years` list it was built with,
+    without needing to construct a real DltSource or iterate any
+    generator."""
+
+    RESOURCE_NAMES = [
+        "rushing_plays_resource",
+        "rushing_player_games_resource",
+        "rushing_team_games_resource",
+        "rushing_player_season_resource",
+        "rushing_team_season_resource",
+    ]
+
+    def test_years_none_incremental_mode_uses_current_season(self):
+        import src.pipelines.sources.rushing as rushing_mod
+
+        patchers = [
+            patch.object(rushing_mod, name, MagicMock(return_value=object()))
+            for name in self.RESOURCE_NAMES
+        ]
+        mocks = [p.start() for p in patchers]
+        try:
+            with patch("src.pipelines.sources.rushing.get_current_season", return_value=2026):
+                rushing_mod.rushing_source.__wrapped__(years=None, mode="incremental")
+        finally:
+            for p in patchers:
+                p.stop()
+
+        for mock in mocks:
+            mock.assert_called_once_with([2026])
+
+    def test_years_none_backfill_mode_uses_full_stats_range(self):
+        import src.pipelines.sources.rushing as rushing_mod
+        from src.pipelines.config.years import YEAR_RANGES
+
+        patchers = [
+            patch.object(rushing_mod, name, MagicMock(return_value=object()))
+            for name in self.RESOURCE_NAMES
+        ]
+        mocks = [p.start() for p in patchers]
+        try:
+            rushing_mod.rushing_source.__wrapped__(years=None, mode="backfill")
+        finally:
+            for p in patchers:
+                p.stop()
+
+        expected_years = YEAR_RANGES["stats"].to_list()
+        for mock in mocks:
+            mock.assert_called_once_with(expected_years)
+
+
 class TestResourceCompositionTable:
     """Locks in table/PK/write-disposition per KTD3."""
 
@@ -114,6 +171,27 @@ class TestEraGuardSkipsPre2025:
 
             mock_make_request.assert_not_called()
             assert results == []
+
+    def test_mixed_pre_and_post_guard_years_only_call_for_the_eligible_year(self):
+        """A single invocation spanning both sides of RUSHING_DATA_START must
+        skip the pre-2025 year with zero calls and walk weeks only for the
+        eligible year -- not just "pre-2025 alone costs nothing" (covered
+        above) but "a pre-2025 year mixed into the same call never leaks a
+        call of its own"."""
+        from src.pipelines.sources.rushing import rushing_plays_resource
+
+        with (
+            patch("src.pipelines.sources.rushing.get_client") as mock_get_client,
+            patch("src.pipelines.sources.rushing.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.return_value = []
+
+            list(rushing_plays_resource(years=[2014, 2025]))
+
+            calls = mock_make_request.call_args_list
+            assert len(calls) == 20
+            assert all(c.kwargs["params"]["year"] == 2025 for c in calls)
 
 
 class TestWeekIterationParamSequence:
@@ -304,6 +382,52 @@ class TestGameGrainRowsStampedWithSeasonWeekSeasonType:
             mock_make_request.side_effect = [fixture] + [[]] * 19
 
             results = list(rushing_player_games_resource(years=[2025]))
+
+            assert len(results) == len(fixture)
+            for row, fixture_row in zip(results, fixture, strict=True):
+                assert row["season"] == fixture_row["season"] == 2025
+                assert row["seasonType"] == fixture_row["seasonType"]
+                assert row["week"] == fixture_row["week"]
+
+    def test_plays_fixture_rows_carry_season_week_season_type(self):
+        """Same setdefault safety-net coverage as the player-games test
+        above, for the play-grain resource (all 5 fixture rows carry
+        week=5/regular/2025)."""
+        from src.pipelines.sources.rushing import rushing_plays_resource
+
+        fixture = _load_fixture("rushing_plays.json")
+
+        with (
+            patch("src.pipelines.sources.rushing.get_client") as mock_get_client,
+            patch("src.pipelines.sources.rushing.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [fixture] + [[]] * 19
+
+            results = list(rushing_plays_resource(years=[2025]))
+
+            assert len(results) == len(fixture)
+            for row, fixture_row in zip(results, fixture, strict=True):
+                assert row["season"] == fixture_row["season"] == 2025
+                assert row["seasonType"] == fixture_row["seasonType"]
+                assert row["week"] == fixture_row["week"]
+
+    def test_team_games_fixture_rows_carry_season_week_season_type(self):
+        """Same setdefault safety-net coverage as the player-games test
+        above, for the team-game-grain resource (all 5 fixture rows carry
+        week=5/regular/2025)."""
+        from src.pipelines.sources.rushing import rushing_team_games_resource
+
+        fixture = _load_fixture("rushing_teams_games.json")
+
+        with (
+            patch("src.pipelines.sources.rushing.get_client") as mock_get_client,
+            patch("src.pipelines.sources.rushing.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [fixture] + [[]] * 19
+
+            results = list(rushing_team_games_resource(years=[2025]))
 
             assert len(results) == len(fixture)
             for row, fixture_row in zip(results, fixture, strict=True):

@@ -152,3 +152,11 @@ LEFT JOIN team_ids ti
 
 -- Required for REFRESH CONCURRENTLY. No team_id index: 152 rows, seq scans win.
 CREATE UNIQUE INDEX ON marts.rushing_charting_team_season (season, team);
+
+-- Re-grant on every apply: DROP MATERIALIZED VIEW loses grants (no ALTER
+-- DEFAULT PRIVILEGES for the PostgREST roles in marts). cfb-app reads this
+-- mart only via api.rushing_charting_team_season (owner-rights view), but
+-- grant SELECT directly here too for symmetry with marts 050/052, which
+-- public.get_player_detail() (no SECURITY DEFINER, runs as the caller)
+-- reads directly.
+GRANT SELECT ON marts.rushing_charting_team_season TO anon, authenticated;

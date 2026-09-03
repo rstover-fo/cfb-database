@@ -23,14 +23,17 @@
 -- right, not a residual.
 --
 -- Shares are the CONSUMER'S to compute, not this mart's: a direction's
--- share of a side's total carries is this row's `carries` /
--- `direction_available_attempts` (or `direction_eligible_attempts` for the
--- eligible-population version) on that same row -- both denominators ride
--- along on every row so no join back to marts 050/051 is required for that
--- one computation. This mart deliberately does not pre-compute a share
--- column: eligible vs available denominators serve different questions
--- (see below) and baking in one choice would silently answer the other
--- wrong.
+-- share of a side's total carries is this row's `carries`::numeric /
+-- `NULLIF(direction_available_attempts, 0)` (or
+-- `NULLIF(direction_eligible_attempts, 0)` for the eligible-population
+-- version) on that same row -- both denominators ride along on every row so
+-- no join back to marts 050/051 is required for that one computation. This
+-- mart deliberately does not pre-compute a share column: eligible vs
+-- available denominators serve different questions (see below) and baking
+-- in one choice would silently answer the other wrong. The fixed four-row
+-- melt guarantees rows where a denominator is 0 (no charted direction
+-- coverage) -- NULLIF makes that a NULL share, not a division-by-zero
+-- error.
 --
 -- Denominators (R8): direction_eligible_attempts is the count of carries
 -- CFBD considered eligible for direction charting (e.g. excludes kneels/
@@ -414,3 +417,10 @@ CREATE UNIQUE INDEX ON marts.rushing_charting_direction_season
 -- Query indexes
 CREATE INDEX ON marts.rushing_charting_direction_season (season, team, side);
 CREATE INDEX ON marts.rushing_charting_direction_season (entity_id, entity_type);
+
+-- Re-grant on every apply: DROP MATERIALIZED VIEW loses grants (no ALTER
+-- DEFAULT PRIVILEGES for the PostgREST roles in marts). public.get_player_detail()
+-- is LANGUAGE sql with no SECURITY DEFINER (runs as the caller) and
+-- subqueries this mart directly, so anon/authenticated need direct SELECT
+-- here for the RPC to work.
+GRANT SELECT ON marts.rushing_charting_direction_season TO anon, authenticated;

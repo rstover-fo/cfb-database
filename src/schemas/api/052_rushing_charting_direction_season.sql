@@ -28,9 +28,13 @@
 --
 -- SHARES ARE THE CONSUMER''S TO COMPUTE: this view does not pre-compute a
 -- direction-share column. A direction''s share of a side''s charted carries
--- is that row''s carries / direction_available_attempts (or
--- / direction_eligible_attempts for the eligible-population version) --
--- both denominators are already on the row.
+-- is that row''s carries::numeric / NULLIF(direction_available_attempts, 0)
+-- (or / NULLIF(direction_eligible_attempts, 0) for the eligible-population
+-- version) -- both denominators are already on the row. The fixed four-row
+-- melt guarantees rows where that denominator is 0 (no charted direction
+-- coverage for that entity/side); NULLIF turns those into NULL instead of a
+-- division-by-zero error, and NULL is the correct answer -- there is no
+-- share to report.
 --
 -- CONTRACT (R10, non-reconciliation): summing a player entity''s carries
 -- across its 4 offense rows for a team will NOT equal that team entity''s
@@ -56,6 +60,6 @@ CREATE VIEW api.rushing_charting_direction_season AS
 SELECT *
 FROM marts.rushing_charting_direction_season;
 
-COMMENT ON VIEW api.rushing_charting_direction_season IS 'Rushing charting direction splits (2025+): season, entity_type (player|team), entity_id (text), team, team_id (numeric, nullable on ambiguous name mapping), side (offense|defense; players are offense only), direction (left|middle|right|unknown), carries, yards, yards_per_carry, success_rate, ppa, total_ppa, line_yards, line_yards_total, second_level_yards, second_level_yards_total, open_field_yards, open_field_yards_total, stuff_rate, power_success, explosiveness, direction_eligible_attempts, direction_available_attempts. FIXED FOUR-ROW GUARANTEE: every (entity, side) has exactly 4 rows, one per direction, even when every metric is NULL -- a player-season row always melts to 4 offense rows, a team-season row always melts to 8 rows (4 offense + 4 defense). unknown is CFBD''s own charted bucket, never derived by subtraction. NULL on a metric means those carries were not charted, 0 is a real observed value; direction_eligible_attempts/direction_available_attempts (available <= eligible) are the direction-coverage denominators, constant across an (entity, side) block''s 4 rows, and are never interchangeable with the yardage-tier/touchdown denominators on the player-season/team-season views. Shares are the consumer''s to compute: carries / direction_available_attempts (or / direction_eligible_attempts). CONTRACT (R10): player-row carries never reconcile to team-row carries for the same (season, team, offense) -- see api.rushing_charting_player_season/api.rushing_charting_team_season. Backed by marts.rushing_charting_direction_season.';
+COMMENT ON VIEW api.rushing_charting_direction_season IS 'Rushing charting direction splits (2025+): season, entity_type (player|team), entity_id (text), team, team_id (numeric, nullable on ambiguous name mapping), side (offense|defense; players are offense only), direction (left|middle|right|unknown), carries, yards, yards_per_carry, success_rate, ppa, total_ppa, line_yards, line_yards_total, second_level_yards, second_level_yards_total, open_field_yards, open_field_yards_total, stuff_rate, power_success, explosiveness, direction_eligible_attempts, direction_available_attempts. FIXED FOUR-ROW GUARANTEE: every (entity, side) has exactly 4 rows, one per direction, even when every metric is NULL -- a player-season row always melts to 4 offense rows, a team-season row always melts to 8 rows (4 offense + 4 defense). unknown is CFBD''s own charted bucket, never derived by subtraction. NULL on a metric means those carries were not charted, 0 is a real observed value; direction_eligible_attempts/direction_available_attempts (available <= eligible) are the direction-coverage denominators, constant across an (entity, side) block''s 4 rows, and are never interchangeable with the yardage-tier/touchdown denominators on the player-season/team-season views. Shares are the consumer''s to compute: carries::numeric / NULLIF(direction_available_attempts, 0) (or / NULLIF(direction_eligible_attempts, 0)); NULL means no charted direction coverage for that entity/side, not an error. CONTRACT (R10): player-row carries never reconcile to team-row carries for the same (season, team, offense) -- see api.rushing_charting_player_season/api.rushing_charting_team_season. Backed by marts.rushing_charting_direction_season.';
 
 GRANT SELECT ON api.rushing_charting_direction_season TO anon, authenticated;

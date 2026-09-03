@@ -116,3 +116,10 @@ CREATE UNIQUE INDEX ON marts.rushing_charting_player_season (season, player_id, 
 -- Query indexes
 CREATE INDEX ON marts.rushing_charting_player_season (season, team);
 CREATE INDEX ON marts.rushing_charting_player_season (player_id);
+
+-- Re-grant on every apply: DROP MATERIALIZED VIEW loses grants (no ALTER
+-- DEFAULT PRIVILEGES for the PostgREST roles in marts). public.get_player_detail()
+-- is LANGUAGE sql with no SECURITY DEFINER (runs as the caller) and LEFT
+-- JOINs this mart directly, so anon/authenticated need direct SELECT here
+-- for the RPC to work.
+GRANT SELECT ON marts.rushing_charting_player_season TO anon, authenticated;

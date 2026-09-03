@@ -9,6 +9,16 @@ database. This doc describes the shape you will read once
 `deploys/rushing_views-manifest.json` runs; nothing below is queryable
 against `api.*` yet.
 
+**Deploy sequencing.** `tests/test_api_views.py` and `tests/test_marts.py`
+already assert against these objects, and the daily mart refresh
+(`scripts/refresh_marts.py`) already lists the three new rushing marts --
+both reference objects that do not exist in production yet. The manifest
+(`deploys/rushing_views-manifest.json`, covering marts/api definitions
+`050`-`052`) and migration `059_rushing_grants_indexes.sql` (applied
+separately via `run_migrations.py --file`, per its own header) must both be
+applied to production from a `deploy/**` branch **before** the Stage B PR
+merges. `api.*` is queryable as soon as that deploy completes.
+
 ## What shipped
 
 **Stage A (live, PR #107, merge commit `dc6568d`).** CFBD's five `/rushing`
@@ -38,9 +48,15 @@ views below.
 
 `get_player_detail` gains a LAST column, `rushing_charting jsonb`: NULL when
 the requested player-season has no rushing charting row; otherwise the
-headline metrics, the four coverage denominators, and a nested `directions`
-object keyed `left`/`middle`/`right`/`unknown` (15 metrics each, always all
-four keys once non-NULL).
+headline metrics, the three player-grain coverage denominators
+(`rushing_yards_available`, `direction_eligible_attempts`,
+`direction_available_attempts`), the attribution counters
+(`individual_attempts`, `unattributed_attempts`, `sacks`, `kneels`,
+`team_rushes`, `multi_carrier_attempts`) as their own separate clause, and
+a nested `directions` object keyed `left`/`middle`/`right`/`unknown` (15
+metrics each, always all four keys once non-NULL). `touchdown_status_
+available` is a team-season-only denominator (`api.rushing_charting_team_
+season`) and does not appear on this player-grain block.
 
 Full column lists and NULL/denominator semantics for each view are in
 `docs/SCHEMA_CONTRACT.md` (2026-09-03 changelog entry and the api/marts
@@ -62,6 +78,11 @@ its own set, and none of them is interchangeable with another:
   for direction splits. `eligible` is the population CFBD considers
   chartable by direction (excludes kneels/sacks by construction);
   `available` is what has actually been charted with a direction so far.
+  These names intentionally diverge from passing charting's
+  `*_attempts_available` suffix (e.g. `air_yards_attempts_available`):
+  rushing has two direction denominators, eligible vs. available, where
+  passing charting has one per metric family, so a single shared suffix
+  would not distinguish them.
 - `offense_touchdown_status_available` / `defense_touchdown_status_
   available` (team-season only) -- the denominator for
   `offense_rushing_touchdowns` / `defense_rushing_touchdowns`.

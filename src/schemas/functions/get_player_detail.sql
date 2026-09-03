@@ -188,3 +188,8 @@ AS $function$
   ORDER BY pc.season DESC
   LIMIT 1;
 $function$;
+
+-- PostgREST schema reload: this file DROPs and recreates the function with a
+-- changed return type, and Supabase's DDL watcher may not always pick that
+-- up on its own (harmless no-op if it already did).
+NOTIFY pgrst, 'reload schema';

@@ -51,7 +51,12 @@
 --       values sit in the twin. EXCEPTION naming the column; the fix is to
 --       add the COALESCE to the relevant mart and extend the allow-list
 --       here (and in that mart's header) to match.
---   (f) grants tripwire: anon/authenticated kept SELECT on all three views.
+--   (f) grants tripwire: anon/authenticated kept SELECT on all three api
+--       views AND all three underlying marts -- marts.rushing_charting_player_season
+--       and marts.rushing_charting_direction_season are read directly (no
+--       SECURITY DEFINER) by public.get_player_detail(), and
+--       marts.rushing_charting_team_season is granted for symmetry with
+--       those two, so a lost grant on any of the six breaks a real caller.
 
 DO $$
 DECLARE
@@ -253,11 +258,18 @@ BEGIN
     RAISE NOTICE 'variant-twin tripwire (KTD7) passed: % player-season twin(s), % team-season twin(s), all within the allow-list',
         array_length(allowed_player_twins, 1), array_length(allowed_team_twins, 1);
 
-    -- (f) grants tripwire: anon/authenticated kept SELECT on all three views
+    -- (f) grants tripwire: anon/authenticated kept SELECT on all three api
+    -- views AND all three underlying marts (marts get no grants automatically
+    -- -- REFRESH/DROP MATERIALIZED VIEW loses them -- and get_player_detail()
+    -- reads marts.rushing_charting_player_season/_direction_season directly
+    -- as the caller, no SECURITY DEFINER)
     FOREACH view_name IN ARRAY ARRAY[
         'api.rushing_charting_player_season',
         'api.rushing_charting_team_season',
-        'api.rushing_charting_direction_season'
+        'api.rushing_charting_direction_season',
+        'marts.rushing_charting_player_season',
+        'marts.rushing_charting_team_season',
+        'marts.rushing_charting_direction_season'
     ] LOOP
         FOREACH role_name IN ARRAY ARRAY['anon', 'authenticated'] LOOP
             IF NOT has_table_privilege(role_name, view_name, 'SELECT') THEN
@@ -266,7 +278,7 @@ BEGIN
         END LOOP;
     END LOOP;
 
-    RAISE NOTICE 'grants tripwire passed: anon/authenticated hold SELECT on all 3 views';
+    RAISE NOTICE 'grants tripwire passed: anon/authenticated hold SELECT on all 3 api views and all 3 marts';
 
     RAISE NOTICE 'rushing_views validation passed';
 END $$;

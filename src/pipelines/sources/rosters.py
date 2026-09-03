@@ -48,6 +48,13 @@ def rosters_source(
 
 @dlt.resource(
     name="rosters",
+    # Every consumer (api.roster_lookup, marts 011/017/020/025/045/050, the
+    # scouting player mart, public.player_search) reads core.roster
+    # (singular). Without this, dlt derives the table from the resource
+    # name and writes core.rosters -- a parallel table nobody reads, which
+    # is where the 2026 rosters landed on 2026-09-03 while core.roster
+    # stopped at 2025. Same 17 columns + roster__recruit_ids child.
+    table_name="roster",
     write_disposition="merge",
     primary_key=["id", "team", "year"],
 )

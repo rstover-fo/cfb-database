@@ -28,6 +28,19 @@ def test_rosters_resource_yields_players():
         assert results[0]["year"] == 2024
 
 
+def test_rosters_resource_writes_core_roster():
+    """The consumers (api.roster_lookup, the charting marts' position join,
+    the scouting player mart) all read core.roster, singular. dlt names the
+    table after the resource unless told otherwise, so without an explicit
+    table_name the load lands in core.rosters and every downstream view
+    silently stops at the last season loaded the old way (2025, as of the
+    2026-09-03 incident)."""
+    from src.pipelines.sources.rosters import rosters_resource
+
+    assert rosters_resource.table_name == "roster"
+    assert rosters_resource.write_disposition == "merge"
+
+
 def test_rosters_resource_iterates_teams_and_years():
     """Should call API for each team/year combination."""
     from src.pipelines.sources.rosters import rosters_resource
@@ -106,8 +119,9 @@ class TestScheduledTeamResolution:
     def test_an_unloaded_schedule_fails_loudly(self):
         """load_season reports a returning runner as [OK]. An empty team list
         would therefore print a successful roster load that made zero /roster
-        requests -- the same silent no-op that left core.roster with no 2026
-        rows to begin with."""
+        requests -- a silent no-op of the same shape as the resource
+        loading core.rosters instead of core.roster (see
+        test_rosters_resource_writes_core_roster)."""
         from unittest.mock import patch
 
         import pytest

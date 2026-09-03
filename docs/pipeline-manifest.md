@@ -132,7 +132,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 
 | # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| 35 | `/player/search` | — | — | — | — | — | — | — | REMOVED (requires searchTerm; use core.rosters instead) |
+| 35 | `/player/search` | — | — | — | — | — | — | — | REMOVED (requires searchTerm; use core.roster instead) |
 | 36 | `/player/usage` | stats.player_usage | stats.py | player_usage_resource | YES | merge | season, id | 2014-2026 | WORKING |
 | 37 | `/player/returning` | stats.player_returning | stats.py | player_returning_resource | YES | merge | season, team | 2014-2026 | WORKING |
 
@@ -176,7 +176,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 51 | `/teams/fbs` | ref.teams_fbs | reference.py | teams_fbs_resource | YES | replace | id | — | WORKING |
 | 52 | `/teams/matchup` | core.team_matchups | — | — | — | DEFERRED | team1, team2, season | — | Computed from games via matchup_history mart |
 | 53 | `/teams/ats` | betting.team_ats | betting.py | team_ats_resource | YES | merge | year, team_id | 2013-2026 | WORKING |
-| 54 | `/roster` | core.rosters | rosters.py | rosters_resource | YES | merge | id, team, year | 2004-2026 | WORKING (requires team list) |
+| 54 | `/roster` | core.roster | rosters.py | rosters_resource | YES | merge | id, team, year | 2004-2026 | WORKING (requires team list) |
 | 55 | `/talent` | recruiting.team_talent | recruiting.py | team_talent_resource | YES | merge | year, team | 2000-2026 | WORKING |
 
 ### Adjusted Metrics (WEPA)
@@ -294,7 +294,7 @@ and PKs above now reflect the code. `/plays/stats/types` was loaded (26 rows in
 (`games.py` no longer yields them), whose week-by-week path avoids Supabase merge
 timeouts — `run.py --source game_stats --weekly` or `scripts/load_season.py --weekly`.
 
-**Sprint 4 Progress:** Promoted 15 endpoints from UNMAPPED/CONFIG_ONLY to WORKING: `/game/box/advanced`, `/plays/stats`, `/stats/season/advanced`, `/stats/game/havoc`, `/ratings/sp/conferences`, `/player/usage`, `/player/returning`, `/teams/ats`, `/ppa/games`, `/ppa/players/games`, `/metrics/fg/ep`, `/wepa/players/passing`, `/wepa/players/rushing`, `/wepa/team/season`, `/wepa/players/kicking`. Removed `/player/search` (requires searchTerm; use core.rosters instead). Deleted dead code: `adjusted_metrics.py` (duplicate of `wepa.py`), `players.py` (broken source).
+**Sprint 4 Progress:** Promoted 15 endpoints from UNMAPPED/CONFIG_ONLY to WORKING: `/game/box/advanced`, `/plays/stats`, `/stats/season/advanced`, `/stats/game/havoc`, `/ratings/sp/conferences`, `/player/usage`, `/player/returning`, `/teams/ats`, `/ppa/games`, `/ppa/players/games`, `/metrics/fg/ep`, `/wepa/players/passing`, `/wepa/players/rushing`, `/wepa/team/season`, `/wepa/players/kicking`. Removed `/player/search` (requires searchTerm; use core.roster instead). Deleted dead code: `adjusted_metrics.py` (duplicate of `wepa.py`), `players.py` (broken source).
 
 **2026-08-29 update:** `/metrics/wp` (row 47) verified against the live database
 (`SELECT COUNT(*) FROM metrics.win_probability` -> 1,971,363) and promoted

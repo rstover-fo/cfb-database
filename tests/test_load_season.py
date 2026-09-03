@@ -436,6 +436,70 @@ class TestPassingWiring:
         assert "passing" in out
 
 
+class TestRushingWiring:
+    """Rushing unit (U3, 2026-09-03): the five /rushing charting endpoints
+    wired into load_season.py's automated orchestration the same way the
+    passing unit's sources were -- SOURCE_ORDER, ESTIMATED_CALLS,
+    active-by-default, and IMMUTABLE_ONCE_FINAL membership (same policy as
+    `passing`/`stats`, since 2025 is partially charted upstream and may be
+    re-charted after the fact)."""
+
+    def test_rushing_is_in_source_order(self):
+        assert "rushing" in SOURCE_ORDER
+
+    def test_rushing_runs_after_passing(self):
+        """Grouped with the other stats-domain charting sources -- not a
+        hard dependency, just documenting where it conceptually belongs."""
+        assert SOURCE_ORDER.index("passing") < SOURCE_ORDER.index("rushing")
+
+    def test_rushing_has_estimated_calls(self):
+        """3 week-iterated resources x ~20 calls + 2 season-grain x 1 call."""
+        assert ESTIMATED_CALLS["rushing"] == 62
+
+    def test_rushing_is_active_by_default(self):
+        """Only "rosters" is excluded from the default active-source list;
+        rushing must not be excluded the same way."""
+        default_active = [s for s in SOURCE_ORDER if s != "rosters"]
+        assert "rushing" in default_active
+
+    def test_rushing_is_immutable_once_final(self):
+        """Same policy as passing/stats -- a finished season's charting is
+        only immutable-ish (2025 is partially charted upstream and improves
+        only via explicit --sources rushing re-pulls), so corrections ride
+        explicit --season re-runs rather than a daily re-ingest."""
+        assert "rushing" in IMMUTABLE_ONCE_FINAL
+
+    def test_rushing_is_a_real_source(self):
+        assert IMMUTABLE_ONCE_FINAL <= set(SOURCE_ORDER)
+
+    def test_rushing_is_not_in_preseason_or_resource_filterable(self):
+        """Rushing data starts 2025 and is week-or-team validated, not a
+        preseason input, and has no per-resource cost skew like stats --
+        it must not be added to either set."""
+        from scripts.load_season import PRESEASON_INPUT_SOURCES, RESOURCE_FILTERABLE
+
+        assert "rushing" not in PRESEASON_INPUT_SOURCES
+        assert "rushing" not in RESOURCE_FILTERABLE
+
+    def test_dry_run_includes_rushing(self, capsys):
+        summary = load_season(season=2025, sources=["rushing"], dry_run=True)
+
+        assert summary["dry_run"] is True
+        assert summary["estimated_calls"] == ESTIMATED_CALLS["rushing"]
+        out = capsys.readouterr().out
+        assert "rushing" in out
+
+    def test_rushing_is_in_run_py_source_choices(self):
+        """run.py's --source argparse choices and dispatch dict must include
+        rushing, mirroring passing. argparse raises SystemExit for an
+        unrecognized choice, so a successful parse is the assertion."""
+        from src.pipelines.run import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["--source", "rushing"])
+        assert args.source == "rushing"
+
+
 class TestSeasonIsFinal:
     """The daily workflow runs with no --season, so get_current_season()
     resolves to `year - 1` until August: every off-season run re-ingested the

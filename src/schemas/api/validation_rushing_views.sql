@@ -61,7 +61,7 @@ DECLARE
     direction_values TEXT[];
     n_bad_groups BIGINT;
     n_bad_player_side BIGINT;
-    col_check TEXT;
+    col_pair TEXT[];
     view_name TEXT;
     col_name TEXT;
     schema_part TEXT;
@@ -165,21 +165,23 @@ BEGIN
     END IF;
 
     -- (d) denominator presence via information_schema.columns
-    FOREACH col_check IN ARRAY ARRAY[
-        'api.rushing_charting_player_season|rushing_yards_available',
-        'api.rushing_charting_player_season|direction_eligible_attempts',
-        'api.rushing_charting_player_season|direction_available_attempts',
-        'api.rushing_charting_team_season|offense_rushing_yards_available',
-        'api.rushing_charting_team_season|offense_direction_eligible_attempts',
-        'api.rushing_charting_team_season|offense_direction_available_attempts',
-        'api.rushing_charting_team_season|offense_touchdown_status_available',
-        'api.rushing_charting_team_season|defense_rushing_yards_available',
-        'api.rushing_charting_team_season|defense_direction_eligible_attempts',
-        'api.rushing_charting_team_season|defense_direction_available_attempts',
-        'api.rushing_charting_team_season|defense_touchdown_status_available'
+    -- (view, column) pairs as a text[][] -- same shape migration 059 uses for
+    -- its (table, column, comment) rows -- iterated one row at a time.
+    FOREACH col_pair SLICE 1 IN ARRAY ARRAY[
+        ['api.rushing_charting_player_season', 'rushing_yards_available'],
+        ['api.rushing_charting_player_season', 'direction_eligible_attempts'],
+        ['api.rushing_charting_player_season', 'direction_available_attempts'],
+        ['api.rushing_charting_team_season', 'offense_rushing_yards_available'],
+        ['api.rushing_charting_team_season', 'offense_direction_eligible_attempts'],
+        ['api.rushing_charting_team_season', 'offense_direction_available_attempts'],
+        ['api.rushing_charting_team_season', 'offense_touchdown_status_available'],
+        ['api.rushing_charting_team_season', 'defense_rushing_yards_available'],
+        ['api.rushing_charting_team_season', 'defense_direction_eligible_attempts'],
+        ['api.rushing_charting_team_season', 'defense_direction_available_attempts'],
+        ['api.rushing_charting_team_season', 'defense_touchdown_status_available']
     ] LOOP
-        view_name := split_part(col_check, '|', 1);
-        col_name := split_part(col_check, '|', 2);
+        view_name := col_pair[1];
+        col_name := col_pair[2];
         schema_part := split_part(view_name, '.', 1);
         table_part := split_part(view_name, '.', 2);
 

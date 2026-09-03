@@ -26,7 +26,7 @@
 -- needs table-level GRANTs, same as 054/057.
 --
 -- Column names below were read live from information_schema.columns on
--- 2026-09-03 (Deploy Schema run 33778100985), after the Stage A backfill --
+-- 2026-09-03, after the Stage A backfill --
 -- NOT a spec guess like 057's header warned about for passing. Row counts
 -- at read time: 63,234 plays / 8,205 player-games / 1,758 team-games /
 -- 1,698 player-seasons / 152 team-seasons. dlt snake_cases camelCase fields,
@@ -55,8 +55,7 @@
 -- loaded for it so far was NULL, so a database whose first rushing load for
 -- some future season happens to land on an all-uncharted week could
 -- genuinely be missing one of these columns. Every column checked here DID
--- exist against the live database at authoring time (see the throwaway
--- verification script referenced in this unit's implementation notes), but
+-- exist against the live database at authoring time, but
 -- the guard removes the dependency on that staying true for a re-apply
 -- against a differently-seeded database. run_migrations.py --file executes
 -- a whole file as one implicit transaction, so an unguarded COMMENT naming

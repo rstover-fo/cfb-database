@@ -1,9 +1,9 @@
 -- marts.rushing_charting_direction_season
 -- =============================================================================
 -- Rushing charting (spec v5.26.0, 2026-09-03 rushing-charting unit, U6).
--- THE TALL DIRECTION-SPLIT MART: product decision (session-settled,
--- user-approved) is "direction splits as tall rows in one view, not wide
--- columns on the headline views" -- one grain serves team, RB, and defense
+-- THE TALL DIRECTION-SPLIT MART: the product decision is "direction splits
+-- as tall rows in one view, not wide columns on the headline views" -- one
+-- grain serves team, RB, and defense
 -- readers without pushing marts 050/051 past 60 columns.
 --
 -- Grain: (season, entity_type, entity_id, team, side, direction).

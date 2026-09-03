@@ -320,10 +320,10 @@ DECLARE
     n_skipped integer := 0;
 BEGIN
     -- stats.rushing_plays: the two play-grain charted metrics.
-    q_table := q_table || 'rushing_plays'; q_col := q_col || 'ppa';
-    q_comment := q_comment || 'Predicted points added (PPA) for this charted rush. NULL means this play has not been charted for PPA yet.';
-    q_table := q_table || 'rushing_plays'; q_col := q_col || 'success';
-    q_comment := q_comment || 'Whether this charted rush was a success by CFBD''s success-rate definition. NULL means this play has not been charted for success yet.';
+    q_table := q_table || 'rushing_plays'::text; q_col := q_col || 'ppa'::text;
+    q_comment := q_comment || 'Predicted points added (PPA) for this charted rush. NULL means this play has not been charted for PPA yet.'::text;
+    q_table := q_table || 'rushing_plays'::text; q_col := q_col || 'success'::text;
+    q_comment := q_comment || 'Whether this charted rush was a success by CFBD''s success-rate definition. NULL means this play has not been charted for success yet.'::text;
 
     -- Player tables (rushing_player_games, rushing_player_season): base
     -- metrics unprefixed, direction metrics as directions__<direction>__<metric>.

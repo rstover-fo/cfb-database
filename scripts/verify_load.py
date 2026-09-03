@@ -24,6 +24,12 @@ Checks:
        season (in-season only; WARNs if migration 041 isn't applied yet)
     7. meta.flat_file_loads has a recent successful 'availability' load
        (in-season only; never FAILs -- external conference sites are flaky)
+    8. no unexpected dlt VARIANT (__v_double) twin has appeared on a
+       charting source table since the mart(s) reading it were authored
+       (KTD7 tripwire; see src/pipelines/utils/variant_twins.py) -- FAILs
+       naming the column, since it means a metric is silently reading NULL
+       downstream; a query failure (e.g. the table doesn't exist yet) WARNs
+       instead of crashing the run
 
 Pre-season semantics: with no completed games, checks 3-4 pass vacuously and
 check 2 is the meaningful one (schedules publish in July, so core.games must
@@ -400,6 +406,94 @@ def check_backtest_freshness(cur, report: Report) -> None:
     )
 
 
+def _safe_execute(cur, sql: str) -> None:
+    """Best-effort execute for a SAVEPOINT/ROLLBACK/RELEASE bracket
+    statement -- must never raise into the caller. If the statement itself
+    fails (e.g. cur has no real `.execute`, as in unit tests, or the
+    connection turns out not to support it), the caller just proceeds
+    without savepoint protection rather than crashing the tripwire."""
+    try:
+        cur.execute(sql)
+    except Exception:  # noqa: BLE001 - the savepoint bracket must never crash the check
+        pass
+
+
+def check_variant_twins(cur, report: Report) -> None:
+    """KTD7 tripwire: no unexpected dlt VARIANT (__v_double) twin column.
+
+    dlt types a metric column bigint on first load and creates a sibling
+    `<col>__v_double` twin the first time a later load carries a fractional
+    value; every value dlt can't fit in the bigint column from then on lands
+    in the twin instead. The marts tracked in
+    src/pipelines/utils/variant_twins.py's EXPECTED_VARIANT_TWINS COALESCE
+    exactly the twins that existed live when they were authored (the
+    rushing/passing charting allow-list also mirrors
+    src/schemas/api/validation_rushing_views.sql's deploy-time check). A
+    daily load that pushes a previously-clean column into VARIANT territory
+    creates a twin no mart's COALESCE accounts for -- the affected metric
+    goes silently NULL in the mart, its api view, and any RPC reading the
+    mart directly. This check is what catches that between deploys, since
+    the SQL validation file only runs at deploy time.
+
+    Query failure (e.g. a tracked table doesn't exist on this database yet)
+    WARNs rather than crashing the daily run -- this check is a tripwire,
+    not a hard dependency of the load. But verify() runs every check on one
+    shared, non-autocommit connection (psycopg2.connect() defaults to
+    transactional mode), so a PostgreSQL-level error from the catalog
+    queries below (e.g. a genuinely malformed query, not just "table
+    missing" which information_schema tolerates as zero rows) would leave
+    that connection's transaction in the aborted state -- every check that
+    runs afterward would then fail with InFailedSqlTransaction, not just
+    this one. A SAVEPOINT around the two catalog queries contains that:
+    ROLLBACK TO SAVEPOINT on failure clears the abort without touching
+    whatever check_partition/check_game_counts/etc. already did earlier in
+    the same transaction, and RELEASE SAVEPOINT on success just drops the
+    bookkeeping. SAVEPOINT is only valid inside a transaction block, so an
+    autocommit connection (cur.connection.autocommit is True) skips the
+    dance entirely -- there every statement is already its own transaction
+    and a failure can't poison a later one.
+    """
+    from src.pipelines.utils.variant_twins import find_missing_twins, find_unexpected_twins
+
+    use_savepoint = not getattr(getattr(cur, "connection", None), "autocommit", False)
+    if use_savepoint:
+        _safe_execute(cur, "SAVEPOINT variant_twins")
+
+    try:
+        unexpected = find_unexpected_twins(cur)
+        missing = find_missing_twins(cur)
+    except Exception as exc:  # noqa: BLE001 - tripwire must never crash the run
+        if use_savepoint:
+            _safe_execute(cur, "ROLLBACK TO SAVEPOINT variant_twins")
+        report.record(WARN, "variant_twins", f"check could not run: {exc}")
+        return
+
+    if use_savepoint:
+        _safe_execute(cur, "RELEASE SAVEPOINT variant_twins")
+
+    if unexpected:
+        for table_key, columns in sorted(unexpected.items()):
+            report.record(
+                FAIL,
+                "variant_twins",
+                f"{table_key}: unexpected __v_double twin(s) {columns} -- add the COALESCE to "
+                "the affected mart, extend EXPECTED_VARIANT_TWINS and the matching "
+                "validation_rushing_views.sql allow-list, then re-apply the mart",
+            )
+    else:
+        report.record(PASS, "variant_twins", "no unexpected __v_double twins")
+
+    if missing:
+        for table_key, columns in sorted(missing.items()):
+            report.record(
+                WARN,
+                "variant_twins_missing",
+                f"{table_key}: expected __v_double twin(s) {columns} not present "
+                "(informational -- OK if the table was recreated or hasn't loaded a "
+                "fractional value for that metric yet)",
+            )
+
+
 def check_freshness(cur, in_season: bool, strict: bool, report: Report) -> None:
     cur.execute(
         """
@@ -443,6 +537,7 @@ def verify(season: int, strict: bool) -> int:
             check_fitted_coverage(cur, report)
             check_backtest_freshness(cur, report)
             check_freshness(cur, in_season, strict, report)
+            check_variant_twins(cur, report)
             check_massey_composite(cur, season, report)
             check_availability_archive(cur, season, report)
     finally:

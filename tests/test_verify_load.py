@@ -401,3 +401,190 @@ class TestBacktestFreshnessGate:
             "the daily backtest must run BARE so the script defaults stay "
             f"canonical; found: {invoked.strip()!r}"
         )
+
+
+class TestCheckVariantTwins:
+    """KTD7 tripwire wired into the daily verifier: check_variant_twins must
+    FAIL on an unexpected __v_double twin, WARN (never FAIL) on a missing
+    expected twin, and WARN (never crash) if the finder itself errors."""
+
+    def test_no_unexpected_no_missing_passes(self, monkeypatch):
+        from scripts.verify_load import Report, check_variant_twins
+
+        monkeypatch.setattr(
+            "src.pipelines.utils.variant_twins.find_unexpected_twins", lambda cur: {}
+        )
+        monkeypatch.setattr("src.pipelines.utils.variant_twins.find_missing_twins", lambda cur: {})
+
+        report = Report()
+        check_variant_twins(cur=object(), report=report)
+
+        assert report.failures == 0
+
+    def test_unexpected_twin_fails(self, monkeypatch, capsys):
+        from scripts.verify_load import Report, check_variant_twins
+
+        monkeypatch.setattr(
+            "src.pipelines.utils.variant_twins.find_unexpected_twins",
+            lambda cur: {"stats.rushing_player_season": ["new_metric__v_double"]},
+        )
+        monkeypatch.setattr("src.pipelines.utils.variant_twins.find_missing_twins", lambda cur: {})
+
+        report = Report()
+        check_variant_twins(cur=object(), report=report)
+
+        assert report.failures == 1
+        out = capsys.readouterr().out
+        assert "[FAIL] variant_twins:" in out
+        assert "stats.rushing_player_season" in out
+        assert "new_metric__v_double" in out
+
+    def test_missing_twin_warns_not_fails(self, monkeypatch, capsys):
+        from scripts.verify_load import Report, check_variant_twins
+
+        monkeypatch.setattr(
+            "src.pipelines.utils.variant_twins.find_unexpected_twins", lambda cur: {}
+        )
+        monkeypatch.setattr(
+            "src.pipelines.utils.variant_twins.find_missing_twins",
+            lambda cur: {"stats.passing_player_season": ["average_yards_after_catch__v_double"]},
+        )
+
+        report = Report()
+        check_variant_twins(cur=object(), report=report)
+
+        assert report.failures == 0
+        out = capsys.readouterr().out
+        assert "[WARN] variant_twins_missing:" in out
+        assert "stats.passing_player_season" in out
+
+    def test_finder_exception_warns_never_crashes(self, monkeypatch, capsys):
+        from scripts.verify_load import Report, check_variant_twins
+
+        def _boom(cur):
+            raise RuntimeError("relation does not exist")
+
+        monkeypatch.setattr("src.pipelines.utils.variant_twins.find_unexpected_twins", _boom)
+
+        report = Report()
+        check_variant_twins(cur=object(), report=report)  # must not raise
+
+        assert report.failures == 0
+        out = capsys.readouterr().out
+        assert "[WARN] variant_twins:" in out
+        assert "could not run" in out
+
+    def test_docstring_explains_the_savepoint(self):
+        from scripts.verify_load import check_variant_twins
+
+        assert "SAVEPOINT" in (check_variant_twins.__doc__ or "")
+
+    def test_the_check_is_wired_into_the_run_after_freshness(self):
+        """A check that is never called is a comment -- and this one must run
+        after check_freshness per the module docstring's numbered list."""
+        import inspect
+
+        import scripts.verify_load as vl
+
+        src = inspect.getsource(vl.verify)
+        assert "check_freshness(cur, in_season, strict, report)" in src
+        assert "check_variant_twins(cur, report)" in src
+        assert src.index("check_freshness(cur, in_season, strict, report)") < src.index(
+            "check_variant_twins(cur, report)"
+        )
+
+    def test_docstring_lists_the_check(self):
+        import scripts.verify_load as vl
+
+        assert "variant" in vl.__doc__.lower()
+
+
+class _FakeConnection:
+    """Bare psycopg2-connection stand-in: check_variant_twins only reads
+    `.autocommit` off of `cur.connection`."""
+
+    def __init__(self, autocommit: bool = False):
+        self.autocommit = autocommit
+
+
+class _SavepointCursor:
+    """Fake cursor exercising the real (non-monkeypatched)
+    find_unexpected_twins/find_missing_twins against a real EXPECTED_
+    VARIANT_TWINS -- unlike the tests above, which stub the finder
+    functions out entirely. Records every SQL statement issued so the
+    SAVEPOINT/ROLLBACK TO SAVEPOINT/RELEASE SAVEPOINT bracket around the
+    two catalog queries can be asserted on directly. `fail_catalog=True`
+    raises the first time an information_schema catalog query runs,
+    simulating the PostgreSQL-level failure (e.g. a malformed query) that
+    would otherwise leave the shared connection's transaction aborted."""
+
+    def __init__(self, fail_catalog: bool, autocommit: bool = False):
+        self.connection = _FakeConnection(autocommit=autocommit)
+        self.statements: list[str] = []
+        self._fail_catalog = fail_catalog
+
+    def execute(self, sql, params=None):
+        self.statements.append(sql)
+        if "information_schema" in sql and self._fail_catalog:
+            raise RuntimeError("relation does not exist")
+
+    def fetchall(self):
+        return []
+
+
+class TestCheckVariantTwinsSavepoint:
+    """Finding 2 (P2, post-#110 review): the two catalog queries run inside
+    a SAVEPOINT so a PostgreSQL-level failure there can't leave verify()'s
+    shared, non-autocommit connection in InFailedSqlTransaction for every
+    check that runs afterward."""
+
+    def test_catalog_failure_rolls_back_to_savepoint_and_warns(self, capsys):
+        from scripts.verify_load import Report, check_variant_twins
+
+        cur = _SavepointCursor(fail_catalog=True)
+        report = Report()
+
+        check_variant_twins(cur, report)  # must not raise
+
+        assert "SAVEPOINT variant_twins" in cur.statements
+        assert "ROLLBACK TO SAVEPOINT variant_twins" in cur.statements
+        assert "RELEASE SAVEPOINT variant_twins" not in cur.statements
+        assert report.failures == 0
+        out = capsys.readouterr().out
+        assert "[WARN] variant_twins:" in out
+        assert "could not run" in out
+
+    def test_catalog_success_releases_savepoint(self):
+        from scripts.verify_load import Report, check_variant_twins
+
+        cur = _SavepointCursor(fail_catalog=False)
+        report = Report()
+
+        check_variant_twins(cur, report)
+
+        assert "SAVEPOINT variant_twins" in cur.statements
+        assert "RELEASE SAVEPOINT variant_twins" in cur.statements
+        assert not any(s.startswith("ROLLBACK TO SAVEPOINT") for s in cur.statements)
+
+    def test_autocommit_connection_skips_the_savepoint_dance(self):
+        from scripts.verify_load import Report, check_variant_twins
+
+        cur = _SavepointCursor(fail_catalog=False, autocommit=True)
+        report = Report()
+
+        check_variant_twins(cur, report)
+
+        assert not any("SAVEPOINT" in s for s in cur.statements)
+
+    def test_autocommit_connection_still_warns_not_crashes_on_catalog_failure(self, capsys):
+        from scripts.verify_load import Report, check_variant_twins
+
+        cur = _SavepointCursor(fail_catalog=True, autocommit=True)
+        report = Report()
+
+        check_variant_twins(cur, report)  # must not raise
+
+        assert not any("SAVEPOINT" in s for s in cur.statements)
+        assert report.failures == 0
+        out = capsys.readouterr().out
+        assert "[WARN] variant_twins:" in out

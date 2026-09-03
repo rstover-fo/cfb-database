@@ -2200,3 +2200,280 @@ class TestRushingChartingNonReconciliation:
             f"a mismatch here is expected non-reconciliation, not necessarily a bug; verify "
             f"against a fresh backfill before treating this as a regression."
         )
+
+
+# ---------------------------------------------------------------------------
+# Test: get_player_detail RPC (2026-09-03 rushing-charting unit, U7, R16)
+# ---------------------------------------------------------------------------
+
+# Frozen from src/schemas/functions/get_player_detail.sql's RETURNS TABLE as it
+# stood BEFORE this unit added rushing_charting -- the additive contract (R16,
+# AE5) is that this list, in this order, is unchanged; only rushing_charting is
+# appended after it.
+GET_PLAYER_DETAIL_COLUMNS_PRE_RUSHING = [
+    "player_id",
+    "name",
+    "team",
+    "position",
+    "jersey",
+    "height",
+    "weight",
+    "year",
+    "home_city",
+    "home_state",
+    "season",
+    "stars",
+    "recruit_rating",
+    "national_ranking",
+    "recruit_class",
+    "pass_att",
+    "pass_cmp",
+    "pass_yds",
+    "pass_td",
+    "pass_int",
+    "pass_pct",
+    "rush_car",
+    "rush_yds",
+    "rush_td",
+    "rush_ypc",
+    "rec",
+    "rec_yds",
+    "rec_td",
+    "rec_ypr",
+    "tackles",
+    "solo",
+    "sacks",
+    "tfl",
+    "pass_def",
+    "def_int",
+    "fg_made",
+    "fg_att",
+    "xp_made",
+    "xp_att",
+    "punt_yds",
+    "wepa_passing",
+    "wepa_rushing",
+    "paar",
+]
+
+# Non-rushing fields that map 1:1 onto marts.player_comparison columns of the
+# same name -- used by AE5 to prove the rushing block is additive and every
+# other field is untouched. Excludes the RPC's own hardcoded-NULL columns
+# (solo, def_int, fg_made, fg_att, xp_made, xp_att, punt_yds) and the WEPA/PAAR
+# and rushing_charting columns, which have no player_comparison counterpart.
+PLAYER_COMPARISON_DIRECT_FIELDS = [
+    "player_id",
+    "name",
+    "team",
+    "position",
+    "jersey",
+    "height",
+    "weight",
+    "season",
+    "home_city",
+    "home_state",
+    "stars",
+    "recruit_rating",
+    "national_ranking",
+    "recruit_class",
+    "pass_att",
+    "pass_cmp",
+    "pass_yds",
+    "pass_td",
+    "pass_int",
+    "pass_pct",
+    "rush_car",
+    "rush_yds",
+    "rush_td",
+    "rush_ypc",
+    "rec",
+    "rec_yds",
+    "rec_td",
+    "rec_ypr",
+    "tackles",
+    "sacks",
+    "tfl",
+    "pass_def",
+]
+
+
+class TestGetPlayerDetail:
+    """R16/KTD6/AE5: the additive rushing_charting jsonb block on
+    public.get_player_detail. rushing_charting is appended LAST to the
+    RETURNS TABLE and every pre-existing column and row-selection rule
+    (player_id + optional season, ORDER BY season DESC LIMIT 1) is preserved.
+    """
+
+    def test_columns_equal_previous_list_plus_rushing_charting_last(self, db_conn):
+        """Even with zero matching rows, a SELECT * from a SQL table function
+        still reports its full declared column shape via cursor.description --
+        no live player_id is needed for this check."""
+        _, columns = _fetch_all(
+            db_conn,
+            "SELECT * FROM public.get_player_detail(%s)",
+            ("__no_such_player_id__",),
+        )
+        assert columns == GET_PLAYER_DETAIL_COLUMNS_PRE_RUSHING + ["rushing_charting"]
+
+    def test_charted_2025_rusher_has_full_directions_block(self, db_conn):
+        """Covers: a charted 2025 rusher returns a non-NULL object with all
+        four direction keys present, each carrying all 15 per-direction
+        metrics (including a direction whose carries are zero, since the mart
+        guarantees a fixed four-row melt -- see
+        marts/052_rushing_charting_direction_season.sql)."""
+        rows, _ = _fetch_all(
+            db_conn,
+            "SELECT player_id, team FROM marts.rushing_charting_player_season "
+            "WHERE season = 2025 LIMIT 1",
+        )
+        if not rows:
+            pytest.skip("no 2025 rushing charting player-season rows to test against")
+        player_id, team = rows[0]
+
+        detail_rows, detail_columns = _fetch_all(
+            db_conn,
+            "SELECT * FROM public.get_player_detail(%s, %s)",
+            (player_id, 2025),
+        )
+        assert len(detail_rows) == 1
+        detail = dict(zip(detail_columns, detail_rows[0]))
+        assert detail["team"] == team
+
+        rc = detail["rushing_charting"]
+        assert rc is not None, f"expected a rushing_charting block for {player_id}/{team}/2025"
+        directions = rc["directions"]
+        assert set(directions.keys()) == {"left", "middle", "right", "unknown"}
+        for direction, metrics in directions.items():
+            assert len(metrics) == 15, (
+                f"{direction}: expected 15 metric keys, got {len(metrics)}: {sorted(metrics)}"
+            )
+
+    def test_no_rushing_charting_leaves_rushing_charting_null_and_other_fields_unchanged(
+        self, db_conn
+    ):
+        """AE5: a player-season with no rushing charting (rushing data starts
+        2025 -- RUSHING_DATA_START in src/pipelines/sources/rushing.py --
+        so any pre-2025 season is guaranteed to have none) returns
+        rushing_charting IS NULL, and every pre-existing field matches a
+        direct marts.player_comparison read."""
+        rows, _ = _fetch_all(
+            db_conn,
+            "SELECT player_id, season FROM marts.player_comparison WHERE season < 2025 LIMIT 1",
+        )
+        if not rows:
+            pytest.skip("no pre-2025 player_comparison rows to test against")
+        player_id, season = rows[0]
+
+        detail_rows, detail_columns = _fetch_all(
+            db_conn,
+            "SELECT * FROM public.get_player_detail(%s, %s)",
+            (player_id, season),
+        )
+        assert len(detail_rows) == 1
+        detail = dict(zip(detail_columns, detail_rows[0]))
+        assert detail["rushing_charting"] is None
+
+        direct_rows, _ = _fetch_all(
+            db_conn,
+            f"""
+            SELECT {", ".join(PLAYER_COMPARISON_DIRECT_FIELDS)}
+            FROM marts.player_comparison
+            WHERE player_id = %s AND season = %s
+            """,
+            (player_id, season),
+        )
+        assert len(direct_rows) == 1
+        direct = dict(zip(PLAYER_COMPARISON_DIRECT_FIELDS, direct_rows[0]))
+        for field, expected in direct.items():
+            assert detail[field] == expected, (
+                f"{field}: get_player_detail returned {detail[field]!r}, "
+                f"marts.player_comparison has {expected!r}"
+            )
+        assert detail["year"] == direct["season"]
+
+    def test_season_player_did_not_play_returns_no_rows(self, db_conn):
+        """Existing behavior preserved: the function filters
+        `pc.season = p_season` before the ORDER BY season DESC LIMIT 1, so a
+        season with no matching player_comparison row eliminates every
+        candidate row BEFORE the LIMIT applies -- the function returns zero
+        rows, not one row with a NULL block. Verified by reading the SQL
+        (src/schemas/functions/get_player_detail.sql), not assumed."""
+        rows, _ = _fetch_all(
+            db_conn,
+            "SELECT player_id FROM marts.player_comparison LIMIT 1",
+        )
+        if not rows:
+            pytest.skip("no player_comparison rows to test against")
+        player_id = rows[0][0]
+
+        detail_rows, _ = _fetch_all(
+            db_conn,
+            "SELECT * FROM public.get_player_detail(%s, %s)",
+            (player_id, 1875),  # before any CFBD season this player could have played
+        )
+        assert detail_rows == []
+
+    def test_two_2025_team_stints_return_one_row_with_matching_team_block(self, db_conn):
+        """A player with two 2025 team stints (a mid-season transfer) has two
+        rows in marts.rushing_charting_player_season -- one per team, keyed
+        (season, player_id, team) per KTD3. get_player_detail still returns
+        exactly one row per call (its own LIMIT 1 is unchanged), and the
+        team-aware join (rcps.team = pc.team) must attach the block for the
+        SAME team as the row it picked, never the other stint's team."""
+        rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT player_id
+            FROM marts.rushing_charting_player_season
+            WHERE season = 2025
+            GROUP BY player_id
+            HAVING COUNT(DISTINCT team) > 1
+            LIMIT 1
+            """,
+        )
+        if not rows:
+            pytest.skip("no 2025 rushing-charted player with two team stints to test against")
+        player_id = rows[0][0]
+
+        detail_rows, detail_columns = _fetch_all(
+            db_conn,
+            "SELECT * FROM public.get_player_detail(%s, %s)",
+            (player_id, 2025),
+        )
+        assert len(detail_rows) == 1, (
+            f"expected exactly one row for a two-stint player+season, got {len(detail_rows)}"
+        )
+        detail = dict(zip(detail_columns, detail_rows[0]))
+        returned_team = detail["team"]
+
+        expected_rows, _ = _fetch_all(
+            db_conn,
+            """
+            SELECT attempts FROM marts.rushing_charting_player_season
+            WHERE player_id = %s AND season = 2025 AND team = %s
+            """,
+            (player_id, returned_team),
+        )
+        assert expected_rows, f"no rushing charting mart row for {player_id}/{returned_team}/2025"
+        assert detail["rushing_charting"] is not None
+        assert detail["rushing_charting"]["attempts"] == expected_rows[0][0], (
+            "rushing_charting block's attempts does not match the mart row for the "
+            "SAME team the function returned -- the join may have crossed team stints"
+        )
+
+    def test_anon_role_can_execute(self, db_conn):
+        """No explicit GRANT EXECUTE exists on this function (repo convention
+        for src/schemas/functions/*.sql -- confirmed via
+        `grep -rn "GRANT EXECUTE" src/schemas/functions/`, which matches
+        nothing), so anon relies on Postgres's default PUBLIC execute grant.
+        This pins that default is still in effect."""
+        with db_conn.cursor() as cur:
+            cur.execute("SET ROLE anon")
+            try:
+                cur.execute(
+                    "SELECT * FROM public.get_player_detail(%s)",
+                    ("__no_such_player_id__",),
+                )
+                cur.fetchall()
+            finally:
+                cur.execute("RESET ROLE")

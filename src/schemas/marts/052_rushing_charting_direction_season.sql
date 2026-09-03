@@ -17,10 +17,14 @@
 --   - player-season row -> 4 rows, all side = 'offense'
 --   - team-season row   -> 8 rows, 4 offense + 4 defense
 --
--- `unknown` is READ from directions__unknown__* on the source tables, never
--- derived by subtraction -- CFBD charts `unknown` as its own bucket when a
--- carry's direction could not be determined, same status as left/middle/
--- right, not a residual.
+-- `unknown` is READ from directions__unknown__* on the source tables, not
+-- computed here -- but it IS the unresolved remainder, not a fourth charted
+-- direction: per-row verification against the rushing fixtures confirms
+-- `unknown.carries` == direction_eligible_attempts - direction_available_
+-- attempts (e.g. Cade Harris: eligible 58, available 20 [left 11 + right 9],
+-- unknown 38). CFBD populates it directly rather than making the consumer
+-- subtract, but its status is "not yet resolved to left/middle/right," not
+-- "resolved."
 --
 -- Shares are the CONSUMER'S to compute, not this mart's: a direction's
 -- share of a side's total carries is this row's `carries`::numeric /
@@ -38,11 +42,17 @@
 -- Denominators (R8): direction_eligible_attempts is the count of carries
 -- CFBD considered eligible for direction charting (e.g. excludes kneels/
 -- sacks by construction upstream); direction_available_attempts is the
--- count actually charted with a direction (left/middle/right/unknown all
--- count as charted -- only a carry CFBD has not gotten to yet is excluded).
--- available <= eligible. Both ride on every row of this mart (constant
--- across a row's 4-direction block) so a consumer never has to join back to
--- marts 050/051 just to compute direction coverage.
+-- count actually resolved to a left/middle/right direction so far.
+-- available <= eligible, and the gap (eligible - available) IS `unknown` --
+-- the unresolved remainder, not a fourth charted bucket alongside left/
+-- middle/right. A direction's share of RESOLVED carries divides by
+-- `available` (left/middle/right only, sums to 1); a direction's share of
+-- ELIGIBLE carries (all four rows, including the unresolved remainder)
+-- divides by `eligible`. Never divide `unknown` by `available` -- that
+-- yields >100%; `unknown / eligible` is the coverage GAP, not a share. Both
+-- denominators ride on every row of this mart (constant across a row's
+-- 4-direction block) so a consumer never has to join back to marts 050/051
+-- just to compute direction coverage.
 --
 -- R10 CONTRACT (non-reconciliation): a player entity's carries summed
 -- across its 4 direction rows will NOT equal the corresponding team

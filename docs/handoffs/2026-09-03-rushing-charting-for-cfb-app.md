@@ -3,21 +3,22 @@
 **From:** cfb-database
 **Date:** 2026-09-03
 **Audience:** cfb-app (dashboard + bot)
-**Status:** Stage A (raw tables) LIVE. Stage B (views + RPC extension) built
-and reviewed, **pending deploy** -- not yet applied to the production
-database. This doc describes the shape you will read once
-`deploys/rushing_views-manifest.json` runs; nothing below is queryable
-against `api.*` yet.
+**Status:** Stage A (raw tables) LIVE. Stage B (views + RPC extension) is
+now **LIVE** too -- applied to production 2026-09-03 by Deploy Schema run
+33783102034 (migration `059` applied; marts built 1,698 / 152 / 8,008 rows
+for player_season/team_season/direction_season; validation passed).
+Everything below is queryable against `api.*` now.
 
 **Deploy sequencing.** `tests/test_api_views.py` and `tests/test_marts.py`
-already assert against these objects, and the daily mart refresh
-(`scripts/refresh_marts.py`) already lists the three new rushing marts --
-both reference objects that do not exist in production yet. The manifest
+already asserted against these objects, and the daily mart refresh
+(`scripts/refresh_marts.py`) already listed the three new rushing marts,
+both ahead of the objects existing in production. The manifest
 (`deploys/rushing_views-manifest.json`, covering marts/api definitions
 `050`-`052`) and migration `059_rushing_grants_indexes.sql` (applied
-separately via `run_migrations.py --file`, per its own header) must both be
-applied to production from a `deploy/**` branch **before** the Stage B PR
-merges. `api.*` is queryable as soon as that deploy completes.
+separately via `run_migrations.py --file`, per its own header) were both
+applied to production from `deploy/rushing-stage-b` **before** the Stage B
+PR merged, per this repo's schema-migrations convention. `api.*` has been
+queryable since that deploy completed.
 
 ## What shipped
 
@@ -37,7 +38,7 @@ mirroring the passing-charting unit shipped 2026-08-30. Backfill run
 These are internal (`stats` schema); you read them only through the api
 views below.
 
-**Stage B (built, pending deploy).** Three `api.*` views plus an additive
+**Stage B (live, deployed 2026-09-03).** Three `api.*` views plus an additive
 `get_player_detail` column, per `deploys/rushing_views-manifest.json`:
 
 | View | Grain | What it carries |
@@ -74,15 +75,18 @@ its own set, and none of them is interchangeable with another:
   open-field yards, success rate, PPA, stuff rate, power success,
   explosiveness).
 - `direction_eligible_attempts` and `direction_available_attempts`
-  (available <= eligible) -- present on all three views, the denominators
+  (`available <= eligible`) -- present on all three views, the denominators
   for direction splits. `eligible` is the population CFBD considers
   chartable by direction (excludes kneels/sacks by construction);
-  `available` is what has actually been charted with a direction so far.
-  These names intentionally diverge from passing charting's
-  `*_attempts_available` suffix (e.g. `air_yards_attempts_available`):
-  rushing has two direction denominators, eligible vs. available, where
-  passing charting has one per metric family, so a single shared suffix
-  would not distinguish them.
+  `available` is what has actually been resolved to a left/middle/right
+  direction so far. The gap (`eligible - available`) is exactly
+  `unknown`'s carries -- the unresolved remainder, not a fourth charted
+  direction; never divide `unknown` by `available` (yields >100%) --
+  `unknown / eligible` is the coverage gap, not a share. These names
+  intentionally diverge from passing charting's `*_attempts_available`
+  suffix (e.g. `air_yards_attempts_available`): rushing has two direction
+  denominators, eligible vs. available, where passing charting has one per
+  metric family, so a single shared suffix would not distinguish them.
 - `offense_touchdown_status_available` / `defense_touchdown_status_
   available` (team-season only) -- the denominator for
   `offense_rushing_touchdowns` / `defense_rushing_touchdowns`.
@@ -91,13 +95,19 @@ NULL on a metric means the carries behind it were not charted yet; 0 is a
 real observed value. Do not treat a NULL rate as zero, and do not compute a
 share or rate without dividing by the matching denominator above.
 
-**`unknown` direction is charted data, not a gap.** `api.rushing_charting_
-direction_season` always carries exactly 4 rows per (entity, side) --
-left/middle/right/unknown -- even when every metric on a row is NULL.
-`unknown` is CFBD's own bucket for a carry whose direction could not be
-determined; it is read directly off the source, never derived by
-subtracting left+middle+right from a total. If you build a stacked-bar or
-pie chart of direction mix, `unknown` belongs in it as its own slice.
+**`unknown` direction is the unresolved remainder, not a charted bucket.**
+`api.rushing_charting_direction_season` always carries exactly 4 rows per
+(entity, side) -- left/middle/right/unknown -- even when every metric on a
+row is NULL. `unknown`'s carries equal `direction_eligible_attempts -
+direction_available_attempts`: the eligible carries CFBD has not yet
+resolved to left/middle/right. It is read directly off the source rather
+than subtracted here, but its status is "not yet charted by direction," the
+same as `parse_status='partial'` on `stats.rushing_plays` -- keeping the row
+visible (instead of dropping it) is exactly what makes that coverage gap
+visible to a consumer. If you build a stacked-bar or pie chart of direction
+mix, `unknown` still belongs in it as its own slice -- just don't read its
+presence as "CFBD charted this carry as unknown" the way left/middle/right
+are charted.
 
 **`invalid` vs `partial` on `stats.rushing_plays`.** `parse_status` has
 three values: `complete`, `partial`, and `invalid`. `invalid` is its own

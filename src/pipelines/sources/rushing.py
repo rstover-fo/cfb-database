@@ -185,7 +185,8 @@ def rushing_plays_resource(years: list[int]) -> Iterator[dict]:
                     if e.response.status_code == 400:
                         logger.warning(
                             f"No rushing plays for {year} {season_type} week {week} "
-                            "(400 response), skipping"
+                            f"(400 response: {e.response.text[:200]!r}), skipping -- a 400 on a "
+                            "week-scoped call is unexpected; check for a CFBD contract change"
                         )
                         continue
                     raise
@@ -245,7 +246,8 @@ def rushing_player_games_resource(years: list[int]) -> Iterator[dict]:
                     if e.response.status_code == 400:
                         logger.warning(
                             f"No rushing player games for {year} {season_type} week {week} "
-                            "(400 response), skipping"
+                            f"(400 response: {e.response.text[:200]!r}), skipping -- a 400 on a "
+                            "week-scoped call is unexpected; check for a CFBD contract change"
                         )
                         continue
                     raise
@@ -303,7 +305,8 @@ def rushing_team_games_resource(years: list[int]) -> Iterator[dict]:
                     if e.response.status_code == 400:
                         logger.warning(
                             f"No rushing team games for {year} {season_type} week {week} "
-                            "(400 response), skipping"
+                            f"(400 response: {e.response.text[:200]!r}), skipping -- a 400 on a "
+                            "week-scoped call is unexpected; check for a CFBD contract change"
                         )
                         continue
                     raise
@@ -355,7 +358,8 @@ def rushing_player_season_resource(years: list[int]) -> Iterator[dict]:
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 400:
                     logger.warning(
-                        f"No rushing player season data for {year} (400 response), skipping"
+                        f"No rushing player season data for {year} "
+                        f"(400 response: {e.response.text[:200]!r}), skipping"
                     )
                     continue
                 raise
@@ -405,7 +409,8 @@ def rushing_team_season_resource(years: list[int]) -> Iterator[dict]:
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 400:
                     logger.warning(
-                        f"No rushing team season data for {year} (400 response), skipping"
+                        f"No rushing team season data for {year} "
+                        f"(400 response: {e.response.text[:200]!r}), skipping"
                     )
                     continue
                 raise

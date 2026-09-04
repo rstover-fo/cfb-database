@@ -50,10 +50,15 @@ full parse path; a large deviation means the wrong file was fed:
 
 - Re-running a load with an unchanged file → `skipped_hash` (ledger:
   `meta.flat_file_loads`, source key `pff_<family>:<season>`).
-- Xwalk: expect **~96–99% matched** (validated on QB and CB/S/LB/DI/ED
-  samples). Unmatched + ambiguous players print to stdout — review, don't
-  force; known residual cases are nicknames (e.g. PFF "Trey" vs a legal
-  first name). Distinct `player_id` across all families ≈ 12–13k.
+- Xwalk: **98.6% matched** on the 2023–2025 backfill (2026-09-04 rebuild:
+  18,117 of 18,375 distinct `player_id`s; 121 ambiguous, 137 unmatched).
+  The first run scored 88.3% because candidates spanned every roster
+  season since 2004 — the matcher now scopes by PFF season and tiebreaks on
+  first name (17,517 same-season, 548 first-name tiebreaks, 42 season±1,
+  10 any-season). Unmatched + ambiguous players print to stdout — review,
+  don't force; the residual is West Georgia (D-II, no CFBD roster), PFF
+  "Unknown <team> <number>" placeholders, nicknames (PFF "Pickle"/"Trey"
+  vs a legal first name), and true same-name-same-season collisions.
 
 ## Post-load verification (any SQL client)
 
@@ -63,7 +68,7 @@ UNION ALL SELECT 'defense', season, count(*) FROM pff.defense_summary GROUP BY s
 ORDER BY 1, 2;                                   -- matches the table above
 SELECT count(*) FROM pff.team_map;               -- 137 (136 FBS map + W GEORGIA, a D-II
                                                  -- team PFF graded in 2023)
-SELECT count(*) FROM pff.player_xwalk;           -- ~12-13k after step 3
+SELECT count(*) FROM pff.player_xwalk;           -- ~18.1k after step 3
 SELECT school, count(*) FROM pff.defense_summary WHERE season=2025
 GROUP BY school ORDER BY 2 DESC LIMIT 5;         -- school column resolved, sane counts
 ```

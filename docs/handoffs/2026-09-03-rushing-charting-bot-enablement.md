@@ -21,7 +21,7 @@ Companion docs (semantics, not repeated here):
 
 | Surface | Grain | Rows (2025 / 2026 as of 2026-09-03) |
 |---|---|---|
-| `api.rushing_charting_player_season` | (season, player_id, team) | 1,632 / 76 |
+| `api.rushing_charting_player_season` | (season, player_id, team) | 1,622 / 76 |
 | `api.rushing_charting_team_season` | (season, team) | 136 / 16 |
 | `api.rushing_charting_direction_season` | (season, entity_type, entity_id, team, side, direction) | 4 rows per (entity, side) |
 | `public.get_player_detail(p_player_id, p_season)` | one row | LAST column `rushing_charting jsonb` (NULL when no charting row) |
@@ -174,25 +174,42 @@ A dedicated `get_rushing_direction` team tool (offense/defense side of
 weeks of data; on 2025 it would mostly rank teams by how much CFBD has
 charted. Not requested now.
 
-### 4. Bot cache invalidation -- use api views, not `stats.rushing_plays`
+### 4. Bot cache invalidation -- content fingerprint over api views
 
 The companion doc's invalidation tuple reads `stats.rushing_plays`, which
 `analyst_ro` cannot see (cfb-app's own finding in
-`docs/WAREHOUSE_EXPANSION_HANDOFF.md` §1). The equivalent from `api.*`:
+`docs/WAREHOUSE_EXPANSION_HANDOFF.md` §1). It is also count-based, and a
+re-pull can correct a player's PPA, move a carry from `unknown` to
+`middle`, or re-attribute a team-only rush without changing any count, so
+counts alone would leave a cached answer stale. Fingerprint the answer-
+bearing rows instead. This runs through `run_sql` in well under the 8 s
+cap (verified 2026-09-04: 2 rows, one per season):
 
 ```sql
-SELECT season,
-       COUNT(*)                          AS player_seasons,
-       SUM(attempts)                     AS attempts,
-       SUM(direction_available_attempts) AS direction_resolved,
-       SUM(direction_eligible_attempts)  AS direction_eligible
-FROM api.rushing_charting_player_season
-GROUP BY season ORDER BY season;
+WITH d AS (
+  SELECT season, 'player' AS v,
+         md5(string_agg(p::text, '|' ORDER BY player_id, team)) AS digest
+  FROM api.rushing_charting_player_season p GROUP BY season
+  UNION ALL
+  SELECT season, 'team', md5(string_agg(t::text, '|' ORDER BY team))
+  FROM api.rushing_charting_team_season t GROUP BY season
+  UNION ALL
+  SELECT season, 'direction',
+         md5(string_agg(x::text, '|' ORDER BY entity_type, entity_id, team, side, direction))
+  FROM api.rushing_charting_direction_season x GROUP BY season
+)
+SELECT season, string_agg(v || ':' || digest, ',' ORDER BY v) AS fingerprint
+FROM d GROUP BY season ORDER BY season;
 ```
 
-`direction_resolved` is the value that moves as CFBD re-charts a season;
-`attempts` moves as new games land. A changed tuple for a season means
-recompute cached rushing answers for it. Do not watermark on load ids.
+Persist the per-season fingerprint alongside any cached rushing answer and
+recompute when it changes. It covers every column of all three views
+(player, team, and direction rows, including the team-only attribution
+counters), so an in-place correction from a re-pull changes the digest
+even when no count moves. The row `::text` cast is deterministic for a
+fixed view definition; a redeploy that changes a view's column list
+changes every digest once, which is the correct outcome. Do not watermark
+on load ids.
 
 ## Worked queries -- all verified through `run_sql` on 2026-09-03
 

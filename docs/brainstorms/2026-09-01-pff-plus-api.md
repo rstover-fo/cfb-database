@@ -250,6 +250,41 @@ settled the §5 unknowns in the right direction:
 - **Caveat:** the match ran against the *current* roster view while the CSV
   is 2025; a same-season match can only do better.
 
+### Defense exports (2026-09-04, three seasons of defense_summary)
+
+Three hand-exported `defense_summary` files extended the validation to the
+deep-roster case:
+
+- **Column contract:** 55 columns, identical across all three seasons — six
+  grade columns (`grades_defense`, `grades_coverage_defense`,
+  `grades_pass_rush_defense`, `grades_run_defense`, `grades_tackle`,
+  `grades_defense_penalty`), pressure/tackling counting stats, coverage
+  stats (targets, receptions, QB rating against), and **per-alignment snap
+  counts** (`snap_counts_box`, `_slot`, `_corner`, `_fs`, `_dl_a_gap`, ...)
+  — the weighting substrate for team-level aggregation. ~5,300–5,700 rows
+  per season, ~10 positions (core CB/S/LB/DI/ED plus offensive players with
+  defensive snaps).
+- **Season fingerprinting works and must be a load-time guard.** The files
+  carry no season column and identical export filenames; season was
+  recovered from FBS-membership changes (Kennesaw State ⇒ 2024+, Delaware /
+  Missouri State ⇒ 2025+, 134 vs 136 teams). The manual-drop loader must
+  take season from the season-tagged filename **and verify it** against the
+  membership fingerprint, failing loud on mismatch — misfiled uploads are
+  otherwise silent data corruption (this nearly happened on the very first
+  batch: three files named `defense_summary*.csv` with nothing else to
+  distinguish them).
+- **Deep-roster matching holds up.** Stratified sample of 175 CB/S/LB/DI/ED
+  players (regulars + 50–200-snap depth) from the 2025 file against the
+  roster: **159/175 (91%)** on last name + first initial + team. 15 of the
+  16 misses are one systematic bug — suffix players (Jr./II/III) where
+  CFBD's `last_name` retains the suffix while PFF appends it to the display
+  name — fixable by stripping suffixes on both sides before comparing.
+  Expected post-fix rate ≈99%; the one residual miss is a nickname
+  (PFF "Trey" vs a legal first name). Positions with 1,000+ graded players
+  per season match as cleanly as QB did.
+- `api.roster_lookup` spans seasons (one row per player-season), so
+  any-season presence matching works without a season-aware view.
+
 Implication for §5: the `pff` schema should mirror the export families —
 one wide table per facet (`pff.passing_summary`, `pff.receiving_summary`,
 `pff.blocking_summary`, ...), keyed `(player_id, season)` (plus `week` when

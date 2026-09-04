@@ -178,8 +178,16 @@ def match_players(pff_players, roster_rows) -> MatchResult:
         # A/2024 (exact-season hit) and B/2023 (roster gap, +-1 hit) must
         # contribute both candidate sets so a conflicting identity surfaces
         # as ambiguous instead of the first observation winning silently.
-        candidates: dict[str, set[str]] = defaultdict(set)  # athlete -> qualifying tokens
+        # Each observation independently proposes the athletes it can
+        # support; the first-name tiebreak is applied INSIDE the observation
+        # (against that observation's own display name and the roster rows
+        # that qualified each candidate). Only then are the proposals
+        # unioned: if two observations point at different athletes, the id
+        # is ambiguous, even when one of them would have been narrowed away
+        # by the other's name. Never guess across observations.
+        chosen: set[str] = set()
         widest_tier = -1
+        used_first_name = False
         for player, school, season in obs:
             key = pff_match_key(player, school)
             if not key:
@@ -190,27 +198,29 @@ def match_players(pff_players, roster_rows) -> MatchResult:
                     qualifying = [y for y in years if in_tier({y}, season)]
                     if qualifying:
                         found[athlete] = set().union(*(years[y] for y in qualifying))
-                if found:
-                    for athlete, toks in found.items():
-                        candidates[athlete] |= toks
-                    widest_tier = max(widest_tier, tier_idx)
-                    break
-        if not candidates:
+                if not found:
+                    continue
+                widest_tier = max(widest_tier, tier_idx)
+                proposal = set(found)
+                if len(proposal) > 1:
+                    pff_first = _name_tokens(player)[0]
+                    narrowed = {a for a, toks in found.items() if pff_first in toks}
+                    # Survivors when there are any (the useful list for
+                    # hand review); an empty narrowing (nickname vs legal
+                    # name) keeps the full set and never guesses.
+                    if narrowed:
+                        proposal = narrowed
+                    if len(narrowed) == 1:
+                        used_first_name = True
+                chosen |= proposal
+                break
+        if not chosen:
             result.unmatched.append(UnresolvedPlayer(pff_id, obs_pairs))
             continue
 
         method = f"{MATCH_METHOD}+{SEASON_TIERS[widest_tier][0]}"
-        chosen = set(candidates)
-        if len(chosen) > 1:
-            pff_firsts = {_name_tokens(name)[0] for name, _, _ in obs if _name_tokens(name)}
-            narrowed = {a for a, toks in candidates.items() if toks & pff_firsts}
-            # Report the first-name survivors when there are any (the
-            # useful list for hand review); an empty narrowing (nickname
-            # vs legal name) keeps the full set and never guesses.
-            if narrowed:
-                chosen = narrowed
-            if len(narrowed) == 1:
-                method += "+first_name"
+        if used_first_name and len(chosen) == 1:
+            method += "+first_name"
 
         if len(chosen) == 1:
             result.matches.append(

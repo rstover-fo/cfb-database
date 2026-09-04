@@ -222,6 +222,35 @@ class TestSeasonTiers:
         # The widest tier any observation needed is what gets recorded.
         assert result.matches[0]["match_method"].endswith("+season+-1")
 
+    def test_observation_pointing_at_a_different_athlete_is_never_narrowed_away(self):
+        # Greptile finding on PR #116: obs 1 "Chris Smith @ A 2024" -> X;
+        # obs 2 "Chris Smith @ B 2023" -> only Y (Carl Smith, B 2023). Y
+        # fails the first-name check, but that check runs per observation:
+        # obs 2 still proposes Y, so the id is ambiguous, not X.
+        roster = [
+            _r("X", "Chris", "Smith", "A", 2024),
+            _r("Y", "Carl", "Smith", "B", 2023),
+        ]
+        result = xwalk.match_players(
+            [_p(1, "Chris Smith", "A", 2024), _p(1, "Chris Smith", "B", 2023)], roster
+        )
+        assert result.matches == []
+        assert result.ambiguous[0].candidates == ["X", "Y"]
+
+    def test_first_name_narrowing_is_per_observation(self):
+        # obs 1 has two same-season candidates and its own name picks X;
+        # obs 2 independently finds X at the other school -> one athlete.
+        roster = [
+            _r("X", "Chris", "Smith", "A", 2024),
+            _r("Z", "Carl", "Smith", "A", 2024),
+            _r("X", "Chris", "Smith", "B", 2023),
+        ]
+        result = xwalk.match_players(
+            [_p(1, "Chris Smith", "A", 2024), _p(1, "Chris Smith", "B", 2023)], roster
+        )
+        assert [m["athlete_id"] for m in result.matches] == ["X"]
+        assert result.matches[0]["match_method"].endswith("+first_name")
+
     def test_multi_season_observations_scope_each_to_its_own_year(self):
         roster = [
             _r("a", "Jaden", "Smith", "Kentucky", 2023),

@@ -316,6 +316,29 @@ deep-roster case:
   (player, season, split, stats...) produced by un-pivoting prefixes at
   parse time — not 554-column tables. Out of v1 scope regardless.
 
+### Receiving exports (2026-09-04, three seasons)
+
+`receiving_summary` 2023–2025: stable 47-column contract, ~2,300
+rows/season. Carries `grades_pass_route`, `yprr`, alignment splits
+(`slot_rate`/`wide_rate`/`inline_rate` + snap counts), contested-catch and
+drop rates, `targeted_qb_rating`, and receiving EPA. Population is anyone
+who ran a route (WR/HB/TE dominate; a handful of QBs and linemen), so the
+position-mixing rule from the other facets applies here too.
+
+### Rushing exports; backfill set complete (2026-09-04)
+
+`rushing_summary` 2023–2025: stable 47-column contract, ~1,700 rows/season
+— `grades_run`, `elusive_rating` (+ its `elu_*` components),
+`yards_after_contact`/`yco_attempt`, `zone_attempts`/`gap_attempts`,
+breakaway and scramble splits. Population is anyone with a carry (HB/QB/WR
+dominate). Filename ordering was different *again* (unnumbered = 2024):
+three batches, three orderings — the season-fingerprint guard is settled
+law.
+
+**All five v1 families are now validated for 2023–2025** (passing 44 cols,
+receiving 47, rushing 47, blocking 31, defense 55 — every contract stable
+across seasons). The ingest lane can be built against real data.
+
 Implication for §5: the `pff` schema should mirror the export families —
 one wide table per facet (`pff.passing_summary`, `pff.receiving_summary`,
 `pff.blocking_summary`, ...), keyed `(player_id, season)` (plus `week` when

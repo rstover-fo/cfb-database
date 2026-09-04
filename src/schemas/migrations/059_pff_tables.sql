@@ -10,8 +10,9 @@
 --   pff.rushing_summary    (47 CSV cols, ~1,700 rows/season)
 --   pff.offense_blocking   (31 CSV cols, ~5,800 rows/season)
 --   pff.defense_summary    (55 CSV cols, ~5,400 rows/season)
---   pff.team_map           (136 rows, seeded below -- canonical copy of
---                           docs/brainstorms/2026-09-01-pff-team-name-map.json)
+--   pff.team_map           (137 rows, seeded below -- the 136-row
+--                           docs/brainstorms/2026-09-01-pff-team-name-map.json
+--                           plus W GEORGIA, found in the real 2023 exports)
 --   pff.player_xwalk       (empty shell; filled by
 --                           scripts/build_pff_player_xwalk.py)
 --
@@ -415,9 +416,10 @@ CREATE TABLE IF NOT EXISTS pff.team_map (
 
 COMMENT ON TABLE pff.team_map IS
     'PFF ALL-CAPS team abbreviation -> CFBD school full name. Seeded below '
-    'from docs/brainstorms/2026-09-01-pff-team-name-map.json (validated over '
-    'the 2023-2025 exports: all 136 FBS names map); this migration is the '
-    'canonical copy. A load meeting an unmapped name fails loud '
+    'from docs/brainstorms/2026-09-01-pff-team-name-map.json (136 rows, the '
+    '2025 FBS membership) plus W GEORGIA (graded by PFF in 2023 as a D2 '
+    'program -- present in all five real 2023 exports); this migration is '
+    'the canonical copy. A load meeting an unmapped name fails loud '
     '(UnmappedNamesError) -- a new name means realignment: add the mapping '
     'here deliberately, never guess in code.';
 
@@ -557,7 +559,14 @@ INSERT INTO pff.team_map (pff_team_name, cfbd_school) VALUES
     ('WASH STATE', 'Washington State'),
     ('WASHINGTON', 'Washington'),
     ('WISCONSIN', 'Wisconsin'),
-    ('WYOMING', 'Wyoming')
+    ('WYOMING', 'Wyoming'),
+    -- Not part of the 136-row 2025-membership JSON: every real 2023 export
+    -- (all five families) also carries W GEORGIA -- West Georgia, a
+    -- Division II program in 2023 that PFF graded anyway. Verified against
+    -- the live warehouse: CFBD's exact school string is 'West Georgia'
+    -- (they appear in core.games as an FCS opponent from 2024). Without
+    -- this row the whole 2023 backfill fails on UnmappedNamesError.
+    ('W GEORGIA', 'West Georgia')
 ON CONFLICT (pff_team_name) DO UPDATE SET cfbd_school = EXCLUDED.cfbd_school;
 
 -- ---------------------------------------------------------------------------

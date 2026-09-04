@@ -285,6 +285,22 @@ deep-roster case:
 - `api.roster_lookup` spans seasons (one row per player-season), so
   any-season presence matching works without a season-aware view.
 
+### Blocking exports (2026-09-04, three seasons of offense_blocking)
+
+- **Column contract:** 31 columns, identical across 2023–2025:
+  `grades_pass_block`, `grades_run_block`, `grades_offense`, `pbe`
+  (pass-blocking efficiency), pressures/sacks/hits/hurries allowed, and
+  per-slot snap counts (`snap_counts_lt/lg/ce/rg/rt/te`) — enough to build
+  snap-weighted OL line grades and positional continuity features without
+  any positional guesswork. ~5,600–6,000 rows/season; every position that
+  ever blocks appears (1,400+ WRs), so OL aggregation filters on
+  T/G/C + slot snap counts, not on the position label alone.
+- **Filename ordering is unreliable — fingerprints are mandatory.** In this
+  batch the *unnumbered* file was 2025 and `...3.csv` was 2023, the exact
+  reverse of the defense batch. Browser download numbering reflects upload
+  order, nothing else. Confirms the season-fingerprint verification is a
+  hard requirement, not defensive nicety.
+
 Implication for §5: the `pff` schema should mirror the export families —
 one wide table per facet (`pff.passing_summary`, `pff.receiving_summary`,
 `pff.blocking_summary`, ...), keyed `(player_id, season)` (plus `week` when

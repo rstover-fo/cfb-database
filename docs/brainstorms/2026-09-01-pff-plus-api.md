@@ -301,6 +301,21 @@ deep-roster case:
   order, nothing else. Confirms the season-fingerprint verification is a
   hard requirement, not defensive nicety.
 
+### Passing family complete + sub-report contracts (2026-09-04)
+
+- `passing_summary` 2023 (542 rows) and 2024 (513 rows) match the 2025
+  44-column contract exactly. One upload was a byte-identical duplicate of
+  the earlier 2025 file — precisely the case the hash-skip ledger absorbs.
+- Sub-report shapes (2025 samples, both 598 rows): `passing_concept` is
+  199 columns — one repeated stat block per concept split (`screen_`,
+  `no_screen_`, `pa_`, `npa_` prefixes); `passing_depth` is **554 columns**
+  — the same block per direction × depth cell (`left/center/right ×
+  behind_los/short/medium/deep`, plus marginals). Pattern: sub-reports are
+  prefix-repeated blocks of the summary stats, not new column vocabularies.
+  If any ever earns ingestion, the sane shape is **long format**
+  (player, season, split, stats...) produced by un-pivoting prefixes at
+  parse time — not 554-column tables. Out of v1 scope regardless.
+
 Implication for §5: the `pff` schema should mirror the export families —
 one wide table per facet (`pff.passing_summary`, `pff.receiving_summary`,
 `pff.blocking_summary`, ...), keyed `(player_id, season)` (plus `week` when

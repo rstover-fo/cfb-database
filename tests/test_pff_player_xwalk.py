@@ -185,6 +185,33 @@ class TestSeasonTiers:
         assert result.matches == []
         assert result.ambiguous[0].candidates == ["new", "new2"]
 
+    def test_each_observation_resolves_its_own_tier_before_the_union(self):
+        # Codex/Greptile finding on PR #115: A/2024 hits athlete X at the
+        # exact season; B/2023 finds athlete Y only via the +-1 tier. The
+        # first observation's hit must not stop the second from looking, or
+        # X is written while a conflicting identity (Y) goes unreported.
+        roster = [
+            _r("X", "Jaden", "Smith", "A", 2024),
+            _r("Y", "Jaden", "Smith", "B", 2022),
+        ]
+        result = xwalk.match_players(
+            [_p(1, "Jaden Smith", "A", 2024), _p(1, "Jaden Smith", "B", 2023)], roster
+        )
+        assert result.matches == []
+        assert result.ambiguous[0].candidates == ["X", "Y"]
+
+    def test_transfer_with_one_gapped_roster_still_matches_when_same_athlete(self):
+        roster = [
+            _r("X", "Jaden", "Smith", "A", 2024),
+            _r("X", "Jaden", "Smith", "B", 2022),
+        ]
+        result = xwalk.match_players(
+            [_p(1, "Jaden Smith", "A", 2024), _p(1, "Jaden Smith", "B", 2023)], roster
+        )
+        assert [m["athlete_id"] for m in result.matches] == ["X"]
+        # The widest tier any observation needed is what gets recorded.
+        assert result.matches[0]["match_method"].endswith("+season+-1")
+
     def test_multi_season_observations_scope_each_to_its_own_year(self):
         roster = [
             _r("a", "Jaden", "Smith", "Kentucky", 2023),

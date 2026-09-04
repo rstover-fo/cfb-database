@@ -22,6 +22,10 @@ docs/brainstorms/2026-09-01-pff-plus-api.md sections 5a+: 96% raw at QB,
 - Roster candidates are SEASON-SCOPED: a PFF observation from season S is
   matched against roster rows for S first, then S+-1 (roster gaps), then
   any season -- each tier only widening when the tighter one found nobody.
+  The tier is resolved per observation and the candidate sets are then
+  unioned, so a transfer's second school contributes its own candidates
+  even when the first school hit at a tighter tier; match_method records
+  the widest tier any observation needed.
   The first cut of this script matched against every roster season since
   2004, so "J. Smith @ Kentucky" collided with every J. Smith Kentucky ever
   rostered: a flat ~12% ambiguous rate across all positions/families
@@ -162,45 +166,49 @@ def match_players(pff_players, roster_rows) -> MatchResult:
     for pff_id in sorted(observations):
         obs = observations[pff_id]
         obs_pairs = tuple((name, school) for name, school, _ in dict.fromkeys(obs))
-        resolved = False
-        for tier_name, in_tier in SEASON_TIERS:
-            candidates: set[str] = set()
-            for player, school, season in obs:
-                key = pff_match_key(player, school)
-                if not key:
-                    continue
-                for athlete, years in index.get(key, {}).items():
-                    if in_tier(years, season):
-                        candidates.add(athlete)
-            if not candidates:
-                continue  # widen to the next tier
 
-            method = f"{MATCH_METHOD}+{tier_name}"
-            if len(candidates) > 1:
-                pff_firsts = {_name_tokens(name)[0] for name, _, _ in obs if _name_tokens(name)}
-                narrowed = {a for a in candidates if first_tokens[a] & pff_firsts}
-                # Report the first-name survivors when there are any (the
-                # useful list for hand review); an empty narrowing (nickname
-                # vs legal name) keeps the full set and never guesses.
-                if narrowed:
-                    candidates = narrowed
-                if len(narrowed) == 1:
-                    method += "+first_name"
-
-            if len(candidates) == 1:
-                result.matches.append(
-                    {
-                        "pff_player_id": pff_id,
-                        "athlete_id": next(iter(candidates)),
-                        "match_method": method,
-                    }
-                )
-            else:
-                result.ambiguous.append(UnresolvedPlayer(pff_id, obs_pairs, sorted(candidates)))
-            resolved = True
-            break
-        if not resolved:
+        # Resolve the tier PER OBSERVATION, then union. A transfer seen at
+        # A/2024 (exact-season hit) and B/2023 (roster gap, +-1 hit) must
+        # contribute both candidate sets so a conflicting identity surfaces
+        # as ambiguous instead of the first observation winning silently.
+        candidates: set[str] = set()
+        widest_tier = -1
+        for player, school, season in obs:
+            key = pff_match_key(player, school)
+            if not key:
+                continue
+            for tier_idx, (_, in_tier) in enumerate(SEASON_TIERS):
+                found = {a for a, years in index.get(key, {}).items() if in_tier(years, season)}
+                if found:
+                    candidates |= found
+                    widest_tier = max(widest_tier, tier_idx)
+                    break
+        if not candidates:
             result.unmatched.append(UnresolvedPlayer(pff_id, obs_pairs))
+            continue
+
+        method = f"{MATCH_METHOD}+{SEASON_TIERS[widest_tier][0]}"
+        if len(candidates) > 1:
+            pff_firsts = {_name_tokens(name)[0] for name, _, _ in obs if _name_tokens(name)}
+            narrowed = {a for a in candidates if first_tokens[a] & pff_firsts}
+            # Report the first-name survivors when there are any (the
+            # useful list for hand review); an empty narrowing (nickname
+            # vs legal name) keeps the full set and never guesses.
+            if narrowed:
+                candidates = narrowed
+            if len(narrowed) == 1:
+                method += "+first_name"
+
+        if len(candidates) == 1:
+            result.matches.append(
+                {
+                    "pff_player_id": pff_id,
+                    "athlete_id": next(iter(candidates)),
+                    "match_method": method,
+                }
+            )
+        else:
+            result.ambiguous.append(UnresolvedPlayer(pff_id, obs_pairs, sorted(candidates)))
     return result
 
 

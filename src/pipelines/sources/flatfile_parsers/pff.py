@@ -89,9 +89,11 @@ EXPECTED_TEAM_COUNTS: dict[int, int] = {
     2025: 136,
 }
 
-# For seasons without a recorded exact count: a full FBS export must land in
-# this band (FBS membership has been 120-136 for a decade; 150 leaves
-# headroom for expansion without admitting position-filtered partials).
+# For FUTURE seasons without a recorded exact count (membership not settled
+# yet): a full FBS export must land in this band (FBS membership has been
+# 120-136 for a decade; 150 leaves headroom for expansion without admitting
+# position-filtered partials). Past seasons without an exact count are
+# refused outright -- see verify_season_fingerprint.
 TEAM_COUNT_SANITY = (120, 150)
 
 # Per-family column contracts: exact CSV header order, column -> kind.
@@ -366,7 +368,18 @@ def verify_season_fingerprint(teams: set[str], claimed_season: int, source: str)
             )
 
     count = len(teams)
-    if expected is not None:
+    if expected is None and claimed_season <= max(EXPECTED_TEAM_COUNTS):
+        # A PAST season with no validated fingerprint: the count band alone
+        # cannot tell 2014 from 2022 (both ~128-130 teams), so a backfill
+        # export could be stamped with any season in the band. Refuse until
+        # someone records that season's exact membership (and any marker
+        # teams) here -- the same validation step 2023-2025 went through.
+        contradictions.append(
+            f"season {claimed_season} has no validated FBS fingerprint; add its exact "
+            "team count to EXPECTED_TEAM_COUNTS (and markers to SEASON_MARKERS) before "
+            "loading it"
+        )
+    elif expected is not None:
         if count != expected:
             contradictions.append(
                 f"file has {count} distinct teams; a season-{claimed_season} "

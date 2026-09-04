@@ -227,6 +227,13 @@ class TestSeasonFingerprint:
         # must not be a provable contradiction for a future season claim.
         pff.verify_season_fingerprint(set(TEAMS_2025), 2026, "pff_passing_summary")
 
+    def test_past_season_without_validated_fingerprint_is_refused(self):
+        # 2014-2022 backfills: the count band cannot tell those seasons
+        # apart, so a season must be validated (EXPECTED_TEAM_COUNTS) first.
+        teams = set(TEAMS_2023[:128])
+        with pytest.raises(SeasonFingerprintError, match="no validated FBS fingerprint"):
+            pff.verify_season_fingerprint(teams, 2018, "pff_passing_summary")
+
     def test_pre_2014_claim_fails(self):
         with pytest.raises(SeasonFingerprintError, match="2014"):
             pff.verify_season_fingerprint(set(TEAMS_2023), 2013, "pff_passing_summary")

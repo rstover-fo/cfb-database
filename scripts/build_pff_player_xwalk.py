@@ -31,24 +31,27 @@ docs/brainstorms/2026-09-01-pff-plus-api.md sections 5a+: 96% raw at QB,
   rostered: a flat ~12% ambiguous rate across all positions/families
   (88.3% matched on the 2023-2025 backfill, 2026-09-04).
 - Within a tier, two or more candidates are narrowed on the full first-name
-  token (PFF "Tycoolhill Luman" vs "Tyclean Luman", both FAU); a unique
-  survivor matches, otherwise the id stays ambiguous.
+  token (PFF "Tycoolhill Luman" vs "Tyclean Luman", both FAU), using ONLY
+  the roster rows that qualified each candidate for that observation -- a
+  same-named row at another school in another decade is not evidence; a
+  unique survivor matches, otherwise the id stays ambiguous.
 - NEVER guess beyond that: a key with two or more surviving candidates is
   left unmatched and reported (ambiguous), as is a key with none. Only
   unique matches are written; match_method records the tier that resolved
   it.
 
 Writes: INSERT ... ON CONFLICT (pff_player_id) DO UPDATE into
-pff.player_xwalk (athlete_id, match_method, matched_at). Already-matched
-ids are skipped unless --rebuild. Unmatched and ambiguous players go to the
-stdout report only -- no row is written for them, so a later run (better
-data, better rule) picks them up automatically. Under --rebuild, an id
-that previously matched but is now ambiguous/unmatched has its old row
-DELETED, so the table never carries a mapping the report disowns.
+pff.player_xwalk (athlete_id, match_method, matched_at). EVERY run
+rematches every PFF id from scratch (the match is a few seconds of
+in-memory work), so a new transfer observation or a better roster can
+contradict an old mapping and be seen: an id that is now ambiguous or
+unmatched has its old row DELETED and is reported, so the table never
+carries a mapping the report disowns. There is no incremental mode --
+skipping already-matched ids would freeze exactly the mappings new
+evidence should overturn.
 
 Usage:
-    python scripts/build_pff_player_xwalk.py             # match new ids only
-    python scripts/build_pff_player_xwalk.py --rebuild   # rematch everything
+    python scripts/build_pff_player_xwalk.py             # rematch everything, write
     python scripts/build_pff_player_xwalk.py --dry-run   # report, write nothing
 
 Requires SUPABASE_DB_URL (or .dlt/secrets.toml destination credentials).
@@ -148,17 +151,19 @@ def match_players(pff_players, roster_rows) -> MatchResult:
         roster_rows: iterable of {"athlete_id", "first_name", "last_name",
             "team", "year"} dicts spanning any/all roster seasons.
     """
-    # key -> athlete_id -> roster years seen at that key
-    index: dict[tuple[str, str, str], dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))
-    # athlete_id -> normalized first-name tokens seen on any roster row
-    first_tokens: dict[str, set[str]] = defaultdict(set)
+    # key -> athlete_id -> roster year -> first-name tokens seen on the
+    # rows at that key/year. Keeping the tokens per qualifying row (not per
+    # athlete globally) is what lets the first-name tiebreak use only the
+    # evidence that made an athlete a candidate: a 2010 row at another
+    # school must not vouch for a 2024 collision.
+    index: dict[tuple[str, str, str], dict[str, dict[int, set[str]]]] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(set))
+    )
     for row in roster_rows:
         key = roster_match_key(row["first_name"], row["last_name"], row["team"])
         if not key:
             continue
-        athlete = str(row["athlete_id"])
-        index[key][athlete].add(int(row["year"]))
-        first_tokens[athlete].add(_name_tokens(row["first_name"])[0])
+        index[key][str(row["athlete_id"])][int(row["year"])].add(_name_tokens(row["first_name"])[0])
 
     observations: dict[int, list[tuple[str, str, int]]] = defaultdict(list)
     for p in pff_players:
@@ -173,16 +178,21 @@ def match_players(pff_players, roster_rows) -> MatchResult:
         # A/2024 (exact-season hit) and B/2023 (roster gap, +-1 hit) must
         # contribute both candidate sets so a conflicting identity surfaces
         # as ambiguous instead of the first observation winning silently.
-        candidates: set[str] = set()
+        candidates: dict[str, set[str]] = defaultdict(set)  # athlete -> qualifying tokens
         widest_tier = -1
         for player, school, season in obs:
             key = pff_match_key(player, school)
             if not key:
                 continue
             for tier_idx, (_, in_tier) in enumerate(SEASON_TIERS):
-                found = {a for a, years in index.get(key, {}).items() if in_tier(years, season)}
+                found: dict[str, set[str]] = {}
+                for athlete, years in index.get(key, {}).items():
+                    qualifying = [y for y in years if in_tier({y}, season)]
+                    if qualifying:
+                        found[athlete] = set().union(*(years[y] for y in qualifying))
                 if found:
-                    candidates |= found
+                    for athlete, toks in found.items():
+                        candidates[athlete] |= toks
                     widest_tier = max(widest_tier, tier_idx)
                     break
         if not candidates:
@@ -190,35 +200,36 @@ def match_players(pff_players, roster_rows) -> MatchResult:
             continue
 
         method = f"{MATCH_METHOD}+{SEASON_TIERS[widest_tier][0]}"
-        if len(candidates) > 1:
+        chosen = set(candidates)
+        if len(chosen) > 1:
             pff_firsts = {_name_tokens(name)[0] for name, _, _ in obs if _name_tokens(name)}
-            narrowed = {a for a in candidates if first_tokens[a] & pff_firsts}
+            narrowed = {a for a, toks in candidates.items() if toks & pff_firsts}
             # Report the first-name survivors when there are any (the
             # useful list for hand review); an empty narrowing (nickname
             # vs legal name) keeps the full set and never guesses.
             if narrowed:
-                candidates = narrowed
+                chosen = narrowed
             if len(narrowed) == 1:
                 method += "+first_name"
 
-        if len(candidates) == 1:
+        if len(chosen) == 1:
             result.matches.append(
                 {
                     "pff_player_id": pff_id,
-                    "athlete_id": next(iter(candidates)),
+                    "athlete_id": next(iter(chosen)),
                     "match_method": method,
                 }
             )
         else:
-            result.ambiguous.append(UnresolvedPlayer(pff_id, obs_pairs, sorted(candidates)))
+            result.ambiguous.append(UnresolvedPlayer(pff_id, obs_pairs, sorted(chosen)))
     return result
 
 
 def stale_ids(result: MatchResult) -> list[int]:
     """PFF ids the matcher considered but refused to write (ambiguous or
-    unmatched). Under --rebuild these may still hold a row from an earlier
-    run whose evidence no longer supports it; the caller deletes them so
-    the table never disagrees with the report."""
+    unmatched). They may still hold a row from an earlier run whose
+    evidence no longer supports it; the caller deletes them so the table
+    never disagrees with the report."""
     return sorted(u.pff_player_id for u in result.ambiguous + result.unmatched)
 
 
@@ -227,7 +238,7 @@ def stale_ids(result: MatchResult) -> list[int]:
 # ---------------------------------------------------------------------------
 
 
-def _fetch_pff_players(cur, skip_ids: set[int]) -> list[dict]:
+def _fetch_pff_players(cur) -> list[dict]:
     union = "\nUNION\n".join(
         f"SELECT player_id, player, school, season FROM pff.{t}" for t in PFF_FAMILY_TABLES
     )
@@ -235,7 +246,6 @@ def _fetch_pff_players(cur, skip_ids: set[int]) -> list[dict]:
     return [
         {"pff_player_id": pid, "player": player, "school": school, "season": season}
         for pid, player, school, season in cur.fetchall()
-        if int(pid) not in skip_ids
     ]
 
 
@@ -273,7 +283,7 @@ def _write_matches(cur, matches: list[dict]) -> None:
 
 
 def _delete_stale(cur, ids: list[int]) -> int:
-    """Drop crosswalk rows for ids the current rebuild left unresolved.
+    """Drop crosswalk rows for ids the current run left unresolved.
     Returns the number of rows actually removed."""
     if not ids:
         return 0
@@ -281,13 +291,13 @@ def _delete_stale(cur, ids: list[int]) -> int:
     return cur.rowcount
 
 
-def _report(result: MatchResult, skipped: int) -> None:
+def _report(result: MatchResult) -> None:
     total = result.total
     rate = (len(result.matches) / total * 100) if total else 0.0
     print(f"\n{'=' * 60}")
     print("PFF Player Xwalk Summary")
     print(f"{'=' * 60}")
-    print(f"  candidates considered: {total} (already matched, skipped: {skipped})")
+    print(f"  candidates considered: {total}")
     print(f"  matched:   {len(result.matches):6d}  ({rate:.1f}%)")
     by_method = Counter(m["match_method"] for m in result.matches)
     for method, n in sorted(by_method.items(), key=lambda kv: -kv[1]):
@@ -315,7 +325,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--rebuild",
         action="store_true",
-        help="Rematch every PFF player id, including ones already in the xwalk",
+        help="Deprecated no-op: every run already rematches every PFF id (kept so "
+        "older handoff commands still parse)",
     )
     parser.add_argument(
         "--dry-run",
@@ -329,17 +340,9 @@ def main(argv: list[str] | None = None) -> int:
     conn = psycopg2.connect(get_db_url())
     try:
         with conn.cursor() as cur:
-            skip_ids: set[int] = set()
-            if not args.rebuild:
-                cur.execute("SELECT pff_player_id FROM pff.player_xwalk")
-                skip_ids = {int(r[0]) for r in cur.fetchall()}
-
-            pff_players = _fetch_pff_players(cur, skip_ids)
+            pff_players = _fetch_pff_players(cur)
             roster = _fetch_roster(cur)
-            print(
-                f"{len(pff_players)} PFF player ids to match "
-                f"({len(skip_ids)} already matched) against {len(roster)} roster rows"
-            )
+            print(f"{len(pff_players)} PFF observations to match against {len(roster)} roster rows")
 
             result = match_players(pff_players, roster)
 
@@ -348,12 +351,11 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 if result.matches:
                     _write_matches(cur, result.matches)
-                # A rebuild rematches ids that already hold a row; if the
-                # current evidence leaves one ambiguous/unmatched, the old
-                # row must go too, or the table silently disagrees with
-                # the report. Without --rebuild those ids were skipped, so
-                # there is nothing stale to remove.
-                removed = _delete_stale(cur, stale_ids(result)) if args.rebuild else 0
+                # Every run rematches every id, so a row whose evidence no
+                # longer supports it (new transfer observation, better
+                # roster) must go, or the table silently disagrees with
+                # the report.
+                removed = _delete_stale(cur, stale_ids(result))
                 conn.commit()
                 print(
                     f"wrote {len(result.matches)} rows to pff.player_xwalk"
@@ -362,7 +364,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         conn.close()
 
-    _report(result, skipped=len(skip_ids))
+    _report(result)
     return 0
 
 

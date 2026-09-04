@@ -119,6 +119,16 @@ class TestMatchPlayers:
         assert result.matches == []
         assert result.ambiguous[0].candidates == ["3", "4"]
 
+    def test_first_name_evidence_comes_only_from_qualifying_rows(self):
+        # Greptile finding on PR #116: Carl Smith (Duke 2024) also has a 2010
+        # row at another school as "Corey". PFF "Corey Smith @ Duke 2024"
+        # must not resolve to Carl on that unrelated row -- neither 2024
+        # Duke candidate is a Corey, so the collision stays ambiguous.
+        roster = self.ROSTER + [_r("4", "Corey", "Smith", "Elsewhere", 2010)]
+        result = xwalk.match_players([_p(12, "Corey Smith", "Duke")], roster)
+        assert result.matches == []
+        assert result.ambiguous[0].candidates == ["3", "4"]
+
     def test_no_candidate_is_unmatched(self):
         result = xwalk.match_players([_p(13, "Ghost Player", "Toledo")], self.ROSTER)
         assert result.matches == [] and result.ambiguous == []

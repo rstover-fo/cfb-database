@@ -1,4 +1,4 @@
-# Handoff: PFF Backfill Deploy (migration 059 + 15-file load + player xwalk)
+# Handoff: PFF Backfill Deploy (migration 061 + 15-file load + player xwalk)
 
 **Branch:** `claude/pff-plus-api-1z1naq` (all code reviewed and pushed; tests green)
 **Design/context:** `docs/brainstorms/2026-09-01-pff-plus-api.md`
@@ -20,8 +20,10 @@ player crosswalk. Everything below runs locally (needs `SUPABASE_DB_URL` /
 ## Steps
 
 ```bash
-# 1. Migration (idempotent; creates schema pff + 5 tables + seeded team_map + xwalk shell)
-python scripts/run_migrations.py --file src/schemas/migrations/059_pff_tables.sql
+# 1. Migration (idempotent; creates schema pff + 5 tables + seeded team_map + xwalk shell).
+#    Applied to production 2026-09-04 as 059_pff_tables.sql (Deploy Schema run 33922048941),
+#    renamed to 061 before merge because main already carried 059_rushing_grants_indexes.sql.
+python scripts/run_migrations.py --file src/schemas/migrations/061_pff_tables.sql
 
 # 2. Load all 15 files (order irrelevant; each is independent)
 for season in 2023 2024 2025; do

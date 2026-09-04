@@ -68,7 +68,7 @@ class XwalkResolver:
     ) -> "XwalkResolver":
         """Load a resolver from a dedicated two-column mapping table instead
         of ref.team_name_xwalk -- e.g. pff.team_map(pff_team_name,
-        cfbd_school), the committed PFF map (migration 059), wired via
+        cfbd_school), the committed PFF map (migration 061), wired via
         ``FlatFileSpec.xwalk_map``.
 
         ``table`` must be schema-qualified; all identifier parts are

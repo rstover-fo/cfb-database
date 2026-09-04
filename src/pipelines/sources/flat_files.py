@@ -225,7 +225,7 @@ class FlatFileSpec:
             ``(schema_qualified_table, source_name_col, cfbd_name_col)``
             triple loaded via ``XwalkResolver.load_map_table`` instead of
             ``ref.team_name_xwalk`` keyed by ``spec.name`` (pff commits its
-            map as ``pff.team_map``, seeded by migration 059).
+            map as ``pff.team_map``, seeded by migration 061).
         xwalk_resolved_field: When set, the crosswalk writes the resolved
             CFBD name to this NEW row field and leaves the source field
             untouched (pff keeps ``team_name`` verbatim and adds
@@ -631,9 +631,9 @@ REGISTRY: dict[str, FlatFileSpec] = {
     # season's file hash-skips independently (a byte-identical re-drop of an
     # already-loaded file is a skipped_hash, the observed duplicate-upload
     # case). Team names resolve through the committed pff.team_map
-    # (migration 059) into a NEW `school` column, keeping PFF's verbatim
+    # (migration 061) into a NEW `school` column, keeping PFF's verbatim
     # team_name; unmapped_fail_rate=0.0 -- any unmapped name is realignment
-    # and fails the whole load. Tables/columns: migration 059, derived from
+    # and fails the whole load. Tables/columns: migration 061, derived from
     # the real 2023-2025 exports. Licensed data: the pff schema is
     # deliberately ungranted and outside the api/public contract.
     "pff_passing_summary": FlatFileSpec(

@@ -1,4 +1,4 @@
--- Migration: 059_pff_tables
+-- Migration: 061_pff_tables
 --
 -- PFF Premium Stats manual-CSV ingest lane (design:
 -- docs/brainstorms/2026-09-01-pff-plus-api.md, section 4 option A1). Five

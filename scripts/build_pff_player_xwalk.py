@@ -2,7 +2,7 @@
 """Build pff.player_xwalk: match pff.* player rows to core.roster athletes.
 
 PFF's player_id namespace shares nothing with CFBD's athlete ids; this
-script fills the crosswalk shell created by migration 059 so PFF grades can
+script fills the crosswalk shell created by migration 061 so PFF grades can
 join the rest of the warehouse. Matching rule (validated in
 docs/brainstorms/2026-09-01-pff-plus-api.md sections 5a+: 96% raw at QB,
 91% raw / ~99% suffix-fixed at CB/S/LB/DI/ED):

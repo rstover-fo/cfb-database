@@ -17,12 +17,26 @@ docs/brainstorms/2026-09-01-pff-plus-api.md sections 5a+: 96% raw at QB,
   the FINAL surname token on both sides, so CFBD's whole-surname last_name
   and PFF's space-split display name land on the same key.
 - School is the CFBD full name: pff.*.school (pre-resolved via
-  pff.team_map) against core.roster.team, matched over ANY roster season --
-  the roster spans seasons, and a transfer's multiple PFF school
+  pff.team_map) against core.roster.team. A transfer's multiple PFF school
   observations union to the same athlete id.
-- NEVER guess: a key with two or more candidate athletes is left unmatched
-  and reported (ambiguous), as is a key with none. Only unique matches are
-  written.
+- Roster candidates are SEASON-SCOPED: a PFF observation from season S is
+  matched against roster rows for S first, then S+-1 (roster gaps), then
+  any season -- each tier only widening when the tighter one found nobody.
+  The tier is resolved per observation and the candidate sets are then
+  unioned, so a transfer's second school contributes its own candidates
+  even when the first school hit at a tighter tier; match_method records
+  the widest tier any observation needed.
+  The first cut of this script matched against every roster season since
+  2004, so "J. Smith @ Kentucky" collided with every J. Smith Kentucky ever
+  rostered: a flat ~12% ambiguous rate across all positions/families
+  (88.3% matched on the 2023-2025 backfill, 2026-09-04).
+- Within a tier, two or more candidates are narrowed on the full first-name
+  token (PFF "Tycoolhill Luman" vs "Tyclean Luman", both FAU); a unique
+  survivor matches, otherwise the id stays ambiguous.
+- NEVER guess beyond that: a key with two or more surviving candidates is
+  left unmatched and reported (ambiguous), as is a key with none. Only
+  unique matches are written; match_method records the tier that resolved
+  it.
 
 Writes: INSERT ... ON CONFLICT (pff_player_id) DO UPDATE into
 pff.player_xwalk (athlete_id, match_method, matched_at). Already-matched
@@ -42,7 +56,7 @@ is pure and unit-tested in tests/test_pff_player_xwalk.py.
 
 import argparse
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
 from src.pipelines.utils.load_ledger import get_db_url
@@ -52,6 +66,15 @@ from src.pipelines.utils.load_ledger import get_db_url
 SUFFIX_TOKENS = frozenset({"JR", "SR", "II", "III", "IV", "V"})
 
 MATCH_METHOD = "last_name+first_initial+school"
+
+# Candidate tiers, tightest first. Each is a predicate on (roster years for
+# the athlete at this key, PFF observation season); the matcher only widens
+# to the next tier when the current one yields no candidate at all.
+SEASON_TIERS: tuple[tuple[str, object], ...] = (
+    ("season", lambda years, season: season in years),
+    ("season+-1", lambda years, season: any(abs(y - season) <= 1 for y in years)),
+    ("any_season", lambda years, season: True),
+)
 
 PFF_FAMILY_TABLES = (
     "passing_summary",
@@ -117,42 +140,75 @@ def match_players(pff_players, roster_rows) -> MatchResult:
     """Pure matching core.
 
     Args:
-        pff_players: iterable of {"pff_player_id", "player", "school"} dicts
-            -- possibly several observations per id (transfers).
+        pff_players: iterable of {"pff_player_id", "player", "school",
+            "season"} dicts -- possibly several observations per id
+            (transfers, multiple seasons).
         roster_rows: iterable of {"athlete_id", "first_name", "last_name",
-            "team"} dicts spanning any/all roster seasons.
+            "team", "year"} dicts spanning any/all roster seasons.
     """
-    index: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    # key -> athlete_id -> roster years seen at that key
+    index: dict[tuple[str, str, str], dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))
+    # athlete_id -> normalized first-name tokens seen on any roster row
+    first_tokens: dict[str, set[str]] = defaultdict(set)
     for row in roster_rows:
         key = roster_match_key(row["first_name"], row["last_name"], row["team"])
-        if key:
-            index[key].add(str(row["athlete_id"]))
+        if not key:
+            continue
+        athlete = str(row["athlete_id"])
+        index[key][athlete].add(int(row["year"]))
+        first_tokens[athlete].add(_name_tokens(row["first_name"])[0])
 
-    observations: dict[int, list[tuple[str, str]]] = defaultdict(list)
+    observations: dict[int, list[tuple[str, str, int]]] = defaultdict(list)
     for p in pff_players:
-        observations[int(p["pff_player_id"])].append((p["player"], p["school"]))
+        observations[int(p["pff_player_id"])].append((p["player"], p["school"], int(p["season"])))
 
     result = MatchResult(matches=[], ambiguous=[], unmatched=[])
     for pff_id in sorted(observations):
         obs = observations[pff_id]
+        obs_pairs = tuple((name, school) for name, school, _ in dict.fromkeys(obs))
+
+        # Resolve the tier PER OBSERVATION, then union. A transfer seen at
+        # A/2024 (exact-season hit) and B/2023 (roster gap, +-1 hit) must
+        # contribute both candidate sets so a conflicting identity surfaces
+        # as ambiguous instead of the first observation winning silently.
         candidates: set[str] = set()
-        for player, school in obs:
+        widest_tier = -1
+        for player, school, season in obs:
             key = pff_match_key(player, school)
-            if key:
-                candidates |= index.get(key, set())
+            if not key:
+                continue
+            for tier_idx, (_, in_tier) in enumerate(SEASON_TIERS):
+                found = {a for a, years in index.get(key, {}).items() if in_tier(years, season)}
+                if found:
+                    candidates |= found
+                    widest_tier = max(widest_tier, tier_idx)
+                    break
+        if not candidates:
+            result.unmatched.append(UnresolvedPlayer(pff_id, obs_pairs))
+            continue
+
+        method = f"{MATCH_METHOD}+{SEASON_TIERS[widest_tier][0]}"
+        if len(candidates) > 1:
+            pff_firsts = {_name_tokens(name)[0] for name, _, _ in obs if _name_tokens(name)}
+            narrowed = {a for a in candidates if first_tokens[a] & pff_firsts}
+            # Report the first-name survivors when there are any (the
+            # useful list for hand review); an empty narrowing (nickname
+            # vs legal name) keeps the full set and never guesses.
+            if narrowed:
+                candidates = narrowed
+            if len(narrowed) == 1:
+                method += "+first_name"
 
         if len(candidates) == 1:
             result.matches.append(
                 {
                     "pff_player_id": pff_id,
                     "athlete_id": next(iter(candidates)),
-                    "match_method": MATCH_METHOD,
+                    "match_method": method,
                 }
             )
-        elif candidates:
-            result.ambiguous.append(UnresolvedPlayer(pff_id, tuple(obs), sorted(candidates)))
         else:
-            result.unmatched.append(UnresolvedPlayer(pff_id, tuple(obs)))
+            result.ambiguous.append(UnresolvedPlayer(pff_id, obs_pairs, sorted(candidates)))
     return result
 
 
@@ -163,24 +219,30 @@ def match_players(pff_players, roster_rows) -> MatchResult:
 
 def _fetch_pff_players(cur, skip_ids: set[int]) -> list[dict]:
     union = "\nUNION\n".join(
-        f"SELECT player_id, player, school FROM pff.{t}" for t in PFF_FAMILY_TABLES
+        f"SELECT player_id, player, school, season FROM pff.{t}" for t in PFF_FAMILY_TABLES
     )
     cur.execute(union)
     return [
-        {"pff_player_id": pid, "player": player, "school": school}
-        for pid, player, school in cur.fetchall()
+        {"pff_player_id": pid, "player": player, "school": school, "season": season}
+        for pid, player, school, season in cur.fetchall()
         if int(pid) not in skip_ids
     ]
 
 
 def _fetch_roster(cur) -> list[dict]:
     cur.execute(
-        "SELECT DISTINCT id::text, first_name, last_name, team "
-        "FROM core.roster WHERE team IS NOT NULL"
+        "SELECT DISTINCT id::text, first_name, last_name, team, year "
+        "FROM core.roster WHERE team IS NOT NULL AND year IS NOT NULL"
     )
     return [
-        {"athlete_id": athlete_id, "first_name": first, "last_name": last, "team": team}
-        for athlete_id, first, last, team in cur.fetchall()
+        {
+            "athlete_id": athlete_id,
+            "first_name": first,
+            "last_name": last,
+            "team": team,
+            "year": year,
+        }
+        for athlete_id, first, last, team, year in cur.fetchall()
     ]
 
 
@@ -208,6 +270,9 @@ def _report(result: MatchResult, skipped: int) -> None:
     print(f"{'=' * 60}")
     print(f"  candidates considered: {total} (already matched, skipped: {skipped})")
     print(f"  matched:   {len(result.matches):6d}  ({rate:.1f}%)")
+    by_method = Counter(m["match_method"] for m in result.matches)
+    for method, n in sorted(by_method.items(), key=lambda kv: -kv[1]):
+        print(f"    {method:<52} {n:6d}")
     print(f"  ambiguous: {len(result.ambiguous):6d}  (left unmatched -- never guessed)")
     print(f"  unmatched: {len(result.unmatched):6d}")
 

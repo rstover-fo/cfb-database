@@ -42,7 +42,9 @@ Writes: INSERT ... ON CONFLICT (pff_player_id) DO UPDATE into
 pff.player_xwalk (athlete_id, match_method, matched_at). Already-matched
 ids are skipped unless --rebuild. Unmatched and ambiguous players go to the
 stdout report only -- no row is written for them, so a later run (better
-data, better rule) picks them up automatically.
+data, better rule) picks them up automatically. Under --rebuild, an id
+that previously matched but is now ambiguous/unmatched has its old row
+DELETED, so the table never carries a mapping the report disowns.
 
 Usage:
     python scripts/build_pff_player_xwalk.py             # match new ids only
@@ -212,6 +214,14 @@ def match_players(pff_players, roster_rows) -> MatchResult:
     return result
 
 
+def stale_ids(result: MatchResult) -> list[int]:
+    """PFF ids the matcher considered but refused to write (ambiguous or
+    unmatched). Under --rebuild these may still hold a row from an earlier
+    run whose evidence no longer supports it; the caller deletes them so
+    the table never disagrees with the report."""
+    return sorted(u.pff_player_id for u in result.ambiguous + result.unmatched)
+
+
 # ---------------------------------------------------------------------------
 # DB flow (not unit-tested -- runs only against the real warehouse)
 # ---------------------------------------------------------------------------
@@ -260,6 +270,15 @@ def _write_matches(cur, matches: list[dict]) -> None:
         [(m["pff_player_id"], m["athlete_id"], m["match_method"]) for m in matches],
         template="(%s, %s, %s, now())",
     )
+
+
+def _delete_stale(cur, ids: list[int]) -> int:
+    """Drop crosswalk rows for ids the current rebuild left unresolved.
+    Returns the number of rows actually removed."""
+    if not ids:
+        return 0
+    cur.execute("DELETE FROM pff.player_xwalk WHERE pff_player_id = ANY(%s)", (ids,))
+    return cur.rowcount
 
 
 def _report(result: MatchResult, skipped: int) -> None:
@@ -324,12 +343,22 @@ def main(argv: list[str] | None = None) -> int:
 
             result = match_players(pff_players, roster)
 
-            if result.matches and not args.dry_run:
-                _write_matches(cur, result.matches)
-                conn.commit()
-                print(f"wrote {len(result.matches)} rows to pff.player_xwalk")
-            elif args.dry_run:
+            if args.dry_run:
                 print("[DRY RUN] no rows written")
+            else:
+                if result.matches:
+                    _write_matches(cur, result.matches)
+                # A rebuild rematches ids that already hold a row; if the
+                # current evidence leaves one ambiguous/unmatched, the old
+                # row must go too, or the table silently disagrees with
+                # the report. Without --rebuild those ids were skipped, so
+                # there is nothing stale to remove.
+                removed = _delete_stale(cur, stale_ids(result)) if args.rebuild else 0
+                conn.commit()
+                print(
+                    f"wrote {len(result.matches)} rows to pff.player_xwalk"
+                    + (f", removed {removed} stale rows" if removed else "")
+                )
     finally:
         conn.close()
 

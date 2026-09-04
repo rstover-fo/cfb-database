@@ -223,3 +223,19 @@ class TestSeasonTiers:
         )
         assert [m["athlete_id"] for m in result.matches] == ["a"]
         assert len(result.matches[0]) == 3
+
+
+class TestStaleIds:
+    """--rebuild must remove rows the current evidence no longer supports."""
+
+    def test_ambiguous_and_unmatched_ids_are_stale(self):
+        result = xwalk.MatchResult(
+            matches=[{"pff_player_id": 1, "athlete_id": "a", "match_method": "m"}],
+            ambiguous=[xwalk.UnresolvedPlayer(7, (("X Y", "S"),), ["a", "b"])],
+            unmatched=[xwalk.UnresolvedPlayer(3, (("X Y", "S"),))],
+        )
+        assert xwalk.stale_ids(result) == [3, 7]
+
+    def test_clean_result_has_no_stale_ids(self):
+        result = xwalk.MatchResult(matches=[], ambiguous=[], unmatched=[])
+        assert xwalk.stale_ids(result) == []

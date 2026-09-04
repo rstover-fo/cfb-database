@@ -38,7 +38,9 @@ FBS-membership facts found in ``team_name``:
   season whose membership is simply unknown yet;
 - a 2014 floor (PFF's NCAA Premium Stats coverage starts in 2014).
 
-Only provable contradictions fail (``SeasonFingerprintError``): a future
+Only provable contradictions fail (``SeasonFingerprintError``), including
+a validated season whose expected markers are MISSING (a 2023 export
+claimed as 2024 has 134 teams and no KENNESAW); a future
 season's file passes on markers it happens to contain, and marker ABSENCE
 never fails anything (a team leaving FBS is realignment, not corruption).
 When 2026's membership is settled, extend ``EXPECTED_TEAM_COUNTS`` (and
@@ -67,8 +69,11 @@ from src.pipelines.sources.flat_files import (
 PFF_MIN_SEASON = 2014
 
 # Team abbreviation -> first FBS season. Presence of a marker in a file
-# claimed as an EARLIER season is a provable contradiction. Absence proves
-# nothing and is never checked.
+# claimed as an EARLIER season is a provable contradiction. For VALIDATED
+# seasons (EXPECTED_TEAM_COUNTS) absence is checked too: a full 2024 export
+# without KENNESAW is really a 2023 file -- both seasons have 134 teams, so
+# the count alone cannot tell them apart. For unvalidated (future) seasons
+# absence proves nothing (a marker could have left FBS) and is not checked.
 SEASON_MARKERS: dict[str, int] = {
     "KENNESAW": 2024,
     "DELAWARE": 2025,
@@ -346,14 +351,21 @@ def verify_season_fingerprint(teams: set[str], claimed_season: int, source: str)
             f"season {claimed_season} cannot exist"
         )
 
+    expected = EXPECTED_TEAM_COUNTS.get(claimed_season)
     for marker, first_fbs_season in SEASON_MARKERS.items():
         if marker in teams and claimed_season < first_fbs_season:
             contradictions.append(
                 f"{marker} is in the file but did not join FBS until {first_fbs_season}"
             )
+        elif marker not in teams and expected is not None and claimed_season >= first_fbs_season:
+            # Validated season, marker should be there: an older export
+            # (the reversed 2023/2024 swap) is the only way it is missing.
+            contradictions.append(
+                f"{marker} is missing from the file but has been FBS since "
+                f"{first_fbs_season}; this looks like an earlier season's export"
+            )
 
     count = len(teams)
-    expected = EXPECTED_TEAM_COUNTS.get(claimed_season)
     if expected is not None:
         if count != expected:
             contradictions.append(

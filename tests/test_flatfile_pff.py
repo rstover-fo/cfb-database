@@ -194,6 +194,23 @@ class TestSeasonFingerprint:
         with pytest.raises(SeasonFingerprintError):
             pff.verify_season_fingerprint(set(TEAMS_2025), 2024, "pff_passing_summary")
 
+    def test_2023_file_claimed_as_2024_fails_on_missing_kennesaw(self):
+        # The reversed swap: both seasons have 134 teams, so only the
+        # marker's ABSENCE can catch a 2023 export labelled 2024.
+        with pytest.raises(SeasonFingerprintError, match="KENNESAW is missing"):
+            pff.verify_season_fingerprint(set(TEAMS_2023), 2024, "pff_passing_summary")
+
+    def test_2024_file_claimed_as_2025_fails_on_missing_markers(self):
+        teams = set(TEAMS_2024) | {"EXTRA A", "EXTRA B"}  # 136 teams, no 2025 markers
+        with pytest.raises(SeasonFingerprintError, match="DELAWARE is missing"):
+            pff.verify_season_fingerprint(teams, 2025, "pff_passing_summary")
+
+    def test_missing_marker_is_not_checked_for_unvalidated_seasons(self):
+        # 2027 is not in EXPECTED_TEAM_COUNTS: a marker could have left FBS,
+        # so absence proves nothing there.
+        teams = set(TEAMS_2023) | {"EXTRA A", "EXTRA B"}
+        pff.verify_season_fingerprint(teams, 2027, "pff_passing_summary")
+
     def test_2024_file_claimed_as_2023_fails_on_kennesaw(self):
         with pytest.raises(SeasonFingerprintError, match="KENNESAW"):
             pff.verify_season_fingerprint(set(TEAMS_2024), 2023, "pff_passing_summary")

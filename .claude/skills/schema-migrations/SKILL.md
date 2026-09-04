@@ -20,6 +20,13 @@ description: Schema-change workflow for this repo — migrations, grants/RLS, ma
 3. **Verify current state from the catalog**, not docs: column names via
    `pg_attribute`, view type (matview vs view) before adding to test
    inventories. dlt renames columns on load.
+4. **Variant-twin allow-lists (KTD7).** When a mart COALESCEs a new dlt
+   `<col>__v_double` twin, extend `EXPECTED_VARIANT_TWINS` in
+   `src/pipelines/utils/variant_twins.py` AND the matching allow-list array
+   in `src/schemas/api/validation_rushing_views.sql` (group (e)) — the two
+   must stay equal (`tests/test_variant_twins.py` guards it). Miss either
+   one and either `verify_load.py` fails every daily run on a twin it
+   doesn't recognize, or the deploy-time SQL validation does.
 
 ## Writing the migration
 

@@ -1,0 +1,14 @@
+{
+  "action": "apply",
+  "files": [
+    "src/schemas/marts/050_rushing_charting_player_season.sql",
+    "src/schemas/marts/051_rushing_charting_team_season.sql",
+    "src/schemas/marts/052_rushing_charting_direction_season.sql",
+    "src/schemas/functions/refresh_all_marts.sql",
+    "src/schemas/api/050_rushing_charting_player_season.sql",
+    "src/schemas/api/051_rushing_charting_team_season.sql",
+    "src/schemas/api/052_rushing_charting_direction_season.sql",
+    "src/schemas/functions/get_player_detail.sql",
+    "src/schemas/api/validation_rushing_views.sql"
+  ]
+}

@@ -23,6 +23,7 @@ from .sources.ratings import ratings_source
 from .sources.recruiting import recruiting_source
 from .sources.reference import reference_source
 from .sources.rosters import rosters_source
+from .sources.rushing import rushing_source
 from .sources.stats import stats_source
 from .sources.wepa import wepa_source
 from .utils.rate_limiter import get_rate_limiter
@@ -86,6 +87,7 @@ Examples:
             "rosters",
             "wepa",
             "passing",
+            "rushing",
             "playoffs",
             "coaches",
             "coach_tenures",
@@ -513,6 +515,29 @@ def run_passing_pipeline(years: list[int] | None = None, mode: str = "incrementa
     )
 
     source = passing_source(years=years, mode=mode)
+    info = pipeline.run(source)
+
+    print(f"\nLoad info: {info}")
+
+    return info
+
+
+def run_rushing_pipeline(years: list[int] | None = None, mode: str = "incremental"):
+    """Run the /rushing charting pipeline (rusher attribution, rush
+    direction, direction/touchdown-status charting coverage -- see
+    rushing.py's module docstring). Data starts 2025; earlier years are
+    skipped per-resource with zero calls.
+    """
+    years_str = f"years={years}" if years else f"mode={mode}"
+    print(f"\n=== Loading Rushing Data ({years_str}) ===\n")
+
+    pipeline = dlt.pipeline(
+        pipeline_name="cfbd_rushing",
+        destination="postgres",
+        dataset_name="stats",
+    )
+
+    source = rushing_source(years=years, mode=mode)
     info = pipeline.run(source)
 
     print(f"\nLoad info: {info}")
@@ -1266,14 +1291,15 @@ def run_player_overview_pipeline(
         Summary dict: `seasons` considered, `eligible_seasons` (post-gate),
         `missing` (the FULL backlog, not the capped slice),
         `excluded_misses` (candidates skipped because meta.fanout_misses
-        recorded a 400/404/5xx for them within FANOUT_MISS_RETRY_DAYS --
-        PR #75 review finding A), `loaded_this_run`,
+        recorded a 400/404/5xx/network-fault for them within
+        FANOUT_MISS_RETRY_DAYS -- PR #75 review finding A), `loaded_this_run`,
         `skipped_misses_this_run` (player-seasons attempted this run that
         ended in a recorded miss instead of rows -- terminal 400/404s plus
-        5xxs that survived api_client's retries, which skip the one player
-        rather than killing the dispatch: backfill run 33351198599),
-        `deferred`, batches, and the list of dlt LoadInfo objects (one per
-        batch).
+        5xxs and network faults (timeouts/connect errors, recorded with
+        sentinel status_code 0) that survived api_client's retries, which
+        skip the one player rather than killing the dispatch: backfill run
+        33351198599, drain #7 run 33515429442), `deferred`, batches, and the
+        list of dlt LoadInfo objects (one per batch).
     """
     import psycopg2
 
@@ -1513,8 +1539,9 @@ def run_rosters_pipeline(
             # successful roster load that made zero /roster requests -- the
             # same silent-no-op shape as the finished-season skip turning a
             # backfill into nothing, and as `--sources rosters` logging "No
-            # runner for source" and exiting 0, which is why core.roster had
-            # no 2026 rows in the first place.
+            # runner for source" and exiting 0. (The 2026-09-03 "no 2026
+            # rosters" incident itself was a different silent no-op: the
+            # resource lacked table_name="roster" and loaded core.rosters.)
             raise RuntimeError(
                 f"No teams with scheduled games in {years}: core.games has no rows for "
                 f"{'that season' if len(years) == 1 else 'those seasons'}. /roster is "
@@ -1633,6 +1660,7 @@ def main() -> NoReturn:
         "rosters": lambda: run_rosters_pipeline(args.teams, args.years, args.mode),
         "wepa": lambda: run_wepa_pipeline(args.years, args.mode),
         "passing": lambda: run_passing_pipeline(args.years, args.mode),
+        "rushing": lambda: run_rushing_pipeline(args.years, args.mode),
         "playoffs": lambda: run_playoffs_pipeline(args.years, args.mode),
         "coaches": lambda: run_coaches_pipeline(args.years, args.mode),
         "coach_tenures": lambda: run_coach_tenures_pipeline(args.teams, args.years),

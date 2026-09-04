@@ -46,7 +46,7 @@ The database uses multiple Postgres schemas organized by data domain:
 |--------|---------|---------|
 | `ref` | Reference/lookup data | teams, venues, conferences |
 | `core` | Normalized game data | roster, games, game_team_stats, line scores |
-| `stats` | Player/team statistics | player_stats, team_stats, passing_plays |
+| `stats` | Player/team statistics | player_stats, team_stats, passing_plays, rushing_plays |
 | `ratings` | Rankings and ratings | SP+, Elo, FPI, SRS |
 | `recruiting` | Recruiting data | recruits, team_recruiting |
 | `betting` | Betting lines | lines, spreads |
@@ -55,8 +55,8 @@ The database uses multiple Postgres schemas organized by data domain:
 | `analytics` | Computed analytics | EPA, style profiles |
 | `features` | Fitted-model substrate | team_week (as-of feature vector), model_coefficients, model_metadata |
 | `live` | In-game polling | scoreboard_snapshots, wp_params (house live win prob) |
-| `marts` | Materialized views (46) | Denormalized, query-optimized |
-| `api` | API view layer (49) | Contract surface for cfb-app/cfb-scout |
+| `marts` | Materialized views (49) | Denormalized, query-optimized |
+| `api` | API view layer (52) | Contract surface for cfb-app/cfb-scout |
 | `predictions` | Prediction snapshots | game_predictions, season_projections (append-only daily) |
 | `public` | Convenience views/RPCs (12) | Downstream consumer interface |
 | `meta` | Flat-file load ledger | flat_file_loads |
@@ -64,7 +64,7 @@ The database uses multiple Postgres schemas organized by data domain:
 
 ### Marts System
 
-46 materialized views in the `marts` schema provide denormalized, query-optimized data (47 in the refresh registry counting the internal helper `marts._game_epa_calc`, plus the plain view `analytics.data_quality_dashboard`). Refresh via:
+49 materialized views in the `marts` schema provide denormalized, query-optimized data (50 in the refresh registry counting the internal helper `marts._game_epa_calc`, plus the plain view `analytics.data_quality_dashboard`). Refresh via:
 ```bash
 python scripts/refresh_marts.py        # Refresh all marts
 ```
@@ -78,6 +78,14 @@ Elo/adjusted EPA (including the as-of weekly EPA build), refits fitted_v1 when i
 (`train_model.py --refit-if-stale`, a no-op on all but one day a year) and writes the
 model's upcoming scores, then runs post-load checks (`scripts/verify_load.py`). Failures
 open/update a rolling GitHub issue.
+
+- `verify_load.py` also runs the KTD7 variant-twin tripwire (`check_variant_twins`,
+  backed by `src/pipelines/utils/variant_twins.py`): dlt sometimes splits a
+  charting metric into a bigint base column plus a `<col>__v_double` twin, and
+  every mart reading `stats.rushing_*`/`stats.passing_player_season` COALESCEs
+  only the twins that existed when it was authored. A daily load that creates a
+  NEW twin now FAILs the run naming the column instead of silently going NULL
+  in the mart/api view/RPC until someone notices.
 
 **Finished-season skip:** on the unattended path (no `--season`, no `--sources`)
 `load_season.py` skips sources whose data cannot change once a season is complete
@@ -156,8 +164,8 @@ cfb-database/
 │   │   ├── config/               # RESTAPIConfig definitions
 │   │   │   ├── endpoints.py
 │   │   │   └── years.py
-│   │   ├── sources/              # 18 endpoint-specific source modules (incl. playoffs.py,
-│   │   │   │                     # coaches.py, conferences.py, player_overview.py, passing.py) + flat-file sources
+│   │   ├── sources/              # 19 endpoint-specific source modules (incl. playoffs.py,
+│   │   │   │                     # coaches.py, conferences.py, player_overview.py, passing.py, rushing.py) + flat-file sources
 │   │   │   ├── flat_files.py      # Flat-file source registry and orchestration
 │   │   │   └── flatfile_parsers/  # Parsers for CSV, parquet, PDF flat-file formats
 │   │   ├── utils/
@@ -165,9 +173,9 @@ cfb-database/
 │   │   │   └── rate_limiter.py   # Monthly budget tracking
 │   │   └── run.py                # Pipeline orchestration
 │   └── schemas/
-│       ├── api/                  # 49 API view definitions (contract surface)
+│       ├── api/                  # 52 API view definitions (contract surface)
 │       ├── functions/            # SQL functions
-│       ├── marts/                # 46 materialized view definitions (+ _game_epa_calc helper, +1 plain view)
+│       ├── marts/                # 49 materialized view definitions (+ _game_epa_calc helper, +1 plain view)
 │       ├── public/               # 12 convenience views + RPCs
 │       └── migrations/           # Schema migrations
 ├── scripts/
@@ -250,7 +258,7 @@ Use this skill when building or debugging anything that calls the CFBD API:
 - **Failure classification**: empty-200 vs 403 semantics, Cloudflare burst 429s vs quota exhaustion, when auto-retry is wrong (one-off scripts) vs correct (the pipeline's Retry-After + circuit-breaker pattern)
 - **Data-shape traps**: nullable fields, v2 breaking changes, completed games with NULL scores, duplicate school names
 
-The complete 79-endpoint inventory stays in `docs/cfbd-api-endpoints.md`; the skill carries conventions and traps, not the endpoint list.
+The complete 84-endpoint inventory stays in `docs/cfbd-api-endpoints.md`; the skill carries conventions and traps, not the endpoint list.
 
 ### dlt REST API Reference
 Location: `docs/dlt-reference.md`

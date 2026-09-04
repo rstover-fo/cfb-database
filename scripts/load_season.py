@@ -34,6 +34,7 @@ SOURCE_ORDER = [
     "plays",  # Play-by-play (largest dataset)
     "stats",  # Aggregated season stats
     "passing",  # /passing charting: air yards, aDOT, depth/direction/location, YAC (2025+)
+    "rushing",  # /rushing charting: rusher attribution, rush direction, TD status (2025+)
     "ratings",  # SP+, Elo, FPI, SRS, CORE, SRS-expanded
     "rankings",  # AP, Coaches polls
     "recruiting",  # Recruits, team composites
@@ -87,6 +88,15 @@ ESTIMATED_CALLS = {
     # = 62. Zero calls for a season before PASSING_DATA_START (2025) --
     # the era guard skips every resource before spending anything.
     "passing": 62,
+    # /rushing charting (rushing.py): same shape as passing -- 3 week-iterated
+    # resources (rushing_plays, rushing_player_games, rushing_team_games) x
+    # ~20 calls each (regular weeks 1-16 + postseason weeks 1-4) + 2
+    # season-grain resources (rushing_player_season, rushing_team_season) x 1
+    # call each = 62. Zero calls for a season before the era guard (2025) --
+    # live probe 2026-09-03 confirmed a bare-year request 400s on the
+    # game-grain endpoints (they require year+week or year+team), same trap
+    # as passing.
+    "rushing": 62,
     # sp/elo/fpi/srs/core/sp_conferences/srs_expanded: one call per year each.
     "ratings": 13,
     "rankings": 20,
@@ -195,6 +205,10 @@ IMMUTABLE_ONCE_FINAL = frozenset(
         # vendor after the fact. Corrections ride explicit --season
         # re-runs, not a daily re-ingest, same as stats/game_advanced.
         "passing",
+        # rushing (rushing.py): same immutable-once-final policy as passing --
+        # 2025 is partially charted upstream and improves only via explicit
+        # --sources rushing re-pulls; the daily path never picks those up.
+        "rushing",
         "ratings",
         "rankings",
         "recruiting",
@@ -365,6 +379,19 @@ def upcoming_schedule_season(season: int, month: int) -> int | None:
     return season + 1 if month < 8 else None
 
 
+def _count_failures(results: dict) -> int:
+    """Count every non-"ok" result as a failure for the summary tally.
+
+    Must stay in lockstep with the row icon's predicate (anything but "ok"
+    prints FAIL) and with main()'s exit-code check. _mart_refresh can report
+    status "partial" (some matviews failed to refresh, others didn't) --
+    that is not "ok" and must fail the run, or a stale mart layer behind N
+    failed refreshes prints "0 failed" and exits 0. Counting only
+    status == "error" was exactly that bug.
+    """
+    return sum(1 for r in results.values() if r["status"] != "ok")
+
+
 def load_season(
     season: int,
     sources: list[str] | None = None,
@@ -409,6 +436,7 @@ def load_season(
         run_recruiting_pipeline,
         run_reference_pipeline,
         run_rosters_pipeline,
+        run_rushing_pipeline,
         run_stats_pipeline,
         run_wepa_pipeline,
     )
@@ -539,6 +567,7 @@ def load_season(
         "plays": lambda: run_plays_pipeline(years=[season]),
         "stats": lambda: run_stats_pipeline(years=[season], only=resource_filters.get("stats")),
         "passing": lambda: run_passing_pipeline(years=[season]),
+        "rushing": lambda: run_rushing_pipeline(years=[season]),
         "ratings": lambda: run_ratings_pipeline(years=[season]),
         "rankings": lambda: run_rankings_pipeline(years=[season]),
         "recruiting": lambda: run_recruiting_pipeline(years=[season]),
@@ -657,12 +686,12 @@ def load_season(
     print(f"Season {season} Load Summary")
     print(f"{'=' * 60}")
     successes = sum(1 for r in results.values() if r["status"] == "ok")
-    errors = sum(1 for r in results.values() if r["status"] == "error")
+    errors = _count_failures(results)
     for name, res in results.items():
         status_icon = "OK" if res["status"] == "ok" else "FAIL"
         print(f"  [{status_icon:4s}] {name:25s} {res['duration_s']:>8.1f}s")
     print(f"{'=' * 60}")
-    print(f"  Total: {total_elapsed:.1f}s | {successes} succeeded, {errors} failed")
+    print(f"  Total: {total_elapsed:.1f}s | {successes} succeeded, {errors} failed (incl. partial)")
 
     return {
         "season": season,
@@ -740,8 +769,11 @@ def main() -> None:
     )
 
     # Validation failures return {"error": str} (singular) before any source
-    # runs; per-source failures count up {"errors": int}. Both must exit
-    # nonzero or a mistyped --sources reports success having loaded nothing.
+    # runs; per-source failures count up {"errors": int} via _count_failures,
+    # which counts any non-"ok" status -- including _mart_refresh's "partial"
+    # -- not just literal status == "error". Both must exit nonzero, or a
+    # mistyped --sources (or a partially-failed mart refresh) reports success
+    # having loaded/refreshed nothing.
     if summary.get("error") or summary.get("errors", 0) > 0:
         sys.exit(1)
 

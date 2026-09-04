@@ -2,9 +2,9 @@
 
 **Date:** 2026-08-29
 **Branch:** `claude/cfbd-cfb-package-updates-7iabg2`
-**Status:** Built and reviewed. Steps 1-3, 6, 7 (launch) and 9 applied to the live
-database/workflows as of 2026-08-30; steps 4, 5 (historical dispatches), 7's
-"once fully drained" rerun, and 8 remain open — see checklist below.
+**Status:** Built and reviewed. Steps 1-6, 7 (launch), 8, and 9 applied to the live
+database/workflows as of 2026-09-02 (steps 4, 5, 8 completed 2026-09-01/02); only
+7's "once fully drained" rerun remains open — see checklist below.
 
 ## What shipped on the branch
 
@@ -74,16 +74,25 @@ load precondition.
        `stats.player_season_overview` (250 rows) after their first capped runs;
        column names verified live via `pg_attribute` (not from API docs).
        `050`/`054` applied 2026-08-30.
-4. [ ] **Cheap corrected-data re-runs** (~4,900 calls): backfill-sources.yml
+4. [x] **Cheap corrected-data re-runs** (~4,900 calls): backfill-sources.yml
        dispatches, seasons 2025→2014, sources
        `metrics,wepa,recruiting,rosters,stats:advanced_team_stats+game_havoc+player_usage+player_returning+game_advanced`,
        plus one `reference` run. Split 2-3 dispatches for the 120-min timeout.
-5. [ ] **Flat-file first loads**: `flat-files.yml` picks the 16 new sources up via
+       **Done 2026-09-01** — all listed sources re-ran across the 2014-2025
+       dispatches; `wepa` was the long pole (the CFBD player-id rename ->
+       migration 058 saga) and finished last, all 12 seasons re-ingested
+       post-058.
+5. [x] **Flat-file first loads**: `flat-files.yml` picks the 16 new sources up via
        `--due`; historical seasons via explicit `--season` dispatches
        (ncaa 2013-2025, espn adv 2004-2025, participants 2014-2025 — ~190 fetches,
-       no API budget). **Partial: the `--due` first loads ran** (16 new sources
-       picked up on schedule); the historical `--season` dispatches for ncaa/espn
-       adv/participants have not been made yet.
+       no API budget). **Done 2026-09-01** — the `--due` first loads ran (16 new
+       sources picked up on schedule); the historical `--season` dispatches
+       loaded ncaa 2013-2024 (incl. play-by-play, 1.34M rows, 2021-2024), ESPN
+       player splits (57.8k/369.9k rows, 23 seasons, at `stats.espn_player_*`;
+       2014-2020 un-parked and loaded), and participants (12 seasons, ~1.77M
+       rows). ESPN 2002-03 pbp closed by decision (not loaded -- ESPN pbp
+       starts 2004, see "Facts discovered en route" above). Zero API budget
+       throughout; August closed under the monthly cap.
 6. [x] Deploy mart `044_epa_crossvalidation.sql` (separate, later run than 052);
        refresh marts; confirm the `cfbd_fpi_season` anchor is NON-dark (it has
        data today — dark there means the team-name join broke). Snapshot the
@@ -118,12 +127,32 @@ load precondition.
        scope here). If it times out again, that edit — parameterizing the loop
        bounds so it can be dispatched per-season or in season chunks — is the
        follow-up, not a re-dispatch of the same file.
-8. [ ] **player_overview backfill 2021-2025** (~23k calls — live counts run
+8. [x] **player_overview backfill 2021-2025** (~23k calls — live counts run
        4-5.5k players/season, higher than the ~3k planning estimate): dispatch
        `backfill-sources.yml --sources player_overview` per season, or let the
        daily drainer work at 250/day. Pace against the campaign so combined
-       spend stays under ~30k/month of headroom. **2014-2020 (~30k more) is
-       parked pending an explicit go-ahead.**
+       spend stays under ~30k/month of headroom.
+       **Complete 2026-09-02** — `stats.player_season_overview` holds **47,396
+       rows across seasons 2013-2025** (grain season/id/team; 2013 was pulled
+       into scope by the `metrics.ppa_players_season` candidate union, the
+       original scope said 2014-2025 -- the 2014-2020 parked range above is
+       included). Per-season: 2013: 2,984 | 2014: 3,048 | 2015: 3,096 | 2016:
+       3,238 | 2017: 3,214 | 2018: 3,473 | 2019: 3,489 | 2020: 2,370 (COVID) |
+       2021: 3,290 | 2022: 4,969 | 2023: 4,560 | 2024: 4,104 | 2025: 5,561.
+       Nine drain rounds Aug 30-Sep 2 drained the measured 43,788-pair backlog
+       (~43.8k calls; ~3.6k rows predated the campaign from the daily 250-cap
+       drip; the September share ≈21k against the fresh 125k monthly budget)
+       -- well above the ~23k estimate above because the full 2013-2020 range
+       was included. Round 7 died at batch 149/180 on a post-retries
+       ReadTimeout (fixed: network-fault skip-with-miss, commit `b046571`,
+       proven in production in round 8); round 8 was externally cancelled at
+       ~5h; the final round (run `33575474184`, 2026-09-02, green, 28 min)
+       finished the tail. Residual backlog: exactly 4 player-seasons, all
+       2014, all in `meta.fanout_misses` (3 network-fault skips -- sentinel
+       `status_code` 0 -- and 1 post-retries 502, recorded during CFBD's
+       unstable evening of 2026-09-01); they age back into eligibility after
+       30 days and self-heal on a later run. Zero 400/404 misses and zero
+       empty-200 residual across the whole population.
 9. [x] On merge to main: remove the temporary `push:` trigger from
        `probe-endpoints.yml` (workflow_dispatch works once it's on main).
        **Done** — commit `d14823f`.
@@ -136,7 +165,7 @@ load precondition.
 | A2 endpoint backfills + one-times | ~1,300 | step 2 |
 | Cheap corrected-data re-runs | ~4,900 | step 4 |
 | Refresh campaign (both per-game tasks) | ~38,000 | step 7, paced |
-| player_overview 2021-2025 | ~23,000 | step 8, paced |
+| player_overview 2021-2025 | ~23,000 (actual: ~43.8k for 2013-2025, split ~22.8k Aug / ~21k Sep) | step 8, paced |
 | Flat-file sources | 0 (GitHub fetches) | steps 5+ |
 
 Worst-case months stay ≈100k of the 125k Tier-4 budget with both paced streams
@@ -149,7 +178,8 @@ referenced in step 5's flat-file notes is now partially seeded — `massey` seed
 2026-08-30 (131 mappings, reviewed); `sbr` remains unseeded, pending a
 user-supplied Excel file.
 
-- player_overview 2014-2020 (~30k calls) — explicit user go-ahead required.
+- player_overview 2014-2020 (~30k calls) — **done, see step 8** (complete
+  2026-09-02, full 2013-2025 range drained; go-ahead was given).
 - `ncaa` schema exposure — deliberately ungranted until a crosswalk exists;
   revisit when an FCS join path is built on the `espn_game_id` bridge columns.
 - `ref.conference_affiliations` replacing the games-derived

@@ -258,6 +258,74 @@ class TestPlayerSeasonOverviewResource:
             assert len(results) == 1
             assert results[0]["id"] == "5083552"
 
+    def test_timeout_after_retries_records_miss_and_continues(self):
+        """Drain #7 (run 33515429442, 2026-09-01) died at batch 149/180: one
+        player's request hit a ~4.5-minute CFBD instability window (5xx and
+        read-timeout retries alternating through the full transient budget),
+        and the 7th attempt ALSO timed out -- so api_client.get() raised
+        httpx.ReadTimeout (an httpx.RequestError), not HTTPStatusError. The
+        5xx-only skip caught nothing, the timeout escaped, and dlt discarded
+        the remaining ~31 batches (~1,600 planned calls) -- the same blast
+        radius the 5xx hardening was built to stop. A post-retries
+        httpx.RequestError is now recorded as a miss with the network-fault
+        sentinel status_code 0 (meta.fanout_misses.status_code is NOT NULL,
+        so there is no HTTP status to record), same ledger, same key format,
+        same FANOUT_MISS_RETRY_DAYS re-eligibility as a 5xx skip, and the
+        loop moves to the next player."""
+        from src.pipelines.sources.player_overview import player_season_overview_resource
+
+        fixture = _load_fixture("player_season_overview.json")
+        timeout = httpx.ReadTimeout(
+            "The read operation timed out",
+            request=httpx.Request(
+                "GET", "https://api.collegefootballdata.com/player/season/overview"
+            ),
+        )
+
+        with (
+            patch("src.pipelines.sources.player_overview.get_client") as mock_get_client,
+            patch("src.pipelines.sources.player_overview.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [timeout, fixture]
+
+            misses: list[tuple[str, int]] = []
+            results = list(
+                player_season_overview_resource(
+                    player_seasons=[(2024, "4879928"), (2024, "5083552")], misses=misses
+                )
+            )
+
+            assert misses == [("2024:4879928", 0)]
+            # The healthy player AFTER the timed-out one still loads.
+            assert len(results) == 1
+            assert results[0]["id"] == "5083552"
+
+    def test_rate_limit_errors_are_not_recorded_as_network_fault_misses(self):
+        """RateLimitExhausted/RateLimitCircuitOpen are custom exceptions, not
+        httpx.RequestError subclasses -- api_client raises them directly
+        rather than letting a 429 surface as a request/response error -- so
+        the network-fault skip must not catch them either: a spent quota
+        aborting the run stays correct."""
+        from dlt.extract.exceptions import ResourceExtractionError
+
+        from src.pipelines.sources.player_overview import player_season_overview_resource
+        from src.pipelines.utils.api_client import RateLimitExhausted
+
+        with (
+            patch("src.pipelines.sources.player_overview.get_client") as mock_get_client,
+            patch("src.pipelines.sources.player_overview.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = RateLimitExhausted("rate limited on all attempts")
+
+            misses: list[tuple[str, int]] = []
+            with pytest.raises(ResourceExtractionError) as exc_info:
+                list(player_season_overview_resource(player_seasons=[(2024, "1")], misses=misses))
+
+            assert isinstance(exc_info.value.__cause__, RateLimitExhausted)
+            assert misses == []
+
     def test_500_after_retries_with_no_collector_still_continues(self):
         """The skip must not depend on a misses collector being passed --
         misses=None (the default) loses only the ledger benefit, never the

@@ -5,7 +5,8 @@ name: Probe 2026 Endpoints
 # affiliation history, player success rate, expanded SRS, player season
 # overview, whether two existing endpoints still accept a bare `year`, and
 # -- new in v5.25.0 -- the /passing family: play-level passing charting,
-# player and team passing splits by game and by season). Read-only, ~24
+# player and team passing splits by game and by season; and -- new in
+# v5.26.0 -- the matching /rushing family, probes 19-23). Read-only, ~35
 # calls total -- see scripts/probe_2026_endpoints.py for the full list.
 # No schedule: run it by hand when a response shape needs to be confirmed
 # before writing the corresponding dlt source module.
@@ -17,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: "Comma-separated probe numbers to run, e.g. 4,9,12 (default: all 18)"
+        description: "Comma-separated probe numbers to run, e.g. 4,9,12 (default: all 23)"
         required: false
         type: string
 

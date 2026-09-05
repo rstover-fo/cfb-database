@@ -139,8 +139,8 @@ class TestDryRun:
         # its 2025 file is ~11.8MB, well under the ~200MB scope threshold)
         # + 5 espn_* (B6b; espn_pbp_2002_2003 dropped -- the dataset's real
         # minimum season is 2004, verified live, so no pre-CFBD gap-fill
-        # table exists).
-        assert len(REGISTRY) == 21
+        # table exists) + 5 pff_* (manual-drop PFF Premium Stats CSVs).
+        assert len(REGISTRY) == 26
         captured = capsys.readouterr()
         for name in REGISTRY:
             assert name in captured.out

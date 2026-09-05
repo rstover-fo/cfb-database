@@ -531,7 +531,7 @@ The table was successfully loaded via `game_stats_source`'s week-by-week loading
 | massey | ratings.massey_composite, ratings.massey_system_ratings | CSV (massey.org) | Weekly | Built (awaiting first load) |
 | nflverse_combine | draft.combine | Parquet (nflverse) | Annual | Built (awaiting first load) |
 | nflverse_draft | draft.nflverse_draft_picks | Parquet (nflverse) | Annual | Built (awaiting first load) |
-| sbr | betting.sbr_historical | Excel (manual backfill) | Manual | Built (awaiting first load) |
+| sbr | betting.sbr_historical | Excel (manual backfill) | Manual | LOADED 2023-2025 (2026-09-04; ledger meta.flat_file_loads) |
 | availability | raw.availability_reports | PDF archive (conf reports) | Weekly | Built (awaiting first load) |
 | sdv_team_xwalk | ref.team_id_xwalk | Parquet (sportsdataverse-data, per-season) | Weekly | Built (awaiting first load) |
 | sdv_game_xwalk | ref.game_id_xwalk | Parquet (sportsdataverse-data, per-season) | Weekly | Built (awaiting first load) |
@@ -549,6 +549,11 @@ The table was successfully loaded via `game_stats_source`'s week-by-week loading
 | espn_player_receiving | stats.espn_player_receiving | Parquet (sportsdataverse-data espn_cfb_adv_receiving, per-season) | Weekly | Built (awaiting first load) |
 | espn_player_defense | stats.espn_player_defense | Parquet (sportsdataverse-data espn_cfb_adv_defensive_players, per-season) | Weekly | Built (awaiting first load) |
 | espn_play_participants | stats.espn_play_participants | Parquet (sportsdataverse-data espn_cfb_play_participants, per-season) | Weekly | Built (awaiting first load) |
+| pff_passing_summary | pff.passing_summary | CSV (PFF Premium Stats, manual export per season) | Manual | LOADED 2023-2025 (2026-09-04; ledger meta.flat_file_loads) |
+| pff_receiving_summary | pff.receiving_summary | CSV (PFF Premium Stats, manual export per season) | Manual | LOADED 2023-2025 (2026-09-04; ledger meta.flat_file_loads) |
+| pff_rushing_summary | pff.rushing_summary | CSV (PFF Premium Stats, manual export per season) | Manual | LOADED 2023-2025 (2026-09-04; ledger meta.flat_file_loads) |
+| pff_offense_blocking | pff.offense_blocking | CSV (PFF Premium Stats, manual export per season) | Manual | LOADED 2023-2025 (2026-09-04; ledger meta.flat_file_loads) |
+| pff_defense_summary | pff.defense_summary | CSV (PFF Premium Stats, manual export per season) | Manual | LOADED 2023-2025 (2026-09-04; ledger meta.flat_file_loads) |
 
 `ncaa.*` lives in its own, deliberately ungranted Postgres schema (migration
 053): stats.ncaa.org ids (team/player/contest) are a disjoint id space from
@@ -568,6 +573,35 @@ play-by-play gap-fill) was dropped from this unit -- the real
 `espn_cfb_pbp` release's minimum season is 2004 (verified via a live download:
 `play_by_play_2004.parquet` succeeds, `play_by_play_2002/2003.parquet` both
 404), so the dataset this table would have held does not exist upstream.
+
+`pff.*` (PFF Premium Stats; design: `docs/brainstorms/2026-09-01-pff-plus-api.md`)
+lives in its own, deliberately ungranted schema (migration 061) -- licensed
+subscription data, held out of PostgREST and the api/public contract until the
+PFF ToS/redistribution question is settled. The five sources are manual drops:
+PFF's report pages are auth-gated browser downloads with no stable URL, so the
+user exports each family's CSV by hand (season filter set in the UI) and loads
+one (family, season) at a time. `--season` is mandatory -- the CSVs carry no
+season column and identical filenames, and the parser verifies the claimed
+season against the file's FBS-membership fingerprint (marker teams + team
+counts), failing loud on a contradiction. Team names resolve through the
+committed `pff.team_map` (unmapped name = realignment = loud failure); PFF
+player ids join CFBD athletes via `pff.player_xwalk`, built by
+`scripts/build_pff_player_xwalk.py` after loading. Zero CFBD API calls.
+
+PFF load, per exported file (repeat per family x season; validated coverage
+2023-2025, PFF publishes NCAA data back to 2014):
+
+```bash
+python scripts/load_flat_files.py --source pff_passing_summary --season 2024 \
+    --file ~/Downloads/passing_summary.csv
+# ... same for pff_receiving_summary, pff_rushing_summary,
+#     pff_offense_blocking, pff_defense_summary
+python scripts/build_pff_player_xwalk.py   # after new rows land; reports unmatched
+```
+
+Re-dropping an unchanged file is a hash-skip (`skipped_hash`, ledger key
+`pff_<family>:<season>`); a byte-identical file under a *different* --season is
+re-parsed and the fingerprint guard rejects the wrong pairing.
 
 First deploy (one-time, requires DB credentials):
 

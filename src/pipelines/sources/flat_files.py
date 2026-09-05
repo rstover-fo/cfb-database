@@ -10,9 +10,13 @@ This module is the contract surface for the flat-file subsystem
   nflverse_draft, sbr, availability) plus the sportsdataverse-data additions
   (sdv_team_xwalk, sdv_game_xwalk, sdv_fpi_weekly, sdv_ratings_weekly), the
   NCAA bundle (ncaa_schedule, ncaa_teams, ncaa_rosters, ncaa_linescores,
-  ncaa_player_stats, ncaa_team_stats, ncaa_pbp), and the ESPN player-grain
+  ncaa_player_stats, ncaa_team_stats, ncaa_pbp), the ESPN player-grain
   bundle (espn_player_passing, espn_player_rushing, espn_player_receiving,
-  espn_player_defense, espn_play_participants).
+  espn_player_defense, espn_play_participants), and the PFF Premium Stats
+  manual-CSV bundle (pff_passing_summary, pff_receiving_summary,
+  pff_rushing_summary, pff_offense_blocking, pff_defense_summary -- see the
+  registry comment above their entries for the manual-drop/--season
+  mechanics).
 - ``build_flat_file_source()`` -- wraps parsed rows into a ``@dlt.source`` whose
   resources merge into pre-created tables (migration 041).
 
@@ -119,6 +123,18 @@ class SeasonNotPublishedError(Exception):
     """
 
 
+class SeasonFingerprintError(Exception):
+    """The file's contents provably contradict the season it was claimed as.
+
+    PFF Premium Stats exports carry no season column and identical filenames
+    across seasons (three observed upload batches had three different
+    browser-numbering orders), so the operator-supplied ``--season`` is
+    verified against FBS-membership facts found in the file (marker teams,
+    team counts). Raised by the pff parsers; a hard failure (misfiled uploads
+    are silent data corruption otherwise), never auto-corrected.
+    """
+
+
 class UnmappedNamesError(Exception):
     """Too many team names failed crosswalk resolution.
 
@@ -194,9 +210,28 @@ class FlatFileSpec:
         keep_source_names: When True, the original spelling of each xwalk
             field F is preserved in column ``{F}_source`` (SBR).
         unmapped_fail_rate: Max tolerated fraction of rows with unmapped
-            names before the source fails loud.
+            names before the source fails loud. 0.0 means any unmapped row
+            fails the whole load (the pff posture: an unmapped team name
+            means realignment and needs a human, never a silent drop).
         kind: "dlt" (fetch -> parse -> dlt merge) or "archiver" (module runs
             its own discovery + raw-bytes archival, bypassing dlt).
+        requires_season: The source's files carry no self-declared season at
+            all (PFF exports), so a load must be told the season explicitly
+            -- the driver rejects a ``--file`` load without ``--season`` --
+            and the ledger keys per ``{name}:{season}`` (same as
+            ``url_template`` specs) so each season's file hash-skips
+            independently.
+        xwalk_map: Alternative store for the team-name resolver: a
+            ``(schema_qualified_table, source_name_col, cfbd_name_col)``
+            triple loaded via ``XwalkResolver.load_map_table`` instead of
+            ``ref.team_name_xwalk`` keyed by ``spec.name`` (pff commits its
+            map as ``pff.team_map``, seeded by migration 061).
+        xwalk_resolved_field: When set, the crosswalk writes the resolved
+            CFBD name to this NEW row field and leaves the source field
+            untouched (pff keeps ``team_name`` verbatim and adds
+            ``school``), instead of the default overwrite-in-place (+
+            optional ``{field}_source`` copy) behavior. Only meaningful with
+            a single entry in ``xwalk_fields``.
     """
 
     name: str
@@ -217,6 +252,9 @@ class FlatFileSpec:
     keep_source_names: bool = False
     unmapped_fail_rate: float = 0.02
     kind: str = "dlt"
+    requires_season: bool = False
+    xwalk_map: tuple[str, str, str] | None = None
+    xwalk_resolved_field: str | None = None
 
 
 REGISTRY: dict[str, FlatFileSpec] = {
@@ -578,6 +616,101 @@ REGISTRY: dict[str, FlatFileSpec] = {
         fallback_latest=True,
         min_season=2014,
     ),
+    # PFF Premium Stats manual-CSV lane (design:
+    # docs/brainstorms/2026-09-01-pff-plus-api.md section 4 option A1).
+    # Hand-exported, auth-gated browser downloads -- no fetch URL exists, so
+    # these are --file-only manual sources like sbr, loaded one
+    # (family, season) at a time:
+    #   scripts/load_flat_files.py --source pff_passing_summary \
+    #       --season 2024 --file <csv>
+    # requires_season: PFF exports carry NO season column and identical
+    # filenames across seasons; the operator's --season is mandatory and is
+    # verified by the parser's FBS-membership fingerprint guard
+    # (SeasonFingerprintError on a provable contradiction -- see
+    # flatfile_parsers/pff.py). Ledger keys per {name}:{season} so each
+    # season's file hash-skips independently (a byte-identical re-drop of an
+    # already-loaded file is a skipped_hash, the observed duplicate-upload
+    # case). Team names resolve through the committed pff.team_map
+    # (migration 061) into a NEW `school` column, keeping PFF's verbatim
+    # team_name; unmapped_fail_rate=0.0 -- any unmapped name is realignment
+    # and fails the whole load. Tables/columns: migration 061, derived from
+    # the real 2023-2025 exports. Licensed data: the pff schema is
+    # deliberately ungranted and outside the api/public contract.
+    "pff_passing_summary": FlatFileSpec(
+        name="pff_passing_summary",
+        parser="pff.parse_passing_summary",
+        schema="pff",
+        table="passing_summary",
+        primary_key=("player_id", "season"),
+        cadence="manual",
+        min_season=2014,
+        uses_xwalk=True,
+        xwalk_fields=("team_name",),
+        unmapped_fail_rate=0.0,
+        requires_season=True,
+        xwalk_map=("pff.team_map", "pff_team_name", "cfbd_school"),
+        xwalk_resolved_field="school",
+    ),
+    "pff_receiving_summary": FlatFileSpec(
+        name="pff_receiving_summary",
+        parser="pff.parse_receiving_summary",
+        schema="pff",
+        table="receiving_summary",
+        primary_key=("player_id", "season"),
+        cadence="manual",
+        min_season=2014,
+        uses_xwalk=True,
+        xwalk_fields=("team_name",),
+        unmapped_fail_rate=0.0,
+        requires_season=True,
+        xwalk_map=("pff.team_map", "pff_team_name", "cfbd_school"),
+        xwalk_resolved_field="school",
+    ),
+    "pff_rushing_summary": FlatFileSpec(
+        name="pff_rushing_summary",
+        parser="pff.parse_rushing_summary",
+        schema="pff",
+        table="rushing_summary",
+        primary_key=("player_id", "season"),
+        cadence="manual",
+        min_season=2014,
+        uses_xwalk=True,
+        xwalk_fields=("team_name",),
+        unmapped_fail_rate=0.0,
+        requires_season=True,
+        xwalk_map=("pff.team_map", "pff_team_name", "cfbd_school"),
+        xwalk_resolved_field="school",
+    ),
+    "pff_offense_blocking": FlatFileSpec(
+        name="pff_offense_blocking",
+        parser="pff.parse_offense_blocking",
+        schema="pff",
+        table="offense_blocking",
+        primary_key=("player_id", "season"),
+        cadence="manual",
+        min_season=2014,
+        uses_xwalk=True,
+        xwalk_fields=("team_name",),
+        unmapped_fail_rate=0.0,
+        requires_season=True,
+        xwalk_map=("pff.team_map", "pff_team_name", "cfbd_school"),
+        xwalk_resolved_field="school",
+    ),
+    "pff_defense_summary": FlatFileSpec(
+        name="pff_defense_summary",
+        parser="pff.parse_defense_summary",
+        schema="pff",
+        table="defense_summary",
+        primary_key=("player_id", "season"),
+        cadence="manual",
+        min_season=2014,
+        uses_xwalk=True,
+        xwalk_fields=("team_name",),
+        unmapped_fail_rate=0.0,
+        requires_season=True,
+        xwalk_map=("pff.team_map", "pff_team_name", "cfbd_school"),
+        xwalk_resolved_field="school",
+    ),
 }
 
 # Months in which weekly sources are considered live (Aug preseason polls
@@ -608,12 +741,14 @@ def ledger_key(spec: FlatFileSpec, season: int) -> str:
     """The ledger `source` value for one (spec, season) fetch attempt.
 
     Single-file specs key on the bare registry name, exactly as before B6a.
-    Season-parameterized specs (``url_template`` set) key on
+    Season-parameterized specs (``url_template`` set, or ``requires_season``
+    manual-drop specs whose files carry no season of their own) key on
     ``f"{name}:{season}"`` -- see the module docstring's "Per-season
     multi-file sources" section for why a shared name would corrupt
-    `is_due()`'s weekly-cadence semantics.
+    `is_due()`'s weekly-cadence semantics; for ``requires_season`` specs the
+    per-season key is what lets each season's file hash-skip independently.
     """
-    if spec.url_template:
+    if spec.url_template or spec.requires_season:
         return f"{spec.name}:{season}"
     return spec.name
 
@@ -681,9 +816,14 @@ def build_flat_file_source(
                 continue
 
             for field, (original, resolved) in resolved_fields.items():
-                if spec.keep_source_names:
-                    row[f"{field}_source"] = original
-                row[field] = resolved
+                if spec.xwalk_resolved_field:
+                    # pff posture: source spelling stays verbatim in `field`,
+                    # the CFBD name lands in a new column (e.g. `school`).
+                    row[spec.xwalk_resolved_field] = resolved
+                else:
+                    if spec.keep_source_names:
+                        row[f"{field}_source"] = original
+                    row[field] = resolved
             kept_rows.append(row)
 
         rows = kept_rows
@@ -759,6 +899,7 @@ __all__ = [
     "FlatFileSpec",
     "ParseContext",
     "ParserStructureError",
+    "SeasonFingerprintError",
     "SeasonNotPublishedError",
     "StaleSnapshotError",
     "UnmappedNamesError",

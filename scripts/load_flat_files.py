@@ -13,6 +13,10 @@ Usage:
     python scripts/load_flat_files.py --due                      # run whatever cadence says is due
     python scripts/load_flat_files.py --source massey            # force one source
     python scripts/load_flat_files.py --source sbr --file odds.xlsx  # feed a local file
+    python scripts/load_flat_files.py --source pff_passing_summary \
+        --season 2024 --file passing_summary.csv   # PFF manual drop: --season is
+                                                   # mandatory (files carry no season;
+                                                   # the parser fingerprint-verifies it)
     python scripts/load_flat_files.py --season 2025 --due         # backfill that season: every
                                                                   # non-manual source, cadence
                                                                   # gating off (hash-skip keeps
@@ -153,6 +157,19 @@ def _fetch_seasoned(
             f"{spec.name}: no published file found for season {season} or the "
             f"{FALLBACK_MAX_STEPS} season(s) before it"
         ) from e
+
+
+def _load_resolver(spec: FlatFileSpec) -> XwalkResolver | None:
+    """The team-name resolver for one spec: the source's rows in
+    ref.team_name_xwalk by default, or the spec's own committed mapping
+    table when ``xwalk_map`` names one (pff.team_map). None when the spec
+    doesn't use the crosswalk at all.
+    """
+    if not spec.uses_xwalk:
+        return None
+    if spec.xwalk_map:
+        return XwalkResolver.load_map_table(spec.name, *spec.xwalk_map)
+    return XwalkResolver.load(spec.name)
 
 
 def is_due(spec: FlatFileSpec, last: datetime | None, today: date) -> bool:
@@ -371,7 +388,7 @@ def run_source(
                         source_url=fetched.source_url,
                         file_name=os.path.basename(fetched.source_url),
                     )
-                    resolver = XwalkResolver.load(spec.name) if spec.uses_xwalk else None
+                    resolver = _load_resolver(spec)
 
                     source_obj = build_flat_file_source(spec, fetched.content, ctx, resolver)
 
@@ -505,6 +522,19 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.file is not None and (not args.source or len(args.source) != 1):
         parser.error("--file requires exactly one --source")
+
+    if args.file is not None and args.season is None:
+        spec = REGISTRY[args.source[0]]
+        if spec.requires_season:
+            # PFF-style manual drops carry no season in the file and no
+            # trustworthy season in the filename; inferring one from today's
+            # date invites exactly the misfiled-season corruption the
+            # fingerprint guard exists for. Make the operator say it.
+            parser.error(
+                f"--source {spec.name} files carry no season of their own; "
+                "pass --season explicitly (the parser verifies it against "
+                "the file's FBS-membership fingerprint)"
+            )
 
     today = date.today()
     season_explicit = args.season is not None

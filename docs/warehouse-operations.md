@@ -41,6 +41,31 @@ Secrets belong in ignored config or the host's credential mechanism, never docs.
 The request budget is configured in `.dlt/config.toml`; historical estimates do
 not establish the cost of today's source/resource selection.
 
+## Box-score and roster request failures
+
+The `/games/teams`, `/games/players`, and `/roster` loaders stop their resource
+when a request fails after the shared client's retries. A successful empty list
+is `expected_no_data`; HTTP errors (including 400/404), invalid JSON, invalid
+record lists, missing provider IDs, and local budget exhaustion are failures.
+These resources do not add a second retry loop.
+
+Each request logs a receipt with its endpoint, season/week or team/season,
+outcome, and fetched row count when available. A failure reports `succeeded`,
+`expected_no_data`, `failed`, and `deferred` request counts. `deferred` means
+requests left unattempted when this resource invocation stops. These are fetch
+outcomes for one invocation, not counts of committed rows or the entire job;
+weekly/year-batch loads may already have completed earlier invocations.
+
+`load_season()` retains this context in the failed source's `request_failure`
+summary field even when dlt wraps the original error. Both season and pipeline
+CLIs exit nonzero on source failure. An all-source run can continue independent
+sources, but its final status remains failed. Existing mart-refresh policy is
+unchanged; a failed load does not establish downstream freshness.
+
+Inspect the failed request and earlier load results before selecting a retry
+scope. Existing rows and an older successful run do not prove completeness.
+Historical gap detection and correction-aware backfills require separate work.
+
 ## Incident notes preserved from CLAUDE.md on 2026-09-04
 
 The following is a dated account of previous fixes and the behavior believed to

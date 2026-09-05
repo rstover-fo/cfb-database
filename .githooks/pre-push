@@ -1,15 +1,34 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
+
+HOOK_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd -- "${HOOK_DIR}/.." && pwd -P)"
+VENV_DIR="${CFB_VENV_DIR:-${REPO_ROOT}/.venv}"
+
+if [[ "${VENV_DIR}" != /* ]]; then
+  VENV_DIR="${REPO_ROOT}/${VENV_DIR}"
+fi
+
+if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
+  echo "Development environment not found. Run scripts/setup_dev.sh first." >&2
+  exit 1
+fi
+
+export PATH="${VENV_DIR}/bin:${PATH}"
+cd "${REPO_ROOT}"
 
 echo "=== Pre-push checks ==="
 
 echo "→ ruff check..."
-.venv/bin/ruff check .
+ruff check .
 
 echo "→ ruff format --check..."
-.venv/bin/ruff format --check .
+ruff format --check .
 
-echo "→ pytest..."
-.venv/bin/pytest -q
+echo "→ root tests (offline)..."
+python -m pytest -q --tb=short
+
+echo "→ MCP tests..."
+python -m pytest mcp/tests -q --tb=short
 
 echo "=== All checks passed ==="

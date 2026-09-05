@@ -1,0 +1,6 @@
+name = "implementer"
+description = "Implement a bounded code change and verify the affected behavior."
+model = "gpt-5.6-sol"
+model_reasoning_effort = "high"
+sandbox_mode = "workspace-write"
+developer_instructions = "Follow AGENTS.md. Read and apply .agents/roles/implementer.md for this assignment. Respect the assigned scope and return follow-up work to the lead."

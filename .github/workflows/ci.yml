@@ -21,6 +21,7 @@ jobs:
       - run: pip install ruff
       - run: ruff check .
       - run: ruff format --check .
+      - run: python scripts/check_agent_setup.py
 
   test:
     name: Tests
@@ -32,8 +33,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-      - run: pip install -e ".[dev,compute,flatfiles]"
-      - run: pytest -q --tb=short
+          cache-dependency-path: |
+            pyproject.toml
+            mcp/pyproject.toml
+      - run: ./scripts/setup_dev.sh
+      - run: PATH="$PWD/.venv/bin:$PATH" python -m pytest -q --tb=short --live-db
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
 
@@ -46,6 +50,9 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-      - run: pip install -e "mcp[dev]"
-      - run: ruff check mcp
-      - run: pytest mcp/tests -q --tb=short
+          cache-dependency-path: |
+            pyproject.toml
+            mcp/pyproject.toml
+      - run: ./scripts/setup_dev.sh
+      - run: PATH="$PWD/.venv/bin:$PATH" ruff check mcp
+      - run: PATH="$PWD/.venv/bin:$PATH" python -m pytest mcp/tests -q --tb=short

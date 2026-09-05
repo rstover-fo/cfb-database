@@ -1,5 +1,19 @@
 {
   "env": {
     "CLAUDE_CODE_TASK_LIST_ID": "cfb-database-tasks"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/claude_cloud_setup.sh\"",
+            "timeout": 600
+          }
+        ]
+      }
+    ]
   }
 }

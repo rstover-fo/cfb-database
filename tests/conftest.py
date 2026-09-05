@@ -11,6 +11,16 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+def pytest_addoption(parser):
+    """Register explicit opt-in for tests that connect to Postgres."""
+    parser.addoption(
+        "--live-db",
+        action="store_true",
+        default=False,
+        help="run database integration tests using configured Postgres credentials",
+    )
+
+
 @pytest.fixture(autouse=True)
 def _reset_rate_limit_breaker():
     """Clear the run-wide CFBD rate-limit breaker around every test.
@@ -49,8 +59,11 @@ def _load_postgres_dsn() -> str:
 
 
 @pytest.fixture(scope="module")
-def db_conn():
-    """Module-scoped Postgres connection for database integration tests."""
+def db_conn(pytestconfig):
+    """Connect to Postgres only when database integration tests are requested."""
+    if not pytestconfig.getoption("--live-db"):
+        pytest.skip("database integration tests require --live-db")
+
     dsn = _load_postgres_dsn()
     conn = psycopg2.connect(dsn)
     conn.autocommit = True

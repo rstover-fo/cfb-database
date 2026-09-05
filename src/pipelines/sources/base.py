@@ -7,6 +7,10 @@ from ..utils.api_client import CFBDClient, get_client
 from ..utils.rate_limiter import get_rate_limiter
 
 
+class RequestBudgetExhausted(RuntimeError):
+    """The local monthly request budget cannot admit another API call."""
+
+
 def make_request(
     client: CFBDClient,
     endpoint: str,
@@ -25,7 +29,7 @@ def make_request(
     rate_limiter = get_rate_limiter()
 
     if not rate_limiter.check_budget():
-        raise RuntimeError(
+        raise RequestBudgetExhausted(
             f"API budget exhausted. {rate_limiter.calls_used} calls used this month. "
             "Wait for next month or upgrade tier."
         )

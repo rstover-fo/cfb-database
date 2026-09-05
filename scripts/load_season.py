@@ -19,6 +19,8 @@ import os
 import sys
 import time
 
+from src.pipelines.utils.request_outcomes import request_failure_summary
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -392,6 +394,15 @@ def _count_failures(results: dict) -> int:
     return sum(1 for r in results.values() if r["status"] != "ok")
 
 
+def _failure_result(error: Exception, elapsed: float) -> dict:
+    """Keep request context when dlt wraps a failed resource extraction."""
+    result = {"status": "error", "duration_s": round(elapsed, 1), "error": str(error)}
+    request_failure = request_failure_summary(error)
+    if request_failure is not None:
+        result["request_failure"] = request_failure
+    return result
+
+
 def load_season(
     season: int,
     sources: list[str] | None = None,
@@ -619,7 +630,7 @@ def load_season(
             logger.info(f"  {src} completed in {elapsed:.1f}s")
         except Exception as e:
             elapsed = time.time() - src_start
-            results[src] = {"status": "error", "duration_s": round(elapsed, 1), "error": str(e)}
+            results[src] = _failure_result(e, elapsed)
             logger.error(f"  {src} failed after {elapsed:.1f}s: {e}")
 
     # Off-season: keep the upcoming season's published schedule and betting
@@ -658,11 +669,7 @@ def load_season(
                 }
             except Exception as e:
                 elapsed = time.time() - src_start
-                results[name] = {
-                    "status": "error",
-                    "duration_s": round(elapsed, 1),
-                    "error": str(e),
-                }
+                results[name] = _failure_result(e, elapsed)
                 logger.error(f"  {name} failed after {elapsed:.1f}s: {e}")
 
     # Refresh marts

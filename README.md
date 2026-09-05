@@ -4,13 +4,21 @@ College Football Data warehouse using dlt pipelines and Supabase Postgres.
 
 ## Setup
 
+For agent/local/cloud development without warehouse credentials, run
+`bash scripts/setup_dev.sh`. This installs the warehouse and MCP development
+dependencies into `.venv`. See [agent setup](docs/agent-setup.md) for shared
+instructions, cloud setup, and offline versus live test commands.
+
+The following steps provision or load a warehouse and need an authorized target:
+
 1. Copy `.dlt/secrets.toml.example` to `.dlt/secrets.toml` and add your credentials:
    - CFBD API key from https://collegefootballdata.com/key
    - Supabase Postgres connection string
 
 2. Install dependencies:
    ```bash
-   pip install -e ".[dev]"
+   bash scripts/setup_dev.sh
+   source .venv/bin/activate
    ```
 
 3. Provision the database:
@@ -74,11 +82,12 @@ python -m src.pipelines.run --status
 
 - **Source:** CFBD API (see `docs/pipeline-manifest.md` for endpoint-to-table coverage)
 - **ETL:** dlt pipelines with year-based iteration
-- **Destination:** Supabase Postgres (10 schemas, ~35 tables + marts/api/public layers)
+- **Destination:** Supabase Postgres with domain tables and marts/api/public layers
+  (see [warehouse operations](docs/warehouse-operations.md) and the schema contract)
 
 ## Rate Limits
 
-Using Tier 4 (125,000 calls/month), read by the rate limiter from
-`.dlt/config.toml` (`sources.cfbd.monthly_budget`). A full single-season
-refresh is ~730 estimated calls (`scripts/load_season.py --dry-run` prints the
-current estimate), so even daily loads stay well under budget.
+The request budget comes from `.dlt/config.toml`
+(`sources.cfbd.monthly_budget`). `scripts/load_season.py --dry-run` prints the
+estimate for the selected sources. Per-game and per-team fanout can dominate
+cost; check the requested scope and correction/reload policy before a backfill.

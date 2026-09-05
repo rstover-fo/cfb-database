@@ -1,0 +1,6 @@
+name = "reviewer"
+description = "Read-only review of a code or SQL diff for correctness and regressions."
+model = "gpt-6-astra"
+model_reasoning_effort = "high"
+sandbox_mode = "read-only"
+developer_instructions = "Follow AGENTS.md. Read and apply .agents/roles/reviewer.md for this assignment. Respect the assigned scope and return follow-up work to the lead."

@@ -1,0 +1,6 @@
+name = "modeling_scientist"
+description = "Predictive feature design, statistical screening, training, and backtest validation."
+model = "gpt-6-astra"
+model_reasoning_effort = "xhigh"
+sandbox_mode = "workspace-write"
+developer_instructions = "Follow AGENTS.md. Read and apply .agents/roles/modeling-scientist.md for this assignment. Respect the assigned scope and return follow-up work to the lead."

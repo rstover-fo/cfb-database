@@ -5,19 +5,21 @@ Python (EXPECTED_VARIANT_TWINS), the deploy-time SQL validation
 (src/schemas/api/validation_rushing_views.sql group (e)), and the marts'
 own COALESCE calls (005/031/032/045/050/051/052 -- the rushing/passing
 charting family plus the three non-charting marts that also COALESCE a
-twin: defensive_havoc, returning_production, player_usage). This file
-asserts all three agree, so a change to one that isn't mirrored in the
-others fails a fast, DB-free unit test instead of surfacing as a silent
-NULL in production. Plus unit tests for find_unexpected_twins/
-find_missing_twins against a fake cursor. No DB, no network -- pure text
-parsing and in-memory fakes.
+twin: defensive_havoc, returning_production, player_usage -- plus
+scripts/build_features.py, a non-mart consumer that COALESCEs one more
+stats.game_havoc twin for features.team_week). This file asserts all of
+them agree, so a change to one that isn't mirrored in the others fails a
+fast, DB-free unit test instead of surfacing as a silent NULL in
+production. Plus unit tests for find_unexpected_twins/find_missing_twins
+against a fake cursor. No DB, no network -- pure text parsing and
+in-memory fakes.
 
 Only 045/050/051/052 are cross-checked against validation_rushing_views.sql
 (TestAllowListsMatchSql) -- that SQL file's allow-lists only cover the
-rushing/passing charting tables. 005/031/032 have no deploy-time SQL
-counterpart, so they're covered only by the marts-vs-Python drift guard
-below (TestAllowListsMatchMarts) and by MART_TABLE_MAP's exhaustiveness
-check against EXPECTED_VARIANT_TWINS.
+rushing/passing charting tables. 005/031/032 and build_features.py have no
+deploy-time SQL counterpart, so they're covered only by the marts-vs-Python
+drift guard below (TestAllowListsMatchMarts) and by MART_TABLE_MAP's
+exhaustiveness check against EXPECTED_VARIANT_TWINS.
 """
 
 import re
@@ -46,12 +48,19 @@ MART_FILES = [
     PROJECT_ROOT / "src" / "schemas" / "marts" / "052_rushing_charting_direction_season.sql",
 ]
 
-# Every mart that COALESCEs a __v_double twin, mapped to the source table(s)
-# it reads -- the full set the marts-vs-Python drift guard walks. Includes
-# MART_FILES (the charting family) plus the three non-charting marts Finding
-# 1 (KTD7 follow-up, 2026-09-03) added: defensive_havoc reads
-# stats.game_havoc, returning_production reads stats.player_returning,
-# player_usage reads stats.player_usage.
+# Every mart (or other consumer with the same COALESCE obligation) that
+# COALESCEs a __v_double twin, mapped to the source table(s) it reads -- the
+# full set the marts-vs-Python drift guard walks. Includes MART_FILES (the
+# charting family) plus the three non-charting marts Finding 1 (KTD7
+# follow-up, 2026-09-03) added: defensive_havoc reads stats.game_havoc,
+# returning_production reads stats.player_returning, player_usage reads
+# stats.player_usage. scripts/build_features.py was added 2026-09-05 (KTD7
+# follow-up 2) as a second mapped consumer of stats.game_havoc: it already
+# COALESCEd offense__total_havoc_events__v_double for features.team_week's
+# havoc_rate_offense_allowed before this table was tracked here, so that
+# twin was live but unaccounted for until the 2026-09-04 daily's first run
+# of the tripwire caught it (alongside two genuinely unused twins on the
+# same table) as "unexpected".
 MART_TABLE_MAP: dict[Path, list[str]] = {
     PROJECT_ROOT / "src" / "schemas" / "marts" / "045_passing_charting_player_season.sql": [
         "stats.passing_player_season"
@@ -67,6 +76,7 @@ MART_TABLE_MAP: dict[Path, list[str]] = {
         "stats.rushing_team_season",
     ],
     PROJECT_ROOT / "src" / "schemas" / "marts" / "005_defensive_havoc.sql": ["stats.game_havoc"],
+    PROJECT_ROOT / "scripts" / "build_features.py": ["stats.game_havoc"],
     PROJECT_ROOT / "src" / "schemas" / "marts" / "031_returning_production.sql": [
         "stats.player_returning"
     ],
@@ -107,11 +117,12 @@ def _v_double_tokens(path: Path) -> set[str]:
 
 class TestAllowListsMatchMarts:
     """Every twin the Python allow-lists know about must actually be
-    COALESCEd by one of the seven marts in MART_TABLE_MAP (the
+    COALESCEd by one of the eight files in MART_TABLE_MAP (the
     rushing/passing charting family plus defensive_havoc/
-    returning_production/player_usage), and vice versa -- a twin referenced
-    by a mart but missing from EXPECTED_VARIANT_TWINS would mean the daily
-    check doesn't actually cover it."""
+    returning_production/player_usage, plus scripts/build_features.py as a
+    second mapped consumer of stats.game_havoc), and vice versa -- a twin
+    referenced by a mart but missing from EXPECTED_VARIANT_TWINS would mean
+    the daily check doesn't actually cover it."""
 
     def test_each_marts_v_double_tokens_belong_to_a_table_it_reads(self):
         """Attribution direction of the drift guard: every twin a mart
@@ -167,6 +178,70 @@ class TestAllowListsMatchMarts:
                 f"{table_key}: EXPECTED_VARIANT_TWINS has columns not found in its "
                 f"mapped mart(s): {expected_cols - found}"
             )
+
+
+BUILD_FEATURES_PATH = PROJECT_ROOT / "scripts" / "build_features.py"
+
+_PY_COMMENT_RE = re.compile(r"#.*")
+
+
+def _strip_python_comments(text: str) -> str:
+    """Strip `#`-to-end-of-line Python comments, line by line.
+
+    Line-based rather than a full tokenizer: sufficient here because the
+    COALESCE this test pins lives inside a triple-quoted SQL string, where
+    `#` has no special meaning and never appears anywhere near it (verified
+    by grep) -- the mutation this guards against is a SQL-level edit to
+    that string, not a Python comment. Stripping `#` comments first is
+    still defense-in-depth against a future Python-level comment reciting
+    the token, mirroring the "don't trust comments" posture this whole
+    test exists to enforce.
+    """
+    return "\n".join(_PY_COMMENT_RE.sub("", line) for line in text.splitlines())
+
+
+class TestBuildFeaturesHavocFallbackIsPinned:
+    """Greptile P2 on PR #117, mutation-verified: TestAllowListsMatchMarts
+    above pools __v_double tokens across every file MART_TABLE_MAP maps to
+    a table, and _v_double_tokens() scans each file's raw text -- comments
+    included. stats.game_havoc is mapped to both
+    marts/005_defensive_havoc.sql and scripts/build_features.py, and mart
+    005's header documents `offense__total_havoc_events__v_double` in a
+    `--` comment (around line 44) purely as data-dictionary prose. That
+    keeps the token in the pooled set even if build_features.py's own
+    COALESCE is deleted -- proven by mutation: removing the fallback from
+    build_features.py (~line 497-500) left the full suite, including
+    TestAllowListsMatchMarts, green.
+
+    build_features.py is the only Python (non-mart) consumer in
+    MART_TABLE_MAP, so the generic pooled/per-table checks above can never
+    see it in isolation -- they only ever see the union with mart 005.
+    This test reads *only* build_features.py, strips comments, and asserts
+    the executable COALESCE is actually there. It intentionally does not
+    touch `_v_double_tokens` or the pooled test -- that generalization (if
+    any) belongs to the tripwire's owners, not to this one consumer's pin.
+    """
+
+    _COALESCE_PATTERN = re.compile(
+        r"COALESCE\(\s*"
+        r"\w+\.offense__total_havoc_events(?:::[\w\s]+)?\s*,\s*"
+        r"\w+\.offense__total_havoc_events__v_double\s*"
+        r"\)"
+    )
+
+    def test_offense_total_havoc_events_coalesce_is_present(self):
+        source = _strip_python_comments(BUILD_FEATURES_PATH.read_text())
+        assert self._COALESCE_PATTERN.search(source), (
+            "scripts/build_features.py no longer COALESCEs "
+            "offense__total_havoc_events with its __v_double twin -- "
+            "features.team_week.havoc_rate_offense_allowed would go NULL "
+            "for any row whose value lives only in the twin. The pooled "
+            "marts-vs-Python drift guard (TestAllowListsMatchMarts) cannot "
+            "catch this on its own: mart 005's header comment mentions the "
+            "same token, so the pooled token set stays non-empty even "
+            "after this file's fallback is removed (Greptile P2 on PR "
+            "#117, mutation-verified)"
+        )
 
 
 class _FakeCursor:

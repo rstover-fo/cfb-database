@@ -37,15 +37,17 @@ Remediation when `find_unexpected_twins` reports a new column:
     3. Re-apply the affected mart(s) (python scripts/run_marts.py or the
        migration workflow -- see the schema-migrations skill).
 
-Scope: only tables a mart actually reads. As of 2026-09-03 that is six
-tables: stats.rushing_player_season, stats.rushing_team_season,
+Scope: only tables a mart (or, for stats.game_havoc, a features-build
+script with the same COALESCE obligation) actually reads. As of 2026-09-03
+that is six tables: stats.rushing_player_season, stats.rushing_team_season,
 stats.passing_player_season (the rushing/passing charting family above),
 plus stats.player_returning (marts/031_returning_production.sql),
 stats.player_usage (marts/032_player_usage.sql), and stats.game_havoc
-(marts/005_defensive_havoc.sql) -- three more marts that already COALESCE
-a twin on a source table outside the charting family. A new twin appearing
-on any of those three would pass this tripwire silently (the affected
-metric going NULL in returning-production / player-usage / defensive-havoc
+(marts/005_defensive_havoc.sql, plus scripts/build_features.py -- see
+below) -- three more marts that already COALESCE a twin on a source table
+outside the charting family. A new twin appearing on any of those three
+would pass this tripwire silently (the affected metric going NULL in
+returning-production / player-usage / defensive-havoc / features.team_week
 outputs) if they weren't tracked here too.
 
 The rushing GAME-grain tables (stats.rushing_player_games,
@@ -88,12 +90,34 @@ from __future__ import annotations
 # not independently re-verified against a live presence check the way
 # player_returning was on 2026-09-03.
 #
-# stats.game_havoc: the two twins marts/005_defensive_havoc.sql COALESCEs
-# in its game_havoc_season CTE (defense__total_havoc_events__v_double,
+# stats.game_havoc: five twins live-verified 2026-09-05 (the 2026-09-04
+# daily was this tripwire's first execution and caught three the
+# 2026-09-03 seeding missed). marts/005_defensive_havoc.sql COALESCEs the
+# original two in its game_havoc_season CTE
+# (defense__total_havoc_events__v_double,
 # defense__front_seven_havoc_events__v_double; defense__db_havoc_events has
-# no variant column). Seeded from the mart's own COALESCE calls; not
-# independently re-verified against a live presence check the way
-# player_returning was on 2026-09-03.
+# no variant column). Of the three newly-caught twins, none needed a new
+# COALESCE in a mart's arithmetic:
+#   - offense__total_havoc_events__v_double IS consumed, but by
+#     scripts/build_features.py (features.team_week's
+#     havoc_rate_offense_allowed), not by a marts/ file -- that COALESCE
+#     already existed there and was already correct; it was simply
+#     untracked here and in MART_TABLE_MAP below. build_features.py now
+#     joins 005 as a second mapped file for this table in
+#     tests/test_variant_twins.py.
+#   - offense__front_seven_havoc_events__v_double sits on a column no
+#     consumer reads today (mart 005's header has long noted "offense__* is
+#     present but is unused here").
+#   - defense__front_seven_havoc_rate__v_double sits on the CFBD-computed
+#     per-game rate mart 005 explicitly does not use -- it recomputes its
+#     own event-weighted season rate from the raw event/play counts instead
+#     (see that file's AGGREGATION CHOICE note).
+# All five are documented as LIVE-VERIFIED in marts/005_defensive_havoc.sql's
+# header. Unlike the rushing/passing charting family, stats.game_havoc has
+# no src/schemas/api/validation_rushing_views.sql counterpart -- that file's
+# group (e) allow-lists (allowed_player_twins / allowed_team_twins) only
+# cover stats.rushing_player_season / stats.rushing_team_season -- so this
+# table's allow-list is not mirrored there.
 EXPECTED_VARIANT_TWINS: dict[str, frozenset[str]] = {
     "stats.rushing_player_season": frozenset(
         {
@@ -148,6 +172,9 @@ EXPECTED_VARIANT_TWINS: dict[str, frozenset[str]] = {
         {
             "defense__total_havoc_events__v_double",
             "defense__front_seven_havoc_events__v_double",
+            "defense__front_seven_havoc_rate__v_double",
+            "offense__front_seven_havoc_events__v_double",
+            "offense__total_havoc_events__v_double",
         }
     ),
 }

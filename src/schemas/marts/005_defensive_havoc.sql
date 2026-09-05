@@ -34,7 +34,30 @@
 --       (CFBD-computed PER-GAME rates; NOT used here -- we recompute an
 --       event-weighted SEASON rate from the raw event/play counts instead,
 --       see AGGREGATION CHOICE below)
--- (offense__* is present but is unused here.)
+--     defense__front_seven_havoc_rate__v_double    float  -- VARIANT twin of
+--       the CFBD per-game rate above; NOT COALESCEd here either, for the
+--       same reason -- the base column is itself unused
+-- (offense__* is present but is unused here in this mart's own arithmetic --
+-- except offense__total_havoc_events, which scripts/build_features.py
+-- COALESCEs separately for features.team_week's havoc_rate_offense_allowed:
+--     offense__total_havoc_events                  bigint
+--     offense__total_havoc_events__v_double        float  -- VARIANT twin,
+--       COALESCEd in scripts/build_features.py, not in this file
+--     offense__front_seven_havoc_events            bigint -- unused everywhere
+--     offense__front_seven_havoc_events__v_double  float  -- VARIANT twin,
+--       also unused everywhere
+--
+-- KTD7 (2026-09-05): the 2026-09-04 daily's first run of the variant-twin
+-- tripwire (src/pipelines/utils/variant_twins.py) caught the three twins
+-- just listed above (defense__front_seven_havoc_rate__v_double,
+-- offense__total_havoc_events__v_double,
+-- offense__front_seven_havoc_events__v_double) live on this table -- none
+-- existed at the 2026-07-20 presence check above. None required a new
+-- COALESCE in this mart's arithmetic (see variant_twins.py's
+-- EXPECTED_VARIANT_TWINS comment for the full reasoning per column); they
+-- are listed here so this file's live-verified column inventory stays
+-- complete and so this header carries the literal `__v_double` tokens the
+-- drift-guard test (tests/test_variant_twins.py) checks for.
 --
 -- >>> DEPLOY-FAILURE DIAGNOSIS <<<
 -- 1. If CREATE fails with 'column "defense__..." does not exist', the live

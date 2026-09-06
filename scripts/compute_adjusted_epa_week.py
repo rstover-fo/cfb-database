@@ -3,13 +3,13 @@
 
 Sibling of scripts/compute_adjusted_epa.py, which fits ONE ridge-adjusted EPA
 model per season using every non-garbage-time play. This script instead
-streams each season's plays in week order and solves the SAME model at every
-week boundary, using only the plays accumulated so far -- producing a
-walk-forward "as of entering week W" rating that never sees week W or any
-later week's results. That is what makes it safe to join onto week W's games
-without leaking the game's own outcome into its own pregame rating (see
-docs/plans/2026-07-21-tier3-analytics-plan.md, Pillar A, and
-src/schemas/migrations/027_adjusted_epa_week_staging.sql's header).
+streams each season's plays in week order and solves the SAME model at target
+week boundaries supplied by that season's core.games schedule. A fit entering
+week W uses exactly the available qualifying plays with week_index < W, so it
+never sees week W or any later week's results. That is what makes it safe to
+join onto week W's games without leaking the game's own outcome into its own
+pregame rating (see docs/plans/2026-07-21-tier3-analytics-plan.md, Pillar A,
+and src/schemas/migrations/027_adjusted_epa_week_staging.sql's header).
 
 The ridge math itself (RidgeAccumulator, the LAMBDA penalty, the team-list and
 play-query patterns) is imported unchanged from compute_adjusted_epa -- this
@@ -26,21 +26,22 @@ cannot order a season monotonically. We compute, per play (via its game):
 For each season we make ONE streaming pass over that season's plays ordered
 by week_index (then game_id for determinism), folding them into a fresh
 RidgeAccumulator. Team identity/column layout is fixed up front from the
-FULL season's team list (same DISTINCT offense/defense union query as
-compute_adjusted_epa.py) -- that is not leakage, only the fitted coefficients
-are as-of. Whenever the incoming play's week_index differs from the previous
-play's AND the accumulator already holds >= 1 play, we solve the accumulated
-(pre-that-week) state and emit one row per team in the layout: the ridge
-coefficients ENTERING that week. We then continue folding that week's plays.
-No boundary is emitted before the first week (the accumulator starts empty),
-and no trailing boundary is emitted after the season's last play -- the
-full-season fit already lives in analytics.adjusted_epa_build.
+FULL season's play-derived team list (same DISTINCT offense/defense union
+query as compute_adjusted_epa.py) -- that is not leakage, only the fitted
+coefficients are as-of. Target week_index values are the distinct, ordered
+regular and postseason weeks in core.games, including upcoming games. At each
+target, we emit one row per team when earlier qualifying plays identify HFA
+(both home-offense indicator values occur). Otherwise the target retains the
+consumer's prior-season/NULL fallback. This also emits boundaries for bye/sparse
+and unplayed weeks; missing schedule weeks are never guessed or filled in.
+Targets sharing the
+same accumulated play state reuse one ridge solve.
 
 Because postseason week_index values (101, 102, ...) sort after every regular
-week_index, the first postseason boundary lands at 100 + <first bowl week>
-and its state is the ENTIRE regular season -- this is the "entering
-postseason" row that bowl games resolve to via a "greatest week_index <= WI"
-lookup.
+week_index, the first postseason target includes every available qualifying
+regular-season play. Later postseason targets can include strictly earlier
+postseason weeks. Consumers resolve a game through a "greatest week_index <=
+WI" lookup.
 
 Each row also records that team's accumulated OFFENSIVE play count entering
 the boundary (a Counter-style tally, incremented as plays are folded), so
@@ -50,20 +51,19 @@ Writes to analytics.adjusted_epa_week_build (migration 027): per-season
 DELETE + batched INSERT, one transaction per season -- same idempotency
 pattern as compute_adjusted_epa.py's write to analytics.adjusted_epa_build.
 
-After writing, each season prints a validation line comparing its LAST
-emitted boundary (the highest week_index, i.e. the most fully-informed
-walk-forward state) against the full-season fit in
-analytics.adjusted_epa_build for the same season, via Pearson r over
-off_coef and def_coef across teams (scripts.compute_house_elo.pearson_r,
-which returns nan rather than raising on too few points):
+After writing, each season prints a diagnostic line comparing its last
+scheduled boundary against the currently available full-season fit in
+analytics.adjusted_epa_build for the same season, via Pearson r over off_coef
+and def_coef across teams (scripts.compute_house_elo.pearson_r, which returns
+nan rather than raising on too few points):
 
     EPA_WEEK_GATE season={s} boundaries={n} teams={t} rows={r} \
         r_off_vs_full={x:.4f} r_def_vs_full={y:.4f}
 
-Expected r >~ 0.97 -- the last boundary's state differs from the full-season
-fit only by excluding that season's postseason plays, so the two fits should
-be nearly identical. If analytics.adjusted_epa_build has no row yet for that
-season, r prints as nan and a log line notes the skip.
+The comparison is informational: its inputs differ whenever the last target
+is at or before the latest played week, and a future target can reflect an
+incomplete current week during a midweek rebuild. If adjusted_epa_build has no
+row yet for that season, r prints as nan and a log line notes the skip.
 
 Usage:
     python scripts/compute_adjusted_epa_week.py --season 2024
@@ -106,15 +106,40 @@ PLAY_QUERY_WEEK = """
     ORDER BY week_index, pe.game_id
 """
 
+TARGET_WEEK_INDEX_QUERY = """
+    SELECT DISTINCT
+        CASE
+            WHEN season_type = 'regular' THEN week
+            WHEN season_type = 'postseason' THEN 100 + week
+        END AS week_index
+    FROM core.games
+    WHERE season = %s
+      AND week IS NOT NULL
+      AND season_type IN ('regular', 'postseason')
+    ORDER BY week_index
+"""
+
 # A play row as consumed by the pure boundary-walking function below.
 PlayRow = tuple[str, str, bool, float, int]
 
+BoundarySolution = tuple[float, float, dict[str, float], dict[str, float], int]
+
+
+def get_target_week_indices(cur, season: int) -> list[int]:
+    """Return distinct scheduled regular/postseason week indices for a season."""
+    cur.execute(TARGET_WEEK_INDEX_QUERY, (season,))
+    return [int(row[0]) for row in cur.fetchall()]
+
 
 def _boundary_rows(
-    accumulator: RidgeAccumulator, season: int | None, week_index: int, lam: float
+    accumulator: RidgeAccumulator,
+    solution: BoundarySolution,
+    season: int | None,
+    week_index: int,
+    lam: float,
 ) -> list[dict]:
-    """Solve `accumulator`'s current (pre-this-week) state into one row per team."""
-    mu, hfa, off_coef, def_coef, _n_plays = accumulator.solve(lam)
+    """Render one previously solved accumulator state at a target boundary."""
+    mu, hfa, off_coef, def_coef, _n_plays = solution
     n_teams = accumulator.n_teams
     return [
         {
@@ -136,47 +161,73 @@ def _boundary_rows(
 def compute_week_boundaries(
     plays: Iterable[PlayRow],
     teams: list[str],
+    *,
+    target_week_indices: Iterable[int],
     lam: float = LAMBDA,
     season: int | None = None,
 ) -> list[dict]:
-    """Stream `plays` (already ordered by week_index) into week-boundary fits.
+    """Stream ordered `plays` into fits for explicit scheduled week boundaries.
 
     Pure, DB-free, and unit-testable: no I/O, only RidgeAccumulator math and
     bookkeeping. `teams` fixes the column layout up front (the full season's
     team list -- see module docstring on why that's not leakage).
 
-    Returns a list of row dicts (team, season, week_index, off_coef, def_coef,
-    hfa_coef, mu, plays, lambda, n_teams), one per team per week boundary, in
-    the order the boundaries were crossed. A boundary for week_index W is
-    emitted the moment a play with that week_index is seen AND the
-    accumulator already holds >= 1 play from strictly earlier week_index
-    values -- i.e. its state reflects exactly the plays with week_index < W.
-    No boundary is emitted before the first week (empty initial state) and
-    none after the last play (no trailing boundary; the full-season fit is
-    computed separately by compute_adjusted_epa.py).
+    `target_week_indices` is normalized to distinct ascending values. A target
+    W is emitted when earlier plays identify the intercept and HFA (both
+    values of is_home_offense occur); otherwise consumers retain their
+    prior-season/NULL fallback. Targets do not need matching plays. Targets with
+    unchanged accumulated state share a solved coefficient set. The input play iterable
+    is consumed once, including when there are no targets.
     """
     accumulator = RidgeAccumulator(teams)
     boundary_rows: list[dict] = []
-    prev_week_index: int | None = None
+    targets = sorted(set(target_week_indices))
+    target_position = 0
+    previous_play_week_index: int | None = None
+    solved_at_n_plays: int | None = None
+    cached_solution: BoundarySolution | None = None
+    home_offense_values: set[bool] = set()
+
+    def _emit_target(week_index: int) -> None:
+        nonlocal solved_at_n_plays, cached_solution
+        if accumulator.n_plays == 0:
+            return
+        if len(home_offense_values) < 2:
+            logger.info(
+                f"season={season} week_index={week_index}: earlier plays cannot identify HFA; "
+                "omitting fit for prior-season/NULL fallback"
+            )
+            return
+        if solved_at_n_plays != accumulator.n_plays:
+            cached_solution = accumulator.solve(lam)
+            solved_at_n_plays = accumulator.n_plays
+        assert cached_solution is not None
+        boundary_rows.extend(_boundary_rows(accumulator, cached_solution, season, week_index, lam))
 
     for off_team, def_team, is_home_offense, epa, week_index in plays:
-        if (
-            prev_week_index is not None
-            and week_index != prev_week_index
-            and accumulator.n_plays > 0
-        ):
-            boundary_rows.extend(_boundary_rows(accumulator, season, week_index, lam))
+        if previous_play_week_index is not None and week_index < previous_play_week_index:
+            raise ValueError("plays must be ordered by nondecreasing week_index")
+
+        while target_position < len(targets) and targets[target_position] <= week_index:
+            _emit_target(targets[target_position])
+            target_position += 1
 
         accumulator.add_play(off_team, def_team, is_home_offense, epa)
-        prev_week_index = week_index
+        home_offense_values.add(bool(is_home_offense))
+        previous_play_week_index = week_index
+
+    while target_position < len(targets):
+        _emit_target(targets[target_position])
+        target_position += 1
 
     return boundary_rows
 
 
 def fit_season_weeks(conn, season: int, lam: float = LAMBDA) -> tuple[list[dict], list[str]] | None:
-    """Stream one season's plays into week-boundary fits. None if no data at all."""
+    """Fit scheduled boundaries from one stream of season plays. None without play data."""
     with conn.cursor() as cur:
         teams = get_season_teams(cur, season)
+        target_week_indices = get_target_week_indices(cur, season)
 
     if not teams:
         logger.info(f"season={season}: no teams found in marts.play_epa, clean no-op")
@@ -196,7 +247,13 @@ def fit_season_weeks(conn, season: int, lam: float = LAMBDA) -> tuple[list[dict]
     with conn.cursor(name=cursor_name) as cur:
         cur.itersize = CURSOR_ITERSIZE
         cur.execute(PLAY_QUERY_WEEK, (season,))
-        boundary_rows = compute_week_boundaries(_play_stream(cur), teams, lam=lam, season=season)
+        boundary_rows = compute_week_boundaries(
+            _play_stream(cur),
+            teams,
+            target_week_indices=target_week_indices,
+            lam=lam,
+            season=season,
+        )
 
     if n_plays == 0:
         logger.warning(f"season={season}: 0 qualifying plays, skipping")

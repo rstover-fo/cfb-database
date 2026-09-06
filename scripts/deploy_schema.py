@@ -62,6 +62,8 @@ VALID_ACTIONS = {"presence_check", "apply", "backfill", "compute"}
 # These land in later Tier 2 + Tier 3 phases -- membership is checked, not file
 # existence, so this action can be wired up before the scripts themselves exist.
 COMPUTE_SCRIPTS = {
+    # Read-only one-request schedule probe for the September 2026 recovery.
+    "probe_projection_schedule",
     "compute_house_elo",
     "compute_adjusted_epa",
     "compute_predictions",

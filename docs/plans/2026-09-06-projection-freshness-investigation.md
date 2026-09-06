@@ -24,11 +24,9 @@ the vintage of the remaining projection fields.
   `2026-09-05 13:26:39.236668+00`, with 12 stored scheduled games versus 13
   current regular-season games. Producer-filter regression passed independently.
 
-The changed game ID, whether the extra row is legitimate or duplicated, and
-the exact source of the player-key duplication remain unverified. Local DB
-and Supabase management credentials are unavailable; no production writes or
-workflow reruns were performed. The two matching count changes do not prove
-that one new Campbell–Western Carolina game caused both.
+Initial local investigation lacked warehouse credentials. On explicit user
+approval, the existing Deploy Schema workflow ran read-only diagnostics with
+its configured secret and logged the results; see the recovery evidence below.
 
 ## Source inspection and next diagnostics
 
@@ -42,6 +40,38 @@ that one new Campbell–Western Carolina game caused both.
 These are hypotheses for this incident, not confirmed live root causes. Run
 the accompanying read-only SQL against the configured warehouse to inspect
 the failing key and affected schedules before selecting a repair.
+
+## Recovery evidence
+
+- [Warehouse probe](https://github.com/rstover-fo/cfb-database/actions/runs/34047820046)
+  confirmed Amarion Fuller has DE metadata on three source stat rows and DL on
+  seven, with exactly one matching roster row and no PPA row. The stats pivot's
+  metadata grouping is the demonstrated duplicate-producing path.
+- The live dependency closure contains only the mart and `api.player_comparison`.
+  Both are owned by postgres. The mart grants SELECT to anon/authenticated;
+  the API additionally grants SELECT to analyst_ro. No relation options exist.
+- The candidate uses one grouped aggregation at player/team/season and selects
+  a coherent modal observed name/position pair, with deterministic tie-breaking.
+  Migration 061 snapshots and restores privileges/owners/comments, uses no
+  CASCADE, and rejects unexpected relation options or column metadata. Local
+  PostgreSQL 16 executed it twice with exact ACL preservation and successful
+  reads under anon, authenticated, and analyst_ro. Independent review passed.
+- [CFBD probe](https://github.com/rstover-fo/cfb-database/actions/runs/34047986266)
+  still lists both 401866625 (Saturday) and 401917058 (Sunday). The old event is
+  marked completed by CFBD; that flag alone cannot establish a played game.
+- [Western Carolina's official postponement release](https://catamountsports.com/news/2026/9/5/football-catamounts-camels-postponed-until-sunday.aspx)
+  confirms one game moved to Sunday at 11 a.m. ET. ESPN's
+  [original event](https://site.api.espn.com/apis/site/v2/sports/football/college-football/summary?event=401866625)
+  reports STATUS_POSTPONED with no statistics/drives, while its
+  [replacement event](https://site.api.espn.com/apis/site/v2/sports/football/college-football/summary?event=401917058)
+  carries the live Sunday contest and statistics. Retain provider records;
+  a reviewed replacement mapping must prevent counting both in projections.
+- The prior havoc variant failure is already corrected in current main's
+  `variant_twins.py` allow-list; no additional havoc arithmetic change is needed.
+
+Production migration and downstream compute require the explicit approvals
+requested after automatic approval review rejected the first migration dispatch.
+Preparation and local execution do not establish production recovery.
 
 ## Recovery order
 

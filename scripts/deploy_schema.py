@@ -64,6 +64,7 @@ VALID_ACTIONS = {"presence_check", "apply", "backfill", "compute"}
 COMPUTE_SCRIPTS = {
     # Read-only one-request schedule probe for the September 2026 recovery.
     "probe_projection_schedule",
+    "recover_season_projections",
     "compute_house_elo",
     "compute_adjusted_epa",
     "compute_predictions",

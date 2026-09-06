@@ -16,6 +16,9 @@ Two tests are load-bearing:
   silent-degradation failure this project already hit once.
 """
 
+from copy import deepcopy
+from unittest.mock import MagicMock
+
 import pytest
 
 pytest.importorskip("numpy")
@@ -33,8 +36,10 @@ from scripts.simulate_season import (  # noqa: E402
     build_projection_row,
     conference_title_probs,
     expected_slate_games,
+    fetch_season_games,
     normalize_strength_share,
     schedule_strength,
+    select_projection_game_rows,
     simulate_wins,
     standard_slate,
     strength_sd,
@@ -73,6 +78,78 @@ def _wins(games, n_sims, sigma, seed=None):
     """simulate_wins()['wins'] -- most tests only care about the overall tally."""
     kwargs = {"seed": seed} if seed is not None else {}
     return simulate_wins(games, n_sims, sigma, **kwargs)["wins"]
+
+
+def _raw_game(game_id, season=2026, home="Campbell", away="Western Carolina", **overrides):
+    row = {
+        "game_id": game_id,
+        "season": season,
+        "home_team": home,
+        "away_team": away,
+        "completed": False,
+        "home_points": None,
+        "away_points": None,
+        "home_conference": "TestConf",
+        "away_conference": "TestConf",
+        "home_classification": "fcs",
+        "away_classification": "fcs",
+        "conference_game": False,
+        "expected_home_margin": 3.0,
+    }
+    row.update(overrides)
+    return row
+
+
+class TestSupersededProjectionGames:
+    def test_verified_pair_suppresses_fake_completed_original_only(self):
+        original = _raw_game(
+            401866625,
+            completed=True,
+            home_points=0,
+            away_points=0,
+        )
+        replacement = _raw_game(401917058)
+        rows = [original, replacement]
+        before = deepcopy(rows)
+        selected_rows = select_projection_game_rows(rows)
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value.fetchall.return_value = rows
+
+        selected = fetch_season_games(conn, 2026, "fitted_v1")
+
+        assert [row["game_id"] for row in selected_rows] == [401917058]
+        assert rows == before, "selector must not mutate caller-owned input"
+        assert [row["game_id"] for row in selected] == [401917058]
+        sim = simulate_wins(selected, 20, 18.5, seed=1)
+        assert sim["games_simulated"] == {"Campbell": 1, "Western Carolina": 1}
+
+    def test_original_without_replacement_is_rejected(self):
+        with pytest.raises(ValueError, match="present without replacement"):
+            select_projection_game_rows([_raw_game(401866625)])
+
+    @pytest.mark.parametrize(
+        "replacement",
+        [
+            _raw_game(401917058, season=2027),
+            _raw_game(401917058, home="Western Carolina"),
+            _raw_game(401917058, away="Campbell"),
+        ],
+        ids=["season", "home_team", "away_team"],
+    )
+    def test_mismatched_pair_is_rejected(self, replacement):
+        with pytest.raises(ValueError, match="disagree"):
+            select_projection_game_rows([_raw_game(401866625), replacement])
+
+    def test_original_absent_and_unrelated_same_opponent_games_are_untouched(self):
+        replacement = _raw_game(401917058)
+        future_rematch = _raw_game(499999999, season=2027)
+        unrelated = _raw_game(123, home="Other Home", away="Other Away")
+        rows = [replacement, future_rematch, unrelated]
+
+        selected = select_projection_game_rows(rows)
+
+        assert selected == rows
+        assert selected is not rows
 
 
 class TestSimulateWins:

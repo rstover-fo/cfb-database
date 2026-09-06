@@ -10,7 +10,8 @@ import dlt
 from dlt.sources import DltSource
 
 from ..config.years import YEAR_RANGES, get_current_season
-from ..utils.api_client import RATE_LIMIT_ERRORS, get_client
+from ..utils.api_client import get_client
+from ..utils.request_outcomes import RequestOutcomeTracker, validate_record_list
 from .base import make_request
 
 logger = logging.getLogger(__name__)
@@ -72,29 +73,23 @@ def rosters_resource(
         Player roster records with team/year context added
     """
     client = get_client()
+    requests = [{"team": team, "year": year} for team in teams for year in years]
+    tracker = RequestOutcomeTracker("/roster", len(requests), logger)
     try:
-        for team in teams:
-            for year in years:
-                logger.info(f"Loading roster for {team} {year}...")
+        for params in requests:
+            logger.info("Loading roster for %s %s...", params["team"], params["year"])
+            try:
+                players = make_request(client, "/roster", params=params)
+                records = validate_record_list(players)
+            except Exception as error:
+                raise tracker.failure(params, error) from error
 
-                try:
-                    players = make_request(client, "/roster", params={"team": team, "year": year})
-
-                    for player in players:
-                        # Add context fields for PK and querying
-                        player["team"] = team
-                        player["year"] = year
-                        yield player
-
-                except RATE_LIMIT_ERRORS:
-                    # Demoting a 429 to a warning here yields a roster that is
-                    # quietly missing teams, which poisons every roster-derived
-                    # feature (continuity, trench counts) without any signal
-                    # that it happened. Fail the load instead.
-                    raise
-                except Exception as e:
-                    logger.warning(f"Error fetching roster for {team} {year}: {e}")
-                    continue
+            tracker.record_response(params, records)
+            for player in records:
+                # Add context fields for PK and querying
+                player["team"] = params["team"]
+                player["year"] = params["year"]
+                yield player
 
     finally:
         client.close()

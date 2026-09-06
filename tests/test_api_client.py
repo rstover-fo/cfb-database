@@ -703,18 +703,8 @@ class TestCircuitIsTerminalButResettable:
         client.close()
 
 
-class TestBroadExceptHandlersDoNotSwallowRateLimits:
-    """Found by the pre-PR adversarial pass on the Codex fixes.
-
-    Three source loops caught bare `Exception` and continued -- game_stats'
-    two week loops (to skip weeks with no games) and rosters' per-team loop.
-    Those handlers swallowed RateLimitExhausted and RateLimitCircuitOpen too,
-    so a quota-exhausted load would spin through every remaining week/team and
-    complete "successfully" with silently missing data: the exact bug raising
-    instead of returning `[]` was meant to eliminate, reintroduced one layer
-    up. For rosters it is worse than lost rows -- a partial roster poisons
-    every roster-derived feature with no signal that it happened.
-    """
+class TestResourceHandlersPropagateFailures:
+    """Resource wrappers must preserve the client's explicit failure causes."""
 
     @staticmethod
     def _rate_limited_client():
@@ -783,10 +773,12 @@ class TestBroadExceptHandlersDoNotSwallowRateLimits:
             patcher.stop()
             client.close()
 
-    def test_non_rate_limit_errors_are_still_skipped(self):
-        """The skip behaviour these handlers exist for must survive: a week
-        with no games still yields nothing rather than failing the load."""
+    def test_non_rate_limit_errors_are_contextual_failures(self):
+        """A provider 400 is not evidence that a week has no games."""
+        from dlt.extract.exceptions import ResourceExtractionError
+
         from src.pipelines.sources.game_stats import game_team_stats_resource
+        from src.pipelines.utils.request_outcomes import request_failure_summary
 
         client = CFBDClient(api_key="test-key")
         boom = MagicMock()
@@ -796,6 +788,21 @@ class TestBroadExceptHandlersDoNotSwallowRateLimits:
             with patch.object(client._client, "get", side_effect=err):
                 with patch("src.pipelines.sources.game_stats.get_client", return_value=client):
                     res = game_team_stats_resource([2026], season_type="regular", weeks=[1, 2])
-                    assert list(res) == []
+                    with pytest.raises(ResourceExtractionError) as exc_info:
+                        list(res)
+            assert request_failure_summary(exc_info.value) == {
+                "endpoint": "/games/teams",
+                "params": {"year": 2026, "seasonType": "regular", "week": 1},
+                "outcome": "failed",
+                "error_type": "HTTPStatusError",
+                "counts_scope": "resource_invocation",
+                "counts_unit": "requests",
+                "counts": {
+                    "succeeded": 0,
+                    "expected_no_data": 0,
+                    "failed": 1,
+                    "deferred": 1,
+                },
+            }
         finally:
             client.close()

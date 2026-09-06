@@ -69,6 +69,8 @@ Evidence: [box-score loaders](https://github.com/rstover-fo/cfb-database/blob/4a
 
 **Acceptance:** inject 401, 403, exhausted 429, 5xx, timeout, malformed payload, and local quota exhaustion. None may produce an unqualified successful load. Expected no-data fixtures remain nonfatal and visible.
 
+**Implementation prepared — September 5, 2026:** the three affected resources now validate each response and propagate failures with endpoint/scope, original cause, and invocation-level request outcomes. The season summary and single/weekly/all-source CLI paths preserve failure status after earlier successes. Regression coverage includes the failure matrix, valid empty responses, request limits, client cleanup, and dlt wrapping; independent review also exercised actual offline `pipeline.extract`. Full offline validation passed (2,257 root tests, 447 skipped; 59 MCP tests). See [operational failure reporting](../warehouse-operations.md#box-score-and-roster-request-failures). Live rollout, historical gap detection, and corrective backfills remain unverified; this update does not claim those are complete.
+
 ### F02 — Weekly EPA omits the snapshot needed for upcoming games
 
 **P1 · Confirmed and reproduced · M**

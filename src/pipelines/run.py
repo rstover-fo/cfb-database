@@ -1,6 +1,7 @@
 """CLI entry point for CFB database pipelines."""
 
 import argparse
+import json
 import logging
 import sys
 from typing import NoReturn
@@ -27,6 +28,7 @@ from .sources.rushing import rushing_source
 from .sources.stats import stats_source
 from .sources.wepa import wepa_source
 from .utils.rate_limiter import get_rate_limiter
+from .utils.request_outcomes import request_failure_summary
 
 logger = logging.getLogger(__name__)
 
@@ -1586,6 +1588,14 @@ def run_wepa_pipeline(years: list[int] | None = None, mode: str = "incremental")
     return info
 
 
+def _report_load_failure(name: str, error: Exception) -> None:
+    """Print the source failure and any contextual request receipt."""
+    print(f"ERROR in {name}: {error}")
+    request_failure = request_failure_summary(error)
+    if request_failure is not None:
+        print(f"  Request failure: {json.dumps(request_failure, sort_keys=True)}")
+
+
 def main() -> NoReturn:
     """Main entry point."""
     parser = create_parser()
@@ -1637,7 +1647,11 @@ def main() -> NoReturn:
         if not args.years:
             print("ERROR: --weekly requires --years")
             sys.exit(1)
-        run_game_stats_weekly(args.years, use_replace=args.replace)
+        try:
+            run_game_stats_weekly(args.years, use_replace=args.replace)
+        except Exception as e:
+            _report_load_failure("game_stats", e)
+            sys.exit(1)
         show_status()
         sys.exit(0)
 
@@ -1681,7 +1695,7 @@ def main() -> NoReturn:
             try:
                 runner()
             except Exception as e:
-                print(f"ERROR in {name}: {e}")
+                _report_load_failure(name, e)
                 failed.append(name)
                 continue
         if failed:
@@ -1691,7 +1705,11 @@ def main() -> NoReturn:
     else:
         runner = source_runners.get(args.source)
         if runner:
-            runner()
+            try:
+                runner()
+            except Exception as e:
+                _report_load_failure(args.source, e)
+                sys.exit(1)
         else:
             print(f"Unknown source: {args.source}")
             sys.exit(1)

@@ -57,9 +57,12 @@ outcomes for one invocation, not counts of committed rows or the entire job;
 weekly/year-batch loads may already have completed earlier invocations.
 
 `load_season()` retains this context in the failed source's `request_failure`
-summary field even when dlt wraps the original error. Both season and pipeline
-CLIs exit nonzero on source failure. An all-source run can continue independent
-sources, but its final status remains failed. Existing mart-refresh policy is
+summary field even when dlt wraps the original error. The summary's `http_status`
+is the response code for `HTTPStatusError`, or `null` for other error types.
+Rate-limit exhaustion and circuit-open failures retain their distinct `error_type`.
+Both season and pipeline CLIs exit nonzero on source failure. An all-source run
+can continue independent sources, but its final status remains failed. Existing
+mart-refresh policy is
 unchanged; a failed load does not establish downstream freshness.
 
 Inspect the failed request and earlier load results before selecting a retry

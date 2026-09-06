@@ -795,6 +795,7 @@ class TestResourceHandlersPropagateFailures:
                 "params": {"year": 2026, "seasonType": "regular", "week": 1},
                 "outcome": "failed",
                 "error_type": "HTTPStatusError",
+                "http_status": 400,
                 "counts_scope": "resource_invocation",
                 "counts_unit": "requests",
                 "counts": {

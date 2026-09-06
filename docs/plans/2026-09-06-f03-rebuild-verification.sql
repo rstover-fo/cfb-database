@@ -39,8 +39,8 @@ BEGIN
  IF n<>2 THEN RAISE EXCEPTION 'Original/replacement raw records not retained'; END IF;
 
  SELECT count(*) INTO n FROM core.games g
- WHERE g.season=2026 AND NOT g.completed AND g.id<>401866625
- AND NOT EXISTS (SELECT 1 FROM predictions.game_predictions p
+ WHERE g.season=2026 AND NOT COALESCE(g.completed,false) AND g.id<>401866625
+ AND NOT EXISTS (SELECT 1 FROM api.game_predictions p
    WHERE p.game_id=g.id AND p.model_version='fitted_v1' AND p.computed_at>=baseline
      AND p.home_win_prob BETWEEN 0 AND 1
      AND p.expected_home_margin::text NOT IN ('NaN','Infinity','-Infinity'));

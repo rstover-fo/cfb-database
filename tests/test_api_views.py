@@ -1836,15 +1836,50 @@ class TestSeasonOutlook:
         )
         assert not rows, f"projected_wins outside [0, games_simulated]: {rows}"
 
-    def test_regular_season_slate_only(self, db_conn):
-        """Bowls and playoff games must not inflate the slate.
+    def test_regular_season_slate_only(self, db_conn, monkeypatch):
+        """Execute the producer SQL against fixed regular/postseason fixtures.
 
-        Checked against core.games rather than a magic ceiling: a fixed bound
-        would be both weak (a bowl only pushes a 12-game team to 13) and
-        wrong, since the Hawaii exemption allows a 13th regular-season game
-        and a conference championship -- also season_type='regular' in CFBD --
-        can make 14 legitimately. Comparing to the actual regular-season count
-        pins the real invariant.
+        Stored projections are snapshots; comparing them to today's mutable
+        schedule conflates input freshness with the producer's season filter.
+        CTE fixtures exercise PostgreSQL without creating or modifying tables.
+        """
+        from scripts import simulate_season as simulation
+
+        fixtures = """
+            WITH fixture_games AS (
+                SELECT id, season, season_type,
+                       'Alpha'::text AS home_team, 'Bravo'::text AS away_team,
+                       false AS completed, NULL::integer AS home_points,
+                       NULL::integer AS away_points,
+                       'Test'::text AS home_conference, 'Test'::text AS away_conference,
+                       'fbs'::text AS home_classification, 'fbs'::text AS away_classification,
+                       false AS conference_game
+                FROM (VALUES
+                    (1, 2026, 'regular'), (2, 2026, 'regular'),
+                    (3, 2026, 'postseason'), (4, 2025, 'regular')
+                ) AS g(id, season, season_type)
+            ), fixture_predictions AS (
+                SELECT 1 AS game_id, 'test'::text AS model_version,
+                       7.0::numeric AS expected_home_margin,
+                       DATE '2026-09-01' AS prediction_date,
+                       TIMESTAMP '2026-09-01' AS computed_at
+            )
+        """
+        query = simulation.SEASON_GAMES_QUERY.replace("core.games", "fixture_games").replace(
+            "predictions.game_predictions", "fixture_predictions"
+        )
+        monkeypatch.setattr(simulation, "SEASON_GAMES_QUERY", fixtures + query)
+        games = simulation.fetch_season_games(db_conn, 2026, "test")
+        assert [g["game_id"] for g in games] == [1, 2]
+        assert games[0]["expected_home_margin"] == 7.0
+        assert games[1]["expected_home_margin"] is None
+
+    def test_reports_schedule_drift_since_projection(self, db_conn):
+        """Surface snapshot/input drift without treating it as SQL leakage.
+
+        The append-only projection stores its own schedule count. Later games
+        or provider corrections can change core.games before the next rebuild.
+        The deterministic producer check above enforces postseason exclusion.
         """
         rows, _ = _fetch_all(
             db_conn,
@@ -1864,16 +1899,22 @@ class TestSeasonOutlook:
                 WHERE g.season_type = 'regular'
                 GROUP BY g.season, t.team
             )
-            SELECT o.season, o.team, o.games_scheduled, a.n AS regular_season_games
+            SELECT o.season, o.team, o.model_version, o.computed_at,
+                   o.games_scheduled, a.n AS regular_season_games
             FROM api.season_outlook o
             JOIN actual a ON a.season = o.season AND a.team = o.team
             WHERE o.games_scheduled <> a.n
             LIMIT 10
             """,
         )
-        assert not rows, (
-            f"games_scheduled != regular-season game count (postseason leaked in?): {rows}"
-        )
+        if rows:
+            warnings.warn(
+                "Season outlook schedule drift: stored games_scheduled differs from "
+                f"current regular-season count: {rows}. Investigate source corrections "
+                "and the last successful season-projection rebuild; this comparison "
+                "does not establish postseason leakage.",
+                stacklevel=2,
+            )
 
     def test_playoff_prob_is_null_in_v1(self, db_conn):
         """Documented as deliberately absent. If this starts failing, the

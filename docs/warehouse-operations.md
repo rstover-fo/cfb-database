@@ -101,6 +101,17 @@ scoped runs; a code merge alone does not refresh stored outputs. The live blend
 path using full-season EPA remains separate from the weekly feature and
 as-of-backfill consumers covered here.
 
+## Season outlook schedule drift
+
+`api.season_outlook.games_scheduled` belongs to the saved projection snapshot;
+it need not equal today's mutable `core.games` count. CI tests the producer's
+regular-season filter using fixed PostgreSQL CTE fixtures and separately warns
+on current-schedule drift. A drift warning needs an operational investigation:
+inspect the affected teams' schedule corrections, projection `computed_at`,
+and the last daily simulation step. Rebuild projections only for an authorized
+target after confirming the inputs. Passing the producer test does not establish
+that stored projections are fresh.
+
 ## Incident notes preserved from CLAUDE.md on 2026-09-04
 
 The following is a dated account of previous fixes and the behavior believed to

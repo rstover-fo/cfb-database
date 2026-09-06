@@ -30,9 +30,11 @@ FULL season's play-derived team list (same DISTINCT offense/defense union
 query as compute_adjusted_epa.py) -- that is not leakage, only the fitted
 coefficients are as-of. Target week_index values are the distinct, ordered
 regular and postseason weeks in core.games, including upcoming games. At each
-target, we emit one row per team when at least one earlier qualifying play is
-available. This also emits boundaries for bye/sparse and unplayed weeks;
-missing schedule weeks are never guessed or filled in. Targets sharing the
+target, we emit one row per team when earlier qualifying plays identify HFA
+(both home-offense indicator values occur). Otherwise the target retains the
+consumer's prior-season/NULL fallback. This also emits boundaries for bye/sparse
+and unplayed weeks; missing schedule weeks are never guessed or filled in.
+Targets sharing the
 same accumulated play state reuse one ridge solve.
 
 Because postseason week_index values (101, 102, ...) sort after every regular
@@ -171,9 +173,10 @@ def compute_week_boundaries(
     team list -- see module docstring on why that's not leakage).
 
     `target_week_indices` is normalized to distinct ascending values. A target
-    W is emitted exactly when the accumulator holds at least one play with
-    week_index < W; targets do not need matching plays. Targets with unchanged
-    accumulated state share a solved coefficient set. The input play iterable
+    W is emitted when earlier plays identify the intercept and HFA (both
+    values of is_home_offense occur); otherwise consumers retain their
+    prior-season/NULL fallback. Targets do not need matching plays. Targets with
+    unchanged accumulated state share a solved coefficient set. The input play iterable
     is consumed once, including when there are no targets.
     """
     accumulator = RidgeAccumulator(teams)
@@ -183,10 +186,17 @@ def compute_week_boundaries(
     previous_play_week_index: int | None = None
     solved_at_n_plays: int | None = None
     cached_solution: BoundarySolution | None = None
+    home_offense_values: set[bool] = set()
 
     def _emit_target(week_index: int) -> None:
         nonlocal solved_at_n_plays, cached_solution
         if accumulator.n_plays == 0:
+            return
+        if len(home_offense_values) < 2:
+            logger.info(
+                f"season={season} week_index={week_index}: earlier plays cannot identify HFA; "
+                "omitting fit for prior-season/NULL fallback"
+            )
             return
         if solved_at_n_plays != accumulator.n_plays:
             cached_solution = accumulator.solve(lam)
@@ -203,6 +213,7 @@ def compute_week_boundaries(
             target_position += 1
 
         accumulator.add_play(off_team, def_team, is_home_offense, epa)
+        home_offense_values.add(bool(is_home_offense))
         previous_play_week_index = week_index
 
     while target_position < len(targets):

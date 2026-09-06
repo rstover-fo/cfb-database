@@ -71,6 +71,12 @@ Historical gap detection and correction-aware backfills require separate work.
 
 ## Weekly EPA for scheduled games
 
+If all earlier qualifying plays have the same home-offense indicator (including
+neutral-site-only openings), the weekly builder logs and omits those fits:
+HFA is unidentifiable. Consumers keep their prior-season/NULL fallback until
+both indicator values occur in strictly earlier plays. Rebuilds remove stale
+snapshots when corrected inputs lose that variation.
+
 `compute_adjusted_epa_week.py` takes its target weeks from `core.games`, including
 unplayed games. Each entering-week W snapshot uses available qualifying plays
 strictly before W, with postseason encoded as week + 100. A missing play in W

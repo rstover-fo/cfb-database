@@ -66,6 +66,17 @@ def _assert_matches_reference(actual_rows, reference_plays):
 
 
 class TestStrictEarlierPlaySemantics:
+    @pytest.mark.parametrize("home", [False, True])
+    def test_unidentifiable_prefix_skips_then_resumes_without_same_week_leakage(self, home):
+        opening = [(off, deff, home, epa, week) for off, deff, _, epa, week in WEEK1_PLAYS]
+        assert compute_week_boundaries(opening, TEAMS, target_week_indices=[2, 3]) == []
+
+        # A target-week play cannot identify HFA for that target, only later ones.
+        next_week = [("Alpha", "Bravo", not home, 0.7, 2)]
+        rows = compute_week_boundaries(opening + next_week, TEAMS, target_week_indices=[2, 3])
+        assert _rows_at(rows, 2) == {}
+        _assert_matches_reference(_rows_at(rows, 3), opening + next_week)
+
     def test_numerical_parity_with_direct_ridge_fit(self):
         plays = WEEK1_PLAYS + WEEK2_PLAYS + WEEK3_PLAYS
         boundaries = compute_week_boundaries(

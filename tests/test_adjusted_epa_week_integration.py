@@ -217,3 +217,25 @@ def test_scheduled_season_without_plays_is_a_clean_noop(warehouse):
     add_game(warehouse, 1, 1)
     add_game(warehouse, 2, 2)
     assert weekly.fit_season_weeks(warehouse, 2026) is None
+
+
+def test_neutral_only_opening_uses_fallback_and_removes_obsolete_snapshots(warehouse):
+    add_game(warehouse, 1, 1, completed=True)
+    add_game(warehouse, 2, 2)
+    add_plays(warehouse, 1)
+    rows, _ = rebuild(warehouse)
+    assert len(rows) == 2
+
+    # A venue correction removes the variation that identified the old HFA.
+    warehouse.db.execute("UPDATE core.games SET neutral_site = true WHERE id = 1")
+    rows, _ = rebuild(warehouse)
+    assert rows == []
+    stored = build_features.fetch_adj_epa_week_rows(warehouse, 2026)
+    assert stored == {}
+    prior = {"Alpha": {"off_coef": 0.1, "def_coef": -0.1, "hfa_coef": 0.01}}
+    resolved = build_features.resolve_adj_epa("Alpha", 2026, 2, stored, prior)
+    assert resolved["source"] == "prior_season"
+    assert resolved["off"] == 0.1
+    missing = build_features.resolve_adj_epa("Bravo", 2026, 2, stored, prior)
+    assert missing["source"] is None
+    assert missing["off"] is None

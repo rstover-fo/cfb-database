@@ -123,6 +123,14 @@ from that target's fit during midweek updates. Keep the ridge model, per-team
 play counts, consumer lookup, and fallback threshold below unchanged. This is
 a boundary-availability correction, not a new feature or statistical candidate.
 
+**F02 review amendment (September 6, 2026):** a nonempty prefix whose
+`is_home_offense` values are all false (for example, neutral-site games only)
+or all true cannot identify the unpenalized intercept and HFA jointly. Omit
+those target fits and retain the existing prior-season/NULL lookup fallback;
+do not invent a zero HFA or change the ridge penalty. Resume emitting fits
+once strictly earlier plays contain both values. A rebuild removes obsolete
+snapshots if corrected inputs make their prefixes unidentifiable.
+
 Lookup order in `build_features` for `(team, season=S, week_index=WI)`:
 
 1. **As-of week fit** — `analytics.adjusted_epa_week_build` row for

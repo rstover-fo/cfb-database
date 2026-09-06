@@ -28,4 +28,15 @@ BEGIN
    FROM predictions.game_predictions WHERE game_id=401866625 GROUP BY model_version
  ) r;
  RAISE NOTICE 'Superseded prediction rows: %',result;
+ SELECT json_agg(row_to_json(r)) INTO result FROM (
+   SELECT id,season,season_type,week,start_date,completed,home_id,home_team,
+          away_id,away_team,home_points,away_points
+   FROM core.games
+   WHERE (season=2023 AND (home_id,away_id) IN
+          ((340,2977),(121,2731),(33,2394),(402,2967)))
+      OR (season=2024 AND (home_id,away_id)=(620,190))
+      OR (season=2025 AND (home_id,away_id)=(2834,2025))
+   ORDER BY season,home_id,start_date,id
+ ) r;
+ RAISE NOTICE 'Replacement candidates: %',result;
 END $diagnostic$;

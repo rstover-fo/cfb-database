@@ -69,9 +69,30 @@ the failing key and affected schedules before selecting a repair.
 - The prior havoc variant failure is already corrected in current main's
   `variant_twins.py` allow-list; no additional havoc arithmetic change is needed.
 
-Production migration and downstream compute require the explicit approvals
-requested after automatic approval review rejected the first migration dispatch.
-Preparation and local execution do not establish production recovery.
+The user explicitly approved migration 061 after automatic approval review
+requested that confirmation. Production recovery is now verified:
+
+- [Migration run](https://github.com/rstover-fo/cfb-database/actions/runs/34048517981)
+  applied 061 successfully in approximately 17 seconds.
+- The first compute attempt stopped before data changes because the workflow
+  passed an option-valued argument as a separate argparse token. Passing it as
+  `--compute-args=<value>` fixed the invocation; focused tests and CI passed.
+- [Compute recovery](https://github.com/rstover-fo/cfb-database/actions/runs/34048655032)
+  refreshed prerequisite marts, rebuilt 2026 Elo/EPA/features, scored all 3,248
+  pending games with the frozen 2025 fit, wrote 716 season projections, and
+  refreshed all seven consumer marts. No ingestion or training ran.
+- [Verification](https://github.com/rstover-fo/cfb-database/actions/runs/34048945546)
+  found no duplicate player keys and exactly one row for the affected player.
+  SELECTs under anon, authenticated and analyst_ro succeeded. Both outlooks
+  were computed at `2026-09-06 17:32:26.03744+00`, with 12 scheduled,
+  12 simulated and zero unscored games. Campbell projected wins/losses:
+  5.67/6.33; Western Carolina: 7.54/4.46.
+
+Raw provider records remain intact. Their raw schedule still has 13 entries;
+the reviewed event mapping produces the correct 12-contest projection slate.
+This is not a live-score ingestion run; outputs reflect the loaded inputs.
+PR 122 must be merged so subsequent daily code runs retain the replacement
+mapping and the canonical mart definition matches the deployed repair.
 
 ## Recovery order
 
@@ -88,6 +109,8 @@ Preparation and local execution do not establish production recovery.
 5. Verify projection timestamps, scheduled counts, unscored games and finite
    outputs for both teams, and confirm no duplicate player keys remain.
 
-This operational incident is separate from F03's premature season-closure
-predicate. The investigation identifies the blocked refresh; it does not mark
-the warehouse repaired or the projections fresh.
+The refresh blocker and affected projection freshness are now repaired.
+This incident is separate from F03's premature season-closure predicate.
+F03 should address the verified postponed-event identity/status problem in
+shared lifecycle handling; the scoped projection mapping does not hide the
+original provider row from other consumers or upstream feature computations.

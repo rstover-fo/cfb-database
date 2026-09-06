@@ -950,7 +950,7 @@ cfb-app for advanced features.
 | `marts.play_epa` | Deployed | Per-play EPA values |
 | `marts.player_game_epa` | Deployed | Player EPA aggregated per game |
 | `marts.player_season_epa` | Deployed | Player EPA aggregated per season |
-| `marts.player_comparison` | Deployed; metadata-grain recovery prepared | Player stats pivoted from EAV at `(player_id, team, season)` with positional percentiles (PERCENT_RANK). Name/position use a coherent modal observed pair, with populated-field and lexical tie-breaks. Metadata corrections must not split the published key. Unique index: `(player_id, team, season)`; additional season/position-group, name and team/season indexes. |
+| `marts.player_comparison` | Deployed; metadata-grain recovery verified 2026-09-06 | Player stats pivoted from EAV at `(player_id, team, season)` with positional percentiles (PERCENT_RANK). Name/position use a coherent modal observed pair, with populated-field and lexical tie-breaks. Metadata corrections must not split the published key. Unique index: `(player_id, team, season)`; additional season/position-group, name and team/season indexes. |
 | `marts.team_playcalling_tendencies` | Deployed | Team play-calling mix (run/pass rates) by situation: down, distance, field position, score state. ~492K rows. Grain: team + season + situation. |
 | `marts.team_situational_success` | Deployed | Team situational effectiveness (success rate, EPA, explosiveness) by context. ~492K rows. Min 10-play threshold for rate metrics. |
 | `marts.coaching_tenure` | Deployed | Coaching tenure analytics with gap detection. One row per coach-team-tenure. Includes W-L, bowl record, inherited vs recruited talent. 2,752 rows. `coach_id` added 2026-08-30 (additive). |

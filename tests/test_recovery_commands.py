@@ -1,4 +1,5 @@
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +18,30 @@ def test_compute_failure_stops_downstream_writes(monkeypatch):
     with pytest.raises(subprocess.CalledProcessError):
         execute_commands((("compute_adjusted_epa",), ("simulate_season",)))
     assert len(calls) == 1
+
+
+def test_recovery_replays_repaired_elo_prefix_before_2026_dependents(monkeypatch):
+    calls = []
+
+    def record(command, *, check):
+        assert check
+        calls.append((Path(command[1]).stem, *command[2:]))
+
+    monkeypatch.setattr(subprocess, "run", record)
+
+    execute_commands()
+
+    assert calls[1:4] == [
+        ("compute_house_elo", "--season", "2024"),
+        ("compute_house_elo", "--season", "2025"),
+        ("compute_house_elo", "--season", "2026"),
+    ]
+    assert calls.index(("compute_house_elo", "--season", "2026")) < calls.index(
+        ("compute_adjusted_epa", "--season", "2026")
+    )
+    assert calls.index(("compute_house_elo", "--season", "2026")) < calls.index(
+        ("build_features", "--season", "2026")
+    )
 
 
 def test_final_refresh_updates_data_freshness_after_consumer_marts():

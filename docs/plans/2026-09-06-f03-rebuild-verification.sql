@@ -29,12 +29,24 @@ BEGIN
  SELECT count(*) INTO n FROM (
    SELECT game_id FROM predictions.game_predictions WHERE game_id=401866625
    UNION ALL SELECT game_id FROM api.game_predictions WHERE game_id=401866625
-   UNION ALL SELECT game_id FROM marts.prediction_accuracy WHERE game_id=401866625
    UNION ALL SELECT game_id FROM marts.scored_matchup_edges WHERE game_id=401866625
    UNION ALL SELECT game_id FROM features.team_week WHERE game_id=401866625
    UNION ALL SELECT game_id FROM analytics.house_elo_game WHERE game_id=401866625
  ) invalid;
  IF n<>0 THEN RAISE EXCEPTION 'Superseded derived rows remain: %',n; END IF;
+ -- prediction_accuracy is aggregated by model/season/threshold, not game ID.
+ -- Verify its unconditional population against current game-grain API inputs.
+ SELECT count(*) INTO n FROM (
+   SELECT p.model_version,p.season,count(*) AS n_games
+   FROM api.game_predictions p JOIN core.games g ON g.id=p.game_id
+   WHERE p.season=2026 AND g.completed AND g.home_points IS NOT NULL
+     AND g.away_points IS NOT NULL GROUP BY p.model_version,p.season
+ ) expected FULL JOIN (
+   SELECT model_version,season,n_games FROM marts.prediction_accuracy
+   WHERE season=2026 AND edge_threshold=0
+ ) actual USING(model_version,season)
+ WHERE expected.n_games IS DISTINCT FROM actual.n_games;
+ IF n<>0 THEN RAISE EXCEPTION 'Accuracy mart population differs from current inputs'; END IF;
  SELECT count(*) INTO n FROM core.games WHERE id IN (401866625,401917058);
  IF n<>2 THEN RAISE EXCEPTION 'Original/replacement raw records not retained'; END IF;
 

@@ -13,6 +13,8 @@ from pathlib import Path
 
 COMMANDS = (
     ("refresh_marts", "--views", "marts.play_epa,marts.returning_production"),
+    ("compute_house_elo", "--season", "2024"),
+    ("compute_house_elo", "--season", "2025"),
     ("compute_house_elo", "--season", "2026"),
     ("compute_adjusted_epa", "--season", "2026"),
     ("compute_adjusted_epa_week", "--season", "2026"),

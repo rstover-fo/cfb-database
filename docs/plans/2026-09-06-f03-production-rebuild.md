@@ -39,7 +39,7 @@ existing Campbell–Western Carolina replacement remains 401866625 → 401917058
 2. `recover_season_projections --check` validates closure, target season, the
    frozen 2025 fit, and an actual synthetic scorer execution. `--execute` repeats
    preflight and holds fit-table SHARE locks across all rebuild subprocesses.
-   It rebuilds 2026 Elo/EPA/features/predictions/outlooks and refreshes marts,
+   It replays Elo for 2024, 2025, and 2026, then rebuilds 2026 EPA/features/predictions/outlooks and refreshes marts,
    including freshness. Dispatch uses the `daily-season-load` concurrency group.
 3. `2026-09-06-f03-rebuild-verification.sql` verifies unchanged complete fit
    tables, retained raw identity pair, no superseded rows in modeled outputs,
@@ -55,7 +55,7 @@ features/predictions beyond the affected 2026 recovery remain outside this run.
 
 ## Verification before production writes
 
-- Root suite: **2,360 passed, 449 skipped** with the documented virtualenv PATH.
+- Root suite: **2,361 passed, 449 skipped** with the documented virtualenv PATH.
 - Affected Ruff lint/format and whitespace checks passed.
 - PostgreSQL 16 disposable fixture executed the repair twice, verified observed
   zero/score preservation, exact archival, owner-only access, and rollback for
@@ -77,3 +77,17 @@ features/predictions beyond the affected 2026 recovery remain outside this run.
 Merge PR 124 so subsequent main-branch daily runs use the reconciled lifecycle
 and durable source corrections; running the recovery branch does not update
 the code used by scheduled jobs on main.
+
+## Automated review corrections
+
+Codex identified two valid rollout defects: historical result repairs need Elo
+replayed from 2024, and prediction_accuracy exposes aggregate rather than game
+grain. The runner now commits the 2024 → 2025 → 2026 Elo chain before downstream
+2026 work. Postflight compares the mart's 2026 threshold-zero population to the
+current game-grain API inputs. The actual repository mart definition was
+executed in PostgreSQL 16; a deliberately stale aggregate failed verification.
+
+The first compute run completed successfully before cancellation reached it:
+frontier 2025, 3,247/3,247 upcoming games scored, 716 projections written, zero
+unscored team-games. Its outputs require the corrected historical Elo replay,
+so this is intermediate evidence, not the final recovery receipt.

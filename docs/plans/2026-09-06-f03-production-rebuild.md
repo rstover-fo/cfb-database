@@ -91,3 +91,22 @@ The first compute run completed successfully before cancellation reached it:
 frontier 2025, 3,247/3,247 upcoming games scored, 716 projections written, zero
 unscored team-games. Its outputs require the corrected historical Elo replay,
 so this is intermediate evidence, not the final recovery receipt.
+
+## Final outlook reconciliation
+
+The corrected replay [34064735040](https://github.com/rstover-fo/cfb-database/actions/runs/34064735040)
+succeeded in 5m27s. Initial live
+[postflight](https://github.com/rstover-fo/cfb-database/actions/runs/34065046695)
+confirmed unchanged fit tables, the two historical results in Elo, current
+scoring coverage and caller-role access. It also counted 746 latest outlook
+rows: 716 rebuilt and 30 old entries. A
+[bounded diagnostic](https://github.com/rstover-fo/cfb-database/actions/runs/34065108610)
+confirmed all 30 names have zero current canonical regular-season schedule
+rows; their stale snapshots date from August. No alias crosswalk is guessed.
+
+The explicit outlook cleanup archives and removes only these 30 named teams'
+old 2026 `fitted_v1` snapshots, requiring absent current schedules and no newer
+projection. It retains other models/seasons and all originals in the private
+journal. Final postflight now rejects any remaining old current-season fitted
+outlook. Future general reconciliation of removed or renamed schedule teams
+is separate from this bounded recovery.

@@ -49,4 +49,17 @@ BEGIN
    ORDER BY o.team
  ) r;
  RAISE NOTICE 'Older outlook candidates: %',result;
+ SELECT row_to_json(r) INTO result FROM (
+   SELECT count(*) AS historical_snapshots,count(DISTINCT p.team) AS obsolete_names
+   FROM predictions.season_projections p
+   WHERE p.season=2026 AND p.model_version='fitted_v1'
+     AND p.computed_at<'2026-09-06 22:41:07+00'::timestamptz
+     AND p.team IN (SELECT o.team FROM api.season_outlook o
+       WHERE o.season=2026 AND o.model_version='fitted_v1'
+         AND o.computed_at<'2026-09-06 22:41:07+00'::timestamptz)
+     AND NOT EXISTS (SELECT 1 FROM core.games g WHERE g.season=2026
+       AND g.season_type='regular' AND g.id<>401866625
+       AND (g.home_team=p.team OR g.away_team=p.team))
+ ) r;
+ RAISE NOTICE 'Proposed outlook cleanup size: %',result;
 END $diagnostic$;

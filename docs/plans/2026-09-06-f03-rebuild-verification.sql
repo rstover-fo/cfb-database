@@ -86,6 +86,9 @@ BEGIN
    FROM api.season_outlook WHERE season=2026 AND model_version='fitted_v1'
  ) r;
  RAISE NOTICE 'F03 all-team outlook coverage: %',result;
+ SELECT count(*) INTO n FROM api.season_outlook
+ WHERE season=2026 AND model_version='fitted_v1' AND computed_at<baseline;
+ IF n<>0 THEN RAISE EXCEPTION 'Older current-season outlooks remain: %',n; END IF;
  RAISE NOTICE 'F03 fit equality, source retention, exclusion and scoring checks passed';
 END $verify$;
 SET LOCAL ROLE anon;

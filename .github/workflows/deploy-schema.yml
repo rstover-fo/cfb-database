@@ -129,5 +129,5 @@ jobs:
           if [ -n "$BACKFILL_END_INPUT" ]; then ARGS+=(--backfill-end "$BACKFILL_END_INPUT"); fi
           if [ -n "$SOURCES_INPUT" ]; then ARGS+=(--sources "$SOURCES_INPUT"); fi
           if [ -n "$COMPUTE_SCRIPT_INPUT" ]; then ARGS+=(--compute-script "$COMPUTE_SCRIPT_INPUT"); fi
-          if [ -n "$COMPUTE_ARGS_INPUT" ]; then ARGS+=(--compute-args "$COMPUTE_ARGS_INPUT"); fi
+          if [ -n "$COMPUTE_ARGS_INPUT" ]; then ARGS+=("--compute-args=$COMPUTE_ARGS_INPUT"); fi
           python scripts/deploy_schema.py "${ARGS[@]}"

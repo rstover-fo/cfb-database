@@ -28,6 +28,9 @@ def main():
         "homeTeam",
         "awayTeam",
         "completed",
+        "homePoints",
+        "awayPoints",
+        "notes",
     )
     print(json.dumps([{field: game.get(field) for field in fields} for game in games]))
 

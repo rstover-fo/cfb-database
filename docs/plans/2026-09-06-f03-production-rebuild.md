@@ -62,3 +62,18 @@ features/predictions beyond the affected 2026 recovery remain outside this run.
   conflicting scores/archive payloads. The real postflight SQL also executed
   against the fixture under anon, authenticated, and analyst_ro.
 - Production execution and final results are recorded below after completion.
+
+## Production receipts
+
+- [Guarded data repair](https://github.com/rstover-fo/cfb-database/actions/runs/34064297499)
+  succeeded September 6, 2026, 22:32 UTC. Both reviewed results were restored;
+  **117** superseded-event prediction snapshots were archived and removed.
+- [Derived rebuild](https://github.com/rstover-fo/cfb-database/actions/runs/34064338454)
+  dispatched from `16d5724` with `recover_season_projections --execute`.
+- Independent review's source-season guard and NULL-completion/latest-consumer
+  verification findings were resolved. PostgreSQL exercised the added NULL
+  pending-game failure case. The verification script is on `420ea8a`.
+
+Merge PR 124 so subsequent main-branch daily runs use the reconciled lifecycle
+and durable source corrections; running the recovery branch does not update
+the code used by scheduled jobs on main.

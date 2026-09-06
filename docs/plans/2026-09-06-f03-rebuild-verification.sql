@@ -59,6 +59,14 @@ BEGIN
      AND team IN ('Campbell','Western Carolina')
  ) r;
  RAISE NOTICE 'F03 rebuilt outlooks: %',result;
+ SELECT row_to_json(r) INTO result FROM (
+   SELECT count(*) AS teams,
+          count(*) FILTER (WHERE computed_at>=baseline) AS fresh_teams,
+          count(*) FILTER (WHERE games_unscored=0) AS complete_schedules,
+          sum(games_unscored) AS unscored_team_games
+   FROM api.season_outlook WHERE season=2026 AND model_version='fitted_v1'
+ ) r;
+ RAISE NOTICE 'F03 all-team outlook coverage: %',result;
  RAISE NOTICE 'F03 fit equality, source retention, exclusion and scoring checks passed';
 END $verify$;
 SET LOCAL ROLE anon;

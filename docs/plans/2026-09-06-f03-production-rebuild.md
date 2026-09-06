@@ -110,3 +110,23 @@ projection. It retains other models/seasons and all originals in the private
 journal. Final postflight now rejects any remaining old current-season fitted
 outlook. Future general reconciliation of removed or renamed schedule teams
 is separate from this bounded recovery.
+
+**Awaiting explicit cleanup approval:** automatic approval review rejected
+executing the outlook cleanup because the user's approval covered production
+rebuilds, not this additional deletion. No outlook cleanup ran. The
+[read-only count](https://github.com/rstover-fo/cfb-database/actions/runs/34065277035)
+confirmed **242 historical snapshots across 30 obsolete names**. The prepared
+script archives each complete payload before removal; the 716 current teams,
+other models/seasons, raw data, and frozen fits are retained. Independent review
+found no actionable issue. PostgreSQL tests using the actual projection schema
+passed repeat execution, scope retention, active/new-projection guards,
+archive-conflict rollback, and archive privacy after normal blanket grants.
+
+Approved production rebuilds and the initial live checks are complete. All
+3,247 pending games have fresh valid fitted scores, 716 teams were rebuilt with
+zero unscored team-games, the repaired outcomes are in Elo, and complete model
+metadata/coefficient tables match the private pre-rebuild snapshot. Campbell
+and Western Carolina each have 12 simulated games, projecting 5.67/6.33 and
+7.54/4.46 wins/losses respectively. The remaining 30 older API entries are the
+only identified outstanding cleanup; the strengthened final postflight is
+prepared to reject them until that separately approved cleanup executes.

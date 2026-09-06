@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from scripts.recover_season_projections import execute_commands
+from scripts.recover_season_projections import COMMANDS, execute_commands
 
 
 def test_compute_failure_stops_downstream_writes(monkeypatch):
@@ -19,6 +19,14 @@ def test_compute_failure_stops_downstream_writes(monkeypatch):
     assert len(calls) == 1
 
 
+def test_final_refresh_updates_data_freshness_after_consumer_marts():
+    final_refresh = COMMANDS[-1]
+
+    assert final_refresh[0] == "refresh_marts"
+    assert final_refresh[1] == "--views"
+    assert final_refresh[2].endswith(",marts.data_freshness")
+
+
 @pytest.mark.parametrize(
     "frontier,fits,pending",
     [
@@ -32,15 +40,84 @@ def test_preflight_rejects_ineligible_rebuild_before_command_execution(
 ):
     from scripts.recover_season_projections import check_recovery_state
 
+    load_fit_calls = []
     monkeypatch.setattr("scripts.train_model.fetch_refit_state", lambda conn: (frontier, fits))
     monkeypatch.setattr("scripts.score_fitted.fetch_pending_game_counts", lambda conn: pending)
+    monkeypatch.setattr(
+        "scripts.score_fitted.load_fit",
+        lambda conn, season: load_fit_calls.append((conn, season)),
+    )
     with pytest.raises(RuntimeError, match="Recovery requires"):
         check_recovery_state(object())
+    assert load_fit_calls == []
 
 
 def test_preflight_accepts_approved_fit_and_target(monkeypatch):
     from scripts.recover_season_projections import check_recovery_state
 
+    conn = object()
+    load_fit_calls = []
+    score_calls = []
+    fit = object()
     monkeypatch.setattr("scripts.train_model.fetch_refit_state", lambda conn: (2025, [2024, 2025]))
     monkeypatch.setattr("scripts.score_fitted.fetch_pending_game_counts", lambda conn: {2026: 10})
-    check_recovery_state(object())
+    monkeypatch.setattr(
+        "scripts.score_fitted.load_fit",
+        lambda conn, season: (load_fit_calls.append((conn, season)), fit)[1],
+    )
+    monkeypatch.setattr(
+        "scripts.score_fitted.score_game",
+        lambda game, loaded_fit: (score_calls.append((game, loaded_fit)), (1.0, 0.5))[1],
+    )
+
+    check_recovery_state(conn)
+
+    assert load_fit_calls == [(conn, 2025)]
+    assert len(score_calls) == 1
+    game, loaded_fit = score_calls[0]
+    assert game["season"] == 2026
+    assert game["home_tw"] == game["away_tw"]
+    assert loaded_fit is fit
+
+
+def test_preflight_propagates_invalid_frozen_fit_before_recovery(monkeypatch):
+    from scripts.recover_season_projections import check_recovery_state
+
+    monkeypatch.setattr("scripts.train_model.fetch_refit_state", lambda conn: (2025, [2024, 2025]))
+    monkeypatch.setattr("scripts.score_fitted.fetch_pending_game_counts", lambda conn: {2026: 10})
+
+    def invalid_fit(conn, season):
+        raise ValueError(f"missing coefficient vector for {season}")
+
+    monkeypatch.setattr("scripts.score_fitted.load_fit", invalid_fit)
+
+    with pytest.raises(ValueError, match="missing coefficient vector for 2025"):
+        check_recovery_state(object())
+
+
+def test_missing_fit_scaling_stats_stop_before_commands(monkeypatch):
+    import scripts.recover_season_projections as recovery
+    from scripts.train_model import FEATURE_NAMES, TEAM_WEEK_SOURCE_COLUMNS
+
+    monkeypatch.setattr("scripts.train_model.fetch_refit_state", lambda conn: (2025, [2025]))
+    monkeypatch.setattr("scripts.score_fitted.fetch_pending_game_counts", lambda conn: {2026: 10})
+    monkeypatch.setattr(
+        "scripts.score_fitted.load_fit",
+        lambda conn, season: {
+            "train_through": season,
+            "feature_means": dict.fromkeys(TEAM_WEEK_SOURCE_COLUMNS, 0.0),
+            "diff_means": {},
+            "diff_stds": {},
+            "platt_a": 1.0,
+            "platt_b": 0.0,
+            "beta_margin": [0.0] * len(FEATURE_NAMES),
+            "beta_winprob": [0.0] * len(FEATURE_NAMES),
+        },
+    )
+    command_calls = []
+    monkeypatch.setattr(recovery, "execute_commands", lambda: command_calls.append(True))
+
+    with pytest.raises(KeyError, match="d_elo"):
+        recovery.execute_recovery(object())
+
+    assert command_calls == []

@@ -14,6 +14,10 @@ import dlt
 from dlt.sources import DltSource
 
 from ..config.years import YEAR_RANGES, get_current_season
+from ..game_results import (
+    apply_verified_result_correction,
+    validate_verified_result_source_season,
+)
 from ..utils.api_client import get_client
 from .base import make_request
 
@@ -90,9 +94,10 @@ def games_resource(
             data = _fetch_year_games(client, year, games_cache)
 
             for game in data:
-                # Add year for partitioning if needed
-                game["season"] = year
-                yield game
+                # Add the partition without changing the shared raw response;
+                # reviewed corrections require this season identity.
+                validate_verified_result_source_season(game, year)
+                yield apply_verified_result_correction({**game, "season": year})
 
     finally:
         client.close()

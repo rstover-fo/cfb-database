@@ -7,9 +7,39 @@ from collections.abc import Mapping
 # https://site.api.espn.com/apis/site/v2/sports/football/college-football/summary?event=401866625
 # https://site.api.espn.com/apis/site/v2/sports/football/college-football/summary?event=401917058
 # https://catamountsports.com/news/2026/9/5/football-catamounts-camels-postponed-until-sunday.aspx
-SUPERSEDED_GAME_REPLACEMENTS = {401866625: 401917058}
-# Add only after reviewing provider/official evidence; absence is not cancellation.
-CANCELLED_GAME_IDS: frozenset[int] = frozenset()
+SUPERSEDED_GAME_REPLACEMENTS = {
+    401866625: 401917058,
+    # Three October 28 Maine games moved to November 18. Provider replacement
+    # rows match season/team IDs, official date, and final scores.
+    # https://athletics.middlebury.edu/news/2023/10/27/nescac-football-schedule-adjusted.aspx
+    401549719: 401611307,  # Bowdoin 21, Trinity 58
+    401550299: 401611308,  # Bates 0, Williams 43
+    401552878: 401611306,  # Colby 28, Middlebury 35
+    # Worcester–Framingham played November 11; the November 12 stub did not.
+    # https://worcester.prestosports.com/sports/fball/2023-24/bios/sturgis_turnbull_qc2l?view=gamelog
+    401552884: 401612659,
+}
+# Alderson Broaddus suspended athletics before the 2023 season. These retained
+# provider schedule rows never became contests. The conference confirmed the
+# suspension; no age-based or team-name-based cancellation inference is used.
+# https://mountaineast.org/news/2023/8/11/general-mec-announces-2023-24-non-conference-scheduling-agreement-with-salem.aspx
+CANCELLED_GAME_IDS: frozenset[int] = frozenset(
+    {
+        401540999,
+        401545766,
+        401545768,
+        401545773,
+        401545780,
+        401545781,
+        # App State–Liberty: canceled, explicitly not rescheduled.
+        # https://appstatesports.com/news/2024/9/27/app-state-liberty-football-game-canceled.aspx
+        401640992,
+        # Delta State–Kentucky State: official schedule says canceled despite
+        # the provider's completed=true / NULL-score record.
+        # https://gostatesmen.com/sports/football/schedule/2025
+        401833535,
+    }
+)
 
 
 def eligible_game_sql(id_column: str = "g.id") -> str:

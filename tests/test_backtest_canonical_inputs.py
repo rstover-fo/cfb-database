@@ -8,6 +8,7 @@ week-one CTE's identity predicate is also asserted structurally.
 import sqlite3
 
 from scripts.backtest_preseason import _week1_games_query, fetch_scheduled_counts
+from src.pipelines.game_identity import eligible_game_sql
 
 
 class _Cursor:
@@ -70,5 +71,5 @@ def test_week_one_cte_and_scored_games_filter_the_superseded_identity():
     query = _week1_games_query()
     week1 = query[query.index("WITH week1 AS") : query.index(")\n        SELECT g.id")]
 
-    assert "game_id NOT IN (401866625)" in week1
-    assert "g.id NOT IN (401866625)" in query
+    assert eligible_game_sql("game_id") in week1
+    assert eligible_game_sql("g.id") in query

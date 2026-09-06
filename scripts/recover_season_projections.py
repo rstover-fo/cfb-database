@@ -6,6 +6,7 @@ invoke only for the explicitly authorized production recovery.
 """
 
 import argparse
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -24,7 +25,7 @@ COMMANDS = (
         "--views",
         "marts.house_elo,marts.house_elo_game,marts.team_adjusted_epa,"
         "marts.scored_matchup_edges,marts.prediction_accuracy,"
-        "marts.team_week_features,marts.adjusted_epa_week",
+        "marts.team_week_features,marts.adjusted_epa_week,marts.data_freshness",
     ),
 )
 
@@ -37,8 +38,8 @@ def execute_commands(commands=COMMANDS):
 
 def check_recovery_state(conn):
     """Fail before writes if the merged scorer cannot use the approved 2025 fit."""
-    from scripts.score_fitted import fetch_pending_game_counts
-    from scripts.train_model import fetch_refit_state
+    from scripts.score_fitted import fetch_pending_game_counts, load_fit, score_game
+    from scripts.train_model import TEAM_WEEK_SOURCE_COLUMNS, fetch_refit_state
 
     frontier, eligible_fits = fetch_refit_state(conn)
     pending = fetch_pending_game_counts(conn)
@@ -54,6 +55,32 @@ def check_recovery_state(conn):
         )
     if set(pending) != {2026}:
         raise RuntimeError(f"Recovery requires only 2026 pending targets; found {pending}")
+    # fetch_refit_state validates season finality and the metadata feature
+    # contract. Loading and exercising the fit proves both coefficient vectors
+    # and every frozen scaling statistic are usable before execute mode changes
+    # derived data.
+    fit = load_fit(conn, 2025)
+    neutral_features = dict.fromkeys(TEAM_WEEK_SOURCE_COLUMNS, 0.0)
+    margin, probability = score_game(
+        {
+            "season": 2026,
+            "neutral_site": False,
+            "home_tw": neutral_features,
+            "away_tw": neutral_features,
+        },
+        fit,
+    )
+    if not (math.isfinite(margin) and math.isfinite(probability)):
+        raise RuntimeError(
+            "Recovery requires the frozen 2025 fit to produce finite margin and probability"
+        )
+
+
+def execute_recovery(conn):
+    """Validate the complete scoring artifact before starting any subprocess."""
+
+    check_recovery_state(conn)
+    execute_commands()
 
 
 def main():
@@ -92,8 +119,7 @@ def main():
             train_through = cur.fetchone()[0]
             if train_through != 2025:
                 raise RuntimeError(f"Recovery requires the frozen 2025 fit; found {train_through}")
-        check_recovery_state(conn)
-        execute_commands()
+        execute_recovery(conn)
 
 
 if __name__ == "__main__":

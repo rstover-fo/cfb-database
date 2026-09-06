@@ -6,7 +6,11 @@ from copy import deepcopy
 import pytest
 
 from scripts.compute_predictions import BACKFILL_GAMES_QUERY, TARGET_GAMES_QUERY
-from src.pipelines.game_identity import eligible_game_sql, select_canonical_game_rows
+from src.pipelines.game_identity import (
+    CANCELLED_GAME_IDS,
+    eligible_game_sql,
+    select_canonical_game_rows,
+)
 
 
 def event(game_id, **changes):
@@ -36,6 +40,19 @@ def test_missing_replacement_is_not_a_cancelled_contest():
 def test_sql_rejects_expression_as_identifier():
     with pytest.raises(ValueError, match="invalid"):
         eligible_game_sql("g.id); DROP TABLE core.games")
+
+
+def test_reviewed_cancellations_are_excluded_without_mutating_provider_rows():
+    rows = [event(game_id) for game_id in sorted(CANCELLED_GAME_IDS)] + [event(123)]
+    before = deepcopy(rows)
+    assert select_canonical_game_rows(rows) == [event(123)]
+    assert rows == before
+    with sqlite3.connect(":memory:") as conn:
+        conn.execute("CREATE TABLE games (id INTEGER)")
+        conn.executemany("INSERT INTO games VALUES (?)", [(r["game_id"],) for r in rows])
+        assert conn.execute(f"SELECT id FROM games g WHERE {eligible_game_sql()}").fetchall() == [
+            (123,)
+        ]
 
 
 @pytest.mark.parametrize("original_completed", [False, True])

@@ -105,12 +105,31 @@ fallback covers unknown teams).
 
 ### 1c. Adjusted EPA as-of (opponent-adjusted, entering week W)
 
+**F02 boundary amendment (September 5, 2026):** the weekly EPA builder takes
+explicit target `week_index` values from the season's `core.games` schedule,
+including completed and unplayed regular/postseason games with a known week.
+Targets are distinct and ordered using the §0 convention; an absent schedule
+week is not invented by incrementing the last observed play week. For each
+target W, fit only the available qualifying plays with `week_index < W`, even
+when W has no plays yet. Do not emit an empty fit when no earlier plays exist.
+This covers upcoming games, bye/sparse weeks, and the entering-postseason
+boundary without waiting for target-week outcomes.
+
+Snapshots for later scheduled weeks describe the currently available earlier
+plays, not proof that those weeks' inputs are complete. Each season rebuild
+replaces its snapshots from the current play data so added or corrected earlier
+plays affect every applicable later boundary; target-week plays remain excluded
+from that target's fit during midweek updates. Keep the ridge model, per-team
+play counts, consumer lookup, and fallback threshold below unchanged. This is
+a boundary-availability correction, not a new feature or statistical candidate.
+
 Lookup order in `build_features` for `(team, season=S, week_index=WI)`:
 
 1. **As-of week fit** — `analytics.adjusted_epa_week_build` row for
    `(team, S)` with the greatest stored entering-week `≤ WI`, **provided** that
-   row's `plays ≥ MIN_TEAM_PLAYS` (see predicate below). For postseason rows
-   this naturally resolves to the last regular-week fit (= full regular season).
+   row's `plays ≥ MIN_TEAM_PLAYS` (see predicate below). The entering-first-
+   postseason fit includes earlier regular-season plays; later postseason
+   boundaries can also include strictly earlier postseason weeks.
 2. **Prior-season fallback** — else `analytics.adjusted_epa_build` row for
    `(team, S−1)` (full-season fit, known before S starts → leak-free).
 3. Else **NULL** (model imputes).

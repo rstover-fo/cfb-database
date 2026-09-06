@@ -69,6 +69,32 @@ Inspect the failed request and earlier load results before selecting a retry
 scope. Existing rows and an older successful run do not prove completeness.
 Historical gap detection and correction-aware backfills require separate work.
 
+## Weekly EPA for scheduled games
+
+`compute_adjusted_epa_week.py` takes its target weeks from `core.games`, including
+unplayed games. Each entering-week W snapshot uses available qualifying plays
+strictly before W, with postseason encoded as week + 100. A missing play in W
+no longer prevents W's snapshot. Sparse schedule gaps do not create artificial
+weeks; targets with the same input state reuse the ridge solution.
+
+The daily workflow runs this builder before `build_features.py` and
+`score_fitted.py`. Keep that ordering for an authorized manual rebuild. Rebuilding
+a season replaces its weekly snapshots, so corrections to earlier plays reach
+later boundaries. A future snapshot can include only part of an earlier week
+during a midweek run; its existence does not certify ingestion completeness.
+Features still require 150 offensive plays before selecting weekly EPA, then
+fall back to the labeled prior-season fit or NULL. Teams absent from the
+season's play data retain that fallback behavior.
+
+After rollout, verify representative staging and feature rows at an upcoming
+week, compare their play counts and coefficients with strictly earlier plays,
+and check `adj_epa_source` before interpreting prediction changes. The printed
+full-season correlation is informational and cannot establish temporal safety
+or coverage. Historical repairs and prediction regeneration need separately
+scoped runs; a code merge alone does not refresh stored outputs. The live blend
+path using full-season EPA remains separate from the weekly feature and
+as-of-backfill consumers covered here.
+
 ## Incident notes preserved from CLAUDE.md on 2026-09-04
 
 The following is a dated account of previous fixes and the behavior believed to

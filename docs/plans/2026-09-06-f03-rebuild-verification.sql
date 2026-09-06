@@ -13,6 +13,9 @@ BEGIN
  END LOOP;
  SELECT min(archived_at) INTO baseline FROM recovery.f03_row_archive;
  IF baseline IS NULL THEN RAISE EXCEPTION 'Missing pre-recovery journal'; END IF;
+ -- Require outputs from the corrected replay, not the earlier intermediate run.
+ -- https://github.com/rstover-fo/cfb-database/actions/runs/34064735040
+ baseline := GREATEST(baseline,'2026-09-06 22:41:07+00'::timestamptz);
  SELECT jsonb_agg(v ORDER BY v::text) INTO old_fit
  FROM recovery.f03_row_archive a CROSS JOIN LATERAL jsonb_array_elements(a.payload) v
  WHERE a.source_table='features.model_metadata';
@@ -49,6 +52,10 @@ BEGIN
  IF n<>0 THEN RAISE EXCEPTION 'Accuracy mart population differs from current inputs'; END IF;
  SELECT count(*) INTO n FROM core.games WHERE id IN (401866625,401917058);
  IF n<>2 THEN RAISE EXCEPTION 'Original/replacement raw records not retained'; END IF;
+ SELECT count(*) INTO n FROM analytics.house_elo_game
+ WHERE (game_id=401677463 AND season=2024 AND actual_home_margin=51)
+    OR (game_id=401773541 AND season=2025 AND actual_home_margin=-62);
+ IF n<>2 THEN RAISE EXCEPTION 'Repaired historical outcomes missing from Elo replay'; END IF;
 
  SELECT count(*) INTO n FROM core.games g
  WHERE g.season=2026 AND NOT COALESCE(g.completed,false) AND g.id<>401866625

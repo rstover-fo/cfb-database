@@ -101,6 +101,33 @@ scoped runs; a code merge alone does not refresh stored outputs. The live blend
 path using full-season EPA remains separate from the weekly feature and
 as-of-backfill consumers covered here.
 
+## Season closure and fit eligibility
+
+`src/pipelines/season_lifecycle.py` owns finished-season decisions for loader
+skips, player overviews, and automatic refits. Closure requires a sufficiently
+populated regular/postseason schedule, the calendar floor, complete scored
+results with known dates, and no future or unresolved contests. The former 99%
+tolerance is removed. Unknown or old unresolved records stay open until
+reconciled; only reviewed cancellation IDs are terminal without results.
+
+The unattended finalized-season path still fetches `/games` with a schedule-only
+load. Explicit `--season`, `--sources`, and `--no-skip-final` requests retain full
+loading behavior. A newly discovered unfinished game reopens the next lifecycle
+assessment; expensive sources skipped earlier in that run resume on the next
+unattended run, or immediately through an explicit source load.
+
+Upcoming fitted predictions select a fit strictly earlier than each pending
+season, independently of closure. Missing eligible fits fail before writes.
+Backfills still require exactly the previous-season vintage. The reviewed event
+crosswalk in `src/pipelines/game_identity.py` excludes known superseded originals
+from modeled inputs while preserving raw data. The projection schedule also
+requires a matching replacement. Do not infer cancellations from age, 0–0
+scores, missing provider rows, or matching team names.
+
+See [F03 plan](plans/2026-09-06-f03-season-lifecycle.md) for acceptance and rollout
+limits. No existing materialization or stored prediction is repaired merely by
+merging these query changes.
+
 ## Season outlook schedule drift
 
 `api.season_outlook.games_scheduled` belongs to the saved projection snapshot;

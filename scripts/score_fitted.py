@@ -18,8 +18,8 @@ side's ``team_week.elo_pregame`` (the pregame Elo the ``d_elo`` feature used).
 
 Frozen-fit selection (design section 2d / 3): for a backfill season ``S`` the fit
 at ``train_through_season = S-1`` is used (hard error if it is missing -- never
-silently fall back); for daily upcoming scoring the latest fit
-(``MAX(train_through_season)``) is used.
+silently fall back); for daily upcoming scoring each season ``S`` uses the
+latest fit with ``train_through_season < S``.
 
 Usage:
     python scripts/score_fitted.py --backfill 2018 2025
@@ -62,6 +62,7 @@ from scripts.train_model import (
     platt_transform,
     standardize,
 )
+from src.pipelines.game_identity import eligible_game_sql
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -110,17 +111,22 @@ def select_train_through(
 
     ``mode='backfill'``: score season ``S`` -> ``S-1`` (walk-forward: the game's
     season was never in that fit's train window). ``mode='upcoming'``: the latest
-    fit, ``max(available_train_through)``. Pure so both branches are testable
-    without a DB.
+    available fit strictly before ``score_season``. Pure so both branches are
+    testable without a DB.
     """
     if mode == "backfill":
         if score_season is None:
             raise ValueError("backfill selection needs score_season")
         return score_season - 1
     if mode == "upcoming":
-        if not available_train_through:
-            raise ValueError("no frozen fitted_v1 fits available for upcoming scoring")
-        return max(available_train_through)
+        if score_season is None:
+            raise ValueError("upcoming selection needs score_season")
+        eligible = [season for season in available_train_through or [] if season < score_season]
+        if not eligible:
+            raise ValueError(
+                f"no eligible frozen fitted_v1 fit with train_through_season < {score_season}"
+            )
+        return max(eligible)
     raise ValueError(f"unknown selection mode {mode!r}")
 
 
@@ -131,6 +137,12 @@ def score_game(game: dict, fit: dict) -> tuple[float, float]:
     stats, dots with the ridge-margin beta for the expected margin and with the
     IRLS beta for the logit, then Platt-calibrates. Returns Python floats (psycopg2
     does not adapt numpy scalars)."""
+    train_through = fit.get("train_through")
+    if train_through is None or train_through >= game["season"]:
+        raise ValueError(
+            f"fit train_through_season={train_through} must be before "
+            f"prediction season={game['season']}"
+        )
     x_raw = build_feature_vector(game, game["home_tw"], game["away_tw"], fit["feature_means"])
     x_std = standardize(x_raw, fit["diff_means"], fit["diff_stds"])
     expected_margin = float(x_std @ fit["beta_margin"])
@@ -213,13 +225,16 @@ def _score_games_query(where_clause: str) -> str:
 # Completed games of a single season (backfill scope).
 _BACKFILL_WHERE = (
     "g.season = %s AND COALESCE(g.completed, false) "
-    "AND g.home_points IS NOT NULL AND g.away_points IS NOT NULL"
+    "AND g.home_points IS NOT NULL AND g.away_points IS NOT NULL "
+    f"AND {eligible_game_sql('g.id')}"
 )
 # Pending games of the current-or-later season, mirroring
 # compute_predictions.TARGET_GAMES_QUERY's selection.
 _UPCOMING_WHERE = (
     "NOT COALESCE(g.completed, false) "
-    "AND g.season >= (SELECT COALESCE(MAX(season), 0) FROM core.games WHERE completed)"
+    f"AND {eligible_game_sql('g.id')} "
+    "AND g.season >= (SELECT COALESCE(MAX(season), 0) FROM core.games "
+    f"WHERE completed AND {eligible_game_sql('id')})"
 )
 
 
@@ -271,13 +286,10 @@ def fetch_pending_game_count(conn) -> int:
     """
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT COUNT(*)
             FROM core.games g
-            WHERE NOT COALESCE(g.completed, false)
-              AND g.season >= (
-                  SELECT COALESCE(MAX(season), 0) FROM core.games WHERE completed
-              )
+            WHERE {_UPCOMING_WHERE}
             """
         )
         return int(cur.fetchone()[0])
@@ -290,6 +302,15 @@ def fetch_available_train_through(conn) -> list[int]:
             "SELECT DISTINCT train_through_season FROM features.model_metadata "
             "WHERE model_version = %s",
             (MODEL_VERSION,),
+        )
+        return [int(row[0]) for row in cur.fetchall()]
+
+
+def fetch_pending_seasons(conn) -> list[int]:
+    """All pending prediction seasons, including games missing feature rows."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT DISTINCT g.season FROM core.games g WHERE {_UPCOMING_WHERE} ORDER BY g.season"
         )
         return [int(row[0]) for row in cur.fetchall()]
 
@@ -414,16 +435,6 @@ def run_backfill(conn, start: int, end: int) -> None:
 
 
 def run_upcoming(conn) -> None:
-    available = fetch_available_train_through(conn)
-    if not available:
-        logger.error(
-            "No frozen %s fits in features.model_metadata; run train_model.py", MODEL_VERSION
-        )
-        sys.exit(1)
-    train_through = select_train_through("upcoming", available_train_through=available)
-    fit = load_fit(conn, train_through)
-    logger.info("Upcoming scoring with latest frozen fit train_through=%d", train_through)
-
     # Counted before the feature join -- see fetch_pending_game_count.
     n_pending = fetch_pending_game_count(conn)
     games = fetch_upcoming_games(conn)
@@ -445,6 +456,20 @@ def run_upcoming(conn) -> None:
         )
         sys.exit(1)
 
+    available = fetch_available_train_through(conn)
+    # Include pending seasons without feature coverage, so a missing eligible
+    # fit cannot hide behind the feature join or cause a partially written batch.
+    pending_seasons = set(fetch_pending_seasons(conn)) | {g["season"] for g in games}
+    train_through_by_season = {
+        season: select_train_through("upcoming", season, available)
+        for season in sorted(pending_seasons)
+    }
+    fits = {
+        train_through: load_fit(conn, train_through)
+        for train_through in sorted(set(train_through_by_season.values()))
+    }
+    logger.info("Upcoming frozen fits by prediction season: %s", train_through_by_season)
+
     game_ids = [g["game_id"] for g in games]
     if table_exists(conn, "betting", "line_snapshots"):
         market_by_game = fetch_market_from_snapshots(conn, game_ids)
@@ -456,6 +481,7 @@ def run_upcoming(conn) -> None:
     rows: list[dict] = []
     n_with_market = 0
     for game in games:
+        fit = fits[train_through_by_season[game["season"]]]
         expected_margin, win_prob = score_game(game, fit)
         market = market_by_game.get(game["game_id"])
         if market and market.get("spread") is not None:
@@ -474,7 +500,7 @@ def run_upcoming(conn) -> None:
     for season in sorted(per_season):
         print(
             f"SCORED_GATE season={season} rows={per_season[season]} model={MODEL_VERSION} "
-            f"train_through={train_through}"
+            f"train_through={train_through_by_season[season]}"
         )
 
     # Rows already written above -- partial output is more useful than none --
@@ -512,7 +538,8 @@ def main() -> None:
     group.add_argument(
         "--upcoming",
         action="store_true",
-        help="Score pending games with the latest frozen fit (default when no flag).",
+        help="Score each pending season with its latest strictly prior frozen fit "
+        "(default when no flag).",
     )
     args = parser.parse_args()
 

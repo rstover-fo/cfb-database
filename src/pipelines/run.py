@@ -8,6 +8,7 @@ from typing import NoReturn
 
 import dlt
 
+from .season_lifecycle import season_is_final
 from .sources.betting import betting_source
 from .sources.coaches import coach_profiles_source, coach_tenures_source, coaches_source
 from .sources.conferences import conferences_source
@@ -189,7 +190,12 @@ def run_reference_pipeline():
     return info
 
 
-def run_games_pipeline(years: list[int] | None = None, mode: str = "incremental"):
+def run_games_pipeline(
+    years: list[int] | None = None,
+    mode: str = "incremental",
+    *,
+    schedule_only: bool = False,
+):
     """Run the games data pipeline.
 
     Two sequential loads, not one: games commits first, THEN drives (and
@@ -199,6 +205,11 @@ def run_games_pipeline(years: list[int] | None = None, mode: str = "incremental"
     that carries a new parent row has committed. Sequencing removes the
     race; the shared games_cache guarantees the drives orphan filter sees
     exactly the /games response the first load merged (see games_source).
+
+    ``schedule_only`` stops after the one cached ``/games`` fetch. The
+    unattended season loader uses it only after conservative finality so
+    schedule corrections remain reachable without re-fetching drives and
+    ancillary game resources.
     """
     years_str = f"years={years}" if years else f"mode={mode}"
     print(f"\n=== Loading Games Data ({years_str}) ===\n")
@@ -216,6 +227,9 @@ def run_games_pipeline(years: list[int] | None = None, mode: str = "incremental"
     )
     info = pipeline.run(games_only)
     print(f"\nLoad info (games): {info}")
+
+    if schedule_only:
+        return info
 
     rest = games_source(years=years, mode=mode, games_cache=games_cache).with_resources(
         "drives", "game_media", "game_weather", "records"
@@ -1056,45 +1070,6 @@ def run_metrics_wp_pipeline(
     }
 
 
-# Same "finished season" definition as scripts/load_season.py's
-# season_is_final (and scripts/train_model.py's independent copy of the
-# same rule for its refit guard) -- duplicated here rather than imported.
-# scripts/ has no __init__.py and is not part of the installed package
-# (pyproject.toml's `packages = ["src"]`); src.pipelines.run is also
-# installed as the `cfb-pipeline` console script and must not depend on the
-# repo's top-level scripts/ directory being importable -- see
-# _metrics_wp_db_url's docstring for the same reasoning applied to DB URLs.
-_SEASON_COMPLETE_THRESHOLD = 0.99
-_MIN_GAMES_FOR_FINISHED_SEASON = 100
-
-
-def _season_is_final(conn, season: int) -> bool:
-    """True when `season` has essentially every scheduled game completed.
-
-    Mirrors scripts/load_season.py::season_is_final -- see that function's
-    docstring and load_season.py's IMMUTABLE_ONCE_FINAL comment block for
-    why a tolerance (not literal 100%) and a games-count floor are both
-    needed. Used by run_player_overview_pipeline's completed-season gate: a
-    season's usage/PPA/box-score totals mutate weekly while it is still
-    being played, so loading its overview rows early would freeze them
-    stale.
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT COUNT(*) AS n,
-                   AVG(CASE WHEN COALESCE(completed, false) THEN 1.0 ELSE 0.0 END) AS pct
-            FROM core.games
-            WHERE season = %s
-            """,
-            (season,),
-        )
-        n, pct = cur.fetchone()
-    if not n or n < _MIN_GAMES_FOR_FINISHED_SEASON:
-        return False
-    return float(pct or 0.0) >= _SEASON_COMPLETE_THRESHOLD
-
-
 def _dedup_rows(*row_lists) -> list[tuple]:
     """Union any number of row lists into a de-duplicated list, stable order.
 
@@ -1264,7 +1239,7 @@ def run_player_overview_pipeline(
 
     - **Completed-seasons gate**: a season's usage/PPA totals mutate weekly
       while it is in progress, so a season is only eligible once
-      `_season_is_final` says so -- an in-progress season is excluded
+      `season_is_final` says so -- an in-progress season is excluded
       entirely rather than loaded early and re-loaded. From January (once
       the just-finished season's games are marked complete) the daily path
       starts draining it at `max_players`/run; the gate is what keeps every
@@ -1331,7 +1306,7 @@ def run_player_overview_pipeline(
             else:
                 candidate_seasons = sorted(set(seasons), reverse=True)
 
-            eligible_seasons = [s for s in candidate_seasons if _season_is_final(conn, s)]
+            eligible_seasons = [s for s in candidate_seasons if season_is_final(conn, s)]
 
             # Fetched once, outside the per-season loop -- the ledger isn't
             # scoped by season, so there's nothing to gain by re-querying it

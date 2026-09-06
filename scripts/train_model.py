@@ -40,6 +40,9 @@ import sys
 
 import numpy as np
 
+from src.pipelines.game_identity import eligible_game_sql
+from src.pipelines.season_lifecycle import season_is_final
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -464,6 +467,7 @@ def _train_games_query() -> str:
         JOIN features.team_week a
           ON a.game_id = g.id AND a.team = g.away_team
         WHERE g.season = ANY(%s)
+          AND {eligible_game_sql("g.id")}
           AND COALESCE(g.completed, false)
           AND g.home_points IS NOT NULL
           AND g.away_points IS NOT NULL
@@ -699,53 +703,42 @@ def stale_score_seasons(
     return list(range(max_existing + 2, target + 2))
 
 
-# A season counts as FINISHED once at least this share of its games are
-# complete. Not 100%: a cancelled or never-reconciled game would otherwise keep
-# a season "unfinished" forever and permanently freeze the refit. 99% clears a
-# handful of stragglers on a ~1,600-game season while still requiring the
-# season to be genuinely over.
-SEASON_COMPLETE_THRESHOLD = 0.99
-
-# Below this many games a season is too small to judge complete by ratio alone
-# (an early season with 3 of 3 games played would look 100% finished).
-MIN_GAMES_FOR_FINISHED_SEASON = 100
-
-
 def fetch_refit_state(conn) -> tuple[int | None, list[int]]:
     """``(latest FINISHED season, existing fitted_v1 train_through values)``.
 
-    "Finished" deliberately means *the whole season is over*, not "has at least
-    one completed game". Using ``MAX(season) WHERE completed`` would flip to the
-    new season the moment its first game ends, and the consequences compound:
-
-      1. ``stale_score_seasons`` would train a fit labelled
-         ``train_through_season = S`` on a season with a handful of games played,
-      2. ``score_fitted --upcoming`` selects ``MAX(train_through_season)`` and
-         would adopt it,
-      3. the remaining games of season S would then be scored **in-sample**, and
-      4. the staleness check would never fire again, because the S key now
-         exists.
-
-    That is a leak that inflates apparent accuracy rather than an outage, so it
-    would not announce itself. Requiring a finished season keeps every fit
-    strictly walk-forward.
+    Use the shared schedule/correction-aware lifecycle policy, newest candidate
+    first. Every year in the expanding train window must exist and be final;
+    an unresolved or missing earlier year caps the safe automatic-refit frontier.
     """
     with conn.cursor() as cur:
         cur.execute(
-            """
-            SELECT MAX(season) FROM (
-                SELECT season
-                FROM core.games
-                GROUP BY season
-                HAVING COUNT(*) >= %s
-                   AND AVG(CASE WHEN COALESCE(completed, false) THEN 1.0 ELSE 0.0 END) >= %s
-            ) finished
-            """,
-            (MIN_GAMES_FOR_FINISHED_SEASON, SEASON_COMPLETE_THRESHOLD),
+            "SELECT DISTINCT season FROM core.games WHERE season >= %s ORDER BY season DESC",
+            (TRAIN_START_SEASON,),
         )
-        row = cur.fetchone()[0]
-        latest_finished = int(row) if row is not None else None
+        candidates = [int(row[0]) for row in cur.fetchall()]
 
+    present = set(candidates)
+    finality: dict[int, bool] = {}
+
+    def is_final(season: int) -> bool:
+        if season not in finality:
+            finality[season] = season in present and season_is_final(conn, season)
+        return finality[season]
+
+    latest_finished = next((season for season in candidates if is_final(season)), None)
+    if latest_finished is not None:
+        for season in range(TRAIN_START_SEASON, latest_finished + 1):
+            if not is_final(season):
+                logger.warning(
+                    "Automatic refit cannot include season=%d: missing or unfinished within "
+                    "the expanding training window through %d",
+                    season,
+                    latest_finished,
+                )
+                latest_finished = season - 1 if season > TRAIN_START_SEASON else None
+                break
+
+    with conn.cursor() as cur:
         # A fit counts as EXISTING only if it was written under the CURRENT
         # feature contract (PR #56 review, P1).
         #
@@ -777,11 +770,21 @@ def fetch_refit_state(conn) -> tuple[int | None, list[int]]:
         expected = set(TEAM_WEEK_SOURCE_COLUMNS)
         existing = []
         stale_by_contract = []
+        beyond_frontier = []
         for season, means in cur.fetchall():
             if isinstance(means, dict) and set(means) == expected:
-                existing.append(int(season))
+                if latest_finished is not None and int(season) <= latest_finished:
+                    existing.append(int(season))
+                else:
+                    beyond_frontier.append(int(season))
             else:
                 stale_by_contract.append(int(season))
+        if beyond_frontier:
+            logger.warning(
+                "Ignoring stored fit(s) beyond safe automatic-refit frontier %s: %s",
+                latest_finished,
+                sorted(beyond_frontier),
+            )
         if stale_by_contract:
             logger.warning(
                 "%d stored fit(s) predate the current %d-feature contract and will be "

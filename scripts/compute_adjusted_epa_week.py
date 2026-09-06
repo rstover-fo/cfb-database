@@ -84,6 +84,7 @@ from scripts.compute_adjusted_epa import (
     get_max_season,
     get_season_teams,
 )
+from src.pipelines.game_identity import eligible_game_sql
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -91,7 +92,7 @@ logger = logging.getLogger(__name__)
 # Play row: (offense, defense, is_home_offense, epa) from compute_adjusted_epa's
 # PLAY_QUERY, plus week_index computed in SQL from the joined game's week /
 # season_type (see module docstring for the week_index convention).
-PLAY_QUERY_WEEK = """
+PLAY_QUERY_WEEK = f"""
     SELECT
         pe.offense,
         pe.defense,
@@ -104,19 +105,21 @@ PLAY_QUERY_WEEK = """
       AND g.season_type IN ('regular', 'postseason')
       AND NOT pe.is_garbage_time
       AND pe.epa IS NOT NULL
+      AND {eligible_game_sql()}
     ORDER BY week_index, pe.game_id
 """
 
-TARGET_WEEK_INDEX_QUERY = """
+TARGET_WEEK_INDEX_QUERY = f"""
     SELECT DISTINCT
         CASE
             WHEN season_type = 'regular' THEN week
             WHEN season_type = 'postseason' THEN 100 + week
         END AS week_index
-    FROM core.games
+    FROM core.games g
     WHERE season = %s
       AND week IS NOT NULL
       AND season_type IN ('regular', 'postseason')
+      AND {eligible_game_sql()}
     ORDER BY week_index
 """
 

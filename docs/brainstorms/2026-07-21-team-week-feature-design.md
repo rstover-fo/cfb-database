@@ -517,11 +517,43 @@ ever touches the transform.
 
 `score_fitted.py` selects the frozen fit by
 `(model_version='fitted_v1', train_through_season = S−1)` for backfill season S,
-and by `MAX(train_through_season)` for daily upcoming scoring. Grants follow
+and by the greatest available `train_through_season < S` separately for each
+prediction season S during daily upcoming scoring. A same-season or future fit
+is never eligible, even if it is the newest stored fit. Missing eligible fits
+fail before any upcoming predictions are written. Grants follow
 `predictions` house style: `GRANT USAGE ON SCHEMA features` + `SELECT` to
 `anon, authenticated`; revoke write.
 
 ---
+
+### F03 season and event lifecycle amendment — September 6, 2026
+
+Annual automatic refits and finished-season ingestion optimizations use one
+shared lifecycle classifier. Automatic refits require every season in the
+expanding training window from 2015 through the candidate to exist and be
+closed; a newer closed year cannot bypass an unresolved older year. The earliest closure date is February 1 following
+the season (July 1 for the disrupted 2020 spring season). This is a lower bound,
+not evidence that a season ended. Require at least 100 canonical contests,
+postseason coverage, known kickoff dates, complete results with both scores,
+and no future or unresolved contests. Explicit reviewed cancellations may be
+terminal without scores; missing records, unknown dates/status, and old
+unresolved rows are not inferred cancellations. A regular-only truncated slate
+cannot close. These checks detect known incompleteness; they do not prove that
+the provider has published every possible contest.
+
+The games schedule remains reachable in unattended ingestion after closure,
+using a schedule-only refresh. Explicit loads retain their full resource scope.
+A newly discovered unfinished contest reopens the season on the next lifecycle
+assessment; scoring eligibility independently prevents same-season fit use.
+
+Verified superseded event identities are centralized in an installed Python
+module. Preserve raw provider rows. Exclude a known superseded original from
+modeled results, training/scoring populations, and feature inputs; projection
+schedule and closure decisions additionally require its matching replacement.
+The September 2026 Campbell–Western Carolina crosswalk remains an explicit
+reviewed exception, not a team-name deduplication heuristic. No real cancelled
+IDs are added without evidence. Existing materializations are not repaired by
+changing source code: any historical rebuild is a separately reviewed rollout.
 
 ## 3. Walk-forward protocol (implementable checklist)
 
@@ -555,8 +587,10 @@ For each `S` in `2018..2025`:
    (`prediction_date = start_date::date`, so re-runs are idempotent under the
    `(game_id, model_version, prediction_date)` key). `marts/038` scores it
    automatically.
-10. **Daily upcoming:** score pending games with the latest frozen fit
-    (`MAX(train_through_season)`).
+10. **Daily upcoming:** select the latest eligible frozen fit separately for
+    each pending season S, requiring `train_through_season < S`. Validate the
+    fit against each game before vectorization. Resolve all required fits
+    before writing the upcoming batch; no eligible fit is an error.
 
 **Gate B:** `fitted_v1` must beat `elo_v1` on walk-forward **MAE and Brier**
 (target Brier ≲ 0.168 vs elo's 0.187). Fail → stays advisory, not wired into

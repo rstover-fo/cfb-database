@@ -238,7 +238,7 @@ class TestStandardize:
 
 
 # =============================================================================
-# 6. Frozen-model selection -- backfill S-1, upcoming MAX.
+# 6. Frozen-model selection -- backfill S-1, upcoming latest strictly prior fit.
 # =============================================================================
 
 
@@ -248,11 +248,25 @@ class TestSelectTrainThrough:
         assert select_train_through("backfill", score_season=2025) == 2024
 
     def test_upcoming_uses_latest_fit(self):
-        assert select_train_through("upcoming", available_train_through=[2017, 2024, 2019]) == 2024
+        assert (
+            select_train_through(
+                "upcoming", score_season=2025, available_train_through=[2017, 2024, 2019]
+            )
+            == 2024
+        )
+
+    def test_upcoming_rejects_same_season_and_future_fits(self):
+        assert select_train_through("upcoming", 2026, [2025, 2026, 2027]) == 2025
+        with pytest.raises(ValueError, match="no eligible"):
+            select_train_through("upcoming", 2026, [2026, 2027])
+
+    def test_upcoming_requires_prediction_season(self):
+        with pytest.raises(ValueError, match="needs score_season"):
+            select_train_through("upcoming", available_train_through=[2025])
 
     def test_upcoming_without_fits_raises(self):
         with pytest.raises(ValueError):
-            select_train_through("upcoming", available_train_through=[])
+            select_train_through("upcoming", score_season=2026, available_train_through=[])
 
     def test_unknown_mode_raises(self):
         with pytest.raises(ValueError):
@@ -445,9 +459,8 @@ class TestStaleScoreSeasons:
 class TestRefitLeakRegression:
     """PR #48 P1-A. `stale_score_seasons` must be fed the last FULLY FINISHED
     season. Feeding it a season that has merely started trains a fit on partial
-    data, which `score_fitted --upcoming` then adopts as MAX(train_through) and
-    uses to score the remainder of that same season -- in-sample, and never
-    refreshed again because the key now exists."""
+    data. Scoring independently rejects that same-season fit, but the lifecycle
+    gate must still prevent persisting an unfinished training vintage."""
 
     def test_in_progress_season_would_produce_an_in_sample_fit(self):
         # 2025 finished; 2026 has kicked off. Passing 2026 (the WRONG input)

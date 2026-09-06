@@ -45,10 +45,9 @@ def game(season, game_id=1):
 def upcoming_io(monkeypatch):
     """Mock only I/O; selection, vectorization, row assembly, and gates execute."""
     names = (
-        "fetch_pending_game_count",
-        "fetch_pending_seasons",
+        "fetch_pending_game_counts",
         "fetch_upcoming_games",
-        "fetch_available_train_through",
+        "fetch_refit_state",
         "load_fit",
         "table_exists",
         "fetch_market_from_lines",
@@ -57,10 +56,9 @@ def upcoming_io(monkeypatch):
     mocks = {name: Mock(name=name) for name in names}
     for name, mock in mocks.items():
         monkeypatch.setattr(scoring, name, mock)
-    mocks["fetch_pending_game_count"].return_value = 1
-    mocks["fetch_pending_seasons"].return_value = [2026]
+    mocks["fetch_pending_game_counts"].return_value = {2026: 1}
     mocks["fetch_upcoming_games"].return_value = [game(2026)]
-    mocks["fetch_available_train_through"].return_value = [2025]
+    mocks["fetch_refit_state"].return_value = (2025, [2025])
     mocks["load_fit"].side_effect = lambda _conn, season: frozen_fit(season)
     mocks["table_exists"].return_value = False
     mocks["fetch_market_from_lines"].return_value = {}
@@ -81,15 +79,14 @@ def test_score_game_accepts_a_strictly_prior_fit():
 
 
 def test_mixed_pending_seasons_use_their_own_latest_eligible_fits(upcoming_io, capsys):
-    upcoming_io["fetch_pending_game_count"].return_value = 3
-    upcoming_io["fetch_pending_seasons"].return_value = [2026, 2027]
+    upcoming_io["fetch_pending_game_counts"].return_value = {2026: 2, 2027: 1}
     upcoming_io["fetch_upcoming_games"].return_value = [game(2027, 3), game(2026, 1), game(2026, 2)]
-    upcoming_io["fetch_available_train_through"].return_value = [2027, 2025, 2026]
+    upcoming_io["fetch_refit_state"].return_value = (2025, [2025])
 
     def write(_conn, rows):
-        assert [call.args[1] for call in upcoming_io["load_fit"].call_args_list] == [2025, 2026]
+        assert [call.args[1] for call in upcoming_io["load_fit"].call_args_list] == [2025]
         assert [(r["game_id"], r["expected_home_margin"]) for r in rows] == [
-            (3, 6.0),
+            (3, 5.0),
             (1, 5.0),
             (2, 5.0),
         ]
@@ -99,31 +96,76 @@ def test_mixed_pending_seasons_use_their_own_latest_eligible_fits(upcoming_io, c
     upcoming_io["write_upcoming"].assert_called_once()
     output = capsys.readouterr().out
     assert "season=2026 rows=2 model=fitted_v1 train_through=2025" in output
-    assert "season=2027 rows=1 model=fitted_v1 train_through=2026" in output
+    assert "season=2027 rows=1 model=fitted_v1 train_through=2025" in output
 
 
 @pytest.mark.parametrize("available", [[], [2026], [2026, 2027]])
 def test_no_eligible_fit_prevents_all_writes(upcoming_io, available):
-    upcoming_io["fetch_available_train_through"].return_value = available
+    upcoming_io["fetch_refit_state"].return_value = (2025, available)
     with pytest.raises(ValueError, match="no eligible"):
         scoring.run_upcoming(object())
     upcoming_io["load_fit"].assert_not_called()
     upcoming_io["write_upcoming"].assert_not_called()
 
 
-def test_pending_season_without_features_still_needs_an_eligible_fit(upcoming_io):
-    upcoming_io["fetch_pending_game_count"].return_value = 2
-    upcoming_io["fetch_pending_seasons"].return_value = [2025, 2026]
-    with pytest.raises(ValueError, match="train_through_season < 2025"):
+def test_pending_season_without_features_fails_before_fit_loading(upcoming_io):
+    upcoming_io["fetch_pending_game_counts"].return_value = {2025: 1, 2026: 1}
+    with pytest.raises(SystemExit):
+        scoring.run_upcoming(object())
+    upcoming_io["load_fit"].assert_not_called()
+    upcoming_io["write_upcoming"].assert_not_called()
+
+
+def test_no_closed_training_frontier_fails_before_writing(upcoming_io):
+    upcoming_io["fetch_refit_state"].return_value = (None, [])
+    with pytest.raises(ValueError, match="no safe closed training frontier"):
+        scoring.run_upcoming(object())
+    upcoming_io["load_fit"].assert_not_called()
+    upcoming_io["write_upcoming"].assert_not_called()
+
+
+@pytest.mark.parametrize("small_season_scored", [0, 17])
+def test_large_covered_season_cannot_hide_a_small_uncovered_season(
+    upcoming_io, small_season_scored, capsys
+):
+    upcoming_io["fetch_pending_game_counts"].return_value = {2026: 1600, 2027: 20}
+    upcoming_io["fetch_upcoming_games"].return_value = [
+        game(2026, game_id) for game_id in range(1, 1601)
+    ] + [game(2027, game_id) for game_id in range(1601, 1601 + small_season_scored)]
+    with pytest.raises(SystemExit) as error:
+        scoring.run_upcoming(object())
+    assert error.value.code == 1
+    upcoming_io["load_fit"].assert_not_called()
+    upcoming_io["write_upcoming"].assert_not_called()
+    output = capsys.readouterr().out
+    assert "season=2026 pending=1600 scored=1600 coverage=1.000" in output
+    assert f"season=2027 pending=20 scored={small_season_scored}" in output
+
+
+def test_each_season_at_the_coverage_threshold_can_write(upcoming_io, capsys):
+    upcoming_io["fetch_pending_game_counts"].return_value = {2026: 10, 2027: 20}
+    upcoming_io["fetch_upcoming_games"].return_value = [
+        game(2026, game_id) for game_id in range(1, 10)
+    ] + [game(2027, game_id) for game_id in range(10, 28)]
+    scoring.run_upcoming(object())
+    upcoming_io["write_upcoming"].assert_called_once()
+    assert len(upcoming_io["write_upcoming"].call_args.args[1]) == 27
+    output = capsys.readouterr().out
+    assert "season=2026 pending=10 scored=9 coverage=0.900" in output
+    assert "season=2027 pending=20 scored=18 coverage=0.900" in output
+
+
+def test_scored_season_missing_from_denominator_requires_retry(upcoming_io):
+    upcoming_io["fetch_upcoming_games"].return_value = [game(2026), game(2027, 2)]
+    with pytest.raises(SystemExit):
         scoring.run_upcoming(object())
     upcoming_io["write_upcoming"].assert_not_called()
 
 
 def test_all_required_fits_load_before_any_scoring_or_writes(upcoming_io, monkeypatch):
-    upcoming_io["fetch_pending_game_count"].return_value = 2
-    upcoming_io["fetch_pending_seasons"].return_value = [2026, 2027]
+    upcoming_io["fetch_pending_game_counts"].return_value = {2026: 1, 2027: 1}
     upcoming_io["fetch_upcoming_games"].return_value = [game(2026), game(2027, 2)]
-    upcoming_io["fetch_available_train_through"].return_value = [2025, 2026]
+    upcoming_io["fetch_refit_state"].return_value = (2026, [2025, 2026])
     upcoming_io["load_fit"].side_effect = [frozen_fit(2025), RuntimeError("missing coefficients")]
     score = Mock()
     monkeypatch.setattr(scoring, "score_game", score)
@@ -134,10 +176,10 @@ def test_all_required_fits_load_before_any_scoring_or_writes(upcoming_io, monkey
 
 
 def test_empty_pending_scope_does_not_require_a_fit(upcoming_io):
-    upcoming_io["fetch_pending_game_count"].return_value = 0
+    upcoming_io["fetch_pending_game_counts"].return_value = {}
     upcoming_io["fetch_upcoming_games"].return_value = []
     scoring.run_upcoming(object())
-    upcoming_io["fetch_available_train_through"].assert_not_called()
+    upcoming_io["fetch_refit_state"].assert_not_called()
     upcoming_io["write_upcoming"].assert_not_called()
 
 
@@ -149,12 +191,12 @@ def test_missing_feature_coverage_still_fails_without_writes(upcoming_io):
     upcoming_io["write_upcoming"].assert_not_called()
 
 
-def test_partial_coverage_keeps_existing_write_then_fail_policy(upcoming_io):
-    upcoming_io["fetch_pending_game_count"].return_value = 10
+def test_partial_coverage_now_fails_before_writing(upcoming_io):
+    upcoming_io["fetch_pending_game_counts"].return_value = {2026: 10}
     with pytest.raises(SystemExit) as error:
         scoring.run_upcoming(object())
     assert error.value.code == 1
-    upcoming_io["write_upcoming"].assert_called_once()
+    upcoming_io["write_upcoming"].assert_not_called()
 
 
 def test_backfill_requires_exact_prior_vintage_even_when_older_fits_exist(monkeypatch):
@@ -188,6 +230,39 @@ class ResultCursor:
 
     def fetchone(self):
         return self.rows[0] if self.rows else None
+
+
+@pytest.mark.parametrize("compatible_closed_fit", [True, False])
+def test_upcoming_uses_actual_shared_frontier_and_contract_filter(
+    upcoming_io, monkeypatch, compatible_closed_fit
+):
+    # A partial 2026 vintage is earlier than prediction season 2027, but its
+    # training season remains open. Only a compatible closed 2025 fit is safe.
+    current = dict.fromkeys(training.TEAM_WEEK_SOURCE_COLUMNS, 0.0)
+    older_means = current if compatible_closed_fit else {**current, "removed_feature": 0.0}
+    conn = Mock()
+    conn.cursor.return_value = ResultCursor(
+        [
+            [(season,) for season in range(2026, training.TRAIN_START_SEASON - 1, -1)],
+            [(2025, older_means), (2026, current)],
+        ]
+    )
+    monkeypatch.setattr(training, "season_is_final", lambda _conn, season: season <= 2025)
+    monkeypatch.setattr(scoring, "fetch_refit_state", training.fetch_refit_state)
+    upcoming_io["fetch_pending_game_counts"].return_value = {2027: 1}
+    upcoming_io["fetch_upcoming_games"].return_value = [game(2027)]
+
+    if compatible_closed_fit:
+        scoring.run_upcoming(conn)
+        upcoming_io["load_fit"].assert_called_once_with(conn, 2025)
+        rows = upcoming_io["write_upcoming"].call_args.args[1]
+        assert rows[0]["season"] == 2027
+        assert rows[0]["expected_home_margin"] == 5.0
+    else:
+        with pytest.raises(ValueError, match="no eligible"):
+            scoring.run_upcoming(conn)
+        upcoming_io["load_fit"].assert_not_called()
+        upcoming_io["write_upcoming"].assert_not_called()
 
 
 @pytest.mark.parametrize("closed_season", [2025, None])
@@ -342,8 +417,9 @@ def test_pending_scope_excludes_reviewed_original_in_count_seasons_and_scoring(
     insert_game(game_database, original, 2028, completed=original_completed)
     insert_game(game_database, replacement, 2026)
     insert_game(game_database, 2, 2027)
-    assert scoring.fetch_pending_game_count(game_database) == 2
-    assert scoring.fetch_pending_seasons(game_database) == [2026, 2027]
+    insert_game(game_database, 3, 2027)
+    game_database.db.execute("DELETE FROM features.team_week WHERE game_id = 3")
+    assert scoring.fetch_pending_game_counts(game_database) == {2026: 1, 2027: 2}
     assert [g["game_id"] for g in scoring.fetch_upcoming_games(game_database)] == [replacement, 2]
 
 

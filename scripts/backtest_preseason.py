@@ -114,6 +114,7 @@ from scripts.simulate_season import (
     summarize,
 )
 from scripts.train_model import MODEL_VERSION, TEAM_WEEK_SOURCE_COLUMNS
+from src.pipelines.game_identity import eligible_game_sql
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -376,6 +377,7 @@ def _week1_games_query() -> str:
                    team, week_index, games_played_to_date, {tw_cols}
             FROM features.team_week
             WHERE season = %(season)s
+              AND {eligible_game_sql("game_id")}
             ORDER BY team, week_index, game_id
         )
         SELECT g.id AS game_id, g.season, g.season_type, g.week, g.start_date,
@@ -391,6 +393,7 @@ def _week1_games_query() -> str:
         JOIN week1 a ON a.team = g.away_team
         WHERE g.season = %(season)s
           AND g.season_type = %(season_type)s
+          AND {eligible_game_sql()}
           AND COALESCE(g.completed, false)
           AND g.home_points IS NOT NULL
           AND g.away_points IS NOT NULL
@@ -436,13 +439,15 @@ def fetch_scheduled_counts(conn, season: int) -> dict:
     """Regular-season games on each team's schedule, for coverage reporting."""
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT team, COUNT(*) FROM (
-                SELECT home_team AS team FROM core.games
+                SELECT home_team AS team FROM core.games g
                 WHERE season = %(season)s AND season_type = %(season_type)s
+                  AND {eligible_game_sql()}
                 UNION ALL
-                SELECT away_team FROM core.games
+                SELECT away_team FROM core.games g
                 WHERE season = %(season)s AND season_type = %(season_type)s
+                  AND {eligible_game_sql()}
             ) t GROUP BY team
             """,
             {"season": season, "season_type": BACKTEST_SEASON_TYPE},

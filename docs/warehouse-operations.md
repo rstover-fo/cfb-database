@@ -117,7 +117,11 @@ assessment; expensive sources skipped earlier in that run resume on the next
 unattended run, or immediately through an explicit source load.
 
 Upcoming fitted predictions select a fit strictly earlier than each pending
-season, independently of closure. Missing eligible fits fail before writes.
+season and no later than the shared contiguous closed training frontier.
+Missing eligible fits fail before writes. Every pending season must separately
+meet the 90% feature/scoring coverage threshold before any upcoming write.
+The post-load verifier applies the same canonical pending population and
+per-season threshold.
 Backfills still require exactly the previous-season vintage. The reviewed event
 crosswalk in `src/pipelines/game_identity.py` excludes known superseded originals
 from modeled inputs while preserving raw data. The projection schedule also

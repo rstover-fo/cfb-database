@@ -520,7 +520,10 @@ ever touches the transform.
 and by the greatest available `train_through_season < S` separately for each
 prediction season S during daily upcoming scoring. A same-season or future fit
 is never eligible, even if it is the newest stored fit. Missing eligible fits
-fail before any upcoming predictions are written. Grants follow
+fail before any upcoming predictions are written. Upcoming eligible vintages
+must also be at or below the shared contiguous closed training frontier and
+match the current feature contract; being earlier than a prediction season
+alone does not prove the training season was complete. Grants follow
 `predictions` house style: `GRANT USAGE ON SCHEMA features` + `SELECT` to
 `anon, authenticated`; revoke write.
 
@@ -590,7 +593,13 @@ For each `S` in `2018..2025`:
 10. **Daily upcoming:** select the latest eligible frozen fit separately for
     each pending season S, requiring `train_through_season < S`. Validate the
     fit against each game before vectorization. Resolve all required fits
-    before writing the upcoming batch; no eligible fit is an error.
+    before writing the upcoming batch; no eligible fit is an error. Exclude
+    vintages beyond the contiguous closed training frontier. Require at least
+    90% feature/scoring coverage independently for every pending season before
+    any upcoming write; aggregate coverage cannot hide a missing season. The
+    post-load verifier uses the same canonical pending population and per-season
+    threshold. Preseason backtests apply the reviewed identity exclusions to
+    both result rows and scheduled counts, including persisted feature sources.
 
 **Gate B:** `fitted_v1` must beat `elo_v1` on walk-forward **MAE and Brier**
 (target Brier ≲ 0.168 vs elo's 0.187). Fail → stays advisory, not wired into

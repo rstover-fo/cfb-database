@@ -70,3 +70,27 @@ executes real fit selection/vectorization and confirms no writes for invalid
 eligibility. Independent reviews found no remaining actionable correctness
 issues. The full Postgres feature query and production rebuild were not executed
 locally. No performance improvement or production repair is claimed.
+
+## PR review corrections
+
+Four valid review findings required additional integration work:
+
+- Upcoming predictions now use only feature-compatible fits at or below the
+  shared contiguous closed training frontier, in addition to the independent
+  strictly-prior-season guard. A partial 2026 fit cannot score 2027 while the
+  closed frontier is 2025.
+- Every pending season must meet 90% coverage before any upcoming batch write.
+  A 1,600-game covered season cannot hide 20 featureless next-season games.
+- Daily coverage verification reuses the scorer's canonical pending predicate,
+  including its max-season anchor, and checks each season separately.
+- Preseason backtests exclude reviewed non-contests from result rows, scheduled
+  counts, and the earliest stored feature source.
+
+The actual PostgreSQL 16 backtest query was executed against a disposable local
+fixture: the false completed 0–0 original and its distinct week-one feature
+values were excluded; the replacement and a genuine rematch remained. The
+container was removed afterward. No production access or backtest run occurred.
+
+Review-fix validation: 2,340 root tests passed, 449 integration tests skipped;
+affected Ruff lint/format and whitespace checks passed. The PostgreSQL fixture
+validated the real backtest query, not production outcomes.

@@ -20,6 +20,9 @@ Frozen-fit selection (design section 2d / 3): for a backfill season ``S`` the fi
 at ``train_through_season = S-1`` is used (hard error if it is missing -- never
 silently fall back); for daily upcoming scoring each season ``S`` uses the
 latest fit with ``train_through_season < S``.
+Upcoming fits must also satisfy the shared contiguous season-finality and
+feature-compatibility policy. Every pending season must meet the coverage
+threshold before any upcoming predictions are written.
 
 Usage:
     python scripts/score_fitted.py --backfill 2018 2025
@@ -59,6 +62,7 @@ from scripts.train_model import (
     MODEL_VERSION,
     TEAM_WEEK_SOURCE_COLUMNS,
     build_feature_vector,
+    fetch_refit_state,
     platt_transform,
     standardize,
 )
@@ -73,7 +77,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-# Minimum share of pending games that must actually score for an upcoming run
+# Minimum share of pending games in EACH season that must score for an upcoming run
 # to be considered healthy. Below this, run_upcoming exits non-zero rather than
 # logging "nothing to write" and returning success -- the exact silent path
 # that left fitted_v1 with zero 2026 rows for six months of green workflow runs
@@ -230,7 +234,7 @@ _BACKFILL_WHERE = (
 )
 # Pending games of the current-or-later season, mirroring
 # compute_predictions.TARGET_GAMES_QUERY's selection.
-_UPCOMING_WHERE = (
+PENDING_GAMES_WHERE = (
     "NOT COALESCE(g.completed, false) "
     f"AND {eligible_game_sql('g.id')} "
     "AND g.season >= (SELECT COALESCE(MAX(season), 0) FROM core.games "
@@ -272,27 +276,31 @@ def fetch_upcoming_games(conn) -> list[dict]:
     import psycopg2.extras
 
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(_score_games_query(_UPCOMING_WHERE))
+        cur.execute(_score_games_query(PENDING_GAMES_WHERE))
         return _rows_to_games(cur.fetchall())
 
 
-def fetch_pending_game_count(conn) -> int:
+def fetch_pending_game_counts(conn) -> dict[int, int]:
     """Pending games in the projection window, counted from ``core.games``
     ALONE -- deliberately without the ``features.team_week`` join.
 
     This is the denominator the coverage gate needs: joining team_week here
     would make the count agree with the scored count by construction and the
-    gate could never fire. Predicate matches ``_UPCOMING_WHERE`` exactly.
+    gate could never fire. Grouping by season prevents a large covered season
+    from hiding missing features in a smaller pending season. Predicate matches
+    ``PENDING_GAMES_WHERE`` exactly.
     """
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT COUNT(*)
+            SELECT g.season, COUNT(*)
             FROM core.games g
-            WHERE {_UPCOMING_WHERE}
+            WHERE {PENDING_GAMES_WHERE}
+            GROUP BY g.season
+            ORDER BY g.season
             """
         )
-        return int(cur.fetchone()[0])
+        return {int(season): int(count) for season, count in cur.fetchall()}
 
 
 def fetch_available_train_through(conn) -> list[int]:
@@ -302,15 +310,6 @@ def fetch_available_train_through(conn) -> list[int]:
             "SELECT DISTINCT train_through_season FROM features.model_metadata "
             "WHERE model_version = %s",
             (MODEL_VERSION,),
-        )
-        return [int(row[0]) for row in cur.fetchall()]
-
-
-def fetch_pending_seasons(conn) -> list[int]:
-    """All pending prediction seasons, including games missing feature rows."""
-    with conn.cursor() as cur:
-        cur.execute(
-            f"SELECT DISTINCT g.season FROM core.games g WHERE {_UPCOMING_WHERE} ORDER BY g.season"
         )
         return [int(row[0]) for row in cur.fetchall()]
 
@@ -435,34 +434,55 @@ def run_backfill(conn, start: int, end: int) -> None:
 
 
 def run_upcoming(conn) -> None:
-    # Counted before the feature join -- see fetch_pending_game_count.
-    n_pending = fetch_pending_game_count(conn)
+    # Each denominator is counted before the feature join.
+    pending_counts = fetch_pending_game_counts(conn)
     games = fetch_upcoming_games(conn)
+    per_season = Counter(g["season"] for g in games)
+    n_pending = sum(pending_counts.values())
 
-    if not games:
-        ok, coverage = coverage_verdict(n_pending, 0)
+    if not pending_counts and not games:
         print(
-            f"FITTED_COVERAGE_GATE pending={n_pending} scored=0 "
+            "FITTED_COVERAGE_GATE pending=0 scored=0 "
+            f"coverage=1.000 threshold={MIN_UPCOMING_COVERAGE:.2f}"
+        )
+        logger.info("No pending games at all; nothing to write")
+        return
+
+    failed_seasons = []
+    for season in sorted(set(pending_counts) | set(per_season)):
+        pending = pending_counts.get(season, 0)
+        scored = per_season[season]
+        ok, coverage = coverage_verdict(pending, scored)
+        print(
+            f"FITTED_COVERAGE_GATE season={season} pending={pending} scored={scored} "
             f"coverage={coverage:.3f} threshold={MIN_UPCOMING_COVERAGE:.2f}"
         )
-        if ok:
-            logger.info("No pending games at all; nothing to write")
-            return
+        # A season appearing only after the denominator query is not a verified
+        # scoring population; require a retry rather than bypassing its gate.
+        if not ok or season not in pending_counts:
+            failed_seasons.append(season)
+    _, total_coverage = coverage_verdict(n_pending, len(games))
+    print(
+        f"FITTED_COVERAGE_GATE pending={n_pending} scored={len(games)} "
+        f"coverage={total_coverage:.3f} threshold={MIN_UPCOMING_COVERAGE:.2f}"
+    )
+    if failed_seasons:
         logger.error(
-            "%d pending game(s) exist but NONE have features.team_week rows -- the "
-            "feature substrate has not been built for the upcoming season. Run "
-            "scripts/build_features.py --incremental.",
-            n_pending,
+            "Pending season(s) %s failed the per-season coverage gate; no predictions written. "
+            "Run scripts/build_features.py --incremental and retry.",
+            failed_seasons,
         )
         sys.exit(1)
 
-    available = fetch_available_train_through(conn)
-    # Include pending seasons without feature coverage, so a missing eligible
-    # fit cannot hide behind the feature join or cause a partially written batch.
-    pending_seasons = set(fetch_pending_seasons(conn)) | {g["season"] for g in games}
+    frontier, available = fetch_refit_state(conn)
+    if frontier is None:
+        raise ValueError("no safe closed training frontier for upcoming fitted_v1 scoring")
+    # The shared state also rejects incompatible stored feature contracts. The
+    # strict per-game season guard remains independent of that lifecycle gate.
+    available = [season for season in available if season <= frontier]
     train_through_by_season = {
         season: select_train_through("upcoming", season, available)
-        for season in sorted(pending_seasons)
+        for season in sorted(pending_counts)
     }
     fits = {
         train_through: load_fit(conn, train_through)
@@ -496,30 +516,11 @@ def run_upcoming(conn) -> None:
         n_with_market,
     )
 
-    per_season = Counter(g["season"] for g in games)
     for season in sorted(per_season):
         print(
             f"SCORED_GATE season={season} rows={per_season[season]} model={MODEL_VERSION} "
             f"train_through={train_through_by_season[season]}"
         )
-
-    # Rows already written above -- partial output is more useful than none --
-    # but a shortfall still fails the run so it cannot pass silently.
-    ok, coverage = coverage_verdict(n_pending, len(games))
-    print(
-        f"FITTED_COVERAGE_GATE pending={n_pending} scored={len(games)} "
-        f"coverage={coverage:.3f} threshold={MIN_UPCOMING_COVERAGE:.2f}"
-    )
-    if not ok:
-        logger.error(
-            "fitted_v1 scored only %d of %d pending game(s) (%.1f%% < %.0f%%); "
-            "features.team_week is incomplete for the upcoming season",
-            len(games),
-            n_pending,
-            coverage * 100,
-            MIN_UPCOMING_COVERAGE * 100,
-        )
-        sys.exit(1)
 
 
 def main() -> None:

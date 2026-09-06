@@ -1422,3 +1422,19 @@ able to explain why an interval widened on the day the share changed. NULL
 means "written before v1.1" rather than a back-filled value the writer never
 used. The migration also supersedes the `n_sims` column comment, which still
 told consumers the tails were understated.
+
+### Recovery amendment — verified replacement event (2026-09-06)
+
+Season projections count one contest when the provider retains a postponed
+original alongside its verified replacement. The reviewed incident mapping
+`401866625 -> 401917058` identifies Campbell–Western Carolina's move from
+September 5 to September 6. ESPN marks the original postponed with no stats;
+the replacement carries the actual contest. The source records remain intact.
+
+Before result parsing or simulation, exclude the original only when the
+replacement exists with the same season and home/away teams; otherwise stop
+with an explicit reconciliation error. Do not infer replacements from repeated
+opponents or arbitrary date proximity. Preserve the existing model, fitted
+vintage, probability calculation and missing-prediction semantics. This is
+input identity correction, not a new statistical candidate. Other consumers'
+shared season/event lifecycle handling remains F03 follow-up work.

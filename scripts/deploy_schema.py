@@ -62,6 +62,9 @@ VALID_ACTIONS = {"presence_check", "apply", "backfill", "compute"}
 # These land in later Tier 2 + Tier 3 phases -- membership is checked, not file
 # existence, so this action can be wired up before the scripts themselves exist.
 COMPUTE_SCRIPTS = {
+    # Read-only one-request schedule probe for the September 2026 recovery.
+    "probe_projection_schedule",
+    "recover_season_projections",
     "compute_house_elo",
     "compute_adjusted_epa",
     "compute_predictions",
@@ -213,6 +216,11 @@ def plan_from_manifest(manifest: dict) -> Plan:
         compute=compute,
     )
     validate_plan(plan)
+    if plan.compute and plan.compute.script == "recover_season_projections":
+        raise ValueError(
+            "recover_season_projections requires workflow_dispatch with compute_script; "
+            "manifest execution does not share the daily ingestion concurrency group"
+        )
     return plan
 
 

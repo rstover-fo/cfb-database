@@ -115,6 +115,10 @@ when W has no plays yet. Do not emit an empty fit when no earlier plays exist.
 This covers upcoming games, bye/sparse weeks, and the entering-postseason
 boundary without waiting for target-week outcomes.
 
+Source plays, like target weeks, must belong to regular or postseason games.
+Exclude all-star and other game types before accumulating fits; their raw week
+numbers do not place them in the regular/postseason observation window.
+
 Snapshots for later scheduled weeks describe the currently available earlier
 plays, not proof that those weeks' inputs are complete. Each season rebuild
 replaces its snapshots from the current play data so added or corrected earlier

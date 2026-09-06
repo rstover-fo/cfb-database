@@ -18,6 +18,19 @@ from scripts.deploy_schema import (
 
 
 class TestValidActions:
+    def test_recovery_manifest_rejected_but_dispatch_plan_allowed(self):
+        with pytest.raises(ValueError, match="requires workflow_dispatch"):
+            plan_from_manifest(
+                {
+                    "action": "compute",
+                    "compute": {"script": "recover_season_projections", "args": ["--execute"]},
+                }
+            )
+        plan = plan_from_cli(
+            action="compute", compute_script="recover_season_projections", compute_args="--execute"
+        )
+        assert plan.compute.args == ["--execute"]
+
     def test_expected_actions(self):
         assert VALID_ACTIONS == {"presence_check", "apply", "backfill", "compute"}
 
@@ -25,6 +38,8 @@ class TestValidActions:
 class TestComputeScripts:
     def test_expected_allowlist(self):
         assert COMPUTE_SCRIPTS == {
+            "probe_projection_schedule",
+            "recover_season_projections",
             "check_backtest",
             "compute_house_elo",
             "compute_adjusted_epa",

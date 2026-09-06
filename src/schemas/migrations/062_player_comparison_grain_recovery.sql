@@ -1,3 +1,34 @@
+-- 062: Repair player-comparison grain after DE/DL source metadata drift.
+-- Explicit-file deployment: scripts/run_migrations.py --file <this file>.
+-- Atomic and repeatable. No CASCADE: unexpected dependents stop the repair.
+-- Canonical definition: src/schemas/marts/020_player_comparison.sql.
+BEGIN;
+SET LOCAL lock_timeout = '10s';
+CREATE TEMP TABLE recovery_player_objects ON COMMIT DROP AS
+SELECT c.oid, n.nspname, c.relname, c.relkind,
+       pg_get_userbyid(c.relowner) AS owner,
+       c.relacl, obj_description(c.oid, 'pg_class') AS comment,
+       c.reloptions,
+       CASE WHEN c.relkind = 'v' THEN pg_get_viewdef(c.oid, true) END AS definition
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.oid IN ('marts.player_comparison'::regclass, 'api.player_comparison'::regclass);
+CREATE TEMP TABLE recovery_player_grants ON COMMIT DROP AS
+SELECT o.nspname, o.relname, x.grantee, x.privilege_type, x.is_grantable
+FROM recovery_player_objects o
+CROSS JOIN LATERAL aclexplode(COALESCE(o.relacl, acldefault('r', o.owner::regrole))) x;
+-- Column-level grants/comments would need their own preservation path.
+DO $guard$
+BEGIN
+ IF EXISTS (SELECT 1 FROM pg_attribute a JOIN recovery_player_objects o ON o.oid=a.attrelid
+            WHERE a.attnum>0 AND (a.attacl IS NOT NULL OR col_description(a.attrelid,a.attnum) IS NOT NULL)) THEN
+   RAISE EXCEPTION 'Unexpected column grants/comments; inspect before recovery';
+ END IF;
+ IF EXISTS (SELECT 1 FROM recovery_player_objects WHERE reloptions IS NOT NULL) THEN
+   RAISE EXCEPTION 'Unexpected relation options; inspect before recovery';
+ END IF;
+END $guard$;
+DROP VIEW api.player_comparison;
+
 -- marts.player_comparison
 -- Player stats with positional percentiles for comparison.
 -- Pre-computes EAV pivot + PERCENT_RANK() window functions so
@@ -243,3 +274,32 @@ CREATE UNIQUE INDEX idx_player_comparison_pk ON marts.player_comparison (player_
 CREATE INDEX idx_player_comparison_season_posgroup ON marts.player_comparison (season, position_group);
 CREATE INDEX idx_player_comparison_name ON marts.player_comparison (name);
 CREATE INDEX idx_player_comparison_team_season ON marts.player_comparison (team, season);
+
+DO $restore$
+DECLARE o record; g record; target text; recipient text;
+BEGIN
+ SELECT * INTO STRICT o FROM recovery_player_objects WHERE nspname='api';
+ EXECUTE format('CREATE VIEW api.player_comparison AS %s', o.definition);
+ FOR o IN SELECT * FROM recovery_player_objects LOOP
+   target := format('%I.%I', o.nspname, o.relname);
+   EXECUTE format('ALTER %s %s OWNER TO %I',
+                  CASE WHEN o.relkind='m' THEN 'MATERIALIZED VIEW' ELSE 'VIEW' END,
+                  target, o.owner);
+   EXECUTE format('COMMENT ON %s %s IS %L',
+                  CASE WHEN o.relkind='m' THEN 'MATERIALIZED VIEW' ELSE 'VIEW' END,
+                  target, o.comment);
+   -- Remove creation-time default grants before restoring the captured ACL.
+   FOR g IN SELECT DISTINCT x.grantee FROM pg_class c,
+       LATERAL aclexplode(COALESCE(c.relacl, acldefault('r',c.relowner))) x
+       WHERE c.oid=target::regclass LOOP
+     recipient := CASE WHEN g.grantee=0 THEN 'PUBLIC' ELSE quote_ident(pg_get_userbyid(g.grantee)) END;
+     EXECUTE format('REVOKE ALL ON TABLE %s FROM %s',target,recipient);
+   END LOOP;
+ END LOOP;
+ FOR g IN SELECT * FROM recovery_player_grants LOOP
+   recipient := CASE WHEN g.grantee=0 THEN 'PUBLIC' ELSE quote_ident(pg_get_userbyid(g.grantee)) END;
+   EXECUTE format('GRANT %s ON TABLE %I.%I TO %s%s',g.privilege_type,g.nspname,g.relname,
+                  recipient,CASE WHEN g.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END);
+ END LOOP;
+END $restore$;
+COMMIT;

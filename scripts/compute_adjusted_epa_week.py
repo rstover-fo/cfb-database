@@ -101,6 +101,7 @@ PLAY_QUERY_WEEK = """
     FROM marts.play_epa pe
     JOIN core.games g ON g.id = pe.game_id
     WHERE pe.season = %s
+      AND g.season_type IN ('regular', 'postseason')
       AND NOT pe.is_garbage_time
       AND pe.epa IS NOT NULL
     ORDER BY week_index, pe.game_id

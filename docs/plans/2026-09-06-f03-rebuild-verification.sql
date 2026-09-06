@@ -86,6 +86,14 @@ BEGIN
    FROM api.season_outlook WHERE season=2026 AND model_version='fitted_v1'
  ) r;
  RAISE NOTICE 'F03 all-team outlook coverage: %',result;
+ -- This dated recovery has 716 verified current teams. Fail on missing/extra
+ -- output as well as stale or unscored teams; logging alone is not a gate.
+ IF (result->>'teams')::bigint IS DISTINCT FROM 716
+    OR (result->>'fresh_teams')::bigint IS DISTINCT FROM 716
+    OR (result->>'complete_schedules')::bigint IS DISTINCT FROM 716
+    OR (result->>'unscored_team_games')::bigint IS DISTINCT FROM 0 THEN
+   RAISE EXCEPTION 'Incomplete F03 all-team outlook coverage: %',result;
+ END IF;
  SELECT count(*) INTO n FROM api.season_outlook
  WHERE season=2026 AND model_version='fitted_v1' AND computed_at<baseline;
  IF n<>0 THEN RAISE EXCEPTION 'Older current-season outlooks remain: %',n; END IF;

@@ -111,22 +111,21 @@ journal. Final postflight now rejects any remaining old current-season fitted
 outlook. Future general reconciliation of removed or renamed schedule teams
 is separate from this bounded recovery.
 
-**Awaiting explicit cleanup approval:** automatic approval review rejected
-executing the outlook cleanup because the user's approval covered production
-rebuilds, not this additional deletion. No outlook cleanup ran. The
-[read-only count](https://github.com/rstover-fo/cfb-database/actions/runs/34065277035)
-confirmed **242 historical snapshots across 30 obsolete names**. The prepared
-script archives each complete payload before removal; the 716 current teams,
-other models/seasons, raw data, and frozen fits are retained. Independent review
-found no actionable issue. PostgreSQL tests using the actual projection schema
-passed repeat execution, scope retention, active/new-projection guards,
-archive-conflict rollback, and archive privacy after normal blanket grants.
+The user explicitly approved the additional archive-and-delete cleanup.
+[Cleanup and live verification](https://github.com/rstover-fo/cfb-database/actions/runs/34068212563)
+succeeded: **242 snapshots archived and removed**, clearing all 30 obsolete
+names. The API now exposes **716 teams, all 716 fresh and scored completely,
+with zero unscored team-games**. All 3,247 pending games have valid fitted
+scores, the repaired historical outcomes are in Elo, and the full model
+metadata/coefficient tables equal the pre-rebuild snapshot. Caller-role access
+and archive privacy checks passed. Campbell and Western Carolina each retain
+12 simulated games, projecting 5.67/6.33 and 7.54/4.46 wins/losses respectively.
 
-Approved production rebuilds and the initial live checks are complete. All
-3,247 pending games have fresh valid fitted scores, 716 teams were rebuilt with
-zero unscored team-games, the repaired outcomes are in Elo, and complete model
-metadata/coefficient tables match the private pre-rebuild snapshot. Campbell
-and Western Carolina each have 12 simulated games, projecting 5.67/6.33 and
-7.54/4.46 wins/losses respectively. The remaining 30 older API entries are the
-only identified outstanding cleanup; the strengthened final postflight is
-prepared to reject them until that separately approved cleanup executes.
+Greptile's remaining completeness finding was valid: coverage must be asserted,
+not merely logged. The final verifier now requires exactly 716 teams, 716 fresh
+rows, 716 fully scored schedules, and zero unscored team-games. PostgreSQL tests
+executed the full verifier with the real accuracy mart: the 716-team fixture
+passed, while missing 714 teams, one stale team, one unscored team, and one extra
+team each failed. The bounded cleanup itself passed independent review and
+actual projection-schema tests for repeat execution, scope retention,
+active/new-projection guards, archive-conflict rollback, and archive privacy.

@@ -105,6 +105,25 @@ def rebuild(conn):
     return rows, teams
 
 
+@pytest.mark.parametrize("excluded_type", ["allstar", "exhibition", None])
+def test_nonseason_plays_do_not_change_scheduled_fits(warehouse, excluded_type):
+    add_game(warehouse, 1, 1, completed=True)
+    add_game(warehouse, 2, 3)
+    add_game(warehouse, 3, 1, season_type="postseason", completed=True)
+    add_game(warehouse, 4, 2, season_type="postseason")
+    add_plays(warehouse, 1)
+    add_plays(warehouse, 3, epa=0.6)
+    baseline, _ = rebuild(warehouse)
+    baseline_consumer = build_features.fetch_adj_epa_week_rows(warehouse, 2026)
+
+    add_game(warehouse, 5, 2, season_type=excluded_type, completed=True)
+    add_plays(warehouse, 5, epa=10000)
+    actual, _ = rebuild(warehouse)
+    assert actual == baseline
+    assert {r["week_index"] for r in actual} == {3, 101, 102}
+    assert build_features.fetch_adj_epa_week_rows(warehouse, 2026) == baseline_consumer
+
+
 def test_schedule_targets_survive_sql_staging_and_feature_resolution(warehouse, monkeypatch):
     add_game(warehouse, 1, 1, completed=True)
     add_game(warehouse, 2, 2)

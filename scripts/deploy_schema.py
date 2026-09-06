@@ -216,6 +216,11 @@ def plan_from_manifest(manifest: dict) -> Plan:
         compute=compute,
     )
     validate_plan(plan)
+    if plan.compute and plan.compute.script == "recover_season_projections":
+        raise ValueError(
+            "recover_season_projections requires workflow_dispatch with compute_script; "
+            "manifest execution does not share the daily ingestion concurrency group"
+        )
     return plan
 
 

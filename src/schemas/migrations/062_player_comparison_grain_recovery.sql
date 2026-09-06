@@ -1,4 +1,4 @@
--- 061: Repair player-comparison grain after DE/DL source metadata drift.
+-- 062: Repair player-comparison grain after DE/DL source metadata drift.
 -- Explicit-file deployment: scripts/run_migrations.py --file <this file>.
 -- Atomic and repeatable. No CASCADE: unexpected dependents stop the repair.
 -- Canonical definition: src/schemas/marts/020_player_comparison.sql.

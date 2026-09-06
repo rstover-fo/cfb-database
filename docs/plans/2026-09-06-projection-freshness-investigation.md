@@ -52,7 +52,7 @@ the failing key and affected schedules before selecting a repair.
   the API additionally grants SELECT to analyst_ro. No relation options exist.
 - The candidate uses one grouped aggregation at player/team/season and selects
   a coherent modal observed name/position pair, with deterministic tie-breaking.
-  Migration 061 snapshots and restores privileges/owners/comments, uses no
+  Migration 062 snapshots and restores privileges/owners/comments, uses no
   CASCADE, and rejects unexpected relation options or column metadata. Local
   PostgreSQL 16 executed it twice with exact ACL preservation and successful
   reads under anon, authenticated, and analyst_ro. Independent review passed.
@@ -114,3 +114,12 @@ This incident is separate from F03's premature season-closure predicate.
 F03 should address the verified postponed-event identity/status problem in
 shared lifecycle handling; the scoped projection mapping does not hide the
 original provider row from other consumers or upstream feature computations.
+
+## Review correction: migration identity
+
+The recovery file is now `062_player_comparison_grain_recovery.sql`; `061`
+is reserved for the existing PFF migration. The successful September 6
+deployment used the former filename `061_player_comparison_grain_recovery.sql`.
+Its SQL body is unchanged; the rename does not require another production
+application. Historical run links and references to that deployed filename
+remain as evidence, not instructions to apply the PFF migration.

@@ -39,4 +39,14 @@ BEGIN
    ORDER BY season,home_id,start_date,id
  ) r;
  RAISE NOTICE 'Replacement candidates: %',result;
+ SELECT json_agg(row_to_json(r)) INTO result FROM (
+   SELECT o.team,o.computed_at,o.games_scheduled,o.games_simulated,
+          (SELECT count(*) FROM core.games g WHERE g.season=2026
+            AND g.season_type='regular' AND g.id<>401866625
+            AND (g.home_team=o.team OR g.away_team=o.team)) AS canonical_schedule_rows
+   FROM api.season_outlook o WHERE o.season=2026 AND o.model_version='fitted_v1'
+     AND o.computed_at<'2026-09-06 22:41:07+00'::timestamptz
+   ORDER BY o.team
+ ) r;
+ RAISE NOTICE 'Older outlook candidates: %',result;
 END $diagnostic$;

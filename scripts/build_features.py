@@ -70,6 +70,7 @@ import sys
 from collections import defaultdict
 
 from scripts.compute_predictions import fetch_elo_current, resolve_elo
+from src.pipelines.game_identity import eligible_game_sql
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -427,6 +428,7 @@ plays_wi AS (
     JOIN core.games g ON g.id = pe.game_id
     WHERE pe.season = %(season)s
       AND NOT pe.is_garbage_time
+      AND {eligible_game_sql()}
 ),
 off_week_agg AS (
     SELECT
@@ -464,6 +466,7 @@ drives_wi AS (
     FROM core.drives d
     JOIN core.games g ON g.id = d.game_id
     WHERE g.season = %(season)s
+      AND {eligible_game_sql()}
 ),
 off_drive_week_agg AS (
     SELECT
@@ -502,6 +505,7 @@ havoc_wi AS (
     FROM stats.game_havoc gh
     JOIN core.games g ON g.id = gh.game_id
     WHERE g.season = %(season)s
+      AND {eligible_game_sql()}
 ),
 havoc_week_agg AS (
     SELECT
@@ -522,14 +526,14 @@ spine AS (
         CASE WHEN g.season_type = 'postseason' THEN 100 + g.week ELSE g.week END AS week_index,
         g.home_team AS team, g.home_conference AS conference, true AS is_home
     FROM core.games g
-    WHERE g.season = %(season)s
+    WHERE g.season = %(season)s AND {eligible_game_sql()}
     UNION ALL
     SELECT
         g.id, g.season, g.season_type, g.week,
         CASE WHEN g.season_type = 'postseason' THEN 100 + g.week ELSE g.week END,
         g.away_team, g.away_conference, false
     FROM core.games g
-    WHERE g.season = %(season)s
+    WHERE g.season = %(season)s AND {eligible_game_sql()}
 )
 SELECT
     s.season,
@@ -655,6 +659,7 @@ LEFT JOIN LATERAL (
     FROM core.games gp
     WHERE COALESCE(gp.completed, false)
       AND gp.season = s.season
+      AND {eligible_game_sql("gp.id")}
       AND (gp.home_team = s.team OR gp.away_team = s.team)
       AND (CASE WHEN gp.season_type = 'postseason' THEN 100 + gp.week ELSE gp.week END)
           < s.week_index

@@ -87,6 +87,8 @@ import logging
 import math
 import sys
 
+from src.pipelines.game_identity import eligible_game_sql, select_canonical_game_rows
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -157,15 +159,6 @@ MIN_SIGMA_GAMES = 100
 # projections to jump as the postseason bracket is published.
 PROJECTION_SEASON_TYPE = "regular"
 
-# Explicit incident crosswalk, not a same-opponent deduplication heuristic.
-# CFBD retains the postponed September 5 event alongside the September 6 game:
-# - original: https://site.api.espn.com/apis/site/v2/sports/football/college-football/summary?event=401866625
-# - replacement: https://site.api.espn.com/apis/site/v2/sports/football/college-football/summary?event=401917058
-# ESPN reports the original as STATUS_POSTPONED with no stats/drives, while the
-# replacement is the game that was played. Western Carolina's official notice:
-# https://catamountsports.com/news/2026/9/5/football-catamounts-camels-postponed-until-sunday.aspx
-SUPERSEDED_GAME_REPLACEMENTS = {401866625: 401917058}
-
 # --- v1.1 correlated draws ---------------------------------------------------
 # Share of margin variance attributed to a per-team SEASON-STRENGTH offset,
 # drawn once per simulation and applied to every game that team plays, rather
@@ -235,41 +228,8 @@ def normalize_strength_share(strength_share: float) -> float:
 
 
 def select_projection_game_rows(rows: list[dict]) -> list[dict]:
-    """Remove only verified superseded events from season-projection inputs.
-
-    The replacement must be present in the same fetched season and must carry
-    the same home and away teams. Failing closed prevents an incomplete fetch
-    from silently deleting a scheduled game or re-rolling the wrong matchup.
-    The returned list is new; source rows and caller-owned input are unchanged.
-    """
-    rows_by_id = {row["game_id"]: row for row in rows}
-    suppressed_ids = set()
-
-    for original_id, replacement_id in SUPERSEDED_GAME_REPLACEMENTS.items():
-        original = rows_by_id.get(original_id)
-        if original is None:
-            continue
-
-        replacement = rows_by_id.get(replacement_id)
-        if replacement is None:
-            raise ValueError(
-                f"Superseded game {original_id} is present without replacement "
-                f"{replacement_id}; refusing to build an incomplete projection schedule"
-            )
-
-        pair_fields = ("season", "home_team", "away_team")
-        mismatches = [
-            field for field in pair_fields if original.get(field) != replacement.get(field)
-        ]
-        if mismatches:
-            raise ValueError(
-                f"Superseded game {original_id} and replacement {replacement_id} disagree "
-                f"on {', '.join(mismatches)}; refusing to suppress either event"
-            )
-
-        suppressed_ids.add(original_id)
-
-    return [row for row in rows if row["game_id"] not in suppressed_ids]
+    """Apply shared reviewed event resolutions to the projection schedule."""
+    return select_canonical_game_rows(rows)
 
 
 def strength_sd(sigma: float, strength_share: float) -> tuple[float, float]:
@@ -811,7 +771,7 @@ REF_CLASSIFICATION_QUERY = """
 # probability, the error would propagate into every number this script writes.
 # DISTINCT ON takes the last snapshot at or before kickoff -- the pregame read
 # the simulation is actually modelling.
-RESIDUAL_SIGMA_QUERY = """
+RESIDUAL_SIGMA_QUERY = f"""
     WITH latest AS (
         SELECT DISTINCT ON (p.game_id)
                p.game_id,
@@ -820,6 +780,7 @@ RESIDUAL_SIGMA_QUERY = """
         FROM predictions.game_predictions p
         JOIN core.games g ON g.id = p.game_id
         WHERE p.model_version = %(model)s
+          AND {eligible_game_sql()}
           AND COALESCE(g.completed, false)
           AND g.home_points IS NOT NULL AND g.away_points IS NOT NULL
           AND p.expected_home_margin IS NOT NULL

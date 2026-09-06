@@ -44,6 +44,8 @@ from collections import Counter, defaultdict
 
 import dlt
 
+from src.pipelines.game_identity import eligible_game_sql
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -327,7 +329,7 @@ def get_db_url() -> str:
     return url
 
 
-GAMES_QUERY = """
+GAMES_QUERY = f"""
     SELECT id, season, week, season_type, start_date, neutral_site,
            home_team, away_team, home_points, away_points,
            home_pregame_elo, away_pregame_elo
@@ -336,6 +338,7 @@ GAMES_QUERY = """
       AND home_points IS NOT NULL
       AND away_points IS NOT NULL
       AND season BETWEEN %s AND %s
+      AND {eligible_game_sql("id")}
     ORDER BY start_date NULLS LAST, id
 """
 
@@ -397,14 +400,16 @@ def compute_team_game_counts(season_games: list[dict]) -> dict[str, int]:
 # normal team into the pooled __FCS__ bucket and overwrite their carried
 # ratings with the 1500 pooled rating (Codex P1, PR #18). For fully played-out
 # historical seasons the two counts are identical, so --full is unaffected.
-SCHEDULED_COUNTS_QUERY = """
+SCHEDULED_COUNTS_QUERY = f"""
     SELECT season, team, COUNT(*) AS n
     FROM (
         SELECT season, home_team AS team
-        FROM core.games WHERE season BETWEEN %s AND %s
+        FROM core.games g
+        WHERE season BETWEEN %s AND %s AND {eligible_game_sql()}
         UNION ALL
         SELECT season, away_team AS team
-        FROM core.games WHERE season BETWEEN %s AND %s
+        FROM core.games g
+        WHERE season BETWEEN %s AND %s AND {eligible_game_sql()}
     ) sides
     GROUP BY season, team
 """
@@ -468,14 +473,17 @@ def seed_state(engine: EloEngine, conn, target_season: int) -> None:
 
 def fetch_max_season(conn) -> int | None:
     with conn.cursor() as cur:
-        cur.execute("SELECT MAX(season) FROM core.games")
+        cur.execute(f"SELECT MAX(season) FROM core.games WHERE {eligible_game_sql('id')}")
         row = cur.fetchone()
     return row[0] if row else None
 
 
 def fetch_max_completed_season(conn) -> int | None:
     with conn.cursor() as cur:
-        cur.execute("SELECT MAX(season) FROM core.games WHERE completed = true")
+        cur.execute(
+            f"SELECT MAX(season) FROM core.games "
+            f"WHERE completed = true AND {eligible_game_sql('id')}"
+        )
         row = cur.fetchone()
     return row[0] if row else None
 

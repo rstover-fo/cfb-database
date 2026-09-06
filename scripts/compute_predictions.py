@@ -67,6 +67,7 @@ import sys
 from datetime import date
 
 from scripts.compute_house_elo import EloEngine, expected_score
+from src.pipelines.game_identity import eligible_game_sql
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -360,20 +361,25 @@ def get_db_url() -> str:
     return url
 
 
-TARGET_GAMES_QUERY = """
+TARGET_GAMES_QUERY = f"""
     SELECT id AS game_id, season, week, season_type, start_date, neutral_site,
            home_team, away_team
     FROM core.games
     WHERE NOT COALESCE(completed, false)
-      AND season >= (SELECT COALESCE(MAX(season), 0) FROM core.games WHERE completed)
+      AND {eligible_game_sql("id")}
+      AND season >= (
+          SELECT COALESCE(MAX(season), 0) FROM core.games
+          WHERE completed AND {eligible_game_sql("id")}
+      )
     ORDER BY season, start_date NULLS LAST, id
 """
 
-BACKFILL_GAMES_QUERY = """
+BACKFILL_GAMES_QUERY = f"""
     SELECT game_id, season, week, season_type, start_date, neutral_site,
            home_team, away_team, home_pregame_elo, away_pregame_elo
     FROM analytics.house_elo_game
     WHERE season = %s
+      AND {eligible_game_sql("game_id")}
     ORDER BY start_date NULLS LAST, game_id
 """
 

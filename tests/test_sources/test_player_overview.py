@@ -2,8 +2,8 @@
 
 Covers src/pipelines/sources/player_overview.py::player_overview_source /
 player_season_overview_resource (mocked CFBD client -- no network) and
-src/pipelines/run.py::run_player_overview_pipeline plus its helpers
-(_season_is_final, _dedup_rows) (mocked psycopg2/rate-limiter/dlt -- no DB,
+src/pipelines/run.py::run_player_overview_pipeline plus its row helpers
+(_dedup_rows) (mocked psycopg2/rate-limiter/dlt -- no DB,
 no network). Mirrors test_sources/test_metrics_wp.py's split between
 resource-level and pipeline-level tests, since /player/season/overview is
 the same DB-set-difference-drainer shape as /metrics/wp.
@@ -506,75 +506,6 @@ class TestDedupRows:
 
 
 # ---------------------------------------------------------------------------
-# _season_is_final (src/pipelines/run.py) -- mirrors
-# scripts/load_season.py::season_is_final; same FakeConn/FakeCursor testing
-# precedent as tests/test_load_season.py::TestSeasonIsFinal.
-# ---------------------------------------------------------------------------
-
-
-class _FakeCursor:
-    def __init__(self, row):
-        self._row = row
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def execute(self, *a, **k):
-        pass
-
-    def fetchone(self):
-        return self._row
-
-
-class _FakeConn:
-    def __init__(self, row):
-        self._row = row
-
-    def cursor(self):
-        return _FakeCursor(self._row)
-
-
-class TestSeasonIsFinalGate:
-    """A season's box score/usage/PPA totals mutate weekly while games are
-    still being played -- this gate is what keeps run_player_overview_pipeline
-    from loading a season early and re-loading it every day."""
-
-    def test_a_completed_season_is_final(self):
-        from src.pipelines.run import _season_is_final
-
-        assert _season_is_final(_FakeConn((900, 1.0)), 2025) is True
-
-    def test_tolerance_allows_a_stray_uncompleted_game(self):
-        from src.pipelines.run import _season_is_final
-
-        assert _season_is_final(_FakeConn((900, 0.995)), 2025) is True
-
-    def test_a_season_in_progress_is_not_final(self):
-        from src.pipelines.run import _season_is_final
-
-        assert _season_is_final(_FakeConn((3677, 0.0158)), 2026) is False
-
-    def test_too_few_games_is_not_final(self):
-        from src.pipelines.run import _MIN_GAMES_FOR_FINISHED_SEASON, _season_is_final
-
-        assert _season_is_final(_FakeConn((3, 1.0)), 2026) is False
-        assert _season_is_final(_FakeConn((_MIN_GAMES_FOR_FINISHED_SEASON - 1, 1.0)), 2026) is False
-
-    def test_near_complete_season_is_final(self):
-        from src.pipelines.run import _season_is_final
-
-        assert _season_is_final(_FakeConn((3801, 0.9995)), 2024) is True
-
-    def test_an_unloaded_season_is_not_final(self):
-        from src.pipelines.run import _season_is_final
-
-        assert _season_is_final(_FakeConn((0, None)), 2027) is False
-
-
-# ---------------------------------------------------------------------------
 # run_player_overview_pipeline (src/pipelines/run.py)
 # ---------------------------------------------------------------------------
 
@@ -613,7 +544,7 @@ class TestRunPlayerOverviewPipelineBatching:
         with (
             patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
             patch("psycopg2.connect", return_value=conn),
-            patch("src.pipelines.run._season_is_final", return_value=True),
+            patch("src.pipelines.run.season_is_final", return_value=True),
             patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
             patch("src.pipelines.run.player_overview_source") as mock_source,
         ):
@@ -636,7 +567,7 @@ class TestRunPlayerOverviewPipelineBatching:
         with (
             patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
             patch("psycopg2.connect", return_value=conn),
-            patch("src.pipelines.run._season_is_final", return_value=True),
+            patch("src.pipelines.run.season_is_final", return_value=True),
             patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
             patch("src.pipelines.run.player_overview_source") as mock_source,
         ):
@@ -659,7 +590,7 @@ class TestRunPlayerOverviewPipelineBatching:
         with (
             patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
             patch("psycopg2.connect", return_value=conn),
-            patch("src.pipelines.run._season_is_final", return_value=True),
+            patch("src.pipelines.run.season_is_final", return_value=True),
             patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
             patch("src.pipelines.run.player_overview_source") as mock_source,
         ):
@@ -690,7 +621,7 @@ class TestRunPlayerOverviewPipelineBatching:
         with (
             patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
             patch("psycopg2.connect", return_value=conn),
-            patch("src.pipelines.run._season_is_final", return_value=True),
+            patch("src.pipelines.run.season_is_final", return_value=True),
             patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
             patch("src.pipelines.run.player_overview_source"),
         ):
@@ -708,7 +639,7 @@ class TestRunPlayerOverviewPipelineBatching:
         with (
             patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
             patch("psycopg2.connect", return_value=conn),
-            patch("src.pipelines.run._season_is_final", return_value=True),
+            patch("src.pipelines.run.season_is_final", return_value=True),
             patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
         ):
             result = run_player_overview_pipeline(seasons=[2024], batch_size=50)
@@ -728,7 +659,7 @@ class TestRunPlayerOverviewPipelineBatching:
         with (
             patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
             patch("psycopg2.connect", return_value=conn),
-            patch("src.pipelines.run._season_is_final", return_value=True),
+            patch("src.pipelines.run.season_is_final", return_value=True),
             patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
             patch("src.pipelines.run.player_overview_source"),
         ):
@@ -763,7 +694,7 @@ class TestRunPlayerOverviewPipelineSeasonGate:
         with (
             patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
             patch("psycopg2.connect", return_value=conn),
-            patch("src.pipelines.run._season_is_final", return_value=True),
+            patch("src.pipelines.run.season_is_final", return_value=True),
         ):
             result = run_player_overview_pipeline()
 
@@ -790,7 +721,7 @@ class TestRunPlayerOverviewPipelineSeasonGate:
         with (
             patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
             patch("psycopg2.connect", return_value=conn),
-            patch("src.pipelines.run._season_is_final", side_effect=fake_is_final),
+            patch("src.pipelines.run.season_is_final", side_effect=fake_is_final),
         ):
             result = run_player_overview_pipeline(seasons=[2026, 2025])
 
@@ -814,7 +745,7 @@ class TestRunPlayerOverviewPipelineBudgetGuard:
         with (
             patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
             patch("psycopg2.connect", return_value=conn),
-            patch("src.pipelines.run._season_is_final", return_value=True),
+            patch("src.pipelines.run.season_is_final", return_value=True),
             patch("src.pipelines.run.get_rate_limiter", return_value=mock_rate_limiter),
             patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
         ):
@@ -838,7 +769,7 @@ class TestRunPlayerOverviewPipelineBudgetGuard:
         with (
             patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
             patch("psycopg2.connect", return_value=conn),
-            patch("src.pipelines.run._season_is_final", return_value=True),
+            patch("src.pipelines.run.season_is_final", return_value=True),
             patch("src.pipelines.run.get_rate_limiter", return_value=mock_rate_limiter),
             patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
             patch("src.pipelines.run.player_overview_source"),
@@ -869,7 +800,7 @@ class TestRunPlayerOverviewPipelineFanoutMisses:
         with (
             patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
             patch("psycopg2.connect", return_value=conn),
-            patch("src.pipelines.run._season_is_final", return_value=True),
+            patch("src.pipelines.run.season_is_final", return_value=True),
             patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
             patch("src.pipelines.run.player_overview_source") as mock_source,
         ):
@@ -889,7 +820,7 @@ class TestRunPlayerOverviewPipelineFanoutMisses:
         with (
             patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
             patch("psycopg2.connect", return_value=conn),
-            patch("src.pipelines.run._season_is_final", return_value=True),
+            patch("src.pipelines.run.season_is_final", return_value=True),
             patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
             patch("src.pipelines.run.player_overview_source"),
         ):
@@ -908,7 +839,7 @@ class TestRunPlayerOverviewPipelineFanoutMisses:
         with (
             patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
             patch("psycopg2.connect", return_value=conn),
-            patch("src.pipelines.run._season_is_final", return_value=True),
+            patch("src.pipelines.run.season_is_final", return_value=True),
             patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
         ):
             result = run_player_overview_pipeline(seasons=[2024], batch_size=50)
@@ -935,7 +866,7 @@ class TestRunPlayerOverviewPipelineFanoutMisses:
         with (
             patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
             patch("psycopg2.connect", return_value=conn),
-            patch("src.pipelines.run._season_is_final", return_value=True),
+            patch("src.pipelines.run.season_is_final", return_value=True),
             patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
             patch("src.pipelines.run.player_overview_source", side_effect=fake_source),
             patch(
@@ -974,7 +905,7 @@ class TestRunPlayerOverviewPipelineFanoutMisses:
         with (
             patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
             patch("psycopg2.connect", return_value=conn),
-            patch("src.pipelines.run._season_is_final", return_value=True),
+            patch("src.pipelines.run.season_is_final", return_value=True),
             patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
             patch("src.pipelines.run.player_overview_source", side_effect=fake_source),
             patch("src.pipelines.run._record_fanout_misses"),
@@ -994,7 +925,7 @@ class TestRunPlayerOverviewPipelineFanoutMisses:
         with (
             patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
             patch("psycopg2.connect", return_value=conn),
-            patch("src.pipelines.run._season_is_final", return_value=True),
+            patch("src.pipelines.run.season_is_final", return_value=True),
             patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
             patch("src.pipelines.run.player_overview_source"),
         ):
@@ -1012,7 +943,7 @@ class TestRunPlayerOverviewPipelineFanoutMisses:
         with (
             patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
             patch("psycopg2.connect", return_value=conn),
-            patch("src.pipelines.run._season_is_final", return_value=True),
+            patch("src.pipelines.run.season_is_final", return_value=True),
             patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
             patch("src.pipelines.run.player_overview_source"),
             patch("src.pipelines.run._record_fanout_misses") as mock_record,
@@ -1042,7 +973,7 @@ class TestRunPlayerOverviewPipelineFanoutMisses:
         with (
             patch("src.pipelines.run._metrics_wp_db_url", return_value="postgres://fake"),
             patch("psycopg2.connect", return_value=conn),
-            patch("src.pipelines.run._season_is_final", return_value=True),
+            patch("src.pipelines.run.season_is_final", return_value=True),
             patch("src.pipelines.run.dlt.pipeline", return_value=mock_pipeline),
             patch("src.pipelines.run.player_overview_source") as mock_source,
         ):

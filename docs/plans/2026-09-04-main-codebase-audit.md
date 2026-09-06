@@ -99,6 +99,17 @@ Evidence: [skip policy and completion test](https://github.com/rstover-fo/cfb-da
 
 **Acceptance:** playoff tail, postponed final, cancelled game, incomplete provider schedule, and old unresolved rows cannot freeze a live season or admit an invalid fit. A completed historical season eventually closes without requiring every cancelled row to become completed.
 
+**Implementation prepared — September 6, 2026:** shared conservative lifecycle
+policy replaces all three ratio predicates, while finalized unattended loads
+retain a schedule-only refresh. Automatic refits require a contiguous closed
+training window and ignore future/premature stored fits when assessing staleness.
+Upcoming scoring independently selects and validates a strictly prior vintage
+per prediction season. Reviewed superseded event identities now filter modeled
+inputs without deleting raw rows. See [F03 implementation and rollout plan](2026-09-06-f03-season-lifecycle.md).
+Offline verification: 2,327 root tests passed (449 skipped), 59 MCP tests passed;
+independent cross-review resolved one refit staleness defect. Production
+rebuilds/training and historical data repair remain outside this implementation.
+
 ### F04 — Historical reconstructions and published forecasts share ambiguous provenance
 
 **P1 · Confirmed design defect · L**

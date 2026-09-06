@@ -27,6 +27,8 @@ from collections.abc import Iterable
 
 import numpy as np
 
+from src.pipelines.game_identity import eligible_game_sql
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -41,7 +43,7 @@ LAMBDA = 100.0
 # Server-side cursor fetch batch size for the per-season play stream.
 CURSOR_ITERSIZE = 10_000
 
-PLAY_QUERY = """
+PLAY_QUERY = f"""
     SELECT
         pe.offense,
         pe.defense,
@@ -52,12 +54,17 @@ PLAY_QUERY = """
     WHERE pe.season = %s
       AND NOT pe.is_garbage_time
       AND pe.epa IS NOT NULL
+      AND {eligible_game_sql()}
 """
 
-TEAM_LIST_QUERY = """
-    SELECT DISTINCT offense AS team FROM marts.play_epa WHERE season = %s
+TEAM_LIST_QUERY = f"""
+    SELECT DISTINCT pe.offense AS team
+    FROM marts.play_epa pe
+    WHERE pe.season = %s AND {eligible_game_sql("pe.game_id")}
     UNION
-    SELECT DISTINCT defense AS team FROM marts.play_epa WHERE season = %s
+    SELECT DISTINCT pe.defense AS team
+    FROM marts.play_epa pe
+    WHERE pe.season = %s AND {eligible_game_sql("pe.game_id")}
 """
 
 
@@ -208,7 +215,9 @@ def get_season_teams(cur, season: int) -> list[str]:
 
 
 def get_max_season(cur) -> int | None:
-    cur.execute("SELECT MAX(season) FROM marts.play_epa")
+    cur.execute(
+        f"SELECT MAX(pe.season) FROM marts.play_epa pe WHERE {eligible_game_sql('pe.game_id')}"
+    )
     row = cur.fetchone()
     return int(row[0]) if row and row[0] is not None else None
 

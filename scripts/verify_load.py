@@ -302,36 +302,41 @@ def check_fitted_coverage(cur, report: Report) -> None:
     Season-independent (the pending window spans whatever seasons have
     schedules), so it takes no season argument.
     """
-    from scripts.score_fitted import MIN_UPCOMING_COVERAGE, coverage_verdict
+    from scripts.score_fitted import (
+        MIN_UPCOMING_COVERAGE,
+        PENDING_GAMES_WHERE,
+        coverage_verdict,
+    )
 
     cur.execute(
-        """
+        f"""
         WITH pending AS (
-            SELECT g.id
+            SELECT g.id, g.season
             FROM core.games g
-            WHERE NOT COALESCE(g.completed, false)
-              AND g.season >= (
-                  SELECT COALESCE(MAX(season), 0) FROM core.games WHERE completed
-              )
+            WHERE {PENDING_GAMES_WHERE}
         )
-        SELECT
-            (SELECT COUNT(*) FROM pending),
-            (SELECT COUNT(*) FROM pending p
-             WHERE EXISTS (
-                 SELECT 1 FROM predictions.game_predictions gp
-                 WHERE gp.game_id = p.id AND gp.model_version = 'fitted_v1'
-             ))
+        SELECT p.season, COUNT(*),
+               SUM(CASE WHEN EXISTS (
+                   SELECT 1 FROM predictions.game_predictions gp
+                   WHERE gp.game_id = p.id AND gp.model_version = 'fitted_v1'
+               ) THEN 1 ELSE 0 END)
+        FROM pending p
+        GROUP BY p.season
+        ORDER BY p.season
         """
     )
-    n_pending, n_scored = cur.fetchone()
-    n_pending, n_scored = int(n_pending), int(n_scored)
-    ok, coverage = coverage_verdict(n_pending, n_scored)
-    report.record(
-        PASS if ok else FAIL,
-        "fitted_coverage",
-        f"fitted_v1 covers {n_scored}/{n_pending} pending game(s) "
-        f"({coverage:.1%}, threshold {MIN_UPCOMING_COVERAGE:.0%})",
-    )
+    counts = cur.fetchall()
+    if not counts:
+        report.record(PASS, "fitted_coverage", "no canonical pending games")
+    for season, n_pending, n_scored in counts:
+        n_pending, n_scored = int(n_pending), int(n_scored)
+        ok, coverage = coverage_verdict(n_pending, n_scored)
+        report.record(
+            PASS if ok else FAIL,
+            "fitted_coverage",
+            f"season={season}: fitted_v1 covers {n_scored}/{n_pending} pending game(s) "
+            f"({coverage:.1%}, threshold {MIN_UPCOMING_COVERAGE:.0%})",
+        )
 
 
 # How old the newest predictions.model_backtest row may be before the honesty

@@ -1,6 +1,7 @@
 """Unit tests for load_season's season-selection helpers (no DB, no API)."""
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -8,15 +9,12 @@ import yaml
 from scripts.load_season import (
     ESTIMATED_CALLS,
     IMMUTABLE_ONCE_FINAL,
-    MIN_GAMES_FOR_FINISHED_SEASON,
     PRESEASON_ESTIMATED_CALLS,
     PRESEASON_INPUT_SOURCES,
     PRESEASON_STATS_RESOURCES,
-    SEASON_COMPLETE_THRESHOLD,
     SOURCE_ORDER,
     load_season,
     parse_source_specs,
-    season_is_final,
     sources_to_skip,
     upcoming_schedule_season,
     validate_resource_filters,
@@ -152,31 +150,6 @@ class TestMetricsWpWiring:
 
         captured = capsys.readouterr()
         assert "metrics_wp" in captured.out
-
-
-class FakeCursor:
-    def __init__(self, row):
-        self._row = row
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def execute(self, *a, **k):
-        pass
-
-    def fetchone(self):
-        return self._row
-
-
-class FakeConn:
-    def __init__(self, row):
-        self._row = row
-
-    def cursor(self):
-        return FakeCursor(self._row)
 
 
 class TestExpansionUnitWiring:
@@ -500,41 +473,6 @@ class TestRushingWiring:
         assert args.source == "rushing"
 
 
-class TestSeasonIsFinal:
-    """The daily workflow runs with no --season, so get_current_season()
-    resolves to `year - 1` until August: every off-season run re-ingested the
-    entire, complete, immutable previous season. plays fans out to one
-    /plays/stats call PER GAME and rosters to one per team -- roughly 2,000
-    calls a day against the then-75,000/month budget, for data that cannot change.
-    That is what exhausted the quota behind the 2026-07-25 three-hour run."""
-
-    def test_a_completed_season_is_final(self):
-        assert season_is_final(FakeConn((900, 1.0)), 2025) is True
-
-    def test_tolerance_allows_a_stray_uncompleted_game(self):
-        """A cancellation that never completes must not freeze a season as
-        unfinished forever -- that would permanently disable the skip."""
-        assert season_is_final(FakeConn((900, 0.995)), 2025) is True
-
-    def test_a_season_in_progress_is_not_final(self):
-        assert season_is_final(FakeConn((900, 0.60)), 2026) is False
-
-    def test_just_below_threshold_is_not_final(self):
-        assert season_is_final(FakeConn((900, SEASON_COMPLETE_THRESHOLD - 0.01)), 2026) is False
-
-    def test_too_few_games_is_not_final(self):
-        """Week 1 of a new season is 100% complete over three games. Without a
-        floor that would read as finished and skip the entire ingest."""
-        assert season_is_final(FakeConn((3, 1.0)), 2026) is False
-        assert season_is_final(FakeConn((MIN_GAMES_FOR_FINISHED_SEASON - 1, 1.0)), 2026) is False
-
-    def test_an_unloaded_season_is_not_final(self):
-        assert season_is_final(FakeConn((0, None)), 2027) is False
-
-    def test_null_percentage_does_not_crash(self):
-        assert season_is_final(FakeConn((500, None)), 2027) is False
-
-
 class TestSourcesToSkip:
     def test_immutable_sources_are_skipped_for_a_finished_season(self):
         skipped = sources_to_skip(list(SOURCE_ORDER), season_final=True, allow_skip=True)
@@ -555,6 +493,67 @@ class TestSourcesToSkip:
         teams and venues arrive."""
         skipped = sources_to_skip(list(SOURCE_ORDER), season_final=True, allow_skip=True)
         assert "reference" not in skipped
+
+    def test_games_schedule_reconciliation_is_never_skipped(self):
+        skipped = sources_to_skip(list(SOURCE_ORDER), season_final=True, allow_skip=True)
+
+        assert "games" not in skipped
+
+
+class TestFinalSeasonScheduleReconciliation:
+    def test_final_unattended_dispatch_uses_schedule_only_games(self):
+        run_games = MagicMock(return_value="loaded")
+        conn = MagicMock()
+        limiter = MagicMock()
+        limiter.get_status.return_value = {"remaining": 10_000}
+
+        with (
+            patch("scripts.load_season.season_is_final", return_value=True),
+            patch("psycopg2.connect", return_value=conn),
+            patch("scripts.compute_predictions.get_db_url", return_value="postgres://fake"),
+            patch("src.pipelines.run.run_games_pipeline", run_games),
+            patch("src.pipelines.utils.rate_limiter.get_rate_limiter", return_value=limiter),
+        ):
+            result = load_season(
+                2025,
+                sources=["games"],
+                skip_refresh=True,
+                allow_skip_final=True,
+            )
+
+        run_games.assert_called_once_with(years=[2025], schedule_only=True)
+        assert result["results"]["games"]["status"] == "ok"
+
+    def test_explicit_load_keeps_full_games_bundle(self):
+        run_games = MagicMock(return_value="loaded")
+        limiter = MagicMock()
+        limiter.get_status.return_value = {"remaining": 10_000}
+
+        with (
+            patch("src.pipelines.run.run_games_pipeline", run_games),
+            patch("src.pipelines.utils.rate_limiter.get_rate_limiter", return_value=limiter),
+        ):
+            load_season(2025, sources=["games"], skip_refresh=True, allow_skip_final=False)
+
+        run_games.assert_called_once_with(years=[2025], schedule_only=False)
+
+    def test_schedule_only_runner_does_not_fetch_drives_or_ancillary_resources(self):
+        from src.pipelines.run import run_games_pipeline
+
+        pipeline = MagicMock()
+        pipeline.run.return_value = "loaded"
+        source = MagicMock()
+
+        with (
+            patch("src.pipelines.run.dlt.pipeline", return_value=pipeline),
+            patch("src.pipelines.run.games_source", return_value=source) as games_source,
+        ):
+            result = run_games_pipeline(years=[2025], schedule_only=True)
+
+        assert result == "loaded"
+        games_source.assert_called_once()
+        source.with_resources.assert_called_once_with("games")
+        pipeline.run.assert_called_once()
 
     def test_metrics_wp_stays_eligible_even_on_a_finished_season(self):
         """PR #54 review, P1.

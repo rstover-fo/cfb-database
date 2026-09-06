@@ -19,6 +19,7 @@ import os
 import sys
 import time
 
+from src.pipelines.season_lifecycle import season_is_final
 from src.pipelines.utils.request_outcomes import request_failure_summary
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -196,7 +197,6 @@ ESTIMATED_CALLS = {
 #                  would skip the only seasons it is allowed to touch.
 IMMUTABLE_ONCE_FINAL = frozenset(
     {
-        "games",
         "playoffs",
         "game_stats",
         "plays",
@@ -221,31 +221,6 @@ IMMUTABLE_ONCE_FINAL = frozenset(
         "rosters",
     }
 )
-
-# A season counts as finished on the same terms train_model.py uses for its
-# refit guard -- one definition of "finished" in the codebase, not two. A
-# permanently un-completed row (a cancellation) must not freeze a season as
-# unfinished forever, hence a tolerance rather than requiring literal 100%.
-SEASON_COMPLETE_THRESHOLD = 0.99
-MIN_GAMES_FOR_FINISHED_SEASON = 100
-
-
-def season_is_final(conn, season: int) -> bool:
-    """True when `season` has essentially every scheduled game completed."""
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT COUNT(*) AS n,
-                   AVG(CASE WHEN COALESCE(completed, false) THEN 1.0 ELSE 0.0 END) AS pct
-            FROM core.games
-            WHERE season = %s
-            """,
-            (season,),
-        )
-        n, pct = cur.fetchone()
-    if not n or n < MIN_GAMES_FOR_FINISHED_SEASON:
-        return False
-    return float(pct or 0.0) >= SEASON_COMPLETE_THRESHOLD
 
 
 def sources_to_skip(active_sources, season_final: bool, allow_skip: bool):
@@ -483,6 +458,7 @@ def load_season(
     # dry-run figure and the budget check reflect what will actually be
     # fetched rather than what would have been.
     skipped_final = []
+    season_final = False
     if allow_skip_final:
         import psycopg2
 
@@ -490,10 +466,10 @@ def load_season(
 
         conn_check = psycopg2.connect(get_db_url())
         try:
-            final = season_is_final(conn_check, season)
+            season_final = season_is_final(conn_check, season)
         finally:
             conn_check.close()
-        skipped_final = sources_to_skip(active_sources, final, allow_skip_final)
+        skipped_final = sources_to_skip(active_sources, season_final, allow_skip_final)
         if skipped_final:
             saved = sum(ESTIMATED_CALLS.get(s, 50) for s in skipped_final)
             logger.info(
@@ -507,13 +483,15 @@ def load_season(
                 season,
             )
             active_sources = [s for s in active_sources if s not in skipped_final]
-        elif final:
+        elif season_final:
             logger.info("Season %d is finished but no immutable source was selected", season)
 
     # Estimate API calls. A resource-filtered source costs a call per named
     # resource per season, not the whole source's per-game fan-out.
     def estimate(src: str) -> int:
         named = resource_filters.get(src)
+        if src == "games" and season_final:
+            return 1
         return len(named) if named else ESTIMATED_CALLS.get(src, 50)
 
     total_est = sum(estimate(s) for s in active_sources)
@@ -572,7 +550,11 @@ def load_season(
         # scoped to the season this load_season() call targets. See
         # run_coach_profiles_pipeline and the IMMUTABLE_ONCE_FINAL comment above.
         "coach_profiles": lambda: run_coach_profiles_pipeline(),
-        "games": lambda: run_games_pipeline(years=[season]),
+        # Even after finality, keep the cheap /games schedule merge reachable
+        # so corrections and newly published rows can reopen the season.  The
+        # expensive drives/media/weather/records bundle is immutable enough to
+        # skip on the unattended path once lifecycle policy says final.
+        "games": lambda: run_games_pipeline(years=[season], schedule_only=season_final),
         "playoffs": lambda: run_playoffs_pipeline(years=[season]),
         "game_stats": game_stats_runner,
         "plays": lambda: run_plays_pipeline(years=[season]),

@@ -107,6 +107,7 @@ def _chain(error: BaseException) -> list[BaseException]:
         "403",
         "404",
         "500",
+        "503",
         "exhausted-429",
         "open-breaker",
         "timeout",
@@ -137,6 +138,7 @@ def test_request_failures_stop_the_bounded_resource_and_preserve_the_cause(
         "params": params,
         "outcome": "failed",
         "error_type": type(original).__name__,
+        "http_status": int(failure_kind) if failure_kind.isdigit() else None,
         "counts_scope": "resource_invocation",
         "counts_unit": "requests",
         "counts": {"succeeded": 0, "expected_no_data": 0, "failed": 1, "deferred": 2},
@@ -215,6 +217,7 @@ def test_success_then_failure_reports_prior_fetch_and_deferred_requests(
     assert summary is not None
     assert summary["endpoint"] == endpoint
     assert summary["params"] != first_params
+    assert summary["http_status"] == 503
     assert summary["counts"] == {
         "succeeded": 1,
         "expected_no_data": 0,
@@ -255,6 +258,7 @@ def test_invalid_response_is_rejected_before_any_row_is_yielded(
     summary = request_failure_summary(exc_info.value)
     assert summary is not None
     assert summary["error_type"] == "ResponseValidationError"
+    assert summary["http_status"] is None
     assert summary["counts"] == {
         "succeeded": 0,
         "expected_no_data": 0,

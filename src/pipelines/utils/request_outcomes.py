@@ -6,6 +6,8 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
+import httpx
+
 
 class ResponseValidationError(ValueError):
     """A successful HTTP response did not contain the resource's required shape."""
@@ -24,6 +26,9 @@ class SourceRequestError(Exception):
         self.endpoint = endpoint
         self.params = dict(params)
         self.error_type = type(error).__name__
+        self.http_status = (
+            error.response.status_code if isinstance(error, httpx.HTTPStatusError) else None
+        )
         self.counts = dict(counts)
         counts_text = ", ".join(f"{name}={count}" for name, count in self.counts.items())
         super().__init__(
@@ -39,6 +44,7 @@ class SourceRequestError(Exception):
             "params": dict(self.params),
             "outcome": "failed",
             "error_type": self.error_type,
+            "http_status": self.http_status,
             "counts_scope": "resource_invocation",
             "counts_unit": "requests",
             "counts": dict(self.counts),

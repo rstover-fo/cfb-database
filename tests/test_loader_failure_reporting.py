@@ -91,6 +91,7 @@ def test_season_summary_keeps_failure_context_after_dlt_wraps_it(
     receipt = result["request_failure"]
     assert receipt["outcome"] == "failed"
     assert receipt["error_type"] == "HTTPStatusError"
+    assert receipt["http_status"] == 401
     assert receipt["params"]["year"] == 2026
     assert receipt["counts"] == {
         "succeeded": 1,
@@ -141,6 +142,7 @@ def test_pipeline_cli_returns_failure_with_request_context(runtime, monkeypatch,
     assert "ERROR in game_stats" in output
     assert '"endpoint": "/games/teams"' in output
     assert '"week": 2' in output
+    assert '"http_status": 401' in output
     if weekly:
         # Week one finished both resources. Week two still fails the whole command.
         assert len(runtime.completed) == 1
@@ -168,6 +170,7 @@ def test_all_sources_cli_carries_one_resource_failure_to_exit(runtime, monkeypat
     output = capsys.readouterr().out
     assert "sources failed: game_stats" in output
     assert '"outcome": "failed"' in output
+    assert '"http_status": 401' in output
 
 
 def test_batched_cli_cannot_hide_failure_after_an_earlier_batch(runtime, monkeypatch, capsys):
@@ -184,6 +187,7 @@ def test_batched_cli_cannot_hide_failure_after_an_earlier_batch(runtime, monkeyp
     assert len(runtime.completed) == 1
     output = capsys.readouterr().out
     assert '"year": 2025' in output
+    assert '"http_status": 401' in output
     assert "All 2 batches complete" not in output
 
 

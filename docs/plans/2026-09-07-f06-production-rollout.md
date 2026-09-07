@@ -61,4 +61,32 @@ actual immutable Actions run URL and regenerates its SQL binding; captured data
 and fingerprints are unchanged. `src/schemas/production-manifest.json` contains
 only `warehouse.production.catalog-adopted.20260907.288b4eaf817b`.
 
-Production adoption and final verification evidence are pending execution.
+## Production adoption evidence
+
+All operations below ran from reviewed source `9fed350` using the explicit
+production manifest and receipt.
+
+| Operation | Actions run | Result |
+|---|---|---|
+| Read-only preflight | [34163613346](https://github.com/rstover-fo/cfb-database/actions/runs/34163613346) | Exact catalog match; no existing ledger; adoption ready |
+| Explicit adoption | [34163735093](https://github.com/rstover-fo/cfb-database/actions/runs/34163735093) | One adoption receipt committed with the reviewed fingerprint |
+| Repeat adoption | [34163835274](https://github.com/rstover-fo/cfb-database/actions/runs/34163835274) | Validated no-op; exactly one ledger entry retained |
+| Ledger privacy and consumer access | [34163850713](https://github.com/rstover-fo/cfb-database/actions/runs/34163850713) | Exact receipt/checksum, empty repeatable history, private ledger denials, and all 54 API views passed under actual roles |
+
+The adopted root checksum is
+`d621e7026d135f6e16aede646628624357cbc51c734dc3b381b4d441d8ab7dcb`.
+Only the private control schema, its two ledger tables and identity sequence,
+and the one adoption row were created. The schema-only fingerprint and repeat
+check establish that the captured warehouse definitions were unchanged.
+Data preservation here follows the executed adoption statements having no
+warehouse DML; no full production row-payload hash audit was performed.
+
+Backfill Sources, Daily Season Load, Flat File Load, Historical Refresh, and
+Model Feature Experiments were active before the maintenance window and paused
+for adoption. No conflicting warehouse writer was active or queued. CI finished
+before adoption; Live Scoreboard and Probe 2026 Endpoints remained active.
+[Final status run 34163889045](https://github.com/rstover-fo/cfb-database/actions/runs/34163889045)
+passed with the same exact fingerprint, a valid installed ledger, and one entry.
+All five paused workflows were restored and the complete before/after state map
+matched exactly: all nine repository workflows are active. No rollback or repair
+was required. No scheduled work remains intentionally paused for this rollout.

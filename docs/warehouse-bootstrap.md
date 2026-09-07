@@ -100,7 +100,7 @@ and its SHA256/object inventory are recorded in
 `src/schemas/baseline/20260907_catalog.json`. The generated baseline is immutable
 once applied. The first capture exposed an untracked dependency on `rp` tables
 used by live returning-production marts; a second capture included that schema.
-No production migration or ledger adoption ran.
+That capture preceded production migration 065 and explicit ledger adoption.
 
 The restore requires the `postgres` owner. Platform roles are NOLOGIN stand-ins
 and include the captured analyst membership grants. Public extensions are
@@ -125,10 +125,11 @@ coverage or model outputs. Empty-view refresh proves executable definitions,
 not representative production refresh cost or populated warehouse completeness.
 
 Schema-only capture retains normalized dlt columns and relationships, but does
-not copy `_dlt_version`/`_dlt_pipeline_state` row contents. An existing production
-warehouse remains unledgered and is deliberately rejected by managed upgrade.
-Adoption requires a separately reviewed catalog comparison and provenance plan;
-never mark historical transformations as applied solely from matching names.
+not copy `_dlt_version`/`_dlt_pipeline_state` row contents. An unledgered existing
+warehouse is deliberately rejected by managed upgrade. Adoption requires a
+separately reviewed catalog comparison and provenance plan; never mark historical
+transformations as applied solely from matching names. This production warehouse
+now has a separately verified catalog-adoption root, described below.
 
 ## Explicit production adoption
 
@@ -162,11 +163,17 @@ never bypassed by substituting the currently observed hash. Preserve and restore
 the prior writer-workflow states around the maintenance window. The migration
 advisory lock coordinates managed tools; other administrators must avoid DDL.
 
-Future production changes append new immutable migrations to the production
-manifest and use `bootstrap_warehouse.py upgrade --manifest <production-manifest>`
+Future production changes append new immutable migrations to
+`src/schemas/production-manifest.json` and use
+`bootstrap_warehouse.py upgrade --manifest src/schemas/production-manifest.json`
 with an explicit `WAREHOUSE_DB_URL`. Do not use the disposable bootstrap manifest
 on production. The original receipt remains immutable after later upgrades;
 its fingerprint describes the adoption catalog, not those future schema changes.
+
+The approved production receipt is
+`src/schemas/adoptions/20260907_production_catalog_receipt.json`. It records only
+the observed catalog-adoption event; migration 065's actual executions are
+recorded in the rollout evidence, not fabricated as managed migration history.
 
 See [production rollout evidence](plans/2026-09-07-f06-production-rollout.md).
 

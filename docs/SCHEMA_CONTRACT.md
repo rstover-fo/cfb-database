@@ -15,7 +15,7 @@ Last updated: 2026-09-07
 
 ## Recent Contract Changes
 
-- **2026-09-07 — F06 managed bootstrap (disposable development; no production adoption).**
+- **2026-09-07 — F06 managed bootstrap and explicit production adoption.**
   `src/schemas/warehouse-manifest.json` reconstructs the reviewed catalog and
   applies checksum-verified forward migrations through a private
   `warehouse_control` ledger. Its two tables and identity sequence are not
@@ -24,6 +24,11 @@ Last updated: 2026-09-07
   and private scouting access. It contains schema definitions and repository
   seeds, not production data. Existing unledgered production databases require
   separate reviewed adoption; normal deployment does not replay the baseline.
+  Production now uses `src/schemas/production-manifest.json` with one truthful
+  catalog-adoption receipt. Its observed schema/ownership/access fingerprint was
+  verified before installing the private ledger. No baseline, seed, 064, or 065
+  historical execution entries were fabricated. Future production migrations
+  append to this manifest; the disposable bootstrap manifest is not its history.
   Executed checks found a missing underlying-mart read grant for the public
   invoker wrapper `team_season_trajectory`. Forward migration 065 restores SELECT
   for anon/authenticated without changing view mode, granting writes, or exposing

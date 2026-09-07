@@ -1,9 +1,8 @@
 # F06 — warehouse bootstrap and migration history
 
 Status: merged in PR #129; CI and review fixes passed. Production migration 065
-was approved, applied, and verified. Explicit catalog-ledger adoption is being
-executed under that rollout approval; the destination-specific schema artifact
-export was explicitly approved and its catalog comparison passed.
+was approved, applied, and verified. Explicit catalog-ledger adoption succeeded
+after the separately approved schema artifact export and catalog comparison.
 See [production rollout evidence](2026-09-07-f06-production-rollout.md).
 
 ## Deliverable and boundaries

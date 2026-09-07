@@ -96,7 +96,7 @@ jobs:
       - name: Rebuild feature substrate
         run: python scripts/build_features.py --incremental
       - name: Refit fitted_v1 if stale
-        run: python scripts/train_model.py --refit-if-stale
+        run: python scripts/train_model.py --refit-if-stale --promote --promotion-reason "Daily closed-season refit under the current production training contract"
       - name: Score fitted model (upcoming)
         run: python scripts/score_fitted.py --upcoming
       - name: Simulate season projections

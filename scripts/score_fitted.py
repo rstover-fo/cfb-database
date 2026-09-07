@@ -44,6 +44,7 @@ Each scored season prints:
 
 import argparse
 import logging
+import math
 import sys
 from collections import Counter
 
@@ -78,6 +79,7 @@ from scripts.train_model import (
     platt_transform,
     standardize,
 )
+from scripts.training_registry import load_selected_fit, selected_fits
 from src.pipelines.game_identity import eligible_game_sql
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -244,6 +246,8 @@ def fitted_model_artifact(fit: dict) -> tuple[str, dict]:
             },
         },
     }
+    if fit.get("training_fit_id") is not None:
+        artifact["training_fit_id"] = fit["training_fit_id"]
     return identify_model_artifact(MODEL_VERSION, artifact)
 
 
@@ -374,73 +378,103 @@ def fetch_pending_game_counts(conn) -> dict[int, int]:
 
 
 def fetch_available_train_through(conn) -> list[int]:
-    """Every ``train_through_season`` with a persisted fitted_v1 fit."""
+    """Every train-through season with an explicitly selected registry fit."""
+    return [int(fit["train_through_season"]) for fit in selected_fits(conn, MODEL_VERSION)]
+
+
+def lock_selected_fits(conn) -> None:
+    """Keep deployment pointers stable until the scoring writer commits.
+
+    PostgreSQL's SHARE table lock is compatible with registry readers but
+    conflicts with the ROW EXCLUSIVE lock taken by a pointer promotion. This
+    closes the READ COMMITTED gap between freshness validation, fit loading,
+    artifact construction, and the append-only prediction write.
+    """
     with conn.cursor() as cur:
-        cur.execute(
-            "SELECT DISTINCT train_through_season FROM features.model_metadata "
-            "WHERE model_version = %s",
-            (MODEL_VERSION,),
+        cur.execute("LOCK TABLE features.model_deployments IN SHARE MODE")
+
+
+def _finite_float(value, label: str) -> float:
+    """Coerce a persisted numeric parameter and reject NaN/Infinity."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"selected {MODEL_VERSION} fit has invalid {label}") from exc
+    if not math.isfinite(result):
+        raise ValueError(f"selected {MODEL_VERSION} fit has non-finite {label}")
+    return result
+
+
+def _validated_stats(
+    values: dict, expected_names: list[str], label: str, *, nullable: bool = False
+) -> dict[str, float | None]:
+    """Validate an immutable fit's complete, exact persisted statistic map."""
+    if not isinstance(values, dict) or set(values) != set(expected_names):
+        actual = sorted(values) if isinstance(values, dict) else type(values).__name__
+        raise ValueError(
+            f"selected {MODEL_VERSION} fit has invalid {label} keys: "
+            f"expected={sorted(expected_names)} actual={actual}"
         )
-        return [int(row[0]) for row in cur.fetchall()]
+    result: dict[str, float | None] = {}
+    for name in expected_names:
+        value = values[name]
+        if nullable and value is None:
+            result[name] = None
+        else:
+            result[name] = _finite_float(value, f"{label}.{name}")
+    return result
 
 
 def load_fit(conn, train_through: int) -> dict:
-    """Load the frozen fitted_v1 fit for ``train_through_season``: the frozen
-    imputation means / z-score stats + Platt params from
-    features.model_metadata, and both coefficient vectors (ordered by
-    FEATURE_NAMES position) from features.model_coefficients. Hard error if the
-    metadata row is absent -- scoring must use the exact frozen fit, never
-    improvise one."""
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT platt_a, platt_b, feature_means, feature_diff_means, feature_diff_stds
-            FROM features.model_metadata
-            WHERE model_version = %s AND train_through_season = %s
-            """,
-            (MODEL_VERSION, train_through),
+    """Load and validate the immutable fit selected for one production vintage."""
+    selected = load_selected_fit(conn, MODEL_VERSION, train_through)
+    parameters = selected["parameters"]
+    if not isinstance(parameters, dict):
+        raise ValueError(f"selected {MODEL_VERSION} fit parameters must be a JSON object")
+    if parameters.get("feature_names") != FEATURE_NAMES:
+        raise ValueError(
+            f"selected {MODEL_VERSION} fit train_through_season={train_through} "
+            "does not match the exact ordered FEATURE_NAMES contract"
         )
-        meta = cur.fetchone()
-        if meta is None:
-            raise RuntimeError(
-                f"No frozen {MODEL_VERSION} fit for train_through_season={train_through}; "
-                "run scripts/train_model.py first"
-            )
-        platt_a, platt_b, feature_means, diff_means, diff_stds = meta
 
-        cur.execute(
-            """
-            SELECT model_component, feature_order, feature_name, coefficient
-            FROM features.model_coefficients
-            WHERE model_version = %s AND train_through_season = %s
-            ORDER BY model_component, feature_order
-            """,
-            (MODEL_VERSION, train_through),
-        )
-        coef_by_component: dict[str, dict[str, float]] = {}
-        for component, _order, feature_name, coefficient in cur.fetchall():
-            coef_by_component.setdefault(component, {})[feature_name] = float(coefficient)
-
-    def _beta(component: str) -> np.ndarray:
-        coefs = coef_by_component.get(component)
-        if not coefs:
-            raise RuntimeError(
-                f"{MODEL_VERSION} fit train_through_season={train_through} is missing "
-                f"'{component}' coefficients"
+    def _beta(name: str) -> np.ndarray:
+        try:
+            beta = np.asarray(parameters[name], dtype=np.float64)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"selected {MODEL_VERSION} fit has invalid {name} coefficients"
+            ) from exc
+        if beta.shape != (len(FEATURE_NAMES),):
+            raise ValueError(
+                f"selected {MODEL_VERSION} fit has invalid {name} dimensions: "
+                f"expected={(len(FEATURE_NAMES),)} actual={beta.shape}"
             )
-        return np.array([coefs[name] for name in FEATURE_NAMES], dtype=np.float64)
+        if not np.all(np.isfinite(beta)):
+            raise ValueError(f"selected {MODEL_VERSION} fit has non-finite {name} coefficients")
+        return beta
+
+    diff_features = FEATURE_NAMES[2:]
+    feature_means = _validated_stats(
+        parameters.get("feature_means"),
+        TEAM_WEEK_SOURCE_COLUMNS,
+        "feature_means",
+        nullable=True,
+    )
+    diff_means = _validated_stats(parameters.get("diff_means"), diff_features, "diff_means")
+    diff_stds = _validated_stats(parameters.get("diff_stds"), diff_features, "diff_stds")
+    if any(value < 0.0 for value in diff_stds.values()):
+        raise ValueError(f"selected {MODEL_VERSION} fit has negative diff_stds")
 
     return {
+        "training_fit_id": selected["training_fit_id"],
         "train_through": train_through,
-        "feature_means": {
-            k: (float(v) if v is not None else None) for k, v in feature_means.items()
-        },
-        "diff_means": {k: float(v) for k, v in diff_means.items()},
-        "diff_stds": {k: float(v) for k, v in diff_stds.items()},
-        "platt_a": float(platt_a),
-        "platt_b": float(platt_b),
-        "beta_margin": _beta("margin"),
-        "beta_winprob": _beta("winprob"),
+        "feature_means": feature_means,
+        "diff_means": diff_means,
+        "diff_stds": diff_stds,
+        "platt_a": _finite_float(parameters.get("platt_a"), "platt_a"),
+        "platt_b": _finite_float(parameters.get("platt_b"), "platt_b"),
+        "beta_margin": _beta("beta_margin"),
+        "beta_winprob": _beta("beta_winprob"),
     }
 
 
@@ -461,6 +495,9 @@ def run_backfill(conn, start: int, end: int) -> None:
 
     total_rows = 0
     for season in range(start, end + 1):
+        # write_backfill_season commits each season, so reacquire the deployment
+        # lock for every load/build/write unit.
+        lock_selected_fits(conn)
         train_through = select_train_through("backfill", score_season=season)
         fit = load_fit(conn, train_through)  # hard error if the frozen fit is missing
         fit_id, artifact = fitted_model_artifact(fit)
@@ -553,6 +590,7 @@ def run_upcoming(conn) -> None:
         )
         sys.exit(1)
 
+    lock_selected_fits(conn)
     frontier, available = fetch_refit_state(conn)
     if frontier is None:
         raise ValueError("no safe closed training frontier for upcoming fitted_v1 scoring")

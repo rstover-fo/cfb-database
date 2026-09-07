@@ -67,6 +67,7 @@ def test_preflight_rejects_ineligible_rebuild_before_command_execution(
 
     load_fit_calls = []
     monkeypatch.setattr("scripts.train_model.fetch_refit_state", lambda conn: (frontier, fits))
+    monkeypatch.setattr("scripts.score_fitted.fetch_available_train_through", lambda conn: fits)
     monkeypatch.setattr("scripts.score_fitted.fetch_pending_game_counts", lambda conn: pending)
     monkeypatch.setattr(
         "scripts.score_fitted.load_fit",
@@ -85,6 +86,9 @@ def test_preflight_accepts_approved_fit_and_target(monkeypatch):
     score_calls = []
     fit = object()
     monkeypatch.setattr("scripts.train_model.fetch_refit_state", lambda conn: (2025, [2024, 2025]))
+    monkeypatch.setattr(
+        "scripts.score_fitted.fetch_available_train_through", lambda conn: [2024, 2025]
+    )
     monkeypatch.setattr("scripts.score_fitted.fetch_pending_game_counts", lambda conn: {2026: 10})
     monkeypatch.setattr(
         "scripts.score_fitted.load_fit",
@@ -109,6 +113,9 @@ def test_preflight_propagates_invalid_frozen_fit_before_recovery(monkeypatch):
     from scripts.recover_season_projections import check_recovery_state
 
     monkeypatch.setattr("scripts.train_model.fetch_refit_state", lambda conn: (2025, [2024, 2025]))
+    monkeypatch.setattr(
+        "scripts.score_fitted.fetch_available_train_through", lambda conn: [2024, 2025]
+    )
     monkeypatch.setattr("scripts.score_fitted.fetch_pending_game_counts", lambda conn: {2026: 10})
 
     def invalid_fit(conn, season):
@@ -125,6 +132,7 @@ def test_missing_fit_scaling_stats_stop_before_commands(monkeypatch):
     from scripts.train_model import FEATURE_NAMES, TEAM_WEEK_SOURCE_COLUMNS
 
     monkeypatch.setattr("scripts.train_model.fetch_refit_state", lambda conn: (2025, [2025]))
+    monkeypatch.setattr("scripts.score_fitted.fetch_available_train_through", lambda conn: [2025])
     monkeypatch.setattr("scripts.score_fitted.fetch_pending_game_counts", lambda conn: {2026: 10})
     monkeypatch.setattr(
         "scripts.score_fitted.load_fit",
@@ -146,3 +154,31 @@ def test_missing_fit_scaling_stats_stop_before_commands(monkeypatch):
         recovery.execute_recovery(object())
 
     assert command_calls == []
+
+
+def test_preflight_rejects_unpromoted_fit_before_loading(monkeypatch):
+    from scripts.recover_season_projections import check_recovery_state
+
+    load_fit = []
+    monkeypatch.setattr("scripts.train_model.fetch_refit_state", lambda conn: (2025, [2025]))
+    monkeypatch.setattr("scripts.score_fitted.fetch_available_train_through", lambda conn: [])
+    monkeypatch.setattr("scripts.score_fitted.fetch_pending_game_counts", lambda conn: {2026: 10})
+    monkeypatch.setattr(
+        "scripts.score_fitted.load_fit", lambda conn, season: load_fit.append((conn, season))
+    )
+
+    with pytest.raises(RuntimeError, match="selected 2025 registry fit"):
+        check_recovery_state(object())
+
+    assert load_fit == []
+
+
+def test_recovery_locks_registry_fit_and_deployment_tables():
+    import inspect
+
+    import scripts.recover_season_projections as recovery
+
+    source = inspect.getsource(recovery.main)
+    assert "features.training_fits, features.model_deployments" in source
+    assert "features.model_metadata" not in source
+    assert "features.model_coefficients" not in source

@@ -124,6 +124,9 @@ Evidence: [backfill defaults and dating](https://github.com/rstover-fo/cfb-datab
 
 ### F05 — “Frozen” model versions are mutable and freshness checks are incomplete
 
+Implementation and validation: [F05 training lifecycle plan](2026-09-07-f05-immutable-training-fits.md).
+Production rollout remains pending; the finding below records the original audit state.
+
 **P2 · Confirmed · M/L; coordinate with F04**
 
 Persisting a fit deletes and rewrites coefficients and metadata under the same model-version/train-through-season key. Automatic staleness checks compare feature-name sets, but do not capture changed formulas, data revisions, hyperparameters, or code. The maximum-existing-season rule also cannot repair arbitrary holes in the historical fit ladder. Reproducing an old prediction against today's same-named fit is therefore unreliable.

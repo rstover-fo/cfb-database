@@ -81,3 +81,7 @@ jobs:
       - run: .venv/bin/python -m pytest tests/test_prediction_provenance_sql.py -q --tb=short
         env:
           F04_TEST_DB_URL: postgresql://postgres@127.0.0.1:5432/postgres
+      - name: Training registry SQL
+        run: .venv/bin/python -m pytest tests/test_training_registry_sql.py -q --tb=short
+        env:
+          F05_TEST_DB_URL: postgresql://postgres@127.0.0.1:5432/postgres

@@ -40,27 +40,38 @@ def execute_commands(commands=COMMANDS):
 
 def check_recovery_state(conn):
     """Fail before writes if the merged scorer cannot use the approved 2025 fit."""
-    from scripts.score_fitted import fetch_pending_game_counts, load_fit, score_game
+    from scripts.score_fitted import (
+        fetch_available_train_through,
+        fetch_pending_game_counts,
+        load_fit,
+        score_game,
+    )
     from scripts.train_model import TEAM_WEEK_SOURCE_COLUMNS, fetch_refit_state
 
     frontier, eligible_fits = fetch_refit_state(conn)
+    selected_fits = fetch_available_train_through(conn)
     pending = fetch_pending_game_counts(conn)
     print(
         f"RECOVERY_PREFLIGHT closed_frontier={frontier} "
-        f"eligible_fits={eligible_fits} pending_by_season={pending}",
+        f"selected_fits={selected_fits} eligible_fits={eligible_fits} "
+        f"pending_by_season={pending}",
         flush=True,
     )
+    if 2025 not in selected_fits:
+        raise RuntimeError(
+            f"Recovery requires a selected 2025 registry fit; selected fits={selected_fits}"
+        )
     if 2025 not in eligible_fits:
         raise RuntimeError(
-            f"Recovery requires an eligible frozen 2025 fit; closed frontier={frontier}, "
+            f"Recovery requires an eligible selected 2025 fit; closed frontier={frontier}, "
             f"eligible fits={eligible_fits}"
         )
     if set(pending) != {2026}:
         raise RuntimeError(f"Recovery requires only 2026 pending targets; found {pending}")
-    # fetch_refit_state validates season finality and the metadata feature
-    # contract. Loading and exercising the fit proves both coefficient vectors
-    # and every frozen scaling statistic are usable before execute mode changes
-    # derived data.
+    # fetch_refit_state validates contiguous season finality plus the selected
+    # fit's current manifest/input contract. Loading and exercising that fit
+    # proves both coefficient vectors and every frozen scaling statistic are
+    # usable before execute mode changes derived data.
     fit = load_fit(conn, 2025)
     neutral_features = dict.fromkeys(TEAM_WEEK_SOURCE_COLUMNS, 0.0)
     margin, probability = score_game(
@@ -109,18 +120,19 @@ def main():
         with conn.cursor() as cur:
             cur.execute("SET LOCAL lock_timeout = '10s'")
             cur.execute("SET LOCAL idle_in_transaction_session_timeout = 0")
-            # SHARE permits scorer reads while preventing any concurrent fit
-            # writer from changing the selected vintage or coefficient vectors.
+            # SHARE permits scorer reads while preventing a concurrent
+            # deployment promotion from changing the selected immutable fit.
             cur.execute(
-                "LOCK TABLE features.model_metadata, features.model_coefficients IN SHARE MODE"
+                "LOCK TABLE features.training_fits, features.model_deployments IN SHARE MODE"
             )
-            cur.execute(
-                "SELECT MAX(train_through_season) FROM features.model_metadata "
-                "WHERE model_version = 'fitted_v1'"
+        from scripts.score_fitted import fetch_available_train_through
+
+        selected_fits = fetch_available_train_through(conn)
+        train_through = max(selected_fits, default=None)
+        if train_through != 2025:
+            raise RuntimeError(
+                f"Recovery requires the selected 2025 registry fit; found {selected_fits}"
             )
-            train_through = cur.fetchone()[0]
-            if train_through != 2025:
-                raise RuntimeError(f"Recovery requires the frozen 2025 fit; found {train_through}")
         execute_recovery(conn)
 
 

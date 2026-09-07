@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from decimal import Decimal
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import numpy as np
 import pytest
@@ -237,6 +237,14 @@ def test_fitted_artifact_captures_loaded_coefficients_scaling_and_calibration():
     }
 
 
+def test_fitted_artifact_references_immutable_training_fit_when_known():
+    fit = {**_fit(), "training_fit_id": "b" * 64}
+
+    _, artifact = fitted.fitted_model_artifact(fit)
+
+    assert artifact["training_fit_id"] == "b" * 64
+
+
 def test_fitted_fit_id_changes_when_consumed_runtime_constant_changes(monkeypatch):
     fit = _fit()
     original_id, _ = fitted.fitted_model_artifact(fit)
@@ -244,3 +252,86 @@ def test_fitted_fit_id_changes_when_consumed_runtime_constant_changes(monkeypatc
     changed_id, artifact = fitted.fitted_model_artifact(fit)
     assert changed_id != original_id
     assert artifact["implementation"]["runtime_constants"]["max_logit"] == 2.0
+
+
+def _registry_parameters():
+    return {
+        "feature_names": list(training.FEATURE_NAMES),
+        "feature_means": dict.fromkeys(training.TEAM_WEEK_SOURCE_COLUMNS, 0.0),
+        "diff_means": dict.fromkeys(training.FEATURE_NAMES[2:], 0.0),
+        "diff_stds": dict.fromkeys(training.FEATURE_NAMES[2:], 1.0),
+        "beta_margin": [0.0] * len(training.FEATURE_NAMES),
+        "beta_winprob": [0.0] * len(training.FEATURE_NAMES),
+        "platt_a": 1.0,
+        "platt_b": 0.0,
+    }
+
+
+def test_load_fit_reads_selected_registry_parameters_and_returns_training_fit_id(monkeypatch):
+    selected = {
+        "training_fit_id": "c" * 64,
+        "manifest": {"lineage": "native"},
+        "parameters": _registry_parameters(),
+    }
+    load = Mock(return_value=selected)
+    monkeypatch.setattr(fitted, "load_selected_fit", load)
+    conn = object()
+
+    fit = fitted.load_fit(conn, 2025)
+
+    load.assert_called_once_with(conn, training.MODEL_VERSION, 2025)
+    assert fit["training_fit_id"] == "c" * 64
+    assert fit["train_through"] == 2025
+    assert fit["beta_margin"].shape == (len(training.FEATURE_NAMES),)
+
+
+def test_fetch_available_train_through_uses_only_selected_registry_fits(monkeypatch):
+    selected = Mock(
+        return_value=[
+            {"train_through_season": 2023},
+            {"train_through_season": 2025},
+        ]
+    )
+    monkeypatch.setattr(fitted, "selected_fits", selected)
+    conn = object()
+
+    assert fitted.fetch_available_train_through(conn) == [2023, 2025]
+    selected.assert_called_once_with(conn, training.MODEL_VERSION)
+
+
+def test_scoring_locks_deployment_pointers_until_writer_commit():
+    conn = MagicMock()
+    cursor = conn.cursor.return_value.__enter__.return_value
+
+    fitted.lock_selected_fits(conn)
+
+    cursor.execute.assert_called_once_with("LOCK TABLE features.model_deployments IN SHARE MODE")
+    conn.commit.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda p: p.update(feature_names=list(reversed(p["feature_names"]))), "FEATURE_NAMES"),
+        (lambda p: p.update(beta_margin=p["beta_margin"][:-1]), "dimensions"),
+        (lambda p: p["diff_means"].update(d_elo=float("nan")), "non-finite"),
+        (lambda p: p["diff_stds"].update(d_elo=-1.0), "negative diff_stds"),
+    ],
+)
+def test_load_fit_rejects_incompatible_or_invalid_selected_parameters(
+    monkeypatch, mutation, message
+):
+    parameters = _registry_parameters()
+    mutation(parameters)
+    monkeypatch.setattr(
+        fitted,
+        "load_selected_fit",
+        lambda *_args: {
+            "training_fit_id": "d" * 64,
+            "manifest": {},
+            "parameters": parameters,
+        },
+    )
+
+    with pytest.raises(ValueError, match=message):
+        fitted.load_fit(object(), 2025)

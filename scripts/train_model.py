@@ -18,9 +18,9 @@ and score share one implementation of the feature contract.
 
 Walk-forward protocol (design section 3): expanding window, minimum 3 train
 seasons. For each score season ``S`` in ``--seasons START END`` (default
-2018..2025) we train on seasons ``2015..S-1`` and persist ONE frozen fit keyed
-``(model_version='fitted_v1', train_through_season=S-1)`` into
-``features.model_coefficients`` + ``features.model_metadata`` (migration 028).
+2018..2025) we train on seasons ``2015..S-1`` and append one immutable candidate
+to ``features.training_fits``. Training changes the selected deployment only
+when ``--promote`` is supplied with a nonempty ``--promotion-reason``.
 The imputation means (section 2b) and z-score stats (section 2c) are computed on
 the TRAIN window only and frozen in the metadata row -- scoring never recomputes
 them, which is what makes the NULL-imputation leak-free.
@@ -35,11 +35,29 @@ Each fit prints a machine-readable gate line:
 """
 
 import argparse
+import inspect
 import logging
+import math
 import sys
+from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
 
 import numpy as np
 
+from scripts.training_manifest import (
+    build_training_manifest,
+    manifests_match_for_freshness,
+    source_text_fingerprint,
+)
+from scripts.training_registry import (
+    import_legacy_fits,
+    insert_fit,
+    promote_fit,
+    selected_fits,
+)
+from scripts.training_registry import (
+    load_fit as load_registry_fit,
+)
 from src.pipelines.game_identity import eligible_game_sql
 from src.pipelines.season_lifecycle import season_is_final
 
@@ -502,18 +520,29 @@ def fetch_games(conn, seasons: list[int]) -> list[dict]:
     return games
 
 
-def _coef_rows(train_through: int, component: str, beta: np.ndarray) -> list[tuple]:
-    return [
-        (MODEL_VERSION, train_through, component, i, FEATURE_NAMES[i], float(beta[i]))
-        for i in range(len(FEATURE_NAMES))
-    ]
+FIT_PARAMETER_KEYS = frozenset(
+    {
+        "feature_names",
+        "feature_means",
+        "diff_means",
+        "diff_stds",
+        "beta_margin",
+        "beta_winprob",
+        "platt_a",
+        "platt_b",
+    }
+)
 
 
-def persist_fit(
-    conn,
-    train_through: int,
-    train_seasons: list[int],
-    n_train: int,
+def _numeric6(value: float) -> float:
+    """Match the legacy NUMERIC(12, 6) storage precision."""
+    numeric = Decimal(str(float(value))).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+    if abs(numeric) >= Decimal("1000000"):
+        raise OverflowError(f"value {value!r} exceeds legacy NUMERIC(12, 6)")
+    return float(numeric)
+
+
+def build_fit_parameters(
     feature_means: dict,
     diff_means: dict,
     diff_stds: dict,
@@ -521,77 +550,192 @@ def persist_fit(
     beta_winprob: np.ndarray,
     platt_a: float,
     platt_b: float,
-) -> None:
-    """DELETE+INSERT the frozen fit into features.model_coefficients (both
-    components) and features.model_metadata under
-    ``(model_version='fitted_v1', train_through_season)``. One commit per fit."""
-    from psycopg2.extras import Json, execute_values
+) -> dict:
+    """Freeze scoring parameters under the immutable registry contract."""
+    return {
+        "feature_names": list(FEATURE_NAMES),
+        "feature_means": {
+            name: None if value is None else float(value) for name, value in feature_means.items()
+        },
+        "diff_means": {name: float(value) for name, value in diff_means.items()},
+        "diff_stds": {name: float(value) for name, value in diff_stds.items()},
+        "beta_margin": [_numeric6(value) for value in beta_margin],
+        "beta_winprob": [_numeric6(value) for value in beta_winprob],
+        "platt_a": _numeric6(platt_a),
+        "platt_b": _numeric6(platt_b),
+    }
 
-    coef_rows = _coef_rows(train_through, "margin", beta_margin) + _coef_rows(
-        train_through, "winprob", beta_winprob
+
+def fit_parameters_are_compatible(parameters: object) -> bool:
+    """Validate the scoring shape of a registry candidate or selected fit."""
+    if not isinstance(parameters, dict) or set(parameters) != FIT_PARAMETER_KEYS:
+        return False
+    if parameters["feature_names"] != FEATURE_NAMES:
+        return False
+    mappings = ("feature_means", "diff_means", "diff_stds")
+    if any(not isinstance(parameters[name], dict) for name in mappings):
+        return False
+    if set(parameters["feature_means"]) != set(TEAM_WEEK_SOURCE_COLUMNS):
+        return False
+    diff_names = set(FEATURE_NAMES) - {INTERCEPT, NEUTRAL_SITE}
+    if set(parameters["diff_means"]) != diff_names:
+        return False
+    if set(parameters["diff_stds"]) != diff_names:
+        return False
+    vectors = ("beta_margin", "beta_winprob")
+    if any(not isinstance(parameters[name], list) for name in vectors):
+        return False
+    if not all(len(parameters[name]) == len(FEATURE_NAMES) for name in vectors):
+        return False
+
+    def number(value: object) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            return None
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        return numeric if math.isfinite(numeric) else None
+
+    if any(
+        value is not None and number(value) is None
+        for value in parameters["feature_means"].values()
+    ):
+        return False
+    if any(
+        number(value) is None
+        for name in ("diff_means", "diff_stds")
+        for value in parameters[name].values()
+    ):
+        return False
+    if any(number(value) is None for name in vectors for value in parameters[name]):
+        return False
+    if number(parameters["platt_a"]) is None or number(parameters["platt_b"]) is None:
+        return False
+    return all(float(value) >= 0 for value in parameters["diff_stds"].values())
+
+
+def current_implementation_contract() -> dict:
+    """Fingerprint the exact training and upstream feature transformations."""
+    from scripts import (
+        build_features,
+        compute_adjusted_epa,
+        compute_adjusted_epa_week,
+        compute_house_elo,
+        compute_predictions,
     )
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            "DELETE FROM features.model_coefficients "
-            "WHERE model_version = %s AND train_through_season = %s",
-            (MODEL_VERSION, train_through),
-        )
-        execute_values(
-            cur,
-            """
-            INSERT INTO features.model_coefficients
-                (model_version, train_through_season, model_component,
-                 feature_order, feature_name, coefficient)
-            VALUES %s
-            """,
-            coef_rows,
-        )
 
-        cur.execute(
-            "DELETE FROM features.model_metadata "
-            "WHERE model_version = %s AND train_through_season = %s",
-            (MODEL_VERSION, train_through),
+    training_math = {
+        obj.__name__: inspect.getsource(obj)
+        for obj in (
+            penalty_mask,
+            sigmoid,
+            platt_transform,
+            _impute_value,
+            build_feature_vector,
+            compute_feature_means,
+            compute_diff_stats,
+            standardize,
+            ridge_fit,
+            _penalized_nll,
+            irls_logistic,
+            platt_fit,
+            build_design,
+            collect_team_week_rows,
+            fetch_games,
+            _numeric6,
+            build_fit_parameters,
+            fit_one,
         )
-        cur.execute(
-            """
-            INSERT INTO features.model_metadata
-                (model_version, train_through_season, ridge_alpha,
-                 winprob_ridge_alpha, platt_a, platt_b, train_seasons,
-                 n_train_games, feature_means, feature_diff_means,
-                 feature_diff_stds)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                MODEL_VERSION,
-                train_through,
-                RIDGE_ALPHA,
-                WINPROB_ALPHA,
-                platt_a,
-                platt_b,
-                list(train_seasons),
-                n_train,
-                Json(feature_means),
-                Json(diff_means),
-                Json(diff_stds),
-            ),
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        cur.close()
+    }
+    training_math["numerical_constants"] = repr(
+        {
+            "max_logit": _MAX_LOGIT,
+            "w_min": _W_MIN,
+            "intercept_idx": INTERCEPT_IDX,
+            "neutral_site_idx": NEUTRAL_SITE_IDX,
+        }
+    )
+    repository = Path(__file__).resolve().parents[1]
+    upstream_sql_paths = (
+        "src/schemas/marts/010_play_epa.sql",
+        "src/schemas/marts/031_returning_production.sql",
+    )
+    return {
+        "training_math": source_text_fingerprint(training_math),
+        "training_query": source_text_fingerprint({"query": _train_games_query()}),
+        "feature_builder": source_text_fingerprint(
+            {"scripts/build_features.py": inspect.getsource(build_features)}
+        ),
+        "upstream_feature_python": source_text_fingerprint(
+            {
+                "scripts/compute_predictions.py": inspect.getsource(compute_predictions),
+                "scripts/compute_house_elo.py": inspect.getsource(compute_house_elo),
+                "scripts/compute_adjusted_epa.py": inspect.getsource(compute_adjusted_epa),
+                "scripts/compute_adjusted_epa_week.py": inspect.getsource(
+                    compute_adjusted_epa_week
+                ),
+            }
+        ),
+        "upstream_feature_sql": source_text_fingerprint(
+            {
+                "FEATURE_ROWS_QUERY": build_features.FEATURE_ROWS_QUERY,
+                **{
+                    path: (repository / path).read_text(encoding="utf-8")
+                    for path in upstream_sql_paths
+                },
+            }
+        ),
+    }
 
 
-def fit_one(conn, train_through: int, train_seasons: list[int]) -> None:
+def current_training_manifest(
+    train_seasons: list[int],
+    games: list[dict],
+    *,
+    implementation: dict | None = None,
+) -> dict:
+    return build_training_manifest(
+        feature_names=FEATURE_NAMES,
+        team_week_source_columns=TEAM_WEEK_SOURCE_COLUMNS,
+        diff_feature_columns=DIFF_FEATURE_COLUMNS,
+        implementation=implementation or current_implementation_contract(),
+        train_seasons=train_seasons,
+        games=games,
+        ridge_alpha=RIDGE_ALPHA,
+        winprob_ridge_alpha=WINPROB_ALPHA,
+    )
+
+
+def selected_fit_is_fresh(selected: dict, current_manifest: dict) -> bool:
+    """Require known current lineage and a valid frozen scoring contract."""
+    fit_id = selected.get("training_fit_id")
+    return (
+        isinstance(fit_id, str)
+        and len(fit_id) == 64
+        and all(character in "0123456789abcdef" for character in fit_id)
+        and manifests_match_for_freshness(selected.get("manifest", {}), current_manifest)
+        and fit_parameters_are_compatible(selected.get("parameters"))
+    )
+
+
+def fit_one(
+    conn,
+    train_through: int,
+    train_seasons: list[int],
+    *,
+    games: list[dict] | None = None,
+    implementation: dict | None = None,
+    promote: bool = False,
+    promotion_reason: str | None = None,
+) -> str | None:
     """Train and persist a single walk-forward fit for ``train_through_season``.
 
     Runs design section 3 steps 3-8: impute means, vectorize, scale, fit ridge
     margin, fit IRLS win-prob, Platt-calibrate the train logits, persist, and
     print the FITTED_GATE line.
     """
-    games = fetch_games(conn, train_seasons)
+    games = games if games is not None else fetch_games(conn, train_seasons)
     if not games:
         logger.warning(
             "train_through=%d: no completed games with team_week features for seasons %s; "
@@ -599,7 +743,7 @@ def fit_one(conn, train_through: int, train_seasons: list[int]) -> None:
             train_through,
             train_seasons,
         )
-        return
+        return None
 
     # Step 3: frozen imputation means over the TRAIN team-week rows, then
     # vectorize (imputation applied inside build_feature_vector).
@@ -625,12 +769,14 @@ def fit_one(conn, train_through: int, train_seasons: list[int]) -> None:
     calibrated = np.array([platt_transform(z, platt_a, platt_b) for z in train_logits])
     winprob_brier = float(np.mean((calibrated - y_win) ** 2))
 
-    # Step 8: persist the frozen fit.
-    persist_fit(
-        conn,
-        train_through,
+    # Step 8: append the immutable candidate. Preserve the old database's
+    # NUMERIC(12, 6) coefficient/calibration precision in the new JSON payload.
+    manifest = current_training_manifest(
         train_seasons,
-        len(games),
+        games,
+        implementation=implementation,
+    )
+    parameters = build_fit_parameters(
         feature_means,
         diff_means,
         diff_stds,
@@ -639,33 +785,95 @@ def fit_one(conn, train_through: int, train_seasons: list[int]) -> None:
         platt_a,
         platt_b,
     )
+    try:
+        training_fit_id = insert_fit(
+            conn,
+            MODEL_VERSION,
+            train_through,
+            manifest,
+            parameters,
+        )
+        if promote:
+            promote_fit(conn, training_fit_id, promotion_reason or "")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
     print(
         f"FITTED_GATE train_through={train_through} n_train={len(games)} "
+        f"training_fit_id={training_fit_id} promoted={str(promote).lower()} "
         f"margin_train_mae={margin_mae:.3f} winprob_train_brier={winprob_brier:.4f} "
         f"platt_a={platt_a:.4f} platt_b={platt_b:.4f}"
     )
+    return training_fit_id
 
 
-def train_walk_forward(conn, score_start: int, score_end: int) -> None:
-    """Expanding-window walk-forward over score seasons ``score_start..score_end``
-    (design section 3): each season ``S`` trains on ``2015..S-1`` and persists a
-    fit keyed ``train_through_season=S-1``."""
-    for score_season in range(score_start, score_end + 1):
+def train_score_seasons(
+    conn,
+    score_seasons: list[int],
+    *,
+    games: list[dict] | None = None,
+    promote: bool = False,
+    promotion_reason: str | None = None,
+) -> list[str]:
+    """Train exactly the requested score-season vintages, reusing one fetch."""
+    if not score_seasons:
+        return []
+    score_seasons = sorted(set(score_seasons))
+    earliest = TRAIN_START_SEASON + MIN_TRAIN_SEASONS
+    if score_seasons[0] < earliest:
+        raise ValueError(f"earliest score season is {earliest}")
+
+    all_games = games
+    if all_games is None:
+        all_games = fetch_games(
+            conn,
+            list(range(TRAIN_START_SEASON, score_seasons[-1])),
+        )
+    implementation = current_implementation_contract()
+    fit_ids = []
+    for score_season in score_seasons:
         train_through = score_season - 1
         train_seasons = list(range(TRAIN_START_SEASON, score_season))
-        assert len(train_seasons) >= MIN_TRAIN_SEASONS, (
-            f"score season {score_season} has only {len(train_seasons)} train season(s); "
-            f"need >= {MIN_TRAIN_SEASONS} (earliest score season is "
-            f"{TRAIN_START_SEASON + MIN_TRAIN_SEASONS})"
-        )
+        train_games = [game for game in all_games if int(game["season"]) <= train_through]
         logger.info(
             "Fitting fitted_v1 for score season %d: train_through=%d, train_seasons=%s",
             score_season,
             train_through,
             train_seasons,
         )
-        fit_one(conn, train_through, train_seasons)
+        fit_id = fit_one(
+            conn,
+            train_through,
+            train_seasons,
+            games=train_games,
+            implementation=implementation,
+            promote=promote,
+            promotion_reason=promotion_reason,
+        )
+        if fit_id is not None:
+            fit_ids.append(fit_id)
+    return fit_ids
+
+
+def train_walk_forward(
+    conn,
+    score_start: int,
+    score_end: int,
+    *,
+    promote: bool = False,
+    promotion_reason: str | None = None,
+) -> list[str]:
+    """Expanding-window walk-forward over score seasons ``score_start..score_end``
+    (design section 3): each season ``S`` trains on ``2015..S-1`` and persists a
+    fit keyed ``train_through_season=S-1``."""
+    return train_score_seasons(
+        conn,
+        list(range(score_start, score_end + 1)),
+        promote=promote,
+        promotion_reason=promotion_reason,
+    )
 
 
 def stale_score_seasons(
@@ -685,31 +893,22 @@ def stale_score_seasons(
     fetch_refit_state). Passing a season that is merely in progress would train
     a fit on partial data and then score the rest of that same season in-sample.
 
-    Returns ``[]`` when the newest fit is already current -- the no-op the daily
-    workflow hits on 364 days a year. Pure, so the staleness rule is testable
-    without a DB.
+    Returns the set difference across every expected vintage, so an interior
+    hole is trained without retraining the enclosing range. Returns ``[]`` only
+    when all expected selected vintages are current.
 
     Exists because the annual refit was a manual chore and was missed: the 2025
     season ended in January 2026 and the newest fit was still
     ``train_through_season=2024`` in July, so 2026 scoring would have silently
     used a two-season-stale fit.
     """
-    target = latest_finished_season
-    if not existing_train_through:
-        return list(range(default_start, target + 2))
-    max_existing = max(existing_train_through)
-    if max_existing >= target:
-        return []
-    return list(range(max_existing + 2, target + 2))
+    expected = set(range(default_start - 1, latest_finished_season + 1))
+    existing = {int(season) for season in existing_train_through}
+    return [season + 1 for season in sorted(expected - existing)]
 
 
-def fetch_refit_state(conn) -> tuple[int | None, list[int]]:
-    """``(latest FINISHED season, existing fitted_v1 train_through values)``.
-
-    Use the shared schedule/correction-aware lifecycle policy, newest candidate
-    first. Every year in the expanding train window must exist and be final;
-    an unresolved or missing earlier year caps the safe automatic-refit frontier.
-    """
+def safe_training_frontier(conn) -> int | None:
+    """Last contiguous, schedule-aware final season beginning in 2015."""
     with conn.cursor() as cur:
         cur.execute(
             "SELECT DISTINCT season FROM core.games WHERE season >= %s ORDER BY season DESC",
@@ -738,68 +937,83 @@ def fetch_refit_state(conn) -> tuple[int | None, list[int]]:
                 latest_finished = season - 1 if season > TRAIN_START_SEASON else None
                 break
 
-    with conn.cursor() as cur:
-        # A fit counts as EXISTING only if it was written under the CURRENT
-        # feature contract (PR #56 review, P1).
-        #
-        # Season recency alone is not staleness. Changing DIFF_FEATURE_COLUMNS
-        # invalidates every stored fit -- score_fitted.load_fit builds its
-        # coefficient vector by name lookup, so a fit written before a column
-        # was added raises KeyError rather than degrading. But a fit for the
-        # latest finished season already EXISTS by season, so --refit-if-stale
-        # returned [] and the daily workflow no-opped straight into that
-        # KeyError. Predictions and season simulation both stop, and the
-        # staleness check can never recover on its own because the season key
-        # is present.
-        #
-        # This file's own header says "there is no partial-rollout path", and
-        # until now that invariant was enforced by whoever remembered to run
-        # the retrain by hand. Comparing the frozen feature_means key set to
-        # TEAM_WEEK_SOURCE_COLUMNS makes it self-enforcing: a vector change
-        # drops every mismatched fit out of `existing`, so stale_score_seasons
-        # rebuilds the whole walk-forward ladder.
-        #
-        # Set EQUALITY, not containment -- migration 046 REMOVED hc_first_year
-        # from the vector, and a fit carrying a column the model no longer uses
-        # is just as wrong as one missing a column it does.
-        cur.execute(
-            "SELECT train_through_season, feature_means FROM features.model_metadata "
-            "WHERE model_version = %s",
-            (MODEL_VERSION,),
+    return latest_finished
+
+
+def _fresh_selected_seasons(
+    selected: list[dict],
+    latest_finished: int,
+    games: list[dict],
+) -> list[int]:
+    """Return selected vintages matching current spec and current input rows."""
+    if not selected:
+        return []
+    implementation = current_implementation_contract()
+    expected = range(DEFAULT_SCORE_START - 1, latest_finished + 1)
+    selected_by_season = {
+        int(fit["train_through_season"]): fit
+        for fit in selected
+        if int(fit["train_through_season"]) <= latest_finished
+    }
+    fresh = []
+    for train_through in expected:
+        fit = selected_by_season.get(train_through)
+        if fit is None:
+            continue
+        train_seasons = list(range(TRAIN_START_SEASON, train_through + 1))
+        train_games = [game for game in games if int(game["season"]) <= train_through]
+        current = current_training_manifest(
+            train_seasons,
+            train_games,
+            implementation=implementation,
         )
-        expected = set(TEAM_WEEK_SOURCE_COLUMNS)
-        existing = []
-        stale_by_contract = []
-        beyond_frontier = []
-        for season, means in cur.fetchall():
-            if isinstance(means, dict) and set(means) == expected:
-                if latest_finished is not None and int(season) <= latest_finished:
-                    existing.append(int(season))
-                else:
-                    beyond_frontier.append(int(season))
-            else:
-                stale_by_contract.append(int(season))
-        if beyond_frontier:
-            logger.warning(
-                "Ignoring stored fit(s) beyond safe automatic-refit frontier %s: %s",
-                latest_finished,
-                sorted(beyond_frontier),
-            )
-        if stale_by_contract:
-            logger.warning(
-                "%d stored fit(s) predate the current %d-feature contract and will be "
-                "retrained: train_through=%s",
-                len(stale_by_contract),
-                len(TEAM_WEEK_SOURCE_COLUMNS),
-                sorted(stale_by_contract),
-            )
-    return latest_finished, existing
+        if selected_fit_is_fresh(fit, current):
+            fresh.append(train_through)
+    return fresh
+
+
+def fetch_refit_plan(conn) -> tuple[int | None, list[int], list[dict]]:
+    """Return safe frontier, fresh selected vintages, and once-fetched rows."""
+    latest_finished = safe_training_frontier(conn)
+    if latest_finished is None:
+        return None, [], []
+    games = fetch_games(conn, list(range(TRAIN_START_SEASON, latest_finished + 1)))
+    selected = selected_fits(conn, MODEL_VERSION)
+    return latest_finished, _fresh_selected_seasons(selected, latest_finished, games), games
+
+
+def fetch_refit_state(conn) -> tuple[int | None, list[int]]:
+    """Return safe frontier and selected vintages fresh for current inputs."""
+    latest_finished, fresh, _games = fetch_refit_plan(conn)
+    return latest_finished, fresh
+
+
+def validate_promotion_fit(conn, fit: dict, *, current_required: bool) -> None:
+    """Require a safe closed vintage and, normally, current known lineage."""
+    if fit.get("model_version") != MODEL_VERSION:
+        raise ValueError(f"cannot promote model_version={fit.get('model_version')!r}")
+    train_through = int(fit["train_through_season"])
+    earliest = TRAIN_START_SEASON + MIN_TRAIN_SEASONS - 1
+    frontier = safe_training_frontier(conn)
+    if frontier is None or not earliest <= train_through <= frontier:
+        raise ValueError(
+            f"train_through={train_through} is outside safe closed frontier {earliest}..{frontier}"
+        )
+    if not fit_parameters_are_compatible(fit.get("parameters")):
+        raise ValueError("fit parameters do not match the current scoring contract")
+    if current_required:
+        games = fetch_games(conn, list(range(TRAIN_START_SEASON, train_through + 1)))
+        current = current_training_manifest(
+            list(range(TRAIN_START_SEASON, train_through + 1)), games
+        )
+        if not selected_fit_is_fresh(fit, current):
+            raise ValueError("fit manifest or training inputs are stale for current code/data")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Train fitted_v1 walk-forward ridge-margin + IRLS/Platt win-prob "
-        "fits into features.model_coefficients / features.model_metadata"
+        "candidates into the immutable training registry"
     )
     parser.add_argument(
         "--seasons",
@@ -814,45 +1028,123 @@ def main() -> None:
     parser.add_argument(
         "--refit-if-stale",
         action="store_true",
-        help="Train only the fits missing relative to the latest completed season, "
-        "then exit. A clean no-op when the newest fit is already current -- safe "
-        "to run daily. What the daily workflow runs.",
+        help="Train only missing or stale selected vintages through the safe closed frontier.",
+    )
+    parser.add_argument(
+        "--promote",
+        action="store_true",
+        help="Select newly trained/imported fits after safe-finality validation.",
+    )
+    parser.add_argument(
+        "--promotion-reason",
+        help="Required nonempty audit reason for --promote or --promote-fit.",
+    )
+    parser.add_argument(
+        "--promote-fit",
+        metavar="TRAINING_FIT_ID",
+        help="Select one existing known-lineage candidate after current-input validation.",
+    )
+    parser.add_argument(
+        "--import-legacy",
+        action="store_true",
+        help="Snapshot legacy coefficient tables; never promotes unless --promote is explicit.",
     )
     args = parser.parse_args()
     start, end = args.seasons
     if start > end:
-        logger.error("--seasons start %d is after end %d", start, end)
-        sys.exit(1)
+        parser.error(f"--seasons start {start} is after end {end}")
+
+    reason = (args.promotion_reason or "").strip()
+    if (args.promote or args.promote_fit) and not reason:
+        parser.error("--promote and --promote-fit require a nonempty --promotion-reason")
+    if reason and not (args.promote or args.promote_fit):
+        parser.error("--promotion-reason requires --promote or --promote-fit")
+    if args.promote_fit and args.promote:
+        parser.error("--promote-fit cannot be combined with --promote")
+    command_modes = sum(
+        bool(value) for value in (args.refit_if_stale, args.promote_fit, args.import_legacy)
+    )
+    if command_modes > 1:
+        parser.error("--refit-if-stale, --promote-fit, and --import-legacy are mutually exclusive")
+    if "--seasons" in sys.argv[1:] and (args.promote_fit or args.import_legacy):
+        parser.error("--seasons is not used with --promote-fit or --import-legacy")
 
     import psycopg2
 
     conn = psycopg2.connect(get_db_url())
     try:
+        if args.promote_fit:
+            fit = load_registry_fit(conn, args.promote_fit)
+            validate_promotion_fit(conn, fit, current_required=True)
+            promote_fit(conn, args.promote_fit, reason)
+            conn.commit()
+            print(
+                f"FITTED_PROMOTION training_fit_id={args.promote_fit} "
+                f"train_through={fit['train_through_season']}"
+            )
+            return
+
+        if args.import_legacy:
+            fit_ids = import_legacy_fits(conn, MODEL_VERSION)
+            if args.promote:
+                for training_fit_id in fit_ids:
+                    fit = load_registry_fit(conn, training_fit_id)
+                    # Import records the historical values exactly but cannot
+                    # claim current input lineage. Explicit import promotion is
+                    # limited to safely closed vintages; freshness still treats
+                    # these deployments as stale and schedules known-lineage fits.
+                    validate_promotion_fit(conn, fit, current_required=False)
+                    promote_fit(conn, training_fit_id, reason)
+            conn.commit()
+            for training_fit_id in fit_ids:
+                print(
+                    f"FITTED_LEGACY_IMPORT training_fit_id={training_fit_id} "
+                    f"promoted={str(args.promote).lower()}"
+                )
+            return
+
         if args.refit_if_stale:
-            latest_finished, existing = fetch_refit_state(conn)
+            latest_finished, existing, games = fetch_refit_plan(conn)
             if latest_finished is None:
                 logger.info("No finished season in core.games yet; nothing to refit")
                 return
             needed = stale_score_seasons(latest_finished, existing)
             if not needed:
                 logger.info(
-                    "fitted_v1 is current: newest fit train_through=%d covers the "
-                    "latest FINISHED season (%d); nothing to refit",
-                    max(existing),
+                    "fitted_v1 is current: all selected vintages through the latest "
+                    "FINISHED season (%d) match current code and inputs; nothing to refit",
                     latest_finished,
                 )
                 return
             logger.info(
-                "fitted_v1 is stale: newest fit train_through=%s vs latest FINISHED "
+                "fitted_v1 has missing/stale selected vintages through latest FINISHED "
                 "season %d; training score season(s) %s",
-                max(existing) if existing else "none",
                 latest_finished,
                 needed,
             )
-            train_walk_forward(conn, needed[0], needed[-1])
+            train_score_seasons(
+                conn,
+                needed,
+                games=games,
+                promote=args.promote,
+                promotion_reason=reason or None,
+            )
             return
 
-        train_walk_forward(conn, start, end)
+        if args.promote:
+            frontier = safe_training_frontier(conn)
+            requested_train_through = list(range(start - 1, end))
+            if frontier is None or any(season > frontier for season in requested_train_through):
+                parser.error(
+                    f"--promote range includes a vintage beyond safe closed frontier {frontier}"
+                )
+        train_walk_forward(
+            conn,
+            start,
+            end,
+            promote=args.promote,
+            promotion_reason=reason or None,
+        )
     except Exception:
         conn.rollback()
         logger.exception("fitted_v1 training failed")

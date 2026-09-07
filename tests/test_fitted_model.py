@@ -13,6 +13,7 @@ pytest.importorskip("numpy")
 
 import numpy as np  # noqa: E402
 
+from scripts import train_model as training  # noqa: E402
 from scripts.score_fitted import (  # noqa: E402
     MIN_UPCOMING_COVERAGE,
     coverage_verdict,
@@ -421,16 +422,21 @@ class TestFitStalenessSeesTheFeatureContract:
         assert "hc_first_year" not in TEAM_WEEK_SOURCE_COLUMNS
         assert "hc_first_year_unproven" in TEAM_WEEK_SOURCE_COLUMNS
 
-    def test_refit_state_filters_on_the_feature_contract(self):
-        """The guard has to live in fetch_refit_state, not in a comment."""
-        import inspect
-
-        from scripts.train_model import fetch_refit_state
-
-        src = inspect.getsource(fetch_refit_state)
-        assert "feature_means" in src
-        assert "TEAM_WEEK_SOURCE_COLUMNS" in src
-        assert "==" in src, "must compare the key set, not merely read it"
+    def test_registry_parameter_guard_checks_exact_current_contract(self):
+        diff_names = FEATURE_NAMES[2:]
+        parameters = {
+            "feature_names": list(FEATURE_NAMES),
+            "feature_means": dict.fromkeys(TEAM_WEEK_SOURCE_COLUMNS, None),
+            "diff_means": dict.fromkeys(diff_names, "0.000000"),
+            "diff_stds": dict.fromkeys(diff_names, "0.000000"),
+            "beta_margin": ["0.000000"] * len(FEATURE_NAMES),
+            "beta_winprob": ["0.000000"] * len(FEATURE_NAMES),
+            "platt_a": "1.000000",
+            "platt_b": "0.000000",
+        }
+        assert training.fit_parameters_are_compatible(parameters)
+        parameters["feature_means"]["removed_feature"] = "0.000000"
+        assert not training.fit_parameters_are_compatible(parameters)
 
 
 class TestStaleScoreSeasons:
@@ -438,13 +444,13 @@ class TestStaleScoreSeasons:
 
     def test_stale_by_one_season_trains_the_gap(self):
         # The real July-2026 state: newest fit train_through=2024, 2025 done.
-        assert stale_score_seasons(2025, [2018, 2020, 2024]) == [2026]
+        assert stale_score_seasons(2025, list(range(2017, 2025))) == [2026]
 
     def test_current_fit_is_a_no_op(self):
-        assert stale_score_seasons(2025, [2024, 2025]) == []
+        assert stale_score_seasons(2025, list(range(2017, 2026))) == []
 
     def test_fit_ahead_of_completed_season_is_a_no_op(self):
-        assert stale_score_seasons(2024, [2025]) == []
+        assert stale_score_seasons(2024, [*range(2017, 2025), 2025]) == []
 
     def test_no_existing_fits_trains_from_default_start(self):
         seasons = stale_score_seasons(2025, [], default_start=2018)
@@ -452,8 +458,10 @@ class TestStaleScoreSeasons:
         assert seasons[-1] == 2026
 
     def test_multi_season_gap(self):
-        # train_through 2023 present, 2025 complete -> need 2024 and 2025.
-        assert stale_score_seasons(2025, [2023]) == [2025, 2026]
+        existing = list(range(2017, 2026))
+        existing.remove(2020)
+        existing.remove(2024)
+        assert stale_score_seasons(2025, existing) == [2021, 2025]
 
 
 class TestRefitLeakRegression:
@@ -465,11 +473,18 @@ class TestRefitLeakRegression:
     def test_in_progress_season_would_produce_an_in_sample_fit(self):
         # 2025 finished; 2026 has kicked off. Passing 2026 (the WRONG input)
         # asks for a fit trained through 2026 while 2026 is still being played.
-        wrong = stale_score_seasons(2026, [2024, 2025])
+        wrong = stale_score_seasons(2026, list(range(2017, 2026)))
         assert wrong == [2027], "documents the bad behavior the fix avoids"
         # Passing the last FINISHED season is a correct no-op.
-        assert stale_score_seasons(2025, [2024, 2025]) == []
+        assert stale_score_seasons(2025, list(range(2017, 2026))) == []
 
     def test_finished_season_still_triggers_the_annual_refit(self):
         # The real July-2026 state: 2025 finished, newest fit train_through=2024.
-        assert stale_score_seasons(2025, [2024]) == [2026]
+        assert stale_score_seasons(2025, list(range(2017, 2025))) == [2026]
+
+
+def test_fit_parameter_numeric6_matches_legacy_postgres_rounding():
+    assert training._numeric6(1.2345665) == 1.234567
+    assert training._numeric6(-1.2345665) == -1.234567
+    with pytest.raises(OverflowError):
+        training._numeric6(999999.9999995)

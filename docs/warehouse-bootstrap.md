@@ -130,6 +130,46 @@ warehouse remains unledgered and is deliberately rejected by managed upgrade.
 Adoption requires a separately reviewed catalog comparison and provenance plan;
 never mark historical transformations as applied solely from matching names.
 
+## Explicit production adoption
+
+`scripts/adopt_warehouse_catalog.py` prepares a schema-only capture and an
+immutable adoption receipt. It uses the approved Deploy Schema environment's
+`SUPABASE_DB_URL`, with the same complete-URL validation as the bootstrap CLI.
+It does not fall back to dlt configuration. Preparation writes schema definitions
+and ownership/access metadata, never table rows; review the artifact destination
+as part of the rollout scope.
+
+```bash
+python scripts/adopt_warehouse_catalog.py prepare \
+  --output /tmp/warehouse-adoption \
+  --source-revision <full-reviewed-git-sha> \
+  --capture-provenance <capture-run-reference> \
+  --root-path src/schemas/adoptions/20260907_production_catalog_receipt.sql
+```
+
+Review the generated catalog against the prior approved capture and explain
+every difference. Check in the receipt JSON, its exact generated root SQL, and
+the separate production manifest at its declared paths. The root binds the
+receipt bytes, capture provenance, and schema/metadata fingerprints. It attests
+to catalog equivalence observed at adoption; it does not claim historical
+baseline, seed, or migration execution. It also refuses ordinary bootstrap.
+
+During a window without other schema writers, run `status`, then `adopt`, then
+`status` again with explicit `--manifest` and `--receipt` paths. Adoption compares
+the reviewed fingerprint before creating the private ledger and records one
+root entry transactionally. A mismatch must be investigated and reviewed,
+never bypassed by substituting the currently observed hash. Preserve and restore
+the prior writer-workflow states around the maintenance window. The migration
+advisory lock coordinates managed tools; other administrators must avoid DDL.
+
+Future production changes append new immutable migrations to the production
+manifest and use `bootstrap_warehouse.py upgrade --manifest <production-manifest>`
+with an explicit `WAREHOUSE_DB_URL`. Do not use the disposable bootstrap manifest
+on production. The original receipt remains immutable after later upgrades;
+its fingerprint describes the adoption catalog, not those future schema changes.
+
+See [production rollout evidence](plans/2026-09-07-f06-production-rollout.md).
+
 ## Forward correction discovered by executed role checks
 
 The captured `public.team_season_trajectory` wrapper grants consumer access but
@@ -140,5 +180,6 @@ boundary, and no consumer write grant is added. The source mart definition
 retains this grant on a later reviewed recreation. The generated captured
 baseline is unchanged; the managed manifest applies the fix as a forward step.
 
-This correction has been executed only in disposable databases. Production
-application of 065 requires separate authorization after review/merge.
+Migration 065 was approved and applied twice in production. Actual-role checks
+passed for the trajectory wrapper, all 54 API views, and private/write boundaries;
+see the production rollout evidence above.

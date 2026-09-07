@@ -27,7 +27,8 @@ Last updated: 2026-09-07
   Executed checks found a missing underlying-mart read grant for the public
   invoker wrapper `team_season_trajectory`. Forward migration 065 restores SELECT
   for anon/authenticated without changing view mode, granting writes, or exposing
-  the raw mart to analyst_ro; production application remains pending approval.
+  the raw mart to analyst_ro. Production application and actual-role verification
+  passed after approval; see [rollout evidence](plans/2026-09-07-f06-production-rollout.md).
   See [bootstrap and upgrade instructions](warehouse-bootstrap.md) and
   [F06 verification](plans/2026-09-07-f06-warehouse-bootstrap.md).
 

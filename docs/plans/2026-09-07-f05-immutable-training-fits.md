@@ -1,6 +1,7 @@
 # F05 — immutable training fits and explicit deployment
 
-Status: implemented and locally validated; production not deployed.
+Status: deployed and verified in production on 2026-09-07. See the
+[executed rollout evidence](2026-09-07-f05-production-rollout.md).
 
 ## Problem and intended behavior
 
@@ -107,6 +108,9 @@ upcoming scoring. Do not defeat those checks to make a rollback appear healthy.
   now share the newest-selected-2025 check, verified through both CLI paths
   before commands run; all 13 recovery tests passed and independent review is clean.
 
-Production runtime, memory cost of training-data hashing, warehouse fit outputs
-and prediction coverage still require the authorized rollout. No accuracy or
-calibration improvement is claimed. No production F05 command has been executed.
+Production rollout is complete: nine closed vintages were trained and promoted,
+freshness reported a no-op, and all 3,247 pending games were scored with verified
+training linkage. Historical payloads were preserved and workflows restored.
+See the linked evidence for runtime, coefficient differences, and pre-kickoff
+coverage. Peak memory was not instrumented; no accuracy or calibration
+improvement is claimed.

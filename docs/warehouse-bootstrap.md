@@ -169,6 +169,13 @@ Future production changes append new immutable migrations to
 with an explicit `WAREHOUSE_DB_URL`. Do not use the disposable bootstrap manifest
 on production. The original receipt remains immutable after later upgrades;
 its fingerprint describes the adoption catalog, not those future schema changes.
+Once later managed migrations are recorded, adoption `status` and repeat `adopt`
+validate the complete migration history and explicitly report
+`catalog_verification: not_checked_after_managed_upgrades`, with null current
+fingerprint/match fields. They do not mistake expected schema evolution for
+adoption-time drift or claim to verify the evolved live catalog. A root-only
+ledger still requires the exact adoption fingerprint, and incomplete or tampered
+history fails validation.
 
 The approved production receipt is
 `src/schemas/adoptions/20260907_production_catalog_receipt.json`. It records only

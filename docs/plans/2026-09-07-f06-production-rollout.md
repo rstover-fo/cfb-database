@@ -90,3 +90,22 @@ passed with the same exact fingerprint, a valid installed ledger, and one entry.
 All five paused workflows were restored and the complete before/after state map
 matched exactly: all nine repository workflows are active. No rollback or repair
 was required. No scheduled work remains intentionally paused for this rollout.
+
+## PR review follow-up
+
+Greptile identified two operational improvements after the completed rollout.
+Adoption status and repeat checks now distinguish a root-only ledger, which
+still requires the exact catalog fingerprint, from later valid managed history.
+After later managed migrations they validate the complete ledger and explicitly
+report that the evolved catalog was not checked against the original receipt.
+An executed forward-ALTER regression verifies status/no-op behavior and rejection
+of tampered later migration checksums.
+
+Both verification SQL files now include explicit BEGIN/ROLLBACK boundaries for
+standalone runners. The original production runs already had transactions from
+`run_migrations.py`, so their read-only and timeout safeguards were active.
+The complete scripts passed both transactional psycopg2 and standalone psql on a
+disposable full warehouse. Four additional PostgreSQL cases verify actual write
+rejection and active timeout settings in both runner modes. The expanded mandatory
+warehouse suite passed **15 tests**; the reviewer independently passed 98
+adoption/CLI/deploy unit checks. No additional production migration was required.

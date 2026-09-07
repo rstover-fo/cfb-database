@@ -371,6 +371,88 @@ def test_repeat_adoption_rejects_other_manifest_history(monkeypatch, tmp_path):
     assert conn.rollbacks == 1
 
 
+def test_evolved_valid_ledger_is_noop_without_comparing_original_fingerprint(monkeypatch, tmp_path):
+    forward = tmp_path / "forward.sql"
+    forward.write_text("ALTER TABLE core.games ADD COLUMN managed integer;\n")
+    extra = {
+        "id": "warehouse.forward.066",
+        "path": "forward.sql",
+        "kind": "immutable",
+    }
+    bundle, _, _ = _make_bundle(tmp_path, extra=(extra,))
+    root, migration = bundle.manifest.migrations
+    applied = (
+        (root.id, root.path, root.kind, root.checksum, 1),
+        (migration.id, migration.path, migration.kind, migration.checksum, 2),
+    )
+    conn = FakeConnection(_fingerprint("9"), ledger_installed=True, applied=applied)
+    monkeypatch.setattr(
+        adoption,
+        "_capture_catalog",
+        lambda *args: pytest.fail("managed evolution must not be compared to the old receipt"),
+    )
+
+    result = adoption.adopt_catalog(conn, "postgresql://unused", bundle)
+
+    assert result["valid"] is True
+    assert result["noop"] is True
+    assert result["catalog_verification"] == "not_checked_after_managed_upgrades"
+    assert result["catalog_matches"] is None
+    assert result["actual_fingerprint"] is None
+    assert result["ledger_entries"] == 2
+
+
+def test_status_accepts_evolved_valid_ledger_but_rejects_tampered_later_checksum(
+    monkeypatch, tmp_path
+):
+    forward = tmp_path / "forward.sql"
+    forward.write_text("SELECT 66;\n")
+    extra = {
+        "id": "warehouse.forward.066",
+        "path": "forward.sql",
+        "kind": "immutable",
+    }
+    bundle, _, _ = _make_bundle(tmp_path, extra=(extra,))
+    root, migration = bundle.manifest.migrations
+    valid_applied = (
+        (root.id, root.path, root.kind, root.checksum, 1),
+        (migration.id, migration.path, migration.kind, migration.checksum, 2),
+    )
+    monkeypatch.setattr(
+        adoption,
+        "_capture_catalog",
+        lambda *args: pytest.fail("evolved ledger status must validate history only"),
+    )
+
+    valid = adoption.catalog_status(
+        FakeConnection(_fingerprint("9"), ledger_installed=True, applied=valid_applied),
+        "postgresql://unused",
+        bundle,
+    )
+    assert valid["valid"] is True
+    assert valid["catalog_verification"] == "not_checked_after_managed_upgrades"
+    assert valid["catalog_matches"] is None
+
+    tampered = (
+        valid_applied[0],
+        (migration.id, migration.path, migration.kind, "0" * 64, 2),
+    )
+    invalid = adoption.catalog_status(
+        FakeConnection(_fingerprint("9"), ledger_installed=True, applied=tampered),
+        "postgresql://unused",
+        bundle,
+    )
+    assert invalid["valid"] is False
+    assert invalid["ledger_entries"] == 2
+    assert "checksum changed" in invalid["diagnostic"]
+    with pytest.raises(adoption.AdoptionError, match="checksum changed"):
+        adoption.adopt_catalog(
+            FakeConnection(_fingerprint("9"), ledger_installed=True, applied=tampered),
+            "postgresql://unused",
+            bundle,
+        )
+
+
 def test_generic_bootstrap_cannot_fabricate_catalog_adoption(tmp_path):
     bundle, _, _ = _make_bundle(tmp_path)
     conn = FakeConnection(bundle.fingerprint)

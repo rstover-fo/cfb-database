@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -12,6 +13,7 @@ import psycopg2
 import pytest
 
 import scripts.adopt_warehouse_catalog as adoption
+from scripts.warehouse_migrations import apply_manifest
 from tests.test_warehouse_migrations_sql import query
 from tests.test_warehouse_migrations_sql import warehouse_db as _warehouse_db_fixture  # noqa: F401
 
@@ -135,3 +137,41 @@ def test_real_pg_dump_and_metadata_capture_is_stable_and_detects_ddl(
     assert len(outcome) == 1
     assert isinstance(outcome[0], adoption.AdoptionError)
     assert "does not match" in str(outcome[0])
+
+    query(conn, "ALTER TABLE core.capture_probe DROP COLUMN after_lock")
+    forward_path = bundle_output / "forward.sql"
+    forward_path.write_text("ALTER TABLE core.capture_probe ADD COLUMN managed_forward integer;\n")
+    manifest_path = bundle_output / adoption.MANIFEST_FILENAME
+    manifest_payload = json.loads(manifest_path.read_text())
+    manifest_payload["migrations"].append(
+        {
+            "id": "warehouse.forward.066",
+            "path": "forward.sql",
+            "kind": "immutable",
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest_payload, indent=2) + "\n")
+    evolved = adoption.load_bundle(
+        manifest_path,
+        bundle_output / adoption.RECEIPT_FILENAME,
+        root=bundle_output,
+    )
+    plan = apply_manifest(conn, evolved.manifest, mode="upgrade")
+    assert [step.id for step in plan.pending] == ["warehouse.forward.066"]
+    evolved_status = adoption.catalog_status(conn, target, evolved)
+    assert evolved_status["valid"] is True
+    assert evolved_status["catalog_verification"] == "not_checked_after_managed_upgrades"
+    assert evolved_status["catalog_matches"] is None
+    assert evolved_status["actual_fingerprint"] is None
+    assert adoption.adopt_catalog(conn, target, evolved)["noop"] is True
+    assert query(conn, "SELECT count(*) FROM warehouse_control.schema_migrations") == [(2,)]
+
+    forward_path.write_text("SELECT 'tampered';\n")
+    tampered = adoption.load_bundle(
+        manifest_path,
+        bundle_output / adoption.RECEIPT_FILENAME,
+        root=bundle_output,
+    )
+    assert adoption.catalog_status(conn, target, tampered)["valid"] is False
+    with pytest.raises(adoption.AdoptionError, match="checksum changed"):
+        adoption.adopt_catalog(conn, target, tampered)

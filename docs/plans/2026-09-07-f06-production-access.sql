@@ -1,4 +1,5 @@
 -- Read-only verification after migration 065. Logs assertions, never table rows.
+BEGIN;
 SET TRANSACTION READ ONLY;
 SET LOCAL statement_timeout = '120s';
 DO $verify$
@@ -49,3 +50,4 @@ BEGIN
     END LOOP;
 END
 $verify$;
+ROLLBACK;

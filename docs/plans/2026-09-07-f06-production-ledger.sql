@@ -1,4 +1,5 @@
 -- Read-only post-adoption assertions. No table rows are emitted to Actions.
+BEGIN;
 SET TRANSACTION READ ONLY;
 SET LOCAL statement_timeout = '60s';
 DO $verify$
@@ -39,3 +40,4 @@ BEGIN
     RAISE NOTICE 'F06 ledger contains exactly one verified catalog-adoption receipt; no historical migrations fabricated';
 END
 $verify$;
+ROLLBACK;

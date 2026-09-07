@@ -541,7 +541,7 @@ def _validate_existing_ledger(cur: object, bundle: AdoptionBundle) -> tuple[obje
 
 
 def adopt_catalog(conn: object, database_url: str, bundle: AdoptionBundle) -> dict[str, object]:
-    """Compare under the migration lock, then transactionally install one receipt root."""
+    """Validate managed history, or compare and transactionally install one receipt root."""
     _ensure_idle_connection(conn)
     cur = conn.cursor()
     capture_dir = Path(tempfile.mkdtemp(prefix="warehouse-adoption-check-"))
@@ -549,16 +549,33 @@ def adopt_catalog(conn: object, database_url: str, bundle: AdoptionBundle) -> di
         _begin_locked_snapshot(conn, cur, read_only=False)
         _execute(cur, "SET LOCAL standard_conforming_strings = on")
         installed = _ledger_installed(cur)
-        actual = _capture_catalog(conn, database_url, capture_dir)
-        _assert_fingerprint(bundle.fingerprint, actual)
         if installed:
             applied = _validate_existing_ledger(cur, bundle)
+            if len(applied) > 1:
+                conn.rollback()
+                return {
+                    "action": "adopt",
+                    "valid": True,
+                    "adopted": False,
+                    "noop": True,
+                    "catalog_verification": "not_checked_after_managed_upgrades",
+                    "catalog_matches": None,
+                    "expected_fingerprint": bundle.fingerprint.digest,
+                    "actual_fingerprint": None,
+                    "ledger_entries": len(applied),
+                }
+            actual = _capture_catalog(conn, database_url, capture_dir)
+            _assert_fingerprint(bundle.fingerprint, actual)
             conn.rollback()
             return {
                 "action": "adopt",
                 "valid": True,
                 "adopted": False,
                 "noop": True,
+                "catalog_verification": "matches_adoption_receipt",
+                "catalog_matches": True,
+                "expected_fingerprint": bundle.fingerprint.digest,
+                "actual_fingerprint": actual.digest,
                 "fingerprint": actual.digest,
                 "ledger_entries": len(applied),
             }
@@ -567,6 +584,8 @@ def adopt_catalog(conn: object, database_url: str, bundle: AdoptionBundle) -> di
                 "unledgered adoption requires a root-only production manifest; "
                 "apply later migrations with upgrade"
             )
+        actual = _capture_catalog(conn, database_url, capture_dir)
+        _assert_fingerprint(bundle.fingerprint, actual)
         first = bundle.manifest.migrations[0]  # type: ignore[attr-defined]
         _execute(
             cur,
@@ -585,6 +604,10 @@ def adopt_catalog(conn: object, database_url: str, bundle: AdoptionBundle) -> di
             "valid": True,
             "adopted": True,
             "noop": False,
+            "catalog_verification": "matches_adoption_receipt",
+            "catalog_matches": True,
+            "expected_fingerprint": bundle.fingerprint.digest,
+            "actual_fingerprint": actual.digest,
             "fingerprint": actual.digest,
             "ledger_entries": 1,
             "migration_id": first.id,
@@ -598,7 +621,7 @@ def adopt_catalog(conn: object, database_url: str, bundle: AdoptionBundle) -> di
 
 
 def catalog_status(conn: object, database_url: str, bundle: AdoptionBundle) -> dict[str, object]:
-    """Compare the live snapshot and report adoption state without mutations."""
+    """Report adoption state; compare the receipt only before managed catalog evolution."""
     _ensure_idle_connection(conn)
     cur = conn.cursor()
     capture_dir = Path(tempfile.mkdtemp(prefix="warehouse-adoption-status-"))
@@ -606,8 +629,6 @@ def catalog_status(conn: object, database_url: str, bundle: AdoptionBundle) -> d
         _begin_locked_snapshot(conn, cur, read_only=True)
         _execute(cur, "SET LOCAL standard_conforming_strings = on")
         installed = _ledger_installed(cur)
-        actual = _capture_catalog(conn, database_url, capture_dir)
-        matches = actual == bundle.fingerprint
         applied: tuple[object, ...] = ()
         ledger_valid = False
         diagnostic: str | None = None
@@ -617,10 +638,34 @@ def catalog_status(conn: object, database_url: str, bundle: AdoptionBundle) -> d
                 ledger_valid = True
             except AdoptionError as exc:
                 diagnostic = str(exc)
+                applied = _read_applied(cur)
+            if not ledger_valid or len(applied) > 1:
+                conn.rollback()
+                return {
+                    "action": "status",
+                    "valid": ledger_valid,
+                    "catalog_verification": "not_checked_after_managed_upgrades"
+                    if ledger_valid
+                    else "not_checked_invalid_ledger",
+                    "catalog_matches": None,
+                    "expected_fingerprint": bundle.fingerprint.digest,
+                    "actual_fingerprint": None,
+                    "ledger_installed": True,
+                    "ledger_valid": ledger_valid,
+                    "ledger_entries": len(applied),
+                    "adoption_ready": False,
+                    "diagnostic": diagnostic,
+                    "read_only": True,
+                }
+        actual = _capture_catalog(conn, database_url, capture_dir)
+        matches = actual == bundle.fingerprint
         conn.rollback()
         return {
             "action": "status",
             "valid": matches and (not installed or ledger_valid),
+            "catalog_verification": "matches_adoption_receipt"
+            if matches
+            else "differs_from_adoption_receipt",
             "catalog_matches": matches,
             "expected_fingerprint": bundle.fingerprint.digest,
             "actual_fingerprint": actual.digest,

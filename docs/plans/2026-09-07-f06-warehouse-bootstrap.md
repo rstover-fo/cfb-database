@@ -1,6 +1,7 @@
 # F06 — warehouse bootstrap and migration history
 
-Status: development in progress after PR #128 merged (`b6c8e98`).
+Status: full baseline implemented; final integration/review in progress after
+PR #128 merged (`b6c8e98`).
 
 ## Deliverable and boundaries
 
@@ -88,3 +89,24 @@ trusted; this does not revoke their role memberships.
 Eight disposable PostgreSQL migration tests and 56 engine/CLI unit tests pass.
 Independent review cleared the ACL change. Catalog export approval remains
 pending; no production export was attempted after the approval rejection.
+
+## Approved catalog and baseline construction
+
+The user approved the schema/role metadata export to Actions. Run 34157756739
+succeeded; dependency review discovered live marts reference the `rp` schema,
+so approved-scope follow-up run 34157877609 captured that closure. No rows or
+credentials were exported, and no production schema changes were executed.
+
+A fresh PostgreSQL 17 restore succeeded after installing required public
+extensions and role stand-ins. All relation owners are postgres. The managed
+five-entry manifest contains platform prerequisites, generated structural
+pre-F05 catalog, current static seeds, dependency-ordered initialization of 60
+materialized views, and the original migration 064. Full bootstrap matched the
+captured per-schema/per-kind object counts exactly. The nested line-score
+fixture returned expected zero/NULL/overtime values.
+
+The first managed attempt correctly rolled back when the historical positions
+seed referenced a table absent from production. That obsolete seed was removed;
+current era/PFF/Massey seeds remain. Catalog-derived definitions, including rp
+objects absent from tracked source DDL, are captured rather than guessed.
+See `docs/warehouse-bootstrap.md` for included schemas and platform/data limits.

@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "migrations": [
+    {
+      "id": "warehouse.platform.20260907",
+      "path": "src/schemas/baseline/20260907_platform.sql",
+      "kind": "immutable"
+    },
+    {
+      "id": "warehouse.baseline.pre-f05.20260907",
+      "path": "src/schemas/baseline/20260907_pre_f05.sql",
+      "kind": "immutable"
+    },
+    {
+      "id": "warehouse.static-seeds.20260907",
+      "path": "src/schemas/baseline/20260907_static_seeds.sql",
+      "kind": "immutable"
+    },
+    {
+      "id": "warehouse.baseline.ready.20260907",
+      "path": "src/schemas/baseline/20260907_initialize_marts.sql",
+      "kind": "immutable"
+    },
+    {
+      "id": "warehouse.f05.064",
+      "path": "src/schemas/migrations/064_immutable_training_fits.sql",
+      "kind": "immutable"
+    }
+  ]
+}

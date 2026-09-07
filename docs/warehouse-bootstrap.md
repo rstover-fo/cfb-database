@@ -1,8 +1,9 @@
 # Managed warehouse bootstrap
 
-F06 is in development. The default catalog baseline is pending approved
-production schema-only inventory; the commands below are the new interface,
-not evidence that full warehouse bootstrap is complete.
+The default manifest reconstructs the reviewed warehouse catalog captured on
+2026-09-07. It includes 31 application schemas, normalized dlt/staging tables,
+partitions, indexes, grants, 60 materialized views, and API/public functions and
+views. It loads static repository seeds, not production rows or dlt load state.
 
 ## Local database
 
@@ -61,7 +62,62 @@ F06_TEST_DB_URL="$WAREHOUSE_DB_URL" F06_REQUIRE_DB=1 \
   .venv/bin/python -m pytest tests/test_warehouse_migrations_sql.py -q
 ```
 
-These tests prove migration behavior; until the catalog baseline is reviewed,
-they do not establish that every warehouse object can be reconstructed. Full
-baseline, representative dlt fixtures and actual consumer-role checks remain
-F06 acceptance work. Ordinary dependency installation does not provision data.
+The full catalog integration suite is `tests/test_warehouse_bootstrap_sql.py`.
+Run both files to exercise fresh installation, prior-version upgrade, repeated
+no-op, catalog counts, nested dlt rows, and actual consumer-role access. CI uses
+the same pinned disposable image with mandatory connection checks. Ordinary
+dependency installation does not provision data.
+
+## Prior-baseline upgrade exercise
+
+On a second empty disposable database, stop at the structural pre-F05 baseline,
+then upgrade through the original migration 064:
+
+```bash
+.venv/bin/python scripts/bootstrap_warehouse.py bootstrap \
+  --target warehouse.baseline.ready.20260907
+.venv/bin/python scripts/bootstrap_warehouse.py upgrade
+.venv/bin/python scripts/bootstrap_warehouse.py upgrade
+```
+
+The second upgrade applies nothing. This fixture was derived from the current
+catalog by removing the three F05 registry tables and three trigger functions.
+It is a structural prior version, not a claim to recover an exact historical
+production snapshot; comments on legacy model tables still describe F05.
+
+## Capture and platform boundaries
+
+[Approved schema-only capture](https://github.com/rstover-fo/cfb-database/actions/runs/34157877609)
+and its SHA256/object inventory are recorded in
+`src/schemas/baseline/20260907_catalog.json`. The generated baseline is immutable
+once applied. The first capture exposed an untracked dependency on `rp` tables
+used by live returning-production marts; a second capture included that schema.
+No production migration or ledger adoption ran.
+
+The restore requires the `postgres` owner. Platform roles are NOLOGIN stand-ins
+and include the captured analyst membership grants. Public extensions are
+pg_trgm, fuzzystrmatch, and pgvector. Supabase authentication, storage, cron,
+vault, GraphQL and platform-managed extensions are outside this fixture. Other
+application/incident schemas (`app`, `bot`, `tracking`, `recovery`) are excluded;
+no captured warehouse definition depends on them. This baseline does not
+codify the user's uncommitted film/tracking work.
+
+All 54 API views retain their captured owner-rights behavior. The 13 public
+wrapper views retain their existing invoker-rights settings. Scouting stays
+private. Role stand-ins do not emulate Supabase JWT/authentication or service
+administrator privileges.
+
+The static seeds are current repository-owned era definitions, PFF team mappings,
+and the reviewed Massey crosswalk. The obsolete root `ref.positions` seed is
+excluded because that relation is absent from the captured warehouse. Provider
+reference rows, training fits, prediction history, scouting records, and `rp`
+weight/configuration rows are not fabricated. Populate those through their
+separately authorized ingestion/configuration workflows before relying on data
+coverage or model outputs. Empty-view refresh proves executable definitions,
+not representative production refresh cost or populated warehouse completeness.
+
+Schema-only capture retains normalized dlt columns and relationships, but does
+not copy `_dlt_version`/`_dlt_pipeline_state` row contents. An existing production
+warehouse remains unledgered and is deliberately rejected by managed upgrade.
+Adoption requires a separately reviewed catalog comparison and provenance plan;
+never mark historical transformations as applied solely from matching names.

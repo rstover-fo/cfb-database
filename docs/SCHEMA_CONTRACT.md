@@ -15,6 +15,18 @@ Last updated: 2026-09-07
 
 ## Recent Contract Changes
 
+- **2026-09-07 — F06 managed bootstrap (disposable development; no production adoption).**
+  `src/schemas/warehouse-manifest.json` reconstructs the reviewed catalog and
+  applies checksum-verified forward migrations through a private
+  `warehouse_control` ledger. Its two tables and identity sequence are not
+  consumer surfaces, even when the host has broad default grants. The baseline
+  preserves captured API owner rights, existing public wrapper invoker rights,
+  and private scouting access. It contains schema definitions and repository
+  seeds, not production data. Existing unledgered production databases require
+  separate reviewed adoption; normal deployment does not replay the baseline.
+  See [bootstrap and upgrade instructions](warehouse-bootstrap.md) and
+  [F06 verification](plans/2026-09-07-f06-warehouse-bootstrap.md).
+
 - **2026-09-07 — F05 immutable training registry (deployed).**
   Migration `064_immutable_training_fits.sql` adds immutable
   `features.training_fits` with content-addressed `training_fit_id`, training

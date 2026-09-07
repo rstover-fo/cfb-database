@@ -15,7 +15,7 @@ Last updated: 2026-09-07
 
 ## Recent Contract Changes
 
-- **2026-09-07 — F05 immutable training registry (pending deployment).**
+- **2026-09-07 — F05 immutable training registry (deployed).**
   Migration `064_immutable_training_fits.sql` adds immutable
   `features.training_fits` with content-addressed `training_fit_id`, training
   manifest and frozen parameter JSON. `features.model_deployments` explicitly
@@ -28,7 +28,8 @@ Last updated: 2026-09-07
   lineage. New fitted scoring artifacts include their upstream `training_fit_id`
   inside artifact JSON; existing F04 artifacts/predictions are never relabeled.
   Public API columns and owner-rights views are unchanged. See the
-  [F05 implementation and rollout plan](plans/2026-09-07-f05-immutable-training-fits.md).
+  [F05 implementation and rollout plan](plans/2026-09-07-f05-immutable-training-fits.md)
+  and [executed production evidence](plans/2026-09-07-f05-production-rollout.md).
 
 - **2026-09-07 — F04 prediction provenance (deployed).** Migration
   `063_prediction_provenance.sql` retains every existing row and ID as

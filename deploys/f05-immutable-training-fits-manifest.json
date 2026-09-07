@@ -1,0 +1,6 @@
+{
+  "action": "apply",
+  "files": [
+    "src/schemas/migrations/064_immutable_training_fits.sql"
+  ]
+}

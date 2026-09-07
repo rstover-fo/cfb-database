@@ -1,6 +1,7 @@
 """Offline checks for fit eligibility, lifecycle delegation, and event exclusions."""
 
 import sqlite3
+import sys
 from unittest.mock import Mock
 
 import numpy as np
@@ -8,6 +9,7 @@ import pytest
 
 from scripts import score_fitted as scoring
 from scripts import train_model as training
+from scripts.training_registry import identify_training_fit
 from src.pipelines.game_identity import SUPERSEDED_GAME_REPLACEMENTS
 
 
@@ -15,6 +17,7 @@ def frozen_fit(train_through):
     beta = np.zeros(len(training.FEATURE_NAMES))
     beta[0] = train_through - 2020
     return {
+        "training_fit_id": f"{train_through:064d}",
         "train_through": train_through,
         "feature_means": dict.fromkeys(training.TEAM_WEEK_SOURCE_COLUMNS, 0.0),
         "diff_means": dict.fromkeys(training.FEATURE_NAMES, 0.0),
@@ -41,12 +44,45 @@ def game(season, game_id=1):
     }
 
 
+def registry_parameters(train_through):
+    beta = ["0.000000"] * len(training.FEATURE_NAMES)
+    beta[0] = f"{train_through - 2020:.6f}"
+    diff_names = training.FEATURE_NAMES[2:]
+    return {
+        "feature_names": list(training.FEATURE_NAMES),
+        "feature_means": dict.fromkeys(training.TEAM_WEEK_SOURCE_COLUMNS, None),
+        "diff_means": dict.fromkeys(diff_names, "0.000000"),
+        "diff_stds": dict.fromkeys(diff_names, "0.000000"),
+        "beta_margin": beta,
+        "beta_winprob": ["0.000000"] * len(training.FEATURE_NAMES),
+        "platt_a": "1.000000",
+        "platt_b": "0.000000",
+    }
+
+
+def selected_registry_fit(train_through, implementation, *, current=True):
+    manifest = training.current_training_manifest(
+        list(range(training.TRAIN_START_SEASON, train_through + 1)),
+        [],
+        implementation=implementation,
+    )
+    if not current:
+        manifest["implementation"] = {"stale": True}
+    return {
+        "training_fit_id": f"{train_through:064d}",
+        "train_through_season": train_through,
+        "manifest": manifest,
+        "parameters": registry_parameters(train_through),
+    }
+
+
 @pytest.fixture
 def upcoming_io(monkeypatch):
     """Mock only I/O; selection, vectorization, row assembly, and gates execute."""
     names = (
         "fetch_pending_game_counts",
         "fetch_upcoming_games",
+        "lock_selected_fits",
         "fetch_refit_state",
         "load_fit",
         "table_exists",
@@ -205,6 +241,7 @@ def test_backfill_requires_exact_prior_vintage_even_when_older_fits_exist(monkey
     monkeypatch.setattr(scoring, "load_fit", load)
     monkeypatch.setattr(scoring, "write_backfill_season", write)
     monkeypatch.setattr(scoring, "fetch_available_train_through", Mock(return_value=[2024]))
+    monkeypatch.setattr(scoring, "lock_selected_fits", Mock())
     conn = object()
     with pytest.raises(RuntimeError, match="missing exact prior fit"):
         scoring.run_backfill(conn, 2026, 2026)
@@ -238,16 +275,24 @@ def test_upcoming_uses_actual_shared_frontier_and_contract_filter(
 ):
     # A partial 2026 vintage is earlier than prediction season 2027, but its
     # training season remains open. Only a compatible closed 2025 fit is safe.
-    current = dict.fromkeys(training.TEAM_WEEK_SOURCE_COLUMNS, 0.0)
-    older_means = current if compatible_closed_fit else {**current, "removed_feature": 0.0}
+    implementation = {"test": "current"}
     conn = Mock()
     conn.cursor.return_value = ResultCursor(
-        [
-            [(season,) for season in range(2026, training.TRAIN_START_SEASON - 1, -1)],
-            [(2025, older_means), (2026, current)],
-        ]
+        [[(season,) for season in range(2026, training.TRAIN_START_SEASON - 1, -1)]]
     )
     monkeypatch.setattr(training, "season_is_final", lambda _conn, season: season <= 2025)
+    monkeypatch.setattr(training, "fetch_games", Mock(return_value=[]))
+    monkeypatch.setattr(training, "current_implementation_contract", lambda: implementation)
+    monkeypatch.setattr(
+        training,
+        "selected_fits",
+        Mock(
+            return_value=[
+                selected_registry_fit(2025, implementation, current=compatible_closed_fit),
+                selected_registry_fit(2026, implementation),
+            ]
+        ),
+    )
     monkeypatch.setattr(scoring, "fetch_refit_state", training.fetch_refit_state)
     upcoming_io["fetch_pending_game_counts"].return_value = {2027: 1}
     upcoming_io["fetch_upcoming_games"].return_value = [game(2027)]
@@ -269,19 +314,22 @@ def test_upcoming_uses_actual_shared_frontier_and_contract_filter(
 def test_refit_delegates_finality_newest_first_and_keeps_contract_filter(
     monkeypatch, closed_season
 ):
-    current = dict.fromkeys(training.TEAM_WEEK_SOURCE_COLUMNS, 0.0)
-    incompatible = {**current, "removed_feature": 0.0}
+    implementation = {"test": "current"}
     conn = Mock()
     conn.cursor.return_value = ResultCursor(
-        [
-            [(season,) for season in range(2027, training.TRAIN_START_SEASON - 1, -1)],
-            [(2025, current), (2024, incompatible), (2023, None)],
-        ]
+        [[(season,) for season in range(2027, training.TRAIN_START_SEASON - 1, -1)]]
     )
     final = Mock(
         side_effect=lambda _conn, season: closed_season is not None and season <= closed_season
     )
     monkeypatch.setattr(training, "season_is_final", final)
+    monkeypatch.setattr(training, "fetch_games", Mock(return_value=[]))
+    monkeypatch.setattr(training, "current_implementation_contract", lambda: implementation)
+    monkeypatch.setattr(
+        training,
+        "selected_fits",
+        Mock(return_value=[selected_registry_fit(2025, implementation)]),
+    )
     assert training.fetch_refit_state(conn) == (closed_season, [2025] if closed_season else [])
     assert [call.args[1] for call in final.call_args_list] == (
         [2027, 2026, 2025, *range(training.TRAIN_START_SEASON, 2025)]
@@ -299,9 +347,12 @@ def test_refit_frontier_stops_before_a_gap_inside_the_training_window(
     if gap_kind == "missing":
         seasons.remove(gap_season)
     conn = Mock()
-    conn.cursor.return_value = ResultCursor([[(season,) for season in seasons], []])
+    conn.cursor.return_value = ResultCursor([[(season,) for season in seasons]])
     final = Mock(side_effect=lambda _conn, season: season != gap_season)
     monkeypatch.setattr(training, "season_is_final", final)
+    monkeypatch.setattr(training, "fetch_games", Mock(return_value=[]))
+    monkeypatch.setattr(training, "selected_fits", Mock(return_value=[]))
+    monkeypatch.setattr(training, "current_implementation_contract", lambda: {"test": "current"})
     frontier, existing = training.fetch_refit_state(conn)
     assert frontier == (gap_season - 1 if gap_season > training.TRAIN_START_SEASON else None)
     assert existing == []
@@ -311,33 +362,200 @@ def test_refit_frontier_stops_before_a_gap_inside_the_training_window(
 
 
 def test_premature_existing_fit_cannot_block_the_eligible_annual_refit(monkeypatch):
-    current = dict.fromkeys(training.TEAM_WEEK_SOURCE_COLUMNS, 0.0)
+    implementation = {"test": "current"}
     conn = Mock()
     conn.cursor.return_value = ResultCursor(
-        [
-            [(season,) for season in range(2026, training.TRAIN_START_SEASON - 1, -1)],
-            [(2024, current), (2026, current)],
-        ]
+        [[(season,) for season in range(2026, training.TRAIN_START_SEASON - 1, -1)]]
     )
     monkeypatch.setattr(training, "season_is_final", lambda _conn, season: season <= 2025)
+    monkeypatch.setattr(training, "fetch_games", Mock(return_value=[]))
+    monkeypatch.setattr(training, "current_implementation_contract", lambda: implementation)
+    monkeypatch.setattr(
+        training,
+        "selected_fits",
+        Mock(
+            return_value=[
+                *(selected_registry_fit(season, implementation) for season in range(2017, 2025)),
+                selected_registry_fit(2026, implementation),
+            ]
+        ),
+    )
     frontier, existing = training.fetch_refit_state(conn)
-    assert (frontier, existing) == (2025, [2024])
+    assert (frontier, existing) == (2025, list(range(2017, 2025)))
     assert training.stale_score_seasons(frontier, existing) == [2026]
 
 
-def test_loaded_fit_carries_the_vintage_checked_by_score_game():
-    fit = frozen_fit(2025)
-    metadata = [(1.0, 0.0, fit["feature_means"], fit["diff_means"], fit["diff_stds"])]
-    coefs = [
-        (component, index, feature, values[index])
-        for component, values in (("margin", fit["beta_margin"]), ("winprob", fit["beta_winprob"]))
-        for index, feature in enumerate(training.FEATURE_NAMES)
-    ]
-    conn = Mock()
-    conn.cursor.return_value = ResultCursor([metadata, coefs])
-    loaded = scoring.load_fit(conn, 2025)
+def test_loaded_fit_carries_registry_id_null_means_zero_stds_and_numeric_strings(monkeypatch):
+    implementation = {"test": "current"}
+    selected = selected_registry_fit(2025, implementation)
+    monkeypatch.setattr(scoring, "load_selected_fit", Mock(return_value=selected))
+    loaded = scoring.load_fit(object(), 2025)
+    assert loaded["training_fit_id"] == selected["training_fit_id"]
     assert loaded["train_through"] == 2025
     assert scoring.score_game(game(2026), loaded) == (5.0, 0.5)
+
+
+def test_constant_training_rows_append_fresh_candidate_and_roundtrip_to_scorer(monkeypatch):
+    training_games = []
+    for game_id, (home_points, away_points) in enumerate(
+        [(21, 14), (14, 21), (17, 10), (10, 17)], start=1
+    ):
+        training_games.append(
+            {
+                **game(2017, game_id),
+                "home_points": home_points,
+                "away_points": away_points,
+                "home_tw": dict.fromkeys(training.TEAM_WEEK_SOURCE_COLUMNS, None),
+                "away_tw": dict.fromkeys(training.TEAM_WEEK_SOURCE_COLUMNS, None),
+            }
+        )
+
+    fit_id = "a" * 64
+    insert = Mock(return_value=fit_id)
+    promote = Mock()
+    monkeypatch.setattr(training, "insert_fit", insert)
+    monkeypatch.setattr(training, "promote_fit", promote)
+    monkeypatch.setattr(training, "current_implementation_contract", lambda: {"test": "v1"})
+    conn = Mock()
+
+    created = training.fit_one(
+        conn,
+        2017,
+        [2015, 2016, 2017],
+        games=training_games,
+        implementation={"test": "v1"},
+    )
+    assert created == fit_id
+    promote.assert_not_called()
+    conn.commit.assert_called_once()
+    parameters = insert.call_args.args[4]
+    manifest = insert.call_args.args[3]
+    assert set(parameters["feature_means"].values()) == {None}
+    assert set(parameters["diff_stds"].values()) == {0.0}
+    assert training.fit_parameters_are_compatible(parameters)
+
+    selected = {
+        "training_fit_id": fit_id,
+        "train_through_season": 2017,
+        "manifest": manifest,
+        "parameters": parameters,
+    }
+    assert training.selected_fit_is_fresh(selected, manifest)
+    identity = identify_training_fit(training.MODEL_VERSION, 2017, manifest, parameters)[0]
+    assert identity == identify_training_fit(training.MODEL_VERSION, 2017, manifest, parameters)[0]
+    monkeypatch.setattr(scoring, "load_selected_fit", Mock(return_value=selected))
+    loaded = scoring.load_fit(object(), 2017)
+    margin, probability = scoring.score_game(game(2018), loaded)
+    assert margin == pytest.approx(0.0)
+    assert probability == pytest.approx(0.5)
+
+
+def test_cli_default_training_creates_candidates_without_promotion(monkeypatch):
+    conn = Mock()
+    walk = Mock()
+    monkeypatch.setattr(sys, "argv", ["train_model.py", "--seasons", "2018", "2018"])
+    monkeypatch.setattr(training, "get_db_url", lambda: "postgresql://test")
+    monkeypatch.setattr("psycopg2.connect", Mock(return_value=conn))
+    monkeypatch.setattr(training, "train_walk_forward", walk)
+    training.main()
+    walk.assert_called_once_with(
+        conn,
+        2018,
+        2018,
+        promote=False,
+        promotion_reason=None,
+    )
+    conn.close.assert_called_once()
+
+
+def test_cli_refit_trains_only_exact_interior_gaps_and_can_promote(monkeypatch):
+    conn = Mock()
+    existing = list(range(2017, 2026))
+    existing.remove(2020)
+    existing.remove(2024)
+    rows = [{"season": season} for season in range(2015, 2026)]
+    train = Mock()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train_model.py",
+            "--refit-if-stale",
+            "--promote",
+            "--promotion-reason",
+            "daily closed refit",
+        ],
+    )
+    monkeypatch.setattr(training, "get_db_url", lambda: "postgresql://test")
+    monkeypatch.setattr("psycopg2.connect", Mock(return_value=conn))
+    monkeypatch.setattr(training, "fetch_refit_plan", Mock(return_value=(2025, existing, rows)))
+    monkeypatch.setattr(training, "train_score_seasons", train)
+    training.main()
+    train.assert_called_once_with(
+        conn,
+        [2021, 2025],
+        games=rows,
+        promote=True,
+        promotion_reason="daily closed refit",
+    )
+
+
+@pytest.mark.parametrize("kind", ["stale", "future"])
+def test_cli_promote_fit_rejects_unsafe_candidate(monkeypatch, kind):
+    conn = Mock()
+    implementation = {"test": "current"}
+    train_through = 2025 if kind == "stale" else 2026
+    fit = {
+        **selected_registry_fit(train_through, implementation, current=kind != "stale"),
+        "model_version": training.MODEL_VERSION,
+    }
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train_model.py",
+            "--promote-fit",
+            fit["training_fit_id"],
+            "--promotion-reason",
+            "reviewed promotion",
+        ],
+    )
+    monkeypatch.setattr(training, "get_db_url", lambda: "postgresql://test")
+    monkeypatch.setattr("psycopg2.connect", Mock(return_value=conn))
+    monkeypatch.setattr(training, "load_registry_fit", Mock(return_value=fit))
+    monkeypatch.setattr(training, "safe_training_frontier", Mock(return_value=2025))
+    monkeypatch.setattr(training, "fetch_games", Mock(return_value=[]))
+    monkeypatch.setattr(training, "current_implementation_contract", lambda: implementation)
+    promote = Mock()
+    monkeypatch.setattr(training, "promote_fit", promote)
+    with pytest.raises(SystemExit) as error:
+        training.main()
+    assert error.value.code == 1
+    promote.assert_not_called()
+    conn.rollback.assert_called_once()
+
+
+def test_cli_rejects_stale_arguments_before_connecting(monkeypatch):
+    connect = Mock()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train_model.py",
+            "--promote-fit",
+            "a" * 64,
+            "--promotion-reason",
+            "reviewed",
+            "--seasons",
+            "2018",
+            "2019",
+        ],
+    )
+    monkeypatch.setattr("psycopg2.connect", connect)
+    with pytest.raises(SystemExit) as error:
+        training.main()
+    assert error.value.code == 2
+    connect.assert_not_called()
 
 
 class SQLiteCursor:

@@ -887,3 +887,38 @@ its existing minimum sample threshold. Keep the existing fail-closed policy;
 do not seed it with legacy or reconstructed predictions or silently invent a
 fallback. New production schema deployment and scoring require a separately
 authorized rollout, with the cold-start limitation explicit before deployment.
+
+### F05 immutable training lifecycle amendment — September 7, 2026
+
+New training runs append to `features.training_fits`, identified by SHA-256 of
+an explicit training manifest and frozen parameters. The manifest records the
+ordered feature contract, transformation/algorithm source fingerprints, training
+seasons and cutoff, consumed input content digest and row count, numerical
+hyperparameters, runtime versions, code revision, and calibration method.
+Source data digests identify the inputs consumed; they do not claim to archive
+or reconstruct upstream warehouse revisions. Existing F04 prediction artifacts
+remain immutable and additionally identify the upstream training fit when known.
+
+`features.model_deployments` explicitly selects one immutable training fit for
+each (model version, train-through season). Training alone does not move this
+pointer; an explicit promotion action does. The daily refit invocation opts into
+promotion under the existing production algorithm. Promotion history is retained.
+Legacy coefficient/metadata tables remain available as historical compatibility
+objects; import snapshots their exact stored values and labels their training
+lineage unknown instead of inventing manifests. Scoring uses selected registry
+fits after cutover. A legacy import is not evidence of current training inputs.
+
+Freshness compares the current ordered transformations, parameters and runtime
+contract plus the actual training input digest, rather than feature-name sets.
+Expected closed-window vintages minus current selected vintages identifies every
+missing or stale season, including interior holes. Preserve F03's contiguous
+season-finality and strictly-prior-season scoring constraints. Explicit training
+ranges may produce candidates; production promotion requires safe finality.
+
+The ridge/IRLS math, feature vector, stored six-decimal coefficient/calibration
+precision, and training-logit Platt calibration remain unchanged. Changing the
+calibration method requires a separately pre-registered time-ordered held-out
+comparison on identical eligible games and the existing MAE/Brier/ATS adoption
+gates; F05 infrastructure itself does not establish an accuracy improvement.
+Production migration, legacy import, refit and promotion require a separately
+authorized rollout with writers coordinated and rollback pointers recorded.

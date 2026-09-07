@@ -1,6 +1,6 @@
 # F06 — warehouse bootstrap and migration history
 
-Status: implemented and locally verified; PR/CI review pending. Production
+Status: implemented; initial PR CI passed, automated review fixes in validation. Production
 ledger adoption and migration 065 application are separate rollout decisions.
 
 ## Deliverable and boundaries
@@ -147,3 +147,13 @@ by the schema-export authorization and has not been run.
 - Independent reviews are clean for the engine, baseline/manifest, access fix,
   integration scope and adjusted guard. Ruff, formatting, whitespace and shared
   agent-setup checks passed. No production DDL or data writes occurred.
+
+## PR 129 review follow-up
+
+CI at `639e603` passed all jobs, including 10 warehouse bootstrap SQL tests,
+2,935 main tests (61 skipped), and 59 MCP tests. Greptile identified the new
+artifact-upload action's mutable tag; it is now pinned to the verified v4.6.2
+commit. Codex identified libpq fallback from incomplete connection URLs. The
+CLI now requires a complete URL and rejects ambient target/credential variables
+and query overrides before connecting. Focused regressions and independent
+review cover these corrections; production rollout remains separate.

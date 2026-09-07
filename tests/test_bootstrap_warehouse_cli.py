@@ -16,6 +16,8 @@ from scripts.warehouse_migrations import (
     MigrationStep,
 )
 
+TEST_DATABASE_URL = "postgresql://warehouse:test-password@db.example:5432/warehouse"
+
 
 class FakeConnection:
     def __init__(self):
@@ -84,7 +86,7 @@ def test_upgrade_dry_run_passes_explicit_read_only_request_and_prints_plan(
     manifest = make_manifest(tmp_path)
     connection = FakeConnection()
     calls = []
-    monkeypatch.setenv("WAREHOUSE_DB_URL", "postgresql://fixture")
+    monkeypatch.setenv("WAREHOUSE_DB_URL", TEST_DATABASE_URL)
     monkeypatch.setattr(cli, "load_manifest", lambda path, root: manifest)
     monkeypatch.setattr(cli, "connect_database", lambda url: connection)
 
@@ -148,10 +150,76 @@ def test_only_warehouse_database_url_is_accepted(monkeypatch, tmp_path, capsys):
     assert "must-not-be-used" not in error
 
 
+def test_complete_database_url_with_nonrouting_options_is_accepted(monkeypatch):
+    monkeypatch.setenv("PGSSLMODE", "verify-full")
+
+    cli.validate_database_url(TEST_DATABASE_URL + "?application_name=f06&connect_timeout=10")
+
+
+def test_connect_database_revalidates_before_calling_driver(monkeypatch):
+    driver_calls = []
+    monkeypatch.setattr("psycopg2.connect", lambda url: driver_calls.append(url))
+
+    with pytest.raises(ValueError, match="host, port, user, password"):
+        cli.connect_database("postgresql:///postgres")
+
+    assert driver_calls == []
+
+
+@pytest.mark.parametrize(
+    ("database_url", "message"),
+    [
+        ("http://warehouse:test@db.example:5432/warehouse", "must use postgres"),
+        ("postgresql:///postgres", "host, port, user, password"),
+        ("postgresql://warehouse:test@db.example/warehouse", "port"),
+        ("postgresql://warehouse:test@db.example:5432/", "dbname"),
+        ("postgresql://:test@db.example:5432/warehouse", "user"),
+        ("postgresql://warehouse@db.example:5432/warehouse", "password"),
+        (TEST_DATABASE_URL + "#other", "fragment"),
+        (
+            "postgresql://warehouse:test@%2Fvar%2Frun%2Fpostgresql:5432/warehouse",
+            "socket",
+        ),
+        ("postgresql://warehouse:test@one,two:5432/warehouse", "host list"),
+        (TEST_DATABASE_URL + "?service=production", "service"),
+        (TEST_DATABASE_URL + "?hostaddr=203.0.113.1", "hostaddr"),
+        (TEST_DATABASE_URL + "?passfile=/tmp/pass", "passfile"),
+        (
+            TEST_DATABASE_URL + "?sslmode=require&%73slmode=disable",
+            "duplicate query parameter",
+        ),
+        (TEST_DATABASE_URL + "?application_name=", "nonempty"),
+        ("postgresql://warehouse:bad%escape@db.example:5432/warehouse", "percent escape"),
+    ],
+)
+def test_incomplete_or_ambient_capable_database_urls_are_rejected(database_url, message):
+    with pytest.raises(ValueError, match=message):
+        cli.validate_database_url(database_url)
+
+
+@pytest.mark.parametrize("ambient_name", ["PGHOST", "PGHOSTADDR", "PGPASSWORD", "PGSERVICE"])
+def test_ambient_libpq_target_or_credentials_stop_before_connection(
+    ambient_name, monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setenv("WAREHOUSE_DB_URL", TEST_DATABASE_URL)
+    monkeypatch.setenv(ambient_name, "must-not-be-used")
+    monkeypatch.setattr(cli, "load_manifest", lambda path, root: make_manifest(tmp_path))
+    monkeypatch.setattr(
+        cli,
+        "connect_database",
+        lambda url: pytest.fail("ambient libpq state must be rejected before connection"),
+    )
+
+    assert cli.main(["status"]) == 1
+    error = capsys.readouterr().err
+    assert ambient_name in error
+    assert "must-not-be-used" not in error
+
+
 def test_database_url_and_password_are_redacted_from_connection_errors(
     monkeypatch, tmp_path, capsys
 ):
-    database_url = "postgresql://warehouse:super-secret@db.example/test"
+    database_url = "postgresql://warehouse:super-secret@db.example:5432/test"
     monkeypatch.setenv("WAREHOUSE_DB_URL", database_url)
     monkeypatch.setattr(cli, "load_manifest", lambda path, root: make_manifest(tmp_path))
 
@@ -170,7 +238,7 @@ def test_database_url_and_password_are_redacted_from_connection_errors(
 
 
 def test_database_url_is_redacted_if_connection_close_fails(monkeypatch, tmp_path, capsys):
-    database_url = "postgresql://warehouse:close-secret@db.example/test"
+    database_url = "postgresql://warehouse:close-secret@db.example:5432/test"
 
     class BadCloseConnection:
         def close(self):
@@ -195,7 +263,7 @@ def test_database_url_is_redacted_if_connection_close_fails(monkeypatch, tmp_pat
 
 def test_drift_plan_is_structured_and_exits_nonzero(monkeypatch, tmp_path, capsys):
     connection = FakeConnection()
-    monkeypatch.setenv("WAREHOUSE_DB_URL", "postgresql://fixture")
+    monkeypatch.setenv("WAREHOUSE_DB_URL", TEST_DATABASE_URL)
     monkeypatch.setattr(cli, "load_manifest", lambda path, root: make_manifest(tmp_path))
     monkeypatch.setattr(cli, "connect_database", lambda url: connection)
     monkeypatch.setattr(
@@ -216,7 +284,7 @@ def test_drift_plan_is_structured_and_exits_nonzero(monkeypatch, tmp_path, capsy
 def test_executable_state_error_still_prints_its_plan(monkeypatch, tmp_path, capsys):
     connection = FakeConnection()
     plan = make_plan(valid=False, mode="upgrade")
-    monkeypatch.setenv("WAREHOUSE_DB_URL", "postgresql://fixture")
+    monkeypatch.setenv("WAREHOUSE_DB_URL", TEST_DATABASE_URL)
     monkeypatch.setattr(cli, "load_manifest", lambda path, root: make_manifest(tmp_path))
     monkeypatch.setattr(cli, "connect_database", lambda url: connection)
 

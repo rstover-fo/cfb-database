@@ -27,6 +27,14 @@ The CLI requires an explicit action and reads only `WAREHOUSE_DB_URL`:
 .venv/bin/python scripts/bootstrap_warehouse.py status
 ```
 
+Use a complete `postgresql://user:password@host:port/database` URL with one TCP
+host. Percent-encode reserved characters in credentials. Target and credential
+overrides in the query string, service files, socket paths, and host lists are
+rejected. Unset ambient `PGDATABASE`, `PGHOST`, `PGHOSTADDR`, `PGPASSFILE`,
+`PGPASSWORD`, `PGPORT`, `PGSERVICE`, `PGSERVICEFILE`, and `PGUSER` before running
+the CLI; it rejects these variables instead of inheriting a different target
+or password. Connection options such as `sslmode=require` remain supported.
+
 `--manifest` selects a reviewed version-1 JSON manifest. `--target` stops at an
 existing migration ID; it cannot roll back applied history. `--dry-run`, `plan`
 and `status` use read-only transactions and never install the ledger.

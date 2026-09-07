@@ -19,7 +19,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -35,6 +35,34 @@ from scripts.warehouse_migrations import (  # noqa: E402
 
 DEFAULT_MANIFEST = REPO_ROOT / "src" / "schemas" / "warehouse-manifest.json"
 DATABASE_ENV = "WAREHOUSE_DB_URL"
+AMBIENT_LIBPQ_TARGET_ENV = frozenset(
+    {
+        "PGDATABASE",
+        "PGHOST",
+        "PGHOSTADDR",
+        "PGPASSFILE",
+        "PGPASSWORD",
+        "PGPORT",
+        "PGSERVICE",
+        "PGSERVICEFILE",
+        "PGUSER",
+    }
+)
+FORBIDDEN_URI_QUERY_KEYS = frozenset(
+    {
+        "database",
+        "dbname",
+        "host",
+        "hostaddr",
+        "passfile",
+        "password",
+        "port",
+        "service",
+        "servicefile",
+        "user",
+    }
+)
+REQUIRED_CONNECTION_FIELDS = ("host", "port", "dbname", "user", "password")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -129,10 +157,65 @@ def _redact_error(exc: Exception, database_url: str | None = None) -> str:
     return message
 
 
+def validate_database_url(database_url: str) -> None:
+    """Reject libpq URLs that can inherit their target or password from ambient state."""
+    if re.search(r"%(?![0-9A-Fa-f]{2})", database_url):
+        raise ValueError(f"{DATABASE_ENV} contains an invalid percent escape")
+    try:
+        parsed_url = urlsplit(database_url)
+        parsed_port = parsed_url.port
+    except ValueError as exc:
+        raise ValueError(f"{DATABASE_ENV} is not a valid PostgreSQL URL") from exc
+    if parsed_url.scheme not in {"postgres", "postgresql"}:
+        raise ValueError(f"{DATABASE_ENV} must use postgres:// or postgresql://")
+    if parsed_url.fragment:
+        raise ValueError(f"{DATABASE_ENV} must not contain a URL fragment")
+
+    try:
+        query_items = parse_qsl(parsed_url.query, keep_blank_values=True, strict_parsing=True)
+    except ValueError as exc:
+        raise ValueError(f"{DATABASE_ENV} contains a malformed query string") from exc
+    query_keys: set[str] = set()
+    for raw_key, value in query_items:
+        key = raw_key.lower()
+        if not key or not value:
+            raise ValueError(f"{DATABASE_ENV} query parameters must have nonempty keys and values")
+        if key in query_keys:
+            raise ValueError(f"{DATABASE_ENV} contains duplicate query parameter: {key}")
+        if key in FORBIDDEN_URI_QUERY_KEYS:
+            raise ValueError(
+                f"{DATABASE_ENV} must put target and credentials in the URL authority/path; "
+                f"query parameter {key!r} is not allowed"
+            )
+        query_keys.add(key)
+
+    try:
+        from psycopg2.extensions import parse_dsn
+
+        connection_fields = parse_dsn(database_url)
+    except Exception as exc:
+        raise ValueError(f"{DATABASE_ENV} is not a valid PostgreSQL URL") from exc
+    missing = [field for field in REQUIRED_CONNECTION_FIELDS if not connection_fields.get(field)]
+    if missing:
+        raise ValueError(f"{DATABASE_ENV} must explicitly include nonempty " + ", ".join(missing))
+    if parsed_port is None:
+        raise ValueError(f"{DATABASE_ENV} must explicitly include a port")
+    host = unquote(connection_fields["host"])
+    if "/" in host or "," in host or "\x00" in host:
+        raise ValueError(f"{DATABASE_ENV} must name one TCP host, not a socket or host list")
+
+    ambient = sorted(name for name in AMBIENT_LIBPQ_TARGET_ENV if os.environ.get(name))
+    if ambient:
+        raise ValueError(
+            "ambient libpq target or credential variables are not allowed: " + ", ".join(ambient)
+        )
+
+
 def connect_database(database_url: str):
     """Open the explicit warehouse database URL with the supported driver."""
     import psycopg2
 
+    validate_database_url(database_url)
     return psycopg2.connect(database_url)
 
 
@@ -161,6 +244,15 @@ def main(argv: list[str] | None = None) -> int:
                 f"{DATABASE_ENV} is required; no other credential source is used",
                 error_type="ConfigurationError",
             ),
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        validate_database_url(database_url)
+    except Exception as exc:
+        _print_json(
+            _error_payload(_redact_error(exc, database_url), error_type=type(exc).__name__),
             file=sys.stderr,
         )
         return 1

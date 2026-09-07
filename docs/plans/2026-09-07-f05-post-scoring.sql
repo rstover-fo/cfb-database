@@ -16,6 +16,7 @@ BEGIN
             OR p.evaluation_mode IS DISTINCT FROM 'published_forecast'
             OR p.created_at IS NULL OR p.published_at IS DISTINCT FROM p.created_at
             OR p.input_hash IS NULL OR p.input_snapshot IS NULL OR p.expected_home_margin IS NULL
+            OR p.home_win_prob IS NULL OR p.home_win_prob NOT BETWEEN 0 AND 1
             OR f.training_fit_id IS NULL OR d.training_fit_id IS NULL
             OR f.manifest->>'lineage' IS DISTINCT FROM 'known'
             OR g.id IS NULL OR f.train_through_season>=g.season

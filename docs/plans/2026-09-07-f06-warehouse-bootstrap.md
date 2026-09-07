@@ -57,3 +57,19 @@ adoption process is required before production uses the managed release path.
 
 F26's broader test-fixture conversion and F27's environment locking are related
 follow-ups; only integration needed to prove F06 belongs to this change.
+
+## Initial development checks
+
+The ledger/CLI implementation is complete pending full-baseline integration.
+Focused tests: 103 passed. Executed disposable PostgreSQL 17 tests: 7 passed,
+including upgrade row preservation, unchanged no-op, exact-byte drift rejection,
+atomic batch failure, repeatable audit history, lock contention, column-before-
+view ordering, and autocommit rejection. Independent review identified the
+repeatable ordering and string-scanner issues; both now have regressions.
+
+The catalog artifact approval is still pending. No production export or schema
+change has run for F06. Full warehouse reconstruction is not yet verified.
+
+Full credential-free suite: 2,483 passed, 507 skipped (live integrations not
+opted in). Ruff, formatting, whitespace and agent setup checks passed. Final
+independent engine/CLI review is clean; the full-baseline review remains pending.

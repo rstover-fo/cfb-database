@@ -9,33 +9,47 @@ For agent/local/cloud development without warehouse credentials, run
 dependencies into `.venv`. See [agent setup](docs/agent-setup.md) for shared
 instructions, cloud setup, and offline versus live test commands.
 
-The following steps provision or load a warehouse and need an authorized target:
+### Disposable warehouse development
 
-1. Copy `.dlt/secrets.toml.example` to `.dlt/secrets.toml` and add your credentials:
-   - CFBD API key from https://collegefootballdata.com/key
-   - Supabase Postgres connection string
+The managed warehouse path requires PostgreSQL 17 with pgvector. It creates the
+reviewed schema and static seeds without CFBD requests or production row data.
+Use an explicitly selected empty database:
 
-2. Install dependencies:
-   ```bash
-   bash scripts/setup_dev.sh
-   source .venv/bin/activate
-   ```
+```bash
+export WAREHOUSE_DB_URL='postgresql://postgres:local-password@127.0.0.1:55436/postgres'
+.venv/bin/python scripts/bootstrap_warehouse.py bootstrap
+.venv/bin/python scripts/bootstrap_warehouse.py status
+```
 
-3. Provision the database:
-   ```bash
-   python scripts/run_migrations.py     # Core DDL (src/schemas/001-018)
-   python scripts/run_marts.py          # Materialized view definitions
-   python scripts/refresh_marts.py      # Populate/refresh the marts
-   ```
-   One-off SQL in `src/schemas/public/`, `api/`, or `functions/` is applied with:
-   ```bash
-   python scripts/run_migrations.py --file src/schemas/public/008_trajectory_averages_function.sql
-   ```
+`bootstrap` is repeatable: an unchanged manifest is a no-op. For a database
+already managed by this manifest, inspect and apply forward changes with:
 
-4. Load data:
-   ```bash
-   python -m src.pipelines.run --source reference
-   ```
+```bash
+.venv/bin/python scripts/bootstrap_warehouse.py plan
+.venv/bin/python scripts/bootstrap_warehouse.py upgrade
+```
+
+See [warehouse bootstrap](docs/warehouse-bootstrap.md) for the disposable Docker
+command, prior-baseline upgrade exercise, fixture tests, and platform boundaries.
+The managed CLI uses only `WAREHOUSE_DB_URL`; it does not discover production
+credentials. Existing unledgered production databases require separately reviewed
+catalog reconciliation and adoption. Do not point bootstrap at them.
+
+### Ingestion and explicit operations
+
+Schema construction does not load game/roster data or certify warehouse coverage.
+For an authorized ingestion target, configure `.dlt/secrets.toml` from its example
+with a CFBD key and Supabase session-pooler connection, then run the selected
+pipelines. Ingestion populates provider data before derived-data computation and
+mart refresh. Secrets are unnecessary for installing dependencies or fixture tests.
+
+Historical root migrations 001–018 are retained for incident/recovery reference;
+they are not a clean-install recipe. Real replay requires `--legacy-history`.
+Explicit reviewed SQL applications and diagnostics retain their existing path:
+
+```bash
+.venv/bin/python scripts/run_migrations.py --file path/to/reviewed.sql
+```
 
 ## In-Season Operations
 

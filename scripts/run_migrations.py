@@ -1,14 +1,18 @@
 """Run schema migration scripts against Supabase Postgres.
 
 Usage:
-    python scripts/run_migrations.py                    # Run all migrations
-    python scripts/run_migrations.py --from 002         # Run from 002 onwards
-    python scripts/run_migrations.py --only 009         # Run only 009
+    python scripts/run_migrations.py --legacy-history   # Run all historical migrations
+    python scripts/run_migrations.py --from 002 --legacy-history
+    python scripts/run_migrations.py --only 009 --legacy-history
     python scripts/run_migrations.py --dry-run          # Print SQL without executing
     python scripts/run_migrations.py --file src/schemas/public/008_trajectory_averages_function.sql
 
 --file applies a single SQL file outside MIGRATION_ORDER -- the supported path
 for one-off changes to public/, api/, and functions/ definitions.
+
+The ordered 001--018 chain is retained as history and may be destructive when
+replayed. Real execution requires --legacy-history; --dry-run remains available
+without the opt-in for inspection.
 """
 
 import argparse
@@ -109,15 +113,32 @@ def run_migration(sql_file: Path, conn, dry_run: bool = False) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run schema migrations")
-    parser.add_argument("--from", dest="from_num", help="Start from migration number (e.g., 002)")
-    parser.add_argument("--only", help="Run only this migration number (e.g., 009)")
+    selectors = parser.add_mutually_exclusive_group()
+    selectors.add_argument(
+        "--from", dest="from_num", help="Start from migration number (e.g., 002)"
+    )
+    selectors.add_argument("--only", help="Run only this migration number (e.g., 009)")
     parser.add_argument("--dry-run", action="store_true", help="Print SQL without executing")
+    parser.add_argument(
+        "--legacy-history",
+        action="store_true",
+        help="Acknowledge real execution of the historical 001--018 chain",
+    )
     parser.add_argument(
         "--file",
         dest="sql_file",
         help="Apply a single SQL file (path relative to repo root or absolute)",
     )
     args = parser.parse_args()
+
+    if args.sql_file and (args.from_num or args.only or args.legacy_history):
+        parser.error("--file cannot be combined with --from, --only, or --legacy-history")
+
+    if not args.sql_file and not args.dry_run and not args.legacy_history:
+        parser.error(
+            "historical 001--018 replay is blocked without --legacy-history; "
+            "use scripts/bootstrap_warehouse.py for managed warehouse releases"
+        )
 
     if args.sql_file:
         sql_path = Path(args.sql_file)

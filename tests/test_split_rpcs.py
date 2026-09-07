@@ -28,6 +28,17 @@ def _sql_files():
     return sorted(SCHEMAS_DIR.rglob("*.sql"))
 
 
+def _uses_absolute_start_yardline(sql: str) -> bool:
+    """Allow captured raw column declarations, but prohibit analytical use."""
+    sql = _strip_comments(sql)
+
+    def without_raw_declaration(match):
+        return re.sub(r"^\s*start_yardline bigint,?\s*$", "", match.group(0), flags=re.MULTILINE)
+
+    sql = re.sub(r"CREATE TABLE [^(;]+\(.*?\n\);", without_raw_declaration, sql, flags=re.DOTALL)
+    return "start_yardline" in sql
+
+
 class TestAbsoluteYardlineBan:
     def test_no_start_yardline_anywhere(self):
         """start_yardline (absolute, direction-dependent) is a proven
@@ -35,9 +46,19 @@ class TestAbsoluteYardlineBan:
         offenders = [
             str(f.relative_to(PROJECT_ROOT))
             for f in _sql_files()
-            if "start_yardline" in _strip_comments(f.read_text())
+            if _uses_absolute_start_yardline(f.read_text())
         ]
         assert offenders == [], f"start_yardline referenced in: {offenders}"
+
+    def test_raw_column_preservation_does_not_allow_query_use(self):
+        raw = "CREATE TABLE core.drives (\n    start_yardline bigint,\n    id bigint\n);"
+        assert not _uses_absolute_start_yardline(raw)
+        assert _uses_absolute_start_yardline(
+            raw + "\nCREATE VIEW public.bad AS SELECT start_yardline FROM core.drives;"
+        )
+        assert _uses_absolute_start_yardline(
+            "CREATE TABLE bad AS SELECT start_yardline FROM core.drives;"
+        )
 
     def test_split_functions_use_yards_to_goal_not_yardline(self):
         """Within the split-RPC files, any yardline mention must be the

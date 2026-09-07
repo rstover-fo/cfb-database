@@ -123,3 +123,7 @@ CREATE UNIQUE INDEX ON marts.team_season_trajectory (season, team);
 CREATE INDEX ON marts.team_season_trajectory (team);
 CREATE INDEX ON marts.team_season_trajectory (era_code, season);
 CREATE INDEX ON marts.team_season_trajectory (epa_delta DESC NULLS LAST);
+
+-- public.team_season_trajectory uses invoker rights. Its intended callers must
+-- retain SELECT on this public-source mart after a reviewed recreation.
+GRANT SELECT ON TABLE marts.team_season_trajectory TO anon, authenticated;

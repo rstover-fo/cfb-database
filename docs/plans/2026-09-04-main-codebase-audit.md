@@ -125,7 +125,7 @@ Evidence: [backfill defaults and dating](https://github.com/rstover-fo/cfb-datab
 ### F05 — “Frozen” model versions are mutable and freshness checks are incomplete
 
 Implementation and validation: [F05 training lifecycle plan](2026-09-07-f05-immutable-training-fits.md).
-Production rollout remains pending; the finding below records the original audit state.
+Production rollout is verified in the linked F05 rollout record; the finding below records the original audit state.
 
 **P2 · Confirmed · M/L; coordinate with F04**
 
@@ -140,6 +140,9 @@ Evidence: [fit persistence](https://github.com/rstover-fo/cfb-database/blob/4a79
 ## Findings: schema, releases, and derived-data dependencies
 
 ### F06 — The documented migration/bootstrap path does not reconstruct the warehouse
+
+Implementation and verification: [F06 managed warehouse baseline](2026-09-07-f06-warehouse-bootstrap.md).
+The finding below records the original audit state.
 
 **P1 · Confirmed · L**
 

@@ -85,3 +85,30 @@ jobs:
         run: .venv/bin/python -m pytest tests/test_training_registry_sql.py -q --tb=short
         env:
           F05_TEST_DB_URL: postgresql://postgres@127.0.0.1:5432/postgres
+
+  warehouse-bootstrap:
+    name: Warehouse Bootstrap SQL
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f
+        env:
+          POSTGRES_PASSWORD: f06-disposable-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: ./scripts/setup_dev.sh
+      - name: Managed bootstrap and upgrade integration
+        run: .venv/bin/python -m pytest tests/test_warehouse_migrations_sql.py tests/test_warehouse_bootstrap_sql.py -q --tb=short
+        env:
+          F06_TEST_DB_URL: postgresql://postgres:f06-disposable-ci@127.0.0.1:5432/postgres
+          F06_REQUIRE_DB: "1"

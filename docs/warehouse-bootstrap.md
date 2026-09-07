@@ -1,0 +1,144 @@
+# Managed warehouse bootstrap
+
+The default manifest reconstructs the reviewed warehouse catalog captured on
+2026-09-07. It includes 31 application schemas, normalized dlt/staging tables,
+partitions, indexes, grants, 60 materialized views, and API/public functions and
+views. It loads static repository seeds, not production rows or dlt load state.
+
+## Local database
+
+Install development dependencies with `bash scripts/setup_dev.sh`, then start
+an isolated PostgreSQL 17 with pgvector. Use a dedicated container and loopback
+port; do not reuse a production tunnel or another project's database.
+
+```bash
+docker run --name cfb-fixture-postgres \
+  -e POSTGRES_PASSWORD=local-password -p 127.0.0.1:55436:5432 -d \
+  pgvector/pgvector:pg17@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f
+export WAREHOUSE_DB_URL='postgresql://postgres:local-password@127.0.0.1:55436/postgres'
+```
+
+The CLI requires an explicit action and reads only `WAREHOUSE_DB_URL`:
+
+```bash
+.venv/bin/python scripts/bootstrap_warehouse.py bootstrap
+.venv/bin/python scripts/bootstrap_warehouse.py plan
+.venv/bin/python scripts/bootstrap_warehouse.py upgrade
+.venv/bin/python scripts/bootstrap_warehouse.py status
+```
+
+Use a complete `postgresql://user:password@host:port/database` URL with one TCP
+host. Percent-encode reserved characters in credentials. Target and credential
+overrides in the query string, service files, socket paths, and host lists are
+rejected. Unset ambient `PGDATABASE`, `PGHOST`, `PGHOSTADDR`, `PGPASSFILE`,
+`PGPASSWORD`, `PGPORT`, `PGSERVICE`, `PGSERVICEFILE`, and `PGUSER` before running
+the CLI; it rejects these variables instead of inheriting a different target
+or password. Connection options such as `sslmode=require` remain supported.
+
+`--manifest` selects a reviewed version-1 JSON manifest. `--target` stops at an
+existing migration ID; it cannot roll back applied history. `--dry-run`, `plan`
+and `status` use read-only transactions and never install the ledger.
+
+## Release semantics
+
+Manifest entries have unique `id`, repository-relative SQL `path`, and `kind`
+(`immutable` or `repeatable`). Immutable entries retain exact bytes and order
+forever once applied. Forward prerequisites run before changed repeatables;
+repeatables then run in manifest order. Add prerequisite objects as immutable
+forward migrations when a changed view/function needs them.
+
+The private `warehouse_control` ledger stores identities, paths, exact SHA256
+checksums and timestamps. Repeatable execution history retains each checksum.
+A transaction-scoped advisory lock covers state validation, all migration SQL,
+and ledger changes. Any SQL failure rolls back the entire batch. Migration SQL
+cannot contain top-level transaction controls. Unchanged invocations are no-ops;
+changed applied immutable files, deleted/reordered identities, and unmanaged
+upgrade targets fail clearly. No command silently adopts production history.
+
+The old `run_migrations.py --file` interface deliberately continues to execute
+explicit diagnostics/repairs each time. It is not ledger-managed. Historical
+001–018 chain execution now needs `--legacy-history`; inspecting it with
+`--dry-run` remains available without that opt-in.
+
+## Executed integration
+
+The ledger tests create uniquely named databases in an explicitly selected
+loopback cluster and drop only those databases afterward:
+
+```bash
+F06_TEST_DB_URL="$WAREHOUSE_DB_URL" F06_REQUIRE_DB=1 \
+  .venv/bin/python -m pytest tests/test_warehouse_migrations_sql.py -q
+```
+
+The full catalog integration suite is `tests/test_warehouse_bootstrap_sql.py`.
+Run both files to exercise fresh installation, prior-version upgrade, repeated
+no-op, catalog counts, nested dlt rows, and actual consumer-role access. CI uses
+the same pinned disposable image with mandatory connection checks. Ordinary
+dependency installation does not provision data.
+
+## Prior-baseline upgrade exercise
+
+On a second empty disposable database, stop at the structural pre-F05 baseline,
+then upgrade through the original migration 064 and access correction 065:
+
+```bash
+.venv/bin/python scripts/bootstrap_warehouse.py bootstrap \
+  --target warehouse.baseline.ready.20260907
+.venv/bin/python scripts/bootstrap_warehouse.py upgrade
+.venv/bin/python scripts/bootstrap_warehouse.py upgrade
+```
+
+The second upgrade applies nothing. This fixture was derived from the current
+catalog by removing the three F05 registry tables and three trigger functions.
+It is a structural prior version, not a claim to recover an exact historical
+production snapshot; comments on legacy model tables still describe F05.
+
+## Capture and platform boundaries
+
+[Approved schema-only capture](https://github.com/rstover-fo/cfb-database/actions/runs/34157877609)
+and its SHA256/object inventory are recorded in
+`src/schemas/baseline/20260907_catalog.json`. The generated baseline is immutable
+once applied. The first capture exposed an untracked dependency on `rp` tables
+used by live returning-production marts; a second capture included that schema.
+No production migration or ledger adoption ran.
+
+The restore requires the `postgres` owner. Platform roles are NOLOGIN stand-ins
+and include the captured analyst membership grants. Public extensions are
+pg_trgm, fuzzystrmatch, and pgvector. Supabase authentication, storage, cron,
+vault, GraphQL and platform-managed extensions are outside this fixture. Other
+application/incident schemas (`app`, `bot`, `tracking`, `recovery`) are excluded;
+no captured warehouse definition depends on them. This baseline does not
+codify the user's uncommitted film/tracking work.
+
+All 54 API views retain their captured owner-rights behavior. The 13 public
+wrapper views retain their existing invoker-rights settings. Scouting stays
+private. Role stand-ins do not emulate Supabase JWT/authentication or service
+administrator privileges.
+
+The static seeds are current repository-owned era definitions, PFF team mappings,
+and the reviewed Massey crosswalk. The obsolete root `ref.positions` seed is
+excluded because that relation is absent from the captured warehouse. Provider
+reference rows, training fits, prediction history, scouting records, and `rp`
+weight/configuration rows are not fabricated. Populate those through their
+separately authorized ingestion/configuration workflows before relying on data
+coverage or model outputs. Empty-view refresh proves executable definitions,
+not representative production refresh cost or populated warehouse completeness.
+
+Schema-only capture retains normalized dlt columns and relationships, but does
+not copy `_dlt_version`/`_dlt_pipeline_state` row contents. An existing production
+warehouse remains unledgered and is deliberately rejected by managed upgrade.
+Adoption requires a separately reviewed catalog comparison and provenance plan;
+never mark historical transformations as applied solely from matching names.
+
+## Forward correction discovered by executed role checks
+
+The captured `public.team_season_trajectory` wrapper grants consumer access but
+uses invoker rights without SELECT on its underlying mart. All other public
+wrappers and API views passed. Migration 065 grants only SELECT on that
+public-source mart to anon/authenticated; analyst_ro retains its API-only
+boundary, and no consumer write grant is added. The source mart definition
+retains this grant on a later reviewed recreation. The generated captured
+baseline is unchanged; the managed manifest applies the fix as a forward step.
+
+This correction has been executed only in disposable databases. Production
+application of 065 requires separate authorization after review/merge.

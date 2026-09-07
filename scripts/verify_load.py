@@ -311,14 +311,18 @@ def check_fitted_coverage(cur, report: Report) -> None:
     cur.execute(
         f"""
         WITH pending AS (
-            SELECT g.id, g.season
+            SELECT g.id, g.season, g.start_date
             FROM core.games g
             WHERE {PENDING_GAMES_WHERE}
         )
         SELECT p.season, COUNT(*),
                SUM(CASE WHEN EXISTS (
                    SELECT 1 FROM predictions.game_predictions gp
-                   WHERE gp.game_id = p.id AND gp.model_version = 'fitted_v1'
+                   WHERE gp.game_id = p.id
+                     AND gp.model_version = 'fitted_v1'
+                     AND gp.evaluation_mode = 'published_forecast'
+                     AND gp.published_at IS NOT NULL
+                     AND (p.start_date IS NULL OR gp.published_at < p.start_date)
                ) THEN 1 ELSE 0 END)
         FROM pending p
         GROUP BY p.season

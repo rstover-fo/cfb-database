@@ -400,6 +400,13 @@ GAME_PREDICTIONS_COLUMNS = {
     "market_captured_at",
     "edge",
     "edge_pick",
+    "evaluation_mode",
+    "created_at",
+    "published_at",
+    "simulated_as_of_at",
+    "experiment_label",
+    "fit_id",
+    "input_hash",
 }
 
 # Phase 5 of the preseason outlook plan -- latest Monte Carlo season
@@ -889,8 +896,8 @@ class TestViewsExistAndReturnRows:
             # retro 2015-2025 x 2 models
             ("api.team_elo", 5000),
             ("api.game_elo_history", 40000),
-            ("api.prediction_accuracy", 80),
-            ("api.game_predictions", 15000),
+            ("api.prediction_accuracy", 0),
+            ("api.game_predictions", 0),
             # Tier 3 analytics: feature vectors and adjusted EPA coefficients
             ("api.team_week_features", 15000),
             ("api.adjusted_epa_week", 50000),
@@ -984,6 +991,7 @@ class TestViewColumns:
             ("api.scored_matchup_edges", SCORED_MATCHUP_EDGES_COLUMNS),
             ("api.prediction_accuracy", PREDICTION_ACCURACY_COLUMNS),
             ("api.game_predictions", GAME_PREDICTIONS_COLUMNS),
+            ("api.prediction_history", GAME_PREDICTIONS_COLUMNS),
             # game_recaps starts empty (fills nightly) -- column check only, no
             # row-count entry in TestViewsExistAndReturnRows.
             ("api.game_recaps", GAME_RECAPS_COLUMNS),
@@ -1029,6 +1037,7 @@ class TestViewColumns:
             "scored_matchup_edges",
             "prediction_accuracy",
             "game_predictions",
+            "prediction_history",
             "game_recaps",
             "game_win_probability",
             "team_week_features",
@@ -1052,6 +1061,29 @@ class TestViewColumns:
     )
     def test_columns_present(self, db_conn, view_name, expected_columns):
         """All expected columns are present in the view."""
+        if view_name in {"api.game_predictions", "api.prediction_history"}:
+            deployed = _fetch_count(
+                db_conn,
+                """
+                SELECT COUNT(*) FROM information_schema.columns
+                WHERE table_schema = 'predictions' AND table_name = 'game_predictions'
+                  AND column_name = 'evaluation_mode'
+            """,
+            )
+            if not deployed:
+                if view_name == "api.prediction_history":
+                    pytest.skip(
+                        "F04 not deployed on this live target; isolated SQL CI tests its contract"
+                    )
+                expected_columns = expected_columns - {
+                    "evaluation_mode",
+                    "created_at",
+                    "published_at",
+                    "simulated_as_of_at",
+                    "experiment_label",
+                    "fit_id",
+                    "input_hash",
+                }
         _, columns = _fetch_all(db_conn, f"SELECT * FROM {view_name} LIMIT 1")
         actual = set(columns)
         missing = expected_columns - actual
@@ -1853,7 +1885,8 @@ class TestSeasonOutlook:
                        NULL::integer AS away_points,
                        'Test'::text AS home_conference, 'Test'::text AS away_conference,
                        'fbs'::text AS home_classification, 'fbs'::text AS away_classification,
-                       false AS conference_game
+                       false AS conference_game,
+                       TIMESTAMPTZ '2026-09-02' AS start_date
                 FROM (VALUES
                     (1, 2026, 'regular'), (2, 2026, 'regular'),
                     (3, 2026, 'postseason'), (4, 2025, 'regular')
@@ -1862,7 +1895,10 @@ class TestSeasonOutlook:
                 SELECT 1 AS game_id, 'test'::text AS model_version,
                        7.0::numeric AS expected_home_margin,
                        DATE '2026-09-01' AS prediction_date,
-                       TIMESTAMP '2026-09-01' AS computed_at
+                       TIMESTAMP '2026-09-01' AS computed_at,
+                       'published_forecast'::text AS evaluation_mode,
+                       TIMESTAMPTZ '2026-09-01' AS published_at,
+                       1::bigint AS prediction_id
             )
         """
         query = simulation.SEASON_GAMES_QUERY.replace("core.games", "fixture_games").replace(

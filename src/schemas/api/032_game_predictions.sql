@@ -1,20 +1,5 @@
--- api.game_predictions
--- Latest snapshot per (game, model) from the append-only prediction log:
--- house Elo + ridge-adjusted-EPA expected margin/win-prob vs the market
--- line, as of each game's most recent prediction_date.
--- Thin latest-snapshot view over predictions.game_predictions (Tier 2
--- analytics, docs/plans/2026-07-21-tier2-analytics-plan.md).
---
--- predictions.game_predictions is append-only across days (one immutable row
--- per game_id/model_version/UTC prediction_date -- see
--- migrations/024_predictions_schema.sql), so this view picks the most recent
--- prediction_date per (game_id, model_version) via DISTINCT ON. Query the
--- base table directly if the full day-by-day history is needed instead.
---
--- PostgREST usage:
---   GET /api/game_predictions?game_id=eq.401628455
---   GET /api/game_predictions?season=eq.2026&week=eq.5&model_version=eq.house_v1
-
+-- Latest published forecast per game/model. Historical modes remain discoverable
+-- through prediction_history. Neither prediction_date nor computed_at selects a row.
 CREATE OR REPLACE VIEW api.game_predictions AS
 SELECT DISTINCT ON (game_id, model_version)
     prediction_id,
@@ -39,10 +24,64 @@ SELECT DISTINCT ON (game_id, model_version)
     market_spread,
     market_captured_at,
     edge,
-    edge_pick
+    edge_pick,
+    evaluation_mode,
+    created_at,
+    published_at,
+    simulated_as_of_at,
+    experiment_label,
+    fit_id,
+    input_hash
 FROM predictions.game_predictions
-ORDER BY game_id, model_version, prediction_date DESC;
+WHERE evaluation_mode = 'published_forecast'
+ORDER BY game_id, model_version, published_at DESC, prediction_id DESC;
 
 GRANT SELECT ON api.game_predictions TO anon, authenticated;
 
-COMMENT ON VIEW api.game_predictions IS 'Latest house prediction snapshot per (game_id, model_version), from the append-only predictions.game_predictions log. Columns: prediction_id, computed_at, prediction_date, model_version, game_id, season, week, season_type, home_team, away_team, neutral_site, home_elo_pregame, away_elo_pregame, elo_margin, epa_margin, expected_home_margin, home_win_prob, market_provider, market_home_margin, market_spread, market_captured_at, edge, edge_pick. DISTINCT ON (game_id, model_version) ORDER BY prediction_date DESC selects the most recent snapshot; query predictions.game_predictions directly for full day-by-day history.';
+COMMENT ON VIEW api.game_predictions IS 'Latest published forecast by publication timestamp and immutable prediction_id. Published does not alone imply pre-kickoff; accuracy applies its strict kickoff cutoff.';
+
+CREATE OR REPLACE VIEW api.prediction_history AS
+SELECT
+    prediction_id,
+    computed_at,
+    prediction_date,
+    model_version,
+    game_id,
+    season,
+    week,
+    season_type,
+    home_team,
+    away_team,
+    neutral_site,
+    home_elo_pregame,
+    away_elo_pregame,
+    elo_margin,
+    epa_margin,
+    expected_home_margin,
+    home_win_prob,
+    market_provider,
+    market_home_margin,
+    market_spread,
+    market_captured_at,
+    edge,
+    edge_pick,
+    evaluation_mode,
+    created_at,
+    published_at,
+    simulated_as_of_at,
+    experiment_label,
+    fit_id,
+    input_hash
+FROM predictions.game_predictions;
+
+GRANT SELECT ON api.prediction_history TO anon, authenticated;
+COMMENT ON VIEW api.prediction_history IS 'All prediction modes and immutable IDs, including legacy_unknown. Simulated as-of timestamps are reconstruction intent, not original publication evidence.';
+
+-- Preserve the API-only analyst role even when deployed by a different owner.
+DO $grants$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'analyst_ro') THEN
+        GRANT SELECT ON api.game_predictions, api.prediction_history TO analyst_ro;
+    END IF;
+END
+$grants$;

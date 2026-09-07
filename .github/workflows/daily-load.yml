@@ -100,7 +100,8 @@ jobs:
       - name: Score fitted model (upcoming)
         run: python scripts/score_fitted.py --upcoming
       - name: Simulate season projections
-        run: python scripts/simulate_season.py
+        # F04 cold start writes no projections but must not block mart refresh/verification.
+        run: python scripts/simulate_season.py --allow-calibration-cold-start
       # Runs DAILY, not annually, even though the measurement only moves on a
       # refit or a feature rebuild. Two reasons. api.model_backtest.run_date is
       # what cfb-app checks to decide whether its cached honesty numbers are

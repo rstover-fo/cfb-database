@@ -7,11 +7,12 @@ The feature vectorization + transforms (``build_feature_vector``, ``standardize`
 ``sigmoid``, ``platt_transform`` and the ``FEATURE_NAMES`` /
 ``TEAM_WEEK_SOURCE_COLUMNS`` contract) are imported from ``train_model`` so train
 and score share one implementation; the market lookup, edge math and the exact
-``predictions.game_predictions`` upsert (``compute_edge``, ``write_backfill_season``,
+``predictions.game_predictions`` append (``compute_edge``, ``write_backfill_season``,
 ``write_upcoming``, the market fetchers, ``get_db_url``) are imported from
 ``compute_predictions`` so ``fitted_v1`` rows are written byte-identically to the
-existing models -- same ``(game_id, model_version, prediction_date)`` conflict key,
-same ``edge = expected_home_margin + market_spread`` convention. ``fitted_v1``'s
+existing models -- same ``edge = expected_home_margin + market_spread`` convention.
+Every row carries the immutable frozen fit artifact and its exact feature/market
+input snapshot. ``fitted_v1``'s
 ``elo_margin`` / ``epa_margin`` columns are always NULL (it is neither an Elo nor a
 blend model); ``home_elo_pregame`` / ``away_elo_pregame`` are populated from each
 side's ``team_week.elo_pregame`` (the pregame Elo the ``d_elo`` feature used).
@@ -27,8 +28,8 @@ threshold before any upcoming predictions are written.
 Usage:
     python scripts/score_fitted.py --backfill 2018 2025
         Score every completed game in each season S with the FROZEN S-1 fit;
-        prediction_date = the game's start_date::date (fallback Jan 1 of its
-        season), idempotent under the daily conflict key. Market: betting.lines
+        prediction_date = the game's start_date::date, which must be known;
+        every run appends a walk_forward_reconstruction. Market: betting.lines
         (closing-line proxy), same as compute_predictions --backfill.
 
     python scripts/score_fitted.py            # or --upcoming
@@ -45,10 +46,11 @@ import argparse
 import logging
 import sys
 from collections import Counter
-from datetime import date
 
 import numpy as np
 
+from scripts import compute_predictions as predictions_module
+from scripts import train_model as training_module
 from scripts.compute_predictions import (
     compute_edge,
     fetch_market_from_lines,
@@ -58,7 +60,17 @@ from scripts.compute_predictions import (
     write_backfill_season,
     write_upcoming,
 )
+from scripts.prediction_provenance import (
+    ARTIFACT_SCHEMA_VERSION,
+    INPUT_SCHEMA_VERSION,
+    PUBLISHED_FORECAST,
+    WALK_FORWARD_RECONSTRUCTION,
+    attach_prediction_provenance,
+    identify_model_artifact,
+    implementation_fingerprint,
+)
 from scripts.train_model import (
+    FEATURE_NAMES,
     MODEL_VERSION,
     TEAM_WEEK_SOURCE_COLUMNS,
     build_feature_vector,
@@ -196,6 +208,64 @@ def build_score_row(
         "market_captured_at": market_captured_at,
         "edge": edge,
         "edge_pick": edge_pick,
+    }
+
+
+def fitted_model_artifact(fit: dict) -> tuple[str, dict]:
+    """Capture the exact frozen fitted_v1 state consumed while scoring."""
+    coefficients = [
+        {
+            "feature_order": index,
+            "feature_name": feature,
+            "margin": float(fit["beta_margin"][index]),
+            "winprob": float(fit["beta_winprob"][index]),
+        }
+        for index, feature in enumerate(FEATURE_NAMES)
+    ]
+    artifact = {
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
+        "artifact_kind": "frozen_fitted_model",
+        "train_through_season": int(fit["train_through"]),
+        "feature_names": list(FEATURE_NAMES),
+        "feature_means": fit["feature_means"],
+        "feature_diff_means": fit["diff_means"],
+        "feature_diff_stds": fit["diff_stds"],
+        "coefficients": coefficients,
+        "calibration": {"platt_a": fit["platt_a"], "platt_b": fit["platt_b"]},
+        "implementation": {
+            "source": implementation_fingerprint(
+                predictions_module, training_module, sys.modules[__name__]
+            ),
+            "runtime_constants": {
+                "max_logit": training_module._MAX_LOGIT,
+                "diff_feature_columns": list(training_module.DIFF_FEATURE_COLUMNS),
+                "feature_names": list(FEATURE_NAMES),
+                "team_week_source_columns": list(TEAM_WEEK_SOURCE_COLUMNS),
+            },
+        },
+    }
+    return identify_model_artifact(MODEL_VERSION, artifact)
+
+
+def fitted_input_snapshot(game: dict, market: dict | None) -> dict:
+    """Capture the exact raw game and team-week feature inputs consumed."""
+    return {
+        "schema_version": INPUT_SCHEMA_VERSION,
+        "game": {
+            "game_id": game["game_id"],
+            "season": game["season"],
+            "season_type": game["season_type"],
+            "week": game["week"],
+            "start_date": game.get("start_date"),
+            "home_team": game["home_team"],
+            "away_team": game["away_team"],
+            "neutral_site": game["neutral_site"],
+        },
+        "team_week": {
+            "home": {column: game["home_tw"].get(column) for column in TEAM_WEEK_SOURCE_COLUMNS},
+            "away": {column: game["away_tw"].get(column) for column in TEAM_WEEK_SOURCE_COLUMNS},
+        },
+        "market": market,
     }
 
 
@@ -351,8 +421,6 @@ def load_fit(conn, train_through: int) -> dict:
         for component, _order, feature_name, coefficient in cur.fetchall():
             coef_by_component.setdefault(component, {})[feature_name] = float(coefficient)
 
-    from scripts.train_model import FEATURE_NAMES
-
     def _beta(component: str) -> np.ndarray:
         coefs = coef_by_component.get(component)
         if not coefs:
@@ -377,11 +445,13 @@ def load_fit(conn, train_through: int) -> dict:
 
 
 def _prediction_date(game: dict):
-    """Backfill prediction_date: the game's start_date::date, falling back to
-    Jan 1 of its season when start_date is NULL -- matches
-    compute_predictions.run_backfill so re-runs are idempotent."""
-    start_date = game["start_date"]
-    return start_date.date() if start_date is not None else date(game["season"], 1, 1)
+    """Backfill date from a known kickoff; historical time is never fabricated."""
+    start_date = game.get("start_date")
+    if start_date is None:
+        raise ValueError(
+            f"game_id={game['game_id']} has no kickoff; cannot create historical provenance"
+        )
+    return start_date.date()
 
 
 def run_backfill(conn, start: int, end: int) -> None:
@@ -393,6 +463,7 @@ def run_backfill(conn, start: int, end: int) -> None:
     for season in range(start, end + 1):
         train_through = select_train_through("backfill", score_season=season)
         fit = load_fit(conn, train_through)  # hard error if the frozen fit is missing
+        fit_id, artifact = fitted_model_artifact(fit)
 
         games = fetch_backfill_games(conn, season)
         if not games:
@@ -412,8 +483,16 @@ def run_backfill(conn, start: int, end: int) -> None:
             if market and market.get("spread") is not None:
                 n_with_market += 1
             row = build_score_row(game, expected_margin, win_prob, market)
-            row["prediction_date"] = _prediction_date(game)
-            rows.append(row)
+            rows.append(
+                attach_prediction_provenance(
+                    {**row, "prediction_date": _prediction_date(game)},
+                    evaluation_mode=WALK_FORWARD_RECONSTRUCTION,
+                    fit_id=fit_id,
+                    model_artifact=artifact,
+                    input_snapshot=fitted_input_snapshot(game, market),
+                    simulated_as_of_at=game["start_date"],
+                )
+            )
 
         write_backfill_season(conn, rows)
         total_rows += len(rows)
@@ -488,6 +567,7 @@ def run_upcoming(conn) -> None:
         train_through: load_fit(conn, train_through)
         for train_through in sorted(set(train_through_by_season.values()))
     }
+    artifacts = {train_through: fitted_model_artifact(fit) for train_through, fit in fits.items()}
     logger.info("Upcoming frozen fits by prediction season: %s", train_through_by_season)
 
     game_ids = [g["game_id"] for g in games]
@@ -501,12 +581,22 @@ def run_upcoming(conn) -> None:
     rows: list[dict] = []
     n_with_market = 0
     for game in games:
-        fit = fits[train_through_by_season[game["season"]]]
+        train_through = train_through_by_season[game["season"]]
+        fit = fits[train_through]
         expected_margin, win_prob = score_game(game, fit)
         market = market_by_game.get(game["game_id"])
         if market and market.get("spread") is not None:
             n_with_market += 1
-        rows.append(build_score_row(game, expected_margin, win_prob, market))
+        fit_id, artifact = artifacts[train_through]
+        rows.append(
+            attach_prediction_provenance(
+                build_score_row(game, expected_margin, win_prob, market),
+                evaluation_mode=PUBLISHED_FORECAST,
+                fit_id=fit_id,
+                model_artifact=artifact,
+                input_snapshot=fitted_input_snapshot(game, market),
+            )
+        )
 
     write_upcoming(conn, rows)
     logger.info(

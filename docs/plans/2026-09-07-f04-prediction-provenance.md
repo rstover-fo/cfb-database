@@ -42,6 +42,11 @@ when historical experiments are added. Run affected checks and repository CI.
 
 ## Rollout boundary
 
+**Update 2026-09-07:** the user separately approved the F04 production rollout,
+which is now complete. See [executed rollout evidence](2026-09-07-f04-production-rollout.md)
+for preservation hashes, scoring coverage, caller-role checks, and restored workflows.
+The boundaries below describe the original pre-approval development phase.
+
 No F04 production writes are authorized by the earlier F03 recovery approvals.
 Prepare a dependency-complete deployment manifest and operational checks.
 Pause prediction writers for schema/index/consumer cutover, then deploy updated

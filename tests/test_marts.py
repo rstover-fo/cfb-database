@@ -158,6 +158,31 @@ class TestMartViewsHaveData:
             # Use quoted identifiers to handle leading underscores safely
             cur.execute(f'SELECT COUNT(*) FROM "{schema_name}"."{view_name}"')
             count = cur.fetchone()[0]
+        if (schema_name, view_name) == ("marts", "prediction_accuracy") and count == 0:
+            with db_conn.cursor() as cur:
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema='predictions' AND table_name='game_predictions'
+                          AND column_name='evaluation_mode'
+                    )
+                """)
+                if cur.fetchone()[0]:
+                    cur.execute("""
+                        SELECT EXISTS (
+                            SELECT 1 FROM predictions.game_predictions p
+                            JOIN core.games g ON g.id=p.game_id
+                            WHERE g.completed AND g.home_points IS NOT NULL
+                              AND g.away_points IS NOT NULL
+                              AND p.evaluation_mode='published_forecast'
+                              AND g.start_date IS NOT NULL AND p.published_at<g.start_date
+                        )
+                    """)
+                    assert not cur.fetchone()[0], (
+                        "marts.prediction_accuracy is empty despite eligible published outcomes; "
+                        "check its refresh and definition"
+                    )
+                    return  # Verified F04 cold start, not an unconditional empty exemption.
         if (schema_name, view_name) in self.EMPTY_OK and count == 0:
             pytest.skip(f"{schema_name}.{view_name} legitimately empty out of season")
         assert count > 0, f"{schema_name}.{view_name} is empty (0 rows)"
@@ -498,3 +523,24 @@ class TestEpaCrossvalidation:
             f"for {inverted} -- the higher-is-better assumption on that system's "
             f"value column is inverted in 044_epa_crossvalidation.sql"
         )
+
+
+@pytest.mark.parametrize(
+    "deployed, eligible_outcomes, allowed",
+    [(True, False, True), (True, True, False), (False, False, False)],
+)
+def test_empty_accuracy_requires_verified_f04_cold_start(deployed, eligible_outcomes, allowed):
+    from unittest.mock import MagicMock
+
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value.fetchone.side_effect = [
+        (0,),
+        (deployed,),
+        (eligible_outcomes,),
+    ]
+    check = TestMartViewsHaveData().test_view_has_rows
+    if allowed:
+        check(conn, "marts", "prediction_accuracy")
+    else:
+        with pytest.raises(AssertionError, match="prediction_accuracy is empty"):
+            check(conn, "marts", "prediction_accuracy")

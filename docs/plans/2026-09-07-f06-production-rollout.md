@@ -42,10 +42,23 @@ rejection before ledger creation, single-receipt adoption, validated repeat no-o
 status, private ledger ACLs, and a synchronized advisory-lock regression proving
 the catalog snapshot follows the lock wait. All affected Ruff checks passed.
 
-Automatic approval review rejected the fresh production schema-only artifact
-export, requiring explicit permission for its metadata payload and GitHub Actions
-destination. That question is pending. No production ledger has been created,
-no new production catalog artifact has been exported, and no writer workflow
-has been paused for adoption. Migration 065 and its verification are complete;
-adoption execution evidence will be added after the export is approved, reviewed,
-and the maintenance-window operation succeeds.
+The user explicitly approved the schema definitions, ownership, grants, and role
+membership metadata export to GitHub Actions. [Capture run
+34163351331](https://github.com/rstover-fo/cfb-database/actions/runs/34163351331)
+succeeded on source revision `6316d1e81c2a84809324c3226c17ba027a6c29fb`.
+Independent comparison with the approved F06 capture found exactly the two 065
+SELECT grants; every pre-existing metadata field was unchanged. The supplemental
+metadata includes schema owners and transitive consumer/owner role attributes
+and membership options.
+Canonical ownership/access metadata is retained beside the receipt as
+`20260907_production_catalog_metadata.json`; its bytes match the receipt's
+metadata SHA256 after the short-lived Actions artifact expires.
+
+The full catalog fingerprint is
+`288b4eaf817bc00f1bba71d4949c72a45d58a77ca0db6907c68a5ae0b337ab94`.
+The checked-in receipt replaces the preparation-time PR provenance link with the
+actual immutable Actions run URL and regenerates its SQL binding; captured data
+and fingerprints are unchanged. `src/schemas/production-manifest.json` contains
+only `warehouse.production.catalog-adopted.20260907.288b4eaf817b`.
+
+Production adoption and final verification evidence are pending execution.

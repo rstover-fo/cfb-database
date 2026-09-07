@@ -1,0 +1,10 @@
+{
+  "migrations": [
+    {
+      "id": "warehouse.production.catalog-adopted.20260907.288b4eaf817b",
+      "kind": "immutable",
+      "path": "src/schemas/adoptions/20260907_production_catalog_receipt.sql"
+    }
+  ],
+  "version": 1
+}

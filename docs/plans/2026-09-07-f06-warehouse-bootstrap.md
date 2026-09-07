@@ -2,8 +2,8 @@
 
 Status: merged in PR #129; CI and review fixes passed. Production migration 065
 was approved, applied, and verified. Explicit catalog-ledger adoption is being
-prepared under that rollout approval; its new artifact export awaits the
-additional destination-specific approval requested by automatic review.
+executed under that rollout approval; the destination-specific schema artifact
+export was explicitly approved and its catalog comparison passed.
 See [production rollout evidence](2026-09-07-f06-production-rollout.md).
 
 ## Deliverable and boundaries

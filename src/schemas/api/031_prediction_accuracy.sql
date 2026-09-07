@@ -30,3 +30,12 @@ FROM marts.prediction_accuracy;
 GRANT SELECT ON api.prediction_accuracy TO anon, authenticated;
 
 COMMENT ON VIEW api.prediction_accuracy IS 'Retroactive scoring of house predictions by season/model/edge-threshold. Columns: model_version, season, edge_threshold, n_games, n_with_market, margin_mae, margin_rmse, ats_wins, ats_losses, ats_pushes, ats_hit_rate, brier, cfbd_brier, n_scored_win_prob. brier/cfbd_brier let the house win-prob model be benchmarked directly against CFBD''s pregame win probability. Backed by marts.prediction_accuracy.';
+
+-- Preserve the API-only analyst role even when deployed by a different owner.
+DO $grants$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'analyst_ro') THEN
+        GRANT SELECT ON api.prediction_accuracy TO analyst_ro;
+    END IF;
+END
+$grants$;

@@ -1,0 +1,11 @@
+{
+  "action": "apply",
+  "files": [
+    "src/schemas/migrations/063_prediction_provenance.sql",
+    "src/schemas/marts/037_scored_matchup_edges.sql",
+    "src/schemas/marts/038_prediction_accuracy.sql",
+    "src/schemas/api/030_scored_matchup_edges.sql",
+    "src/schemas/api/031_prediction_accuracy.sql",
+    "src/schemas/api/032_game_predictions.sql"
+  ]
+}

@@ -2,7 +2,7 @@
 -- =============================================================================
 -- Tier 2 analytics (docs/plans/2026-07-21-tier2-analytics-plan.md), Phase 4/5.
 --
--- THE BACKTEST / AUDIT SURFACE. This file IS the prediction-scoring methodology
+-- THE PUBLISHED-FORECAST AUDIT SURFACE. This file IS the prediction-scoring methodology
 -- for the house model -- every rule below is authoritative and intentionally
 -- documented in full so the numbers are reproducible from the SQL alone.
 --
@@ -18,7 +18,7 @@
 -- SCORING BASE
 -- ---------------------------------------------------------------------------
 -- One row per (game_id, model_version): the LATEST prediction snapshot,
--- DISTINCT ON (game_id, model_version) ORDER BY prediction_date DESC, joined to
+-- DISTINCT ON (game_id, model_version) ordered by published_at and prediction_id, joined to
 -- core.games and restricted to COMPLETED games that actually have both scores
 -- (home_points/away_points NOT NULL). Derived per game:
 --   actual_home_margin  = home_points - away_points
@@ -83,25 +83,11 @@
 -- ---------------------------------------------------------------------------
 -- CAVEATS (read before trusting a row)
 -- ---------------------------------------------------------------------------
--- * LEAKAGE -- FIXED (2026-07-21, Tier 3): 'elo_epa_blend_v1' used to fold in
---   ridge-adjusted EPA fit on the FULL season, so retro rows for early-season
---   games were MILDLY LEAKY (the fit "saw" games that hadn't happened yet at
---   kickoff). This is now closed: scripts/compute_predictions.py --as-of-week
---   backfills each game using analytics.adjusted_epa_week_build coefficients
---   as of THAT game's week (prior-season fallback when the current season has
---   no fit yet at that point, Elo-only when neither is available), so both
---   model_versions are walk-forward honest. The previously documented 56.1%
---   ATS>=6 hit rate was that leakage, not real edge -- the honest numbers are
---   elo_epa_blend_v1 ATS>=6 = 50.1% (n=3,462) vs elo_v1 = 50.3%; nobody beats
---   the closing line. The blend still edges elo_v1 on margin MAE (16.31 vs
---   16.46).
--- * CLOSING-LINE PROXY: past-game market_spread comes from betting.lines, which
---   is approximately the CLOSING line. True line-movement history only begins
---   accruing 2026-07-21, so pre-2026 ATS/edge figures are scored against
---   closing, not against the number the model would have seen earlier in the week.
---
--- NO EMPTY-GUARD (by design): legitimately EMPTY until the Phase 5 predictions
--- backfill populates predictions.game_predictions with completed-game snapshots.
+-- Only observed publications strictly before known kickoff are scored. Historical
+-- reconstructions, hindsight experiments, and legacy_unknown rows are excluded.
+-- As-of reconstruction cannot prove inputs/closing lines were available then.
+-- Empty accuracy after migration is valid until published games complete; backfill
+-- never populates this prospective cohort.
 
 DROP MATERIALIZED VIEW IF EXISTS marts.prediction_accuracy CASCADE;
 
@@ -124,7 +110,10 @@ WITH latest_pred AS (
     WHERE g.completed
       AND g.home_points IS NOT NULL
       AND g.away_points IS NOT NULL
-    ORDER BY p.game_id, p.model_version, p.prediction_date DESC
+      AND p.evaluation_mode = 'published_forecast'
+      AND g.start_date IS NOT NULL
+      AND p.published_at < g.start_date
+    ORDER BY p.game_id, p.model_version, p.published_at DESC, p.prediction_id DESC
 ),
 scored AS (
     -- Attach actuals + CFBD's pregame win prob (1:1 join, post-DISTINCT ON).

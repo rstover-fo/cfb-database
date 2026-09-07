@@ -30,6 +30,8 @@ from scripts.simulate_season import (  # noqa: E402
     BOWL_ELIGIBLE_WINS,
     DEFAULT_STRENGTH_SHARE,
     MIN_SLATE_COHORT,
+    RESIDUAL_SIGMA_QUERY,
+    SEASON_GAMES_QUERY,
     STANDARD_SLATE_GAMES,
     assign_sos_ranks,
     bowls_apply,
@@ -37,6 +39,7 @@ from scripts.simulate_season import (  # noqa: E402
     conference_title_probs,
     expected_slate_games,
     fetch_season_games,
+    fetch_sigma,
     normalize_strength_share,
     schedule_strength,
     select_projection_game_rows,
@@ -150,6 +153,44 @@ class TestSupersededProjectionGames:
 
         assert selected == rows
         assert selected is not rows
+
+
+class TestPublishedPredictionSelection:
+    @staticmethod
+    def _normalized(sql):
+        return " ".join(sql.split())
+
+    def test_season_query_filters_before_latest_published_selection(self):
+        sql = self._normalized(SEASON_GAMES_QUERY)
+        assert "gp.evaluation_mode = 'published_forecast'" in sql
+        assert "gp.published_at IS NOT NULL" in sql
+        assert "gp.published_at < g.start_date" in sql
+        assert "ORDER BY gp.published_at DESC, gp.prediction_id DESC" in sql
+        assert "prediction_date" not in sql
+        assert "computed_at" not in sql
+
+    def test_sigma_query_uses_only_strictly_prekickoff_published_rows(self):
+        sql = self._normalized(RESIDUAL_SIGMA_QUERY)
+        distinct_at = sql.index("SELECT DISTINCT ON")
+        published_filter_at = sql.index("p.evaluation_mode = 'published_forecast'")
+        order_at = sql.index("ORDER BY p.game_id, p.published_at DESC, p.prediction_id DESC")
+        assert published_filter_at > distinct_at
+        assert published_filter_at < order_at
+        assert "p.published_at IS NOT NULL" in sql
+        assert "g.start_date IS NOT NULL" in sql
+        assert "p.published_at < g.start_date" in sql
+        assert "prediction_date" not in sql
+        assert "computed_at" not in sql
+
+    def test_sigma_cold_start_stays_fail_closed_without_backfill_advice(self):
+        conn = MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = (None, 0)
+
+        with pytest.raises(RuntimeError, match="prospective published forecasts") as exc:
+            fetch_sigma(conn, "fitted_v1")
+
+        assert "backfill" not in str(exc.value).lower()
 
 
 class TestSimulateWins:
@@ -1005,3 +1046,69 @@ class TestBowlEligibilityIsAnFbsRule:
         of-an-absence failure this file already has three tests about."""
         assert bowls_apply(None) is False
         assert bowls_apply("fbs") is True
+
+
+@pytest.mark.parametrize("allow", [False, True])
+def test_cli_calibration_cold_start_is_explicit_opt_in(monkeypatch, caplog, allow):
+    from unittest.mock import MagicMock
+
+    from scripts import simulate_season as simulation
+
+    conn = MagicMock()
+    monkeypatch.setattr("psycopg2.connect", lambda *_: conn)
+    monkeypatch.setattr(simulation, "get_db_url", lambda: "unused")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["simulate_season.py", "--season", "2026"]
+        + (["--allow-calibration-cold-start"] if allow else []),
+    )
+
+    def cold_start(*_):
+        raise simulation.CalibrationColdStartError("insufficient published outcomes")
+
+    monkeypatch.setattr(simulation, "simulate_one_season", cold_start)
+    if allow:
+        simulation.main()
+        assert "no projections written" in caplog.text
+        assert "stored outlook retained" in caplog.text
+    else:
+        with pytest.raises(SystemExit) as exc:
+            simulation.main()
+        assert exc.value.code == 1
+    conn.commit.assert_not_called()
+    conn.close.assert_called_once()
+
+
+def test_cli_cold_start_option_does_not_hide_other_failures(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from scripts import simulate_season as simulation
+
+    conn = MagicMock()
+    monkeypatch.setattr("psycopg2.connect", lambda *_: conn)
+    monkeypatch.setattr(simulation, "get_db_url", lambda: "unused")
+    monkeypatch.setattr(
+        "sys.argv", ["simulate_season.py", "--season", "2026", "--allow-calibration-cold-start"]
+    )
+
+    def broken(*_):
+        raise RuntimeError("invalid sigma or database failure")
+
+    monkeypatch.setattr(simulation, "simulate_one_season", broken)
+    with pytest.raises(SystemExit) as exc:
+        simulation.main()
+    assert exc.value.code == 1
+    conn.commit.assert_not_called()
+
+
+@pytest.mark.parametrize("sigma", [None, float("nan"), float("inf"), 0, -1])
+def test_invalid_sigma_is_not_an_ignorable_cold_start(sigma):
+    from unittest.mock import MagicMock
+
+    from scripts import simulate_season as simulation
+
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value.fetchone.return_value = (sigma, 1000)
+    with pytest.raises(RuntimeError) as exc:
+        simulation.fetch_sigma(conn, "fitted_v1")
+    assert not isinstance(exc.value, simulation.CalibrationColdStartError)

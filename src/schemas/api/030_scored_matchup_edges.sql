@@ -42,3 +42,12 @@ FROM marts.scored_matchup_edges;
 GRANT SELECT ON api.scored_matchup_edges TO anon, authenticated;
 
 COMMENT ON VIEW api.scored_matchup_edges IS 'House model expected margin/win-prob vs the market line for upcoming games. Columns: game_id, season, week, season_type, start_date, home_team, away_team, neutral_site, model_version, prediction_date, home_elo_pregame, away_elo_pregame, elo_margin, epa_margin, expected_home_margin, home_win_prob, market_provider, market_spread, market_home_margin, market_captured_at, edge, edge_pick, abs_edge. edge = expected_home_margin + spread (positive = home undervalued by the market). Backed by marts.scored_matchup_edges; normally empty out of season.';
+
+-- Preserve the API-only analyst role even when deployed by a different owner.
+DO $grants$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'analyst_ro') THEN
+        GRANT SELECT ON api.scored_matchup_edges TO analyst_ro;
+    END IF;
+END
+$grants$;

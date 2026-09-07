@@ -717,10 +717,13 @@ def get_db_url() -> str:
     return url
 
 
-# Latest snapshot per game for the chosen model. predictions.game_predictions
-# is append-only across days, so DISTINCT ON picks the most recent read rather
-# than an arbitrary historical one -- the same idiom
-# compute_predictions.MARKET_SNAPSHOTS_QUERY uses.
+# Latest published snapshot per game for the chosen model. Descriptive
+# prediction_date/computed_at values do not establish publication order or
+# prospective eligibility. A known kickoff therefore bounds the snapshot
+# strictly before kickoff; pending games without a kickoff can still use their
+# latest published forecast. Completed games with no known kickoff deliberately
+# carry no prediction -- their result does not need one, and a missing score
+# must not turn a late historical prediction into a simulated forecast.
 SEASON_GAMES_QUERY = """
     SELECT g.id AS game_id, g.season, g.home_team, g.away_team,
            COALESCE(g.completed, false) AS completed,
@@ -737,8 +740,15 @@ SEASON_GAMES_QUERY = """
     LEFT JOIN LATERAL (
         SELECT gp.expected_home_margin
         FROM predictions.game_predictions gp
-        WHERE gp.game_id = g.id AND gp.model_version = %(model)s
-        ORDER BY gp.prediction_date DESC, gp.computed_at DESC
+        WHERE gp.game_id = g.id
+          AND gp.model_version = %(model)s
+          AND gp.evaluation_mode = 'published_forecast'
+          AND gp.published_at IS NOT NULL
+          AND (
+              (g.start_date IS NOT NULL AND gp.published_at < g.start_date)
+              OR (g.start_date IS NULL AND NOT COALESCE(g.completed, false))
+          )
+        ORDER BY gp.published_at DESC, gp.prediction_id DESC
         LIMIT 1
     ) p ON true
     WHERE g.season = %(season)s
@@ -764,13 +774,13 @@ REF_CLASSIFICATION_QUERY = """
 """
 
 # ONE snapshot per game before the aggregate. predictions.game_predictions is
-# append-only daily, so a naive join contributes a game once per day it was
+# append-only per run, so a naive join contributes a game once per run it was
 # predicted: games that sat on the board for weeks would dominate the estimate,
 # and their early, worse predictions would mix with the final pregame one. That
 # is not a per-game residual SD, and since sigma drives every simulated
 # probability, the error would propagate into every number this script writes.
-# DISTINCT ON takes the last snapshot at or before kickoff -- the pregame read
-# the simulation is actually modelling.
+# DISTINCT ON takes the last eligible published snapshot strictly before a
+# known kickoff -- the prospective read the simulation is actually modelling.
 RESIDUAL_SIGMA_QUERY = f"""
     WITH latest AS (
         SELECT DISTINCT ON (p.game_id)
@@ -784,13 +794,20 @@ RESIDUAL_SIGMA_QUERY = f"""
           AND COALESCE(g.completed, false)
           AND g.home_points IS NOT NULL AND g.away_points IS NOT NULL
           AND p.expected_home_margin IS NOT NULL
-          AND (g.start_date IS NULL OR p.prediction_date <= g.start_date::date)
-        ORDER BY p.game_id, p.prediction_date DESC, p.computed_at DESC
+          AND p.evaluation_mode = 'published_forecast'
+          AND p.published_at IS NOT NULL
+          AND g.start_date IS NOT NULL
+          AND p.published_at < g.start_date
+        ORDER BY p.game_id, p.published_at DESC, p.prediction_id DESC
     )
     SELECT stddev_pop(actual_margin::double precision - expected_home_margin),
            COUNT(*)
     FROM latest
 """
+
+
+class CalibrationColdStartError(RuntimeError):
+    """Too few prospective published outcomes; no projection may be written."""
 
 
 def fetch_sigma(conn, model: str) -> float:
@@ -804,13 +821,15 @@ def fetch_sigma(conn, model: str) -> float:
     with conn.cursor() as cur:
         cur.execute(RESIDUAL_SIGMA_QUERY, {"model": model})
         sigma, n_games = cur.fetchone()
-    if sigma is None or n_games < MIN_SIGMA_GAMES:
-        raise RuntimeError(
-            f"Only {n_games or 0} completed game(s) with a pregame {model} prediction "
+    if n_games is None or n_games < MIN_SIGMA_GAMES:
+        raise CalibrationColdStartError(
+            f"Only {n_games or 0} completed game(s) with an eligible pre-kickoff "
+            f"published {model} forecast "
             f"(need >= {MIN_SIGMA_GAMES}); cannot measure a trustworthy residual sigma. "
-            "Backfill predictions before simulating."
+            "Simulation remains unavailable until enough prospective published forecasts "
+            "have completed outcomes."
         )
-    if sigma <= 0.0:
+    if sigma is None or not math.isfinite(sigma) or sigma <= 0.0:
         # Degenerate rather than merely small: every draw would collapse onto
         # its mean, so every game would resolve deterministically and every
         # win probability would be exactly 0 or 1. That is a broken input
@@ -818,7 +837,7 @@ def fetch_sigma(conn, model: str) -> float:
         # model, and it must not pass silently.
         raise RuntimeError(
             f"Residual sigma for {model} measured as {sigma} over {n_games} game(s); "
-            "a non-positive sigma would make every simulated game deterministic."
+            "sigma must be finite and positive for simulation."
         )
     logger.info("Measured residual sigma for %s: %.2f over %d game(s)", model, sigma, n_games)
     return float(sigma)
@@ -1087,6 +1106,12 @@ def main() -> None:
         help=f"Share of margin variance carried by the per-team season-strength "
         f"offset (default {DEFAULT_STRENGTH_SHARE}; 0 reproduces v1)",
     )
+    parser.add_argument(
+        "--allow-calibration-cold-start",
+        action="store_true",
+        help="Warn and preserve stored outlooks when published calibration is too small; "
+        "continue unrelated nightly work. Other failures remain fatal.",
+    )
     args = parser.parse_args()
 
     try:
@@ -1108,9 +1133,20 @@ def main() -> None:
 
         total = 0
         for season in seasons:
-            total += simulate_one_season(
-                conn, season, args.model, args.sims, args.seed, args.strength_share
-            )
+            try:
+                total += simulate_one_season(
+                    conn, season, args.model, args.sims, args.seed, args.strength_share
+                )
+            except CalibrationColdStartError as exc:
+                if not args.allow_calibration_cold_start:
+                    raise
+                conn.rollback()
+                logger.warning(
+                    "Season %s calibration cold start: no projections written; "
+                    "stored outlook retained. %s",
+                    season,
+                    exc,
+                )
         logger.info("Wrote %d projection row(s) across %d season(s)", total, len(seasons))
     except Exception:
         conn.rollback()

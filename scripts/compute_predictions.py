@@ -7,7 +7,7 @@ plus the small lookup helpers below them) is pure -- plain floats/dicts, no
 I/O -- so it is fully unit-testable without a database (see
 tests/test_predictions.py). Everything below `# --- I/O layer ---` is a thin
 wrapper: fetch games + ratings + market lines, feed them through the pure
-functions, upsert the results into predictions.game_predictions
+functions, append the results to predictions.game_predictions
 (src/schemas/migrations/024_predictions_schema.sql).
 
 House Elo's `expected_score` (the 400-scale logistic) and the season-carryover
@@ -38,18 +38,13 @@ Usage:
         same date the DB itself would use, one single commit.
 
     python scripts/compute_predictions.py --backfill 2015 2025
-        Retroactively score completed games for seasons 2015-2025 (inclusive)
-        using each game's true walk-forward pregame Elo from
-        analytics.house_elo_game and SAME-SEASON-ONLY ridge-adjusted EPA
-        (documented leaky-for-blend -- see marts/038_prediction_accuracy.sql's
-        header). Market line: betting.lines only (closing-line proxy).
-        prediction_date = the game's start_date::date, falling back to
-        make_date(season, 1, 1) when start_date is NULL, so re-running a
-        backfill is idempotent under the (game_id, model_version,
-        prediction_date) unique key. Commits once per season.
+        Retroactively score completed games as walk-forward reconstructions.
+        Elo comes from analytics.house_elo_game and EPA defaults to the
+        leak-free as-of-week ladder described below. A known kickoff is
+        required and becomes simulated_as_of_at. Every run appends new rows.
 
     python scripts/compute_predictions.py --backfill 2015 2025 --as-of-week
-        Same as --backfill but LEAK-FREE for the blend (Tier 3 Pillar A):
+        Compatibility alias for the default leak-free backfill behavior:
         the EPA arm reads analytics.adjusted_epa_week_build coefficients
         ENTERING each game's week (greatest stored week_index <= the game's
         week_index with plays >= MIN_TEAM_PLAYS), falling back to the
@@ -59,14 +54,31 @@ Usage:
         the Gate A invariant. week_index convention matches
         scripts/build_features.py: week for regular season, 100 + week for
         postseason.
+
+    python scripts/compute_predictions.py --backfill 2015 2025 \
+        --hindsight-experiment LABEL
+        Explicitly score the blend from same-season full-season EPA. These
+        append-only rows are labeled hindsight_experiment and remain outside
+        published forecast evaluation.
 """
 
 import argparse
 import logging
 import sys
-from datetime import date
 
+from scripts import compute_house_elo as house_elo_module
 from scripts.compute_house_elo import EloEngine, expected_score
+from scripts.prediction_provenance import (
+    ARTIFACT_SCHEMA_VERSION,
+    HINDSIGHT_EXPERIMENT,
+    INPUT_SCHEMA_VERSION,
+    PUBLISHED_FORECAST,
+    WALK_FORWARD_RECONSTRUCTION,
+    attach_prediction_provenance,
+    identify_model_artifact,
+    implementation_fingerprint,
+    insert_model_artifacts,
+)
 from src.pipelines.game_identity import eligible_game_sql
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -321,6 +333,79 @@ def build_predictions_for_game(
     return rows
 
 
+def closed_form_model_artifacts() -> dict[str, tuple[str, dict]]:
+    """Return content-addressed artifacts for both transparent models."""
+    implementation = implementation_fingerprint(house_elo_module, sys.modules[__name__])
+    common_parameters = {
+        "elo_seed": EloEngine.SEED,
+        "elo_home_field_advantage": EloEngine.HFA,
+        "elo_margin_divisor": EloEngine.DIVISOR,
+        "elo_carryover": EloEngine.CARRYOVER,
+    }
+    elo_artifact = {
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
+        "artifact_kind": "closed_form",
+        "parameters": common_parameters,
+        "implementation": implementation,
+    }
+    blend_artifact = {
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
+        "artifact_kind": "closed_form",
+        "parameters": {
+            **common_parameters,
+            "plays_per_game": PLAYS,
+            "blend_elo_weight": BLEND_ELO,
+            "blend_epa_weight": BLEND_EPA,
+            "as_of_min_team_plays": MIN_TEAM_PLAYS,
+            "postseason_week_offset": POSTSEASON_WEEK_OFFSET,
+        },
+        "implementation": implementation,
+    }
+    return {
+        MODEL_ELO: identify_model_artifact(MODEL_ELO, elo_artifact),
+        MODEL_BLEND: identify_model_artifact(MODEL_BLEND, blend_artifact),
+    }
+
+
+_GAME_INPUT_COLUMNS = (
+    "game_id",
+    "season",
+    "week",
+    "season_type",
+    "start_date",
+    "home_team",
+    "away_team",
+    "neutral_site",
+)
+
+
+def closed_form_input_snapshot(
+    game: dict,
+    *,
+    model_version: str,
+    home_elo: float,
+    away_elo: float,
+    market: dict | None,
+    home_epa: dict | None = None,
+    away_epa: dict | None = None,
+    epa_source: str | None = None,
+) -> dict:
+    """Capture the exact game, rating, EPA, and market values consumed."""
+    snapshot = {
+        "schema_version": INPUT_SCHEMA_VERSION,
+        "game": {column: game.get(column) for column in _GAME_INPUT_COLUMNS},
+        "elo": {"home": home_elo, "away": away_elo},
+        "market": market,
+    }
+    if model_version == MODEL_BLEND:
+        snapshot["epa"] = {
+            "source": epa_source,
+            "home": home_epa,
+            "away": away_epa,
+        }
+    return snapshot
+
+
 # =============================================================================
 # --- I/O layer --- (thin: fetch games/ratings/market, drive the math, write)
 # =============================================================================
@@ -397,9 +482,9 @@ MARKET_LINES_QUERY = """
     ORDER BY game_id, CASE WHEN provider = 'consensus' THEN 0 ELSE 1 END, provider
 """
 
-# Column order matches predictions.game_predictions exactly (see
-# src/schemas/migrations/024_predictions_schema.sql), minus computed_at and
-# prediction_date, which the two write_* functions handle separately.
+# Column order matches the mutable-free writer contract. Database triggers own
+# created_at and published_at; the templates below own only the compatibility
+# computed_at/prediction_date columns.
 _ROW_COLUMNS = [
     "model_version",
     "game_id",
@@ -421,55 +506,41 @@ _ROW_COLUMNS = [
     "market_captured_at",
     "edge",
     "edge_pick",
+    "evaluation_mode",
+    "simulated_as_of_at",
+    "experiment_label",
+    "fit_id",
+    "input_hash",
+    "input_snapshot",
 ]
 
-_UPDATE_SET_COLUMNS = [
-    "computed_at",
-    "season",
-    "week",
-    "season_type",
-    "home_team",
-    "away_team",
-    "neutral_site",
-    "home_elo_pregame",
-    "away_elo_pregame",
-    "elo_margin",
-    "epa_margin",
-    "expected_home_margin",
-    "home_win_prob",
-    "market_provider",
-    "market_home_margin",
-    "market_spread",
-    "market_captured_at",
-    "edge",
-    "edge_pick",
-]
-
-_UPSERT_SQL = """
+_INSERT_SQL = """
     INSERT INTO predictions.game_predictions (
         computed_at, prediction_date, model_version, game_id, season, week,
         season_type, home_team, away_team, neutral_site,
         home_elo_pregame, away_elo_pregame, elo_margin, epa_margin,
         expected_home_margin, home_win_prob,
         market_provider, market_home_margin, market_spread, market_captured_at,
-        edge, edge_pick
+        edge, edge_pick, evaluation_mode, simulated_as_of_at, experiment_label,
+        fit_id, input_hash, input_snapshot
     ) VALUES %s
-    ON CONFLICT (game_id, model_version, prediction_date) DO UPDATE SET
-        {update_set}
-""".format(update_set=",\n        ".join(f"{c} = EXCLUDED.{c}" for c in _UPDATE_SET_COLUMNS))
+"""
 
 _ROW_PLACEHOLDERS = ", ".join(["%s"] * len(_ROW_COLUMNS))
 # Upcoming mode: prediction_date is a fixed SQL-side expression (same value
 # for every row in the batch -- one INSERT statement, one transaction-local
 # `now()`), never a Python-computed date.
-_UPCOMING_TEMPLATE = f"(now(), (now() AT TIME ZONE 'utc')::date, {_ROW_PLACEHOLDERS})"
+_UPCOMING_TEMPLATE = (
+    f"(statement_timestamp(), "
+    f"(statement_timestamp() AT TIME ZONE 'utc')::date, {_ROW_PLACEHOLDERS})"
+)
 # Backfill mode: prediction_date varies per game (each game's start_date),
 # so it is a bound parameter, prepended ahead of the shared row values.
-_BACKFILL_TEMPLATE = f"(now(), %s, {_ROW_PLACEHOLDERS})"
+_BACKFILL_TEMPLATE = f"(statement_timestamp(), %s, {_ROW_PLACEHOLDERS})"
 
 
-def _row_values(row: dict) -> tuple:
-    return tuple(row[c] for c in _ROW_COLUMNS)
+def _row_values(row: dict, json_adapter) -> tuple:
+    return tuple(json_adapter(row[c]) if c == "input_snapshot" else row[c] for c in _ROW_COLUMNS)
 
 
 def table_exists(conn, schema: str, table: str) -> bool:
@@ -526,6 +597,9 @@ def fetch_epa_week_coefs(conn, season: int) -> dict[str, list[tuple[int, dict]]]
                 (
                     int(week_index),
                     {
+                        "team": team,
+                        "season": season,
+                        "week_index": int(week_index),
                         "off_coef": float(off_coef),
                         "def_coef": float(def_coef),
                         "hfa_coef": float(hfa_coef),
@@ -550,6 +624,8 @@ def fetch_epa_coefs(conn, season: int | None = None) -> dict[tuple[str, int], di
             if off_coef is None or def_coef is None or hfa_coef is None:
                 continue
             result[(team, row_season)] = {
+                "team": team,
+                "season": int(row_season),
                 "off_coef": float(off_coef),
                 "def_coef": float(def_coef),
                 "hfa_coef": float(hfa_coef),
@@ -588,24 +664,26 @@ def fetch_market_from_lines(conn, game_ids: list[int]) -> dict[int, dict]:
 
 
 def write_upcoming(conn, rows: list[dict]) -> None:
-    from psycopg2.extras import execute_values
+    from psycopg2.extras import Json, execute_values
 
     if not rows:
         return
-    values = [_row_values(r) for r in rows]
+    insert_model_artifacts(conn, rows)
+    values = [_row_values(r, Json) for r in rows]
     with conn.cursor() as cur:
-        execute_values(cur, _UPSERT_SQL, values, template=_UPCOMING_TEMPLATE)
+        execute_values(cur, _INSERT_SQL, values, template=_UPCOMING_TEMPLATE)
     conn.commit()
 
 
 def write_backfill_season(conn, rows: list[dict]) -> None:
-    from psycopg2.extras import execute_values
+    from psycopg2.extras import Json, execute_values
 
     if not rows:
         return
-    values = [(r["prediction_date"], *_row_values(r)) for r in rows]
+    insert_model_artifacts(conn, rows)
+    values = [(r["prediction_date"], *_row_values(r, Json)) for r in rows]
     with conn.cursor() as cur:
-        execute_values(cur, _UPSERT_SQL, values, template=_BACKFILL_TEMPLATE)
+        execute_values(cur, _INSERT_SQL, values, template=_BACKFILL_TEMPLATE)
     conn.commit()
 
 
@@ -618,6 +696,7 @@ def run_upcoming(conn) -> None:
 
     elo_current = fetch_elo_current(conn)
     epa_by_team_season = fetch_epa_coefs(conn)
+    artifacts = closed_form_model_artifacts()
 
     game_ids = [g["game_id"] for g in games]
     if table_exists(conn, "betting", "line_snapshots"):
@@ -632,14 +711,44 @@ def run_upcoming(conn) -> None:
     for game in games:
         home_elo = resolve_elo(game["home_team"], game["season"], elo_current)
         away_elo = resolve_elo(game["away_team"], game["season"], elo_current)
+        home_epa = lookup_epa_coefs(
+            epa_by_team_season, game["home_team"], game["season"], lookback=1
+        )
+        away_epa = lookup_epa_coefs(
+            epa_by_team_season, game["away_team"], game["season"], lookback=1
+        )
         market = market_by_game.get(game["game_id"])
         if market and market.get("spread") is not None:
             n_with_market += 1
-        rows.extend(
-            build_predictions_for_game(
-                game, home_elo, away_elo, epa_by_team_season, epa_lookback=1, market=market
-            )
+        game_rows = build_predictions_for_game(
+            game,
+            home_elo,
+            away_elo,
+            epa_by_team_season,
+            epa_lookback=1,
+            market=market,
+            epa_rows=(home_epa, away_epa),
         )
+        for row in game_rows:
+            fit_id, artifact = artifacts[row["model_version"]]
+            rows.append(
+                attach_prediction_provenance(
+                    row,
+                    evaluation_mode=PUBLISHED_FORECAST,
+                    fit_id=fit_id,
+                    model_artifact=artifact,
+                    input_snapshot=closed_form_input_snapshot(
+                        game,
+                        model_version=row["model_version"],
+                        home_elo=home_elo,
+                        away_elo=away_elo,
+                        market=market,
+                        home_epa=home_epa,
+                        away_epa=away_epa,
+                        epa_source="current_or_prior_season",
+                    ),
+                )
+            )
 
     write_upcoming(conn, rows)
     logger.info(
@@ -648,7 +757,35 @@ def run_upcoming(conn) -> None:
     )
 
 
-def run_backfill(conn, start: int, end: int, as_of_week: bool = False) -> None:
+def _historical_prediction_date(game: dict):
+    start_date = game.get("start_date")
+    if start_date is None:
+        raise ValueError(
+            f"game_id={game['game_id']} has no kickoff; cannot create historical provenance"
+        )
+    return start_date.date()
+
+
+def run_backfill(
+    conn,
+    start: int,
+    end: int,
+    as_of_week: bool = True,
+    hindsight_experiment: str | None = None,
+) -> None:
+    if hindsight_experiment is not None:
+        hindsight_experiment = hindsight_experiment.strip()
+        if not hindsight_experiment:
+            raise ValueError("--hindsight-experiment requires a nonempty label")
+        if as_of_week:
+            raise ValueError("hindsight backfills cannot use as-of-week EPA")
+        evaluation_mode = HINDSIGHT_EXPERIMENT
+    else:
+        if not as_of_week:
+            raise ValueError("full-season EPA requires --hindsight-experiment LABEL")
+        evaluation_mode = WALK_FORWARD_RECONSTRUCTION
+
+    artifacts = closed_form_model_artifacts()
     total_games = total_rows = total_with_market = 0
     for season in range(start, end + 1):
         games = fetch_backfill_games(conn, season)
@@ -688,7 +825,7 @@ def run_backfill(conn, start: int, end: int, as_of_week: bool = False) -> None:
                 n_with_market += 1
 
             start_date = game["start_date"]
-            prediction_date = start_date.date() if start_date is not None else date(season, 1, 1)
+            prediction_date = _historical_prediction_date(game)
 
             epa_rows = None
             if as_of_week:
@@ -708,6 +845,16 @@ def run_backfill(conn, start: int, end: int, as_of_week: bool = False) -> None:
                 else:
                     src_counts["week"] += 1
                 epa_rows = (home_row, away_row)
+                epa_source = {"home": home_src, "away": away_src}
+            else:
+                home_row = lookup_epa_coefs(
+                    epa_by_team_season, game["home_team"], season, lookback=0
+                )
+                away_row = lookup_epa_coefs(
+                    epa_by_team_season, game["away_team"], season, lookback=0
+                )
+                epa_rows = (home_row, away_row)
+                epa_source = "same_season_full_fit"
 
             game_rows = build_predictions_for_game(
                 game,
@@ -719,8 +866,26 @@ def run_backfill(conn, start: int, end: int, as_of_week: bool = False) -> None:
                 epa_rows=epa_rows,
             )
             for row in game_rows:
-                row["prediction_date"] = prediction_date
-            rows.extend(game_rows)
+                fit_id, artifact = artifacts[row["model_version"]]
+                provenance_row = attach_prediction_provenance(
+                    {**row, "prediction_date": prediction_date},
+                    evaluation_mode=evaluation_mode,
+                    fit_id=fit_id,
+                    model_artifact=artifact,
+                    input_snapshot=closed_form_input_snapshot(
+                        game,
+                        model_version=row["model_version"],
+                        home_elo=home_elo,
+                        away_elo=away_elo,
+                        market=market,
+                        home_epa=home_row,
+                        away_epa=away_row,
+                        epa_source=epa_source,
+                    ),
+                    simulated_as_of_at=start_date,
+                    experiment_label=hindsight_experiment,
+                )
+                rows.append(provenance_row)
 
         write_backfill_season(conn, rows)
         if as_of_week:
@@ -753,21 +918,32 @@ def main() -> None:
         type=int,
         metavar=("START", "END"),
         help="Backfill completed games for seasons START..END (inclusive) using "
-        "walk-forward pregame Elo + same-season EPA; prediction_date = each "
-        "game's start_date (fallback: Jan 1 of its season). Default (no flag): "
+        "walk-forward pregame Elo + as-of-week EPA; prediction_date and "
+        "simulated_as_of_at come from each known kickoff. Default (no flag): "
         "score upcoming/pending games using current ratings.",
     )
     parser.add_argument(
         "--as-of-week",
         action="store_true",
-        help="With --backfill: leak-free blend via as-of-week EPA coefficients "
+        help="Compatibility alias for the default backfill behavior: leak-free "
+        "blend via as-of-week EPA coefficients "
         "(analytics.adjusted_epa_week_build entering each game's week, prior-"
         "season full fit fallback, else Elo-only). elo_v1 rows are unchanged.",
+    )
+    parser.add_argument(
+        "--hindsight-experiment",
+        metavar="LABEL",
+        help="With --backfill: use same-season full-season EPA and label the "
+        "append-only rows as an explicit hindsight experiment.",
     )
     args = parser.parse_args()
 
     if args.as_of_week and not args.backfill:
         parser.error("--as-of-week requires --backfill")
+    if args.hindsight_experiment and not args.backfill:
+        parser.error("--hindsight-experiment requires --backfill")
+    if args.as_of_week and args.hindsight_experiment:
+        parser.error("--as-of-week and --hindsight-experiment are mutually exclusive")
 
     import psycopg2
 
@@ -778,7 +954,13 @@ def main() -> None:
             if start > end:
                 logger.error(f"--backfill start {start} is after end {end}")
                 sys.exit(1)
-            run_backfill(conn, start, end, as_of_week=args.as_of_week)
+            run_backfill(
+                conn,
+                start,
+                end,
+                as_of_week=not bool(args.hindsight_experiment),
+                hindsight_experiment=args.hindsight_experiment,
+            )
         else:
             run_upcoming(conn)
     except Exception:

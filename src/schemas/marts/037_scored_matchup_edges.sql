@@ -5,7 +5,7 @@
 -- The FORWARD-LOOKING surface: house expected margin vs the market line for
 -- UPCOMING (not-yet-completed) games only. One row per (game_id, model_version):
 -- the LATEST prediction snapshot for that game+model, chosen by
--- DISTINCT ON (game_id, model_version) ORDER BY prediction_date DESC. As new
+-- DISTINCT ON (game_id, model_version) ordered by published_at and prediction_id. As new
 -- daily snapshots land in predictions.game_predictions the mart re-materializes
 -- to the freshest read on each game.
 --
@@ -31,7 +31,7 @@
 -- this ordering.
 --
 -- NO EMPTY-GUARD (by design): this mart is legitimately EMPTY out of season and
--- until the Phase 5 predictions backfill / in-season daily runs populate
+-- until prospective in-season scoring runs populate
 -- predictions.game_predictions. An empty result is a valid state, not a failure,
 -- so it must not RAISE at deploy time (unlike the Tier 1 marts).
 --
@@ -77,7 +77,8 @@ SELECT DISTINCT ON (p.game_id, p.model_version)
 FROM predictions.game_predictions p
 JOIN core.games g ON g.id = p.game_id
 WHERE NOT COALESCE(g.completed, false)
-ORDER BY p.game_id, p.model_version, p.prediction_date DESC;
+  AND p.evaluation_mode = 'published_forecast'
+ORDER BY p.game_id, p.model_version, p.published_at DESC, p.prediction_id DESC;
 
 -- Required for REFRESH CONCURRENTLY; also the natural grain key. DISTINCT ON
 -- (game_id, model_version) guarantees one row per pair, so this is unique.

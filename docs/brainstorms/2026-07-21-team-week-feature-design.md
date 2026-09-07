@@ -587,9 +587,9 @@ For each `S` in `2018..2025`:
    **frozen S−1** `feature_means`/scaling, apply β → `expected_home_margin`,
    apply logistic+Platt → `home_win_prob`, and write a
    `model_version='fitted_v1'` row into `predictions.game_predictions`
-   (`prediction_date = start_date::date`, so re-runs are idempotent under the
-   `(game_id, model_version, prediction_date)` key). `marts/038` scores it
-   automatically.
+   as an immutable `walk_forward_reconstruction` with the actual artifact and
+   input snapshot, actual creation time, and nominal kickoff as-of time. Re-runs
+   append new IDs; reconstruction rows never enter published accuracy (F04).
 10. **Daily upcoming:** select the latest eligible frozen fit separately for
     each pending season S, requiring `train_through_season < S`. Validate the
     fit against each game before vectorization. Resolve all required fits
@@ -850,3 +850,40 @@ rows in a private recovery journal before the bounded database repair; apply the
 same reviewed result correction on later game ingestion so it cannot regress.
 These are source-data repairs, not a change to the feature vector, fit vintage,
 week-index semantics, or permission to retrain. The 2025 fit remains frozen.
+
+### F04 prediction provenance amendment — September 7, 2026
+
+Prediction history is an append-only ledger, not a mutable daily cache. Preserve
+existing IDs/values and label all pre-migration rows `legacy_unknown`; existing
+computed/date fields cannot prove when a forecast was actually published.
+New modes are `published_forecast`, `walk_forward_reconstruction`, and
+`hindsight_experiment`. All new rows record database write-time `created_at`,
+content-addressed `fit_id`, `input_hash`, and the exact captured input snapshot.
+A separate immutable model-artifact table retains the consumed coefficients,
+scaling/calibration or closed-form parameters, and implementation fingerprint.
+This identifies the artifact actually consumed; it does not invent the training
+manifest or upstream data-generation history deferred to F05.
+
+For published rows, `published_at` is the actual database write instant, never
+kickoff or transaction-start time. Reconstructions/experiments have no
+publication timestamp and record their nominal `simulated_as_of_at` from a
+known kickoff. Hindsight requires an explicit nonempty experiment label.
+Backfill defaults to as-of-week reconstruction and never overwrites a published
+row. Same-day reruns append distinct immutable prediction IDs. Compatibility
+`prediction_date` remains descriptive and is never an identity or eligibility
+key. The original source/fit snapshots remain recoverable after source refresh
+or retraining. No feature-vector, calibration algorithm, or production fit is
+changed by this amendment.
+
+Public forecast, edge, accuracy, and season-simulation inputs use only published
+rows. Prospective accuracy/calibration require known kickoff and strictly
+`published_at < kickoff`, selecting the latest eligible timestamp then ID.
+Unknown legacy, reconstructions, hindsight, at-kickoff, and post-kickoff rows
+cannot affect that cohort. An explicit history API exposes all modes with their
+provenance. The separate preseason walk-forward backtest stays unchanged.
+
+Cutover may leave published accuracy unmeasured and simulation calibration below
+its existing minimum sample threshold. Keep the existing fail-closed policy;
+do not seed it with legacy or reconstructed predictions or silently invent a
+fallback. New production schema deployment and scoring require a separately
+authorized rollout, with the cold-start limitation explicit before deployment.

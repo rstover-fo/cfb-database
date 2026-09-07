@@ -24,9 +24,9 @@ docs/plans/2026-07-21-tier2-analytics-plan.md Phase 5) and prints:
 This script never fails the gate itself -- reading the printed numbers
 against the plan's thresholds and deciding whether to re-tune (K, lambda,
 blend weights) is a human call in the Phase 5 loop, per the plan. The only
-failure mode here is the mart itself being missing or empty, which means
-`compute_predictions.py --backfill <start> <end>` and a mart refresh haven't
-run yet.
+failure mode here is the mart itself being missing or empty, which may be an
+expected F04 prospective cold start. Historical backfills cannot populate this
+published-forecast cohort.
 
 Usage:
     python scripts/check_backtest.py
@@ -173,9 +173,8 @@ def run() -> int:
         with conn.cursor() as cur:
             if not table_exists(cur, "marts", "prediction_accuracy"):
                 logger.error(
-                    "marts.prediction_accuracy is MISSING -- run "
-                    "`python scripts/compute_predictions.py --backfill <start> <end>` "
-                    "then refresh marts (python scripts/refresh_marts.py) before retrying."
+                    "marts.prediction_accuracy is MISSING -- apply its schema and API "
+                    "dependency closure before retrying."
                 )
                 return 1
 
@@ -183,9 +182,10 @@ def run() -> int:
             (count,) = cur.fetchone()
             if count == 0:
                 logger.error(
-                    "marts.prediction_accuracy is EMPTY -- run "
-                    "`python scripts/compute_predictions.py --backfill <start> <end>` "
-                    "then refresh marts (python scripts/refresh_marts.py) before retrying."
+                    "marts.prediction_accuracy is EMPTY -- no eligible prospective "
+                    "published outcomes are available. Publish forecasts before kickoff, "
+                    "wait for completed outcomes, then refresh marts. Historical "
+                    "backfills cannot populate this cohort."
                 )
                 return 1
 

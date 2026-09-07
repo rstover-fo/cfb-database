@@ -57,9 +57,10 @@ def check_recovery_state(conn):
         f"pending_by_season={pending}",
         flush=True,
     )
-    if 2025 not in selected_fits:
+    if max(selected_fits, default=None) != 2025:
         raise RuntimeError(
-            f"Recovery requires a selected 2025 registry fit; selected fits={selected_fits}"
+            f"Recovery requires the selected 2025 registry fit to be newest; "
+            f"selected fits={selected_fits}"
         )
     if 2025 not in eligible_fits:
         raise RuntimeError(
@@ -124,14 +125,6 @@ def main():
             # deployment promotion from changing the selected immutable fit.
             cur.execute(
                 "LOCK TABLE features.training_fits, features.model_deployments IN SHARE MODE"
-            )
-        from scripts.score_fitted import fetch_available_train_through
-
-        selected_fits = fetch_available_train_through(conn)
-        train_through = max(selected_fits, default=None)
-        if train_through != 2025:
-            raise RuntimeError(
-                f"Recovery requires the selected 2025 registry fit; found {selected_fits}"
             )
         execute_recovery(conn)
 

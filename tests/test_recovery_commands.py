@@ -182,3 +182,25 @@ def test_recovery_locks_registry_fit_and_deployment_tables():
     assert "features.training_fits, features.model_deployments" in source
     assert "features.model_metadata" not in source
     assert "features.model_coefficients" not in source
+
+
+@pytest.mark.parametrize("mode", ["--check", "--execute"])
+def test_both_recovery_modes_reject_a_newer_selected_fit(monkeypatch, mode):
+    from unittest.mock import MagicMock
+
+    import scripts.recover_season_projections as recovery
+
+    monkeypatch.setattr("sys.argv", ["recover_season_projections.py", mode])
+    monkeypatch.setattr("psycopg2.connect", lambda _: MagicMock())
+    monkeypatch.setattr("scripts.run_migrations.get_db_url", lambda: "unused")
+    monkeypatch.setattr("scripts.train_model.fetch_refit_state", lambda _: (2025, [2025]))
+    monkeypatch.setattr(
+        "scripts.score_fitted.fetch_available_train_through", lambda _: [2025, 2026]
+    )
+    monkeypatch.setattr("scripts.score_fitted.fetch_pending_game_counts", lambda _: {2026: 10})
+    commands = []
+    monkeypatch.setattr(recovery, "execute_commands", lambda: commands.append(True))
+
+    with pytest.raises(RuntimeError, match="selected 2025 registry fit to be newest"):
+        recovery.main()
+    assert commands == []

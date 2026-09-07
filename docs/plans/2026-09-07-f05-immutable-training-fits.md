@@ -103,6 +103,10 @@ upcoming scoring. Do not defeat those checks to make a rollback appear healthy.
   The 29-case F05 SQL rerun passed after this fix, including a writer-owned
   temporary-trigger bypass regression.
 
+- Greptile identified a mismatch between recovery preflight and execution. Both
+  now share the newest-selected-2025 check, verified through both CLI paths
+  before commands run; all 13 recovery tests passed and independent review is clean.
+
 Production runtime, memory cost of training-data hashing, warehouse fit outputs
 and prediction coverage still require the authorized rollout. No accuracy or
 calibration improvement is claimed. No production F05 command has been executed.

@@ -29,6 +29,7 @@ PROJECT_SCHEMAS = {
     "public",
     "ratings",
     "raw",
+    "rp",
     "recruiting",
     "ref",
     "scouting",

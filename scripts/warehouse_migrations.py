@@ -56,6 +56,8 @@ PROJECT_SCHEMAS = (
     "public_staging",
     "raw",
     "raw_staging",
+    "rp",
+    "rp_staging",
     "ratings",
     "ratings_staging",
     "recruiting",

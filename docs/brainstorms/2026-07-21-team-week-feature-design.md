@@ -829,3 +829,24 @@ Per-family assertions the gate runs against the freshly-built `team_week`
   optional volatility-modulated calibration experiment) was dropped with its
   substrate when `vol_net_epa` was rejected in the 2026-07-28 screen -- see
   that entry above -- so the plan's Definition of Done is met without it.
+
+### Production lifecycle reconciliation — September 6, 2026
+
+The rollout preflight found actual 2020 `spring_regular` and
+`spring_postseason` records. These are documented CFBD season types, not unknown
+status or exhibitions ([official Games schema](https://apinext.collegefootballdata.com/api/games)).
+For closure coverage only, recognize them as regular/postseason contest types;
+retain their raw season_type and the conservative 2020 July 1 floor. Their
+future dates, incomplete status and missing scores still block closure. This
+amendment does not alter historical feature week-index semantics.
+
+The same preflight identified reviewed non-contests and two missing official
+results. Extend the existing explicit event registry only with documented
+cancellations and matched replacement IDs. Correct Taylor–Defiance 2024 to
+63–12/completed and Sul Ross–Angelo State 2025 to 0–62/completed, with exact
+provider ID/season/team identity guards and official source citations. A
+contradictory non-NULL result must stop correction. Preserve the original stored
+rows in a private recovery journal before the bounded database repair; apply the
+same reviewed result correction on later game ingestion so it cannot regress.
+These are source-data repairs, not a change to the feature vector, fit vintage,
+week-index semantics, or permission to retrain. The 2025 fit remains frozen.

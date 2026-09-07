@@ -25,6 +25,10 @@ MIN_GAMES_FOR_FINAL_SEASON = 100
 _POSTSEASON = "postseason"
 _CLOSURE_SEASON_TYPES = frozenset({"regular", _POSTSEASON})
 _IGNORED_SEASON_TYPES = frozenset({"allstar", "exhibition"})
+_CLOSURE_SEASON_TYPE_ALIASES = {
+    "spring_regular": "regular",
+    "spring_postseason": _POSTSEASON,
+}
 
 
 @dataclass(frozen=True)
@@ -97,6 +101,13 @@ def _canonical_rows(
         return rows, str(exc)
 
 
+def _closure_season_type(row: Mapping) -> str:
+    """Normalize documented CFBD spring enums only for closure decisions."""
+
+    raw_type = str(row.get("season_type") or "").lower()
+    return _CLOSURE_SEASON_TYPE_ALIASES.get(raw_type, raw_type)
+
+
 def classify_season(
     rows: Iterable[Mapping],
     season: int,
@@ -131,7 +142,7 @@ def classify_season(
     closure_rows: list[dict] = []
     unknown_type_ids: list[int] = []
     for row in canonical:
-        season_type = str(row.get("season_type") or "").lower()
+        season_type = _closure_season_type(row)
         if season_type in _CLOSURE_SEASON_TYPES:
             closure_rows.append(row)
         elif season_type not in _IGNORED_SEASON_TYPES:
@@ -156,7 +167,7 @@ def classify_season(
             completed,
         )
 
-    present_types = {str(row.get("season_type") or "").lower() for row in closure_rows}
+    present_types = {_closure_season_type(row) for row in closure_rows}
     missing_types = _CLOSURE_SEASON_TYPES - present_types
     if missing_types:
         return SeasonLifecycle(

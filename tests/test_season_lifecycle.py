@@ -71,6 +71,59 @@ def test_2020_disruption_uses_july_floor():
     ).is_final
 
 
+def test_completed_2020_spring_schedule_closes_after_july_floor():
+    rows = _complete_schedule(2020)
+    for row in rows:
+        row["season_type"] = "spring_regular"
+    rows[-1]["season_type"] = "spring_postseason"
+
+    result = classify_season(
+        rows,
+        2020,
+        as_of=datetime(2021, 7, 1, tzinfo=UTC),
+    )
+
+    assert result.is_final is True
+    assert result.scheduled_games == 100
+    assert rows[0]["season_type"] == "spring_regular"
+    assert rows[-1]["season_type"] == "spring_postseason"
+
+
+def test_incomplete_spring_game_blocks_2020_closure():
+    rows = _complete_schedule(2020)
+    rows[0].update(
+        season_type="spring_regular",
+        completed=False,
+        home_points=None,
+        away_points=None,
+    )
+    rows[-1]["season_type"] = "spring_postseason"
+
+    result = classify_season(
+        rows,
+        2020,
+        as_of=datetime(2021, 7, 1, tzinfo=UTC),
+    )
+
+    assert result.is_final is False
+    assert result.unresolved_game_ids == (1,)
+
+
+def test_spring_postseason_satisfies_postseason_coverage():
+    rows = _complete_schedule(2020)
+    for row in rows:
+        row["season_type"] = "regular"
+    rows[-1]["season_type"] = "spring_postseason"
+
+    result = classify_season(
+        rows,
+        2020,
+        as_of=datetime(2021, 7, 1, tzinfo=UTC),
+    )
+
+    assert result.is_final is True
+
+
 def test_regular_only_truncated_schedule_cannot_close():
     rows = _complete_schedule()
     for row in rows:

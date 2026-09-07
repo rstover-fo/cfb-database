@@ -71,3 +71,26 @@ PostgreSQL was removed. Production changes and all six Actions runs succeeded;
 no rollback was required. Independent review cleared the atomic bundle and
 post-scoring SQL; local verification executed the exact bundle twice and the
 post-scoring SQL with equivalent fixture baseline constants.
+
+## PR #126 review follow-up
+
+The coverage verifier now gates every pending season/model combination for all
+three models. Unknown kickoffs remain in the denominator but cannot count as
+covered; neither can at/after-kickoff publications or NULL expected margins.
+Repeated publications cannot inflate coverage. The prior 100% scorer coverage
+is distinct from this strict eligibility gate.
+
+[Verification run 34072696413](https://github.com/rstover-fo/cfb-database/actions/runs/34072696413)
+passed with 3,225/3,247 eligible games for **each** model, unchanged legacy and
+outlook hashes, and zero prospective calibration outcomes. No migration,
+rescoring, or ACL change was performed. Twenty-one disposable PostgreSQL tests
+passed, including partial/missing models, per-season failures, unknown/late
+kickoffs, duplicate inflation, and actual raw/API role boundaries.
+
+The raw-access review was assessed against migrations 024/028/063: anon and
+authenticated intentionally have SELECT access to these public-source prediction
+and fit snapshots. The API-only role is analyst_ro. The contract and tests now
+state that distinction explicitly; no production access revocation was warranted.
+Historical coverage and the 2025 comparison are now consistently labeled as
+pre-F04 reconstruction evidence, not availability or performance of the current
+published-only endpoints.

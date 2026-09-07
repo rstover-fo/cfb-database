@@ -91,6 +91,32 @@ CREATE TRIGGER reject_training_fit_truncate
     BEFORE TRUNCATE ON features.training_fits
     FOR EACH STATEMENT EXECUTE FUNCTION features.reject_training_registry_mutation();
 
+-- Only the nested deployment-change trigger may create audit records. Even a
+-- writer with broad table INSERT privileges cannot fabricate a direct entry.
+CREATE OR REPLACE FUNCTION features.guard_deployment_history_insert()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = ''
+AS $function$
+BEGIN
+    -- Nesting alone is insufficient: a writer can create a temporary trigger.
+    -- The authorized recorder is SECURITY DEFINER, so its nested INSERT also
+    -- carries that function owner's effective role. Keep this guard invoker-rights.
+    IF pg_catalog.pg_trigger_depth() <> 2 OR current_user <> (
+        SELECT pg_catalog.pg_get_userbyid(proowner) FROM pg_catalog.pg_proc
+        WHERE oid = 'features.record_model_deployment_change()'::pg_catalog.regprocedure
+    ) THEN
+        RAISE EXCEPTION 'Deployment history is generated only by deployment changes';
+    END IF;
+    RETURN NEW;
+END
+$function$;
+
+DROP TRIGGER IF EXISTS guard_deployment_history_insert ON features.model_deployment_history;
+CREATE TRIGGER guard_deployment_history_insert
+    BEFORE INSERT ON features.model_deployment_history
+    FOR EACH ROW EXECUTE FUNCTION features.guard_deployment_history_insert();
+
 DROP TRIGGER IF EXISTS reject_deployment_history_update
     ON features.model_deployment_history;
 CREATE TRIGGER reject_deployment_history_update
@@ -166,3 +192,5 @@ $migration$;
 
 REVOKE ALL ON FUNCTION features.reject_training_registry_mutation() FROM PUBLIC;
 REVOKE ALL ON FUNCTION features.record_model_deployment_change() FROM PUBLIC;
+
+REVOKE ALL ON FUNCTION features.guard_deployment_history_insert() FROM PUBLIC;

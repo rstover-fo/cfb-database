@@ -323,3 +323,50 @@ def test_parameter_quantization_matches_executed_postgres_numeric(db, value):
 
     stored = query(db, "SELECT %s::NUMERIC(12,6)", (value,))[0][0]
     assert _numeric6(value) == float(stored)
+
+
+@pytest.mark.parametrize("role", [None, "f05_writer"])
+def test_direct_history_insert_cannot_fabricate_a_promotion(db, role):
+    first = add_fit(db)
+    if role:
+        query(db, f"SET LOCAL ROLE {role}")
+    with pytest.raises(psycopg2.Error, match="generated only by deployment changes"):
+        query(
+            db,
+            """
+            INSERT INTO features.model_deployment_history
+                (model_version, train_through_season, training_fit_id,
+                 action, reason, changed_by)
+            VALUES ('fitted_v1', 2025, %s, 'promote', 'fabricated', 'someone_else')
+        """,
+            (first,),
+        )
+
+
+def test_writer_cannot_forge_history_through_a_temporary_trigger(db):
+    first = add_fit(db)
+    query(db, "SET LOCAL ROLE f05_writer")
+    query(
+        db,
+        """
+        -- A hostile writer may shadow unqualified catalog names in pg_temp.
+        CREATE TEMP TABLE pg_proc AS
+            SELECT 'features.record_model_deployment_change()'::pg_catalog.regprocedure AS oid,
+                   (SELECT oid FROM pg_catalog.pg_roles WHERE rolname=current_user) AS proowner;
+        CREATE TEMP TABLE fabricated_deployment (training_fit_id text);
+        CREATE FUNCTION pg_temp.fabricate_history() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+            INSERT INTO features.model_deployment_history
+                (model_version, train_through_season, training_fit_id,
+                 action, reason, changed_by)
+            VALUES ('fitted_v1', 2025, NEW.training_fit_id,
+                    'promote', 'fabricated nested record', 'someone_else');
+            RETURN NEW;
+        END $$;
+        CREATE TRIGGER fabricate_history AFTER INSERT ON fabricated_deployment
+            FOR EACH ROW EXECUTE FUNCTION pg_temp.fabricate_history();
+    """,
+    )
+    with pytest.raises(psycopg2.Error, match="generated only by deployment changes"):
+        query(db, "INSERT INTO fabricated_deployment VALUES (%s)", (first,))

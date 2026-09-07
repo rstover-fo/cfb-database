@@ -85,8 +85,8 @@ upcoming scoring. Do not defeat those checks to make a rollback appear healthy.
 - Main suite: **2,425 passed, 497 skipped**. Configured warehouse integration
   tests were not opted into locally; the skips are not production evidence.
 - MCP suite: **59 passed**.
-- Disposable PostgreSQL 16: **47 passed** across the F04 and F05 SQL suites,
-  including **26 F05 cases**. Applied migration 064 twice, executed exact legacy
+- Disposable PostgreSQL 16: **50 passed** across the F04 and F05 SQL suites,
+  including **29 F05 cases**. Applied migration 064 twice, executed exact legacy
   import, selection/rollback, immutable history and fit guards, actual caller-role
   checks, scoring linkage, and comparisons against PostgreSQL NUMERIC rounding.
 - A synthetic training-to-registry-to-scoring regression covers NULL imputation
@@ -97,6 +97,11 @@ upcoming scoring. Do not defeat those checks to make a rollback appear healthy.
 - Independent Astra review is clean after resolving source-fingerprint closure,
   legacy numeric-string compatibility, zero-variance compatibility and rounding
   findings. Concurrent selection and legacy import use transaction-held locks.
+- PR #127 Codex review identified direct history insertion as an audit-integrity
+  gap. A nested-trigger/effective-recorder-role guard now rejects fabricated history inserts, including
+  from a broadly privileged writer; actual promotion/deletion still journals.
+  The 29-case F05 SQL rerun passed after this fix, including a writer-owned
+  temporary-trigger bypass regression.
 
 Production runtime, memory cost of training-data hashing, warehouse fit outputs
 and prediction coverage still require the authorized rollout. No accuracy or

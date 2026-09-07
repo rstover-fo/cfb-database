@@ -30,22 +30,31 @@ BEGIN
              FROM predictions.game_predictions WHERE evaluation_mode='published_forecast'
              GROUP BY model_version ORDER BY model_version
     LOOP RAISE NOTICE 'F04 publications: %',row_to_json(r); END LOOP;
-    IF (SELECT count(DISTINCT model_version) FROM api.game_predictions WHERE model_version IN
-        ('elo_v1','elo_epa_blend_v1','fitted_v1'))<>3 THEN
-        RAISE EXCEPTION 'Missing published model'; END IF;
+    -- F04_COVERAGE_BEGIN: executed against isolated fixtures in regression tests.
     FOR r IN
-        WITH pending AS (SELECT g.id,g.season,g.start_date FROM core.games g WHERE NOT COALESCE(g.completed, false) AND g.id NOT IN (401540999, 401545766, 401545768, 401545773, 401545780, 401545781, 401549719, 401550299, 401552878, 401552884, 401640992, 401833535, 401866625) AND g.season >= (SELECT COALESCE(MAX(season), 0) FROM core.games WHERE completed AND id NOT IN (401540999, 401545766, 401545768, 401545773, 401545780, 401545781, 401549719, 401550299, 401552878, 401552884, 401640992, 401833535, 401866625)))
-        SELECT p.season,count(*) AS pending,
-            count(*) FILTER(WHERE EXISTS(SELECT 1 FROM predictions.game_predictions gp
-                WHERE gp.game_id=p.id AND gp.model_version='fitted_v1'
+        WITH pending AS (
+            SELECT g.id,g.season,g.start_date FROM core.games g
+            WHERE NOT COALESCE(g.completed, false) AND g.id NOT IN (401540999, 401545766, 401545768, 401545773, 401545780, 401545781, 401549719, 401550299, 401552878, 401552884, 401640992, 401833535, 401866625) AND g.season >= (SELECT COALESCE(MAX(season), 0) FROM core.games WHERE completed AND id NOT IN (401540999, 401545766, 401545768, 401545773, 401545780, 401545781, 401549719, 401550299, 401552878, 401552884, 401640992, 401833535, 401866625))
+        )
+        SELECT p.season,m.model_version,count(*) AS pending,
+            count(*) FILTER(WHERE EXISTS(
+                SELECT 1 FROM predictions.game_predictions gp
+                WHERE gp.game_id=p.id AND gp.model_version=m.model_version
                   AND gp.evaluation_mode='published_forecast'
-                  AND (p.start_date IS NULL OR gp.published_at<p.start_date))) AS covered
-        FROM pending p GROUP BY p.season ORDER BY p.season
+                  AND gp.expected_home_margin IS NOT NULL
+                  AND p.start_date IS NOT NULL
+                  AND gp.published_at<p.start_date
+            )) AS covered
+        FROM pending p
+        CROSS JOIN (VALUES ('elo_v1'),('elo_epa_blend_v1'),('fitted_v1')) m(model_version)
+        GROUP BY p.season,m.model_version ORDER BY p.season,m.model_version
     LOOP
-        RAISE NOTICE 'F04 eligible fitted coverage: %',row_to_json(r);
+        RAISE NOTICE 'F04 eligible model coverage: %',row_to_json(r);
         IF r.covered::numeric/r.pending < 0.9 THEN
-            RAISE EXCEPTION 'Insufficient eligible fitted coverage: %',row_to_json(r); END IF;
+            RAISE EXCEPTION 'Insufficient eligible model coverage: %',row_to_json(r);
+        END IF;
     END LOOP;
+    -- F04_COVERAGE_END
     FOR r IN 
     WITH latest AS (
         SELECT DISTINCT ON (p.game_id)

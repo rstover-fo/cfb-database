@@ -678,6 +678,19 @@ def test_api_roles_can_read_but_cannot_mutate(role: str, f04_db: F04Database) ->
             assert cur.fetchone()[0] >= 1
             cur.execute("SELECT count(*) FROM api.prediction_history")
             assert cur.fetchone()[0] >= 1
+            for query in [
+                "SELECT input_snapshot FROM predictions.game_predictions "
+                "WHERE input_snapshot IS NOT NULL LIMIT 1",
+                "SELECT artifact FROM predictions.model_artifacts LIMIT 1",
+            ]:
+                if role == "analyst_ro":
+                    with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                        cur.execute(query)
+                else:
+                    # The predictions read contract deliberately exposes these
+                    # public-source snapshots to anon/authenticated, not analyst_ro.
+                    cur.execute(query)
+                    assert cur.fetchone()[0] is not None
             with pytest.raises(psycopg2.errors.InsufficientPrivilege):
                 cur.execute(
                     "UPDATE api.prediction_history SET expected_home_margin = 0 "
@@ -776,3 +789,110 @@ def test_python_writers_round_trip_same_day_snapshots_and_artifacts(f04_db):
     finally:
         conn.rollback()
         conn.autocommit = True
+
+
+@pytest.mark.parametrize(
+    "scenario, failing_model",
+    [
+        ("complete", None),
+        ("sparse_elo", "elo_v1"),
+        ("sparse_blend", "elo_epa_blend_v1"),
+        ("sparse_fitted", "fitted_v1"),
+        ("missing_elo", "elo_v1"),
+        ("unknown_kickoff", "elo_epa_blend_v1"),
+        ("at_kickoff", "elo_epa_blend_v1"),
+        ("after_kickoff", "elo_epa_blend_v1"),
+        ("missing_margin", "elo_v1"),
+        ("duplicate_sparse_elo", "elo_v1"),
+        ("sparse_next_season", "elo_v1"),
+    ],
+)
+def test_rollout_coverage_gates_each_model_and_known_kickoff(f04_db, scenario, failing_model):
+    """Execute the operational SQL gate against controlled temporary relations."""
+    from psycopg2.extras import execute_values
+
+    source = (PROJECT_ROOT / "docs/plans/2026-09-07-f04-post-scoring.sql").read_text()
+    block = source.split("-- F04_COVERAGE_BEGIN:", 1)[1].split("-- F04_COVERAGE_END", 1)[0]
+    # Drop the marker's prose line; keep the actual deployed FOR/query/assertion body.
+    block = block.split("\n", 1)[1]
+    block = block.replace("core.games", "pg_temp.f04_rollout_games").replace(
+        "predictions.game_predictions", "pg_temp.f04_rollout_predictions"
+    )
+    conn = f04_db.conn
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TEMP TABLE f04_rollout_games (
+                    id bigint,season integer,start_date timestamptz,completed boolean
+                );
+                CREATE TEMP TABLE f04_rollout_predictions (
+                    game_id bigint,model_version text,evaluation_mode text,
+                    published_at timestamptz,expected_home_margin numeric
+                );
+            """)
+            games = [
+                (
+                    i,
+                    2026,
+                    None if scenario == "unknown_kickoff" and i <= 3 else "2026-09-02 12:00:00+00",
+                    False,
+                )
+                for i in range(1, 21)
+            ]
+            if scenario == "sparse_next_season":
+                games += [
+                    (21, 2027, "2027-09-02 12:00:00+00", False),
+                    (22, 2027, "2027-09-02 12:00:00+00", False),
+                ]
+            execute_values(cur, "INSERT INTO f04_rollout_games VALUES %s", games)
+            predictions = []
+            sparse = {
+                "sparse_elo": "elo_v1",
+                "sparse_blend": "elo_epa_blend_v1",
+                "sparse_fitted": "fitted_v1",
+                "duplicate_sparse_elo": "elo_v1",
+            }
+            for model in ["elo_v1", "elo_epa_blend_v1", "fitted_v1"]:
+                for game_id, season, _, _ in games:
+                    if (
+                        model == sparse.get(scenario)
+                        and game_id > 1
+                        or scenario == "missing_elo"
+                        and model == "elo_v1"
+                        or scenario == "sparse_next_season"
+                        and model == "elo_v1"
+                        and game_id == 22
+                    ):
+                        continue
+                    publication = f"{season}-09-01 12:00:00+00"
+                    if game_id <= 3 and scenario in {"at_kickoff", "after_kickoff"}:
+                        publication = (
+                            "2026-09-02 12:00:00+00"
+                            if scenario == "at_kickoff"
+                            else ("2026-09-02 12:00:01+00")
+                        )
+                    margin = (
+                        None
+                        if scenario == "missing_margin" and model == "elo_v1" and (game_id <= 3)
+                        else 7
+                    )
+                    row = (game_id, model, "published_forecast", publication, margin)
+                    predictions.extend(
+                        [row]
+                        * (100 if scenario == "duplicate_sparse_elo" and model == "elo_v1" else 1)
+                    )
+            execute_values(cur, "INSERT INTO f04_rollout_predictions VALUES %s", predictions)
+            statement = "DO $test$ DECLARE r record; BEGIN\n" + block + "\nEND $test$;"
+            if failing_model is None:
+                cur.execute(statement)
+            else:
+                with pytest.raises(
+                    psycopg2.Error, match="Insufficient eligible model coverage"
+                ) as err:
+                    cur.execute(statement)
+                assert failing_model in str(err.value)
+    finally:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DROP TABLE IF EXISTS pg_temp.f04_rollout_predictions, pg_temp.f04_rollout_games"
+            )

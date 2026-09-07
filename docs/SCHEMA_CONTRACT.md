@@ -28,7 +28,10 @@ Last updated: 2026-09-07
     `experiment_label`, `fit_id`, and `input_hash`.
   - New `api.prediction_history` exposes the same columns for **all** modes:
     `legacy_unknown`, `published_forecast`, `walk_forward_reconstruction`, and
-    `hindsight_experiment`. Heavy input JSON remains in the underlying ledger.
+    `hindsight_experiment`. Heavy input JSON remains in the underlying ledger;
+    `anon`/`authenticated` can read that ledger and `predictions.model_artifacts`
+    directly. The thin API omits `input_snapshot` and artifact JSON to keep its
+    payload shape bounded, not to create a confidentiality boundary.
   - `api.scored_matchup_edges` uses published rows only. Accuracy and simulation
     residual calibration require known kickoff and strict `published_at <
     start_date`, filtering before latest-row selection. A same-day late forecast
@@ -283,9 +286,10 @@ Last updated: 2026-09-07
   matviews). Four things to get right: (1) it is **not a model input** — every
   row mixes season-final information and would leak if used as-of, and it is
   absent from `DIFF_FEATURE_COLUMNS` by design; (2) it is **not a shipping
-  gate** — only the walk-forward no-regression gate on
-  `marts.prediction_accuracy` ships a model change; (3) it is **legitimately
-  empty** before an external anchor loads, so it is in `test_marts.py`'s
+  gate** — model changes require the governed retrospective walk-forward
+  no-regression gate; after F04, `marts.prediction_accuracy` is the prospective
+  published-forecast audit and does not contain that reconstructed cohort; (3)
+  it is **legitimately empty** before an external anchor loads, so it is in `test_marts.py`'s
   `EMPTY_OK` set and a dark anchor is UNTESTABLE, never a null result; (4)
   migration 052 must be applied in an **earlier deploy run** than this mart —
   `deploy_schema.py` runs `run_marts.py` before its `--files` migrations. The
@@ -376,22 +380,26 @@ Last updated: 2026-09-07
   had already produced a wrong answer downstream. All three are now in the new
   **House Model Versions** table below.
   1. **`fitted_v1` is a third `model_version`, not just the season-projection
-     model.** It appears in `api.game_predictions` (23,453 rows, 2018-2026) and
-     in `api.scored_matchup_edges` alongside `elo_v1` and `elo_epa_blend_v1`.
-     cfb-app's model constant listed only the two Elo versions, so neither the
-     Discord bot nor the UI could select it at all.
+     model.** At the 2026-07-26 pre-F04 snapshot, the then-unfiltered
+     `api.game_predictions` exposed 23,453 `fitted_v1` rows spanning 2018-2026.
+     F04 preserved those rows as `legacy_unknown` history, now available only
+     through `api.prediction_history`; at F04 rollout, `api.game_predictions`
+     instead exposed 3,247 new published 2026 rows per model. cfb-app's model
+     constant listed only the two Elo versions, so neither the Discord bot nor
+     the UI could select `fitted_v1` at all.
   2. **`fitted_v1` carries its own Platt-scaled `home_win_prob`.** The previous
      downstream assumption -- "`home_win_prob` is Elo-only in both versions, so
      only `expected_home_margin` changes between them" -- is true of the two Elo
      rows and false of `fitted_v1`. On one verified game: `elo_v1` 0.7000,
      `elo_epa_blend_v1` 0.7000, `fitted_v1` 0.8772. Any consumer caching "win
      probability is constant across model versions" now quotes the wrong model.
-  3. **`fitted_v1` coverage is narrower and its decomposition columns are NULL.**
-     It starts at **2018**; both Elo versions reach **2015**, so making
-     `fitted_v1` a default silently broke pre-2018 game lookups. `elo_margin` and
-     `epa_margin` are NULL on all 23,453 `fitted_v1` rows -- correct (a fitted
-     ridge does not decompose its margin into an Elo part and an EPA part) but
-     indistinguishable from missing data unless documented.
+  3. **`fitted_v1` historical reconstruction coverage is narrower and its
+     decomposition columns are NULL.** The pre-F04 snapshot starts at **2018**;
+     both Elo versions reach **2015**. This describes retained
+     `legacy_unknown` history, not live published availability. `elo_margin` and
+     `epa_margin` are NULL on all 23,453 historical `fitted_v1` rows -- correct
+     (a fitted ridge does not decompose its margin into an Elo part and an EPA
+     part) but indistinguishable from missing data unless documented.
 
 - **2026-07-26 — `api.season_outlook` gains `classification` and `is_projection`;
   `schedule_complete` and `p_bowl_eligible` become division-aware.** Four defects
@@ -676,13 +684,15 @@ Last updated: 2026-09-07
   - **Walk-forward honesty:** `scripts/compute_predictions.py --as-of-week` backfills
     `elo_epa_blend_v1` using `analytics.adjusted_epa_week_build` coefficients as of each game's
     own week (prior-season fallback, else Elo-only), closing the in-season EPA leakage that
-    inflated the old backtest. Honest numbers: `elo_epa_blend_v1` ATS at `|edge|>=6` = 50.1%
+    inflated the old backtest. In the 2026-07-21 pre-F04 retrospective reconstruction,
+    `elo_epa_blend_v1` ATS at `|edge|>=6` = 50.1%
     (n=3,462) vs. `elo_v1` = 50.3% -- nobody beats the closing line; the blend still edges
-    `elo_v1` on margin MAE (16.31 vs 16.46). `marts.prediction_accuracy`'s header documents the
-    full methodology.
+    `elo_v1` on margin MAE (16.31 vs 16.46). Those rows are now `legacy_unknown` history and
+    do not populate the current strict prospective `marts.prediction_accuracy` surface.
   - **`fitted_v1` model (new, wired into the daily load):** a ridge-margin + IRLS/Platt-
     calibrated win-probability model trained on `features.team_week`
-    (`scripts/train_model.py`, `scripts/tune_params.py`). Gate B passed: `fitted_v1` beats
+    (`scripts/train_model.py`, `scripts/tune_params.py`). The 2026-07-21 retrospective Gate B
+    passed: `fitted_v1` beats
     `elo_v1` on walk-forward MAE (14.99 vs 16.46) and Brier (0.182 vs 0.187) every season
     2018-2025. `scripts/score_fitted.py --upcoming` now runs daily, scoring upcoming games
     into `predictions.game_predictions`.
@@ -894,8 +904,8 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 | `api.team_elo` | **Live** | ~29,000 | Season-end house Elo rating per team-season, ranked within season. Columns: team, season, season_end_elo, elo_rank, games_played, low_confidence, cfbd_elo |
 | `api.game_elo_history` | **Live** | ~71,000 | Game-grain house Elo history: pregame/postgame Elo both sides, win probability, expected vs actual margin, CFBD Elo copies for validation. Columns: game_id, season, week, season_type, start_date, neutral_site, home_team, away_team, home_pregame_elo, away_pregame_elo, home_postgame_elo, away_postgame_elo, home_win_prob, expected_home_margin, actual_home_margin, mov_multiplier, cfbd_home_pregame_elo, cfbd_away_pregame_elo, margin_error, abs_margin_error |
 | `api.scored_matchup_edges` | **Live** | Varies (in-season) | House model expected margin/win probability vs. the market line for upcoming games, with the resulting edge. Empty out of season by design -- not a failure. Columns: game_id, season, week, season_type, start_date, home_team, away_team, neutral_site, model_version, prediction_date, home_elo_pregame, away_elo_pregame, elo_margin, epa_margin, expected_home_margin, home_win_prob, market_provider, market_spread, market_home_margin, market_captured_at, edge, edge_pick, abs_edge. Carries all three model versions -- see House Model Versions below. |
-| `api.prediction_accuracy` | **Live** | May be 0 | Strict pre-kickoff published scoring of house predictions by season/model/edge-threshold: margin MAE/RMSE, ATS record, Brier score (house vs. CFBD). Columns: model_version, season, edge_threshold, n_games, n_with_market, margin_mae, margin_rmse, ats_wins, ats_losses, ats_pushes, ats_hit_rate, brier, cfbd_brier, n_scored_win_prob. No model wins on all three metrics -- see House Model Versions below for the 2025 tradeoff, and note `cfbd_brier` beats every house model. |
-| `api.game_predictions` | **Live** | May be 0 | Latest published house prediction snapshot per (game, model), from the append-only `predictions.game_predictions` log. Columns: prediction_id, computed_at, prediction_date, model_version, game_id, season, week, season_type, home_team, away_team, neutral_site, home_elo_pregame, away_elo_pregame, elo_margin, epa_margin, expected_home_margin, home_win_prob, market_provider, market_home_margin, market_spread, market_captured_at, edge, edge_pick, evaluation_mode, created_at, published_at, simulated_as_of_at, experiment_label, fit_id, input_hash. **Three `model_version` values, not two** -- `elo_v1`, `elo_epa_blend_v1` and `fitted_v1` (2018+ only, its own Platt-scaled `home_win_prob`, `elo_margin`/`epa_margin` NULL). Read the House Model Versions table below before selecting or defaulting a model. |
+| `api.prediction_accuracy` | **Live** | May be 0 | Strict pre-kickoff published scoring of house predictions by season/model/edge-threshold: margin MAE/RMSE, ATS record, Brier score (house vs. CFBD). Columns: model_version, season, edge_threshold, n_games, n_with_market, margin_mae, margin_rmse, ats_wins, ats_losses, ats_pushes, ats_hit_rate, brier, cfbd_brier, n_scored_win_prob. The surface had zero eligible completed outcomes at F04 rollout. The 2025 tradeoff in House Model Versions is a dated pre-F04 retrospective reconstruction snapshot, absent from this prospective view; its `cfbd_brier` comparison must not be presented as current prospective evidence. |
+| `api.game_predictions` | **Live** | May be 0 | Latest published house prediction snapshot per (game, model), from the append-only `predictions.game_predictions` log. Columns: prediction_id, computed_at, prediction_date, model_version, game_id, season, week, season_type, home_team, away_team, neutral_site, home_elo_pregame, away_elo_pregame, elo_margin, epa_margin, expected_home_margin, home_win_prob, market_provider, market_home_margin, market_spread, market_captured_at, edge, edge_pick, evaluation_mode, created_at, published_at, simulated_as_of_at, experiment_label, fit_id, input_hash. **Three `model_version` values, not two** -- `elo_v1`, `elo_epa_blend_v1` and `fitted_v1`. At F04 rollout this view held 3,247 published 2026 rows per model; older rows are `legacy_unknown` history visible only through `api.prediction_history`. `fitted_v1` has its own Platt-scaled `home_win_prob`; its `elo_margin`/`epa_margin` are NULL. Read the House Model Versions table below before selecting or defaulting a model. |
 | `api.prediction_history` | **Live** | 374,700 at rollout | All evaluation modes with the same columns as `api.game_predictions`; use provenance labels, never infer publication from historical prediction dates. |
 | `api.season_outlook` | **Deployed** | ~350 per projection season | Latest Monte Carlo season projection per (season, team, model), from the append-only `predictions.season_projections` log. Projected wins with a full distribution, schedule strength and conference title odds. Columns: projection_id, computed_at, projection_date, model_version, season, team, conference, games_scheduled, games_simulated, games_unscored, games_completed, actual_wins, schedule_complete, projected_wins, projected_losses, median_wins, wins_p10, wins_p25, wins_p75, wins_p90, p_win_dist, p_bowl_eligible, p_ten_plus, sos_rating, sos_rank, conf_title_prob, playoff_prob, n_sims, residual_sigma, strength_share, classification, is_projection. **Filter on `classification` before ranking** -- the view mixes FBS/FCS/DII/DIII (350 teams across 49 conferences in 2026), so an unfiltered `ORDER BY projected_wins` compares teams playing entirely different schedules; it is season-accurate (realignment-safe) and NULL means unplaceable, not FBS. **Check `is_projection` before calling anything a forecast** -- false means `games_simulated = games_completed`, so the row is a settled record (`projected_wins = actual_wins`, `wins_p10 = wins_p90`, and `conf_title_prob` values such as an exact 0.2500 shared by four teams are a tie split evenly, not a title race); it is per row, so use `bool_or(is_projection)` for a season-level answer. `schedule_complete` is division-aware (a 10-game Ivy League slate is complete) and `p_bowl_eligible` is NULL outside FBS. **Read `games_unscored` before trusting `projected_losses`** -- a pending game with no prediction is excluded from the simulation, and every projected quantity is computed over `games_simulated`, never `games_scheduled`. `p_win_dist` is `{"0": p, "1": p, ...}` summing to 1. From v1.1 each simulation draws one per-team season-strength offset (`strength_share`, calibrated to 0.15 against backtest coverage), so the tails are no longer understated; per-game variance is unchanged so `projected_wins` is unaffected. `playoff_prob` is NULL by design. **FCS/D2 caveat:** CFBD labels non-FBS playoff bracket games `season_type='regular'`, so `games_scheduled` for an FCS/D2 team can include a playoff run (completed seasons only -- no forward-looking row is affected). Do not rank FCS against FBS teams on `projected_wins` alone. |
 | `api.model_backtest` | **Pending deploy** | -- | Latest walk-forward **preseason** backtest per `(model_version, scope, season_start, season_end, strength_share)`, from the append-only `predictions.model_backtest` log (migration 045). How wrong `api.season_outlook`'s projections actually are -- the numbers an outlook answer must be quoted with. Columns: backtest_id, computed_at, run_date, model_version, feature_build_version, scope, season_start, season_end, seasons_covered, train_through_min, train_through_max, n_sims, seed, strength_share, max_games_played_to_date, games_dropped_outcome_dependent, n, win_mae, rmse, bias, coverage, baseline_prior_mae, baseline_flat_mae, beats_prior_baseline, beats_flat_baseline, resid_p05, resid_p10, resid_p25, resid_p50, resid_p75, resid_p90, resid_p95, bowl_brier, ten_plus_brier, calibration, respectable_win_mae. **`n` counts TEAM-SEASONS, not games** -- a multi-season FBS backtest is in the high hundreds, not the thousands a game-grain reading would suggest. **Use `resid_p10`/`resid_p90` for an interval, never `± win_mae`** -- MAE is an average loss, not a half-width; a `±MAE` band spans ~58% of a normal error distribution, not the ~80% a reader assumes. The 80% band is `[projected_wins + resid_p10, projected_wins + resid_p90]` and it is **asymmetric in general** -- read both ends from the row rather than mirroring one (the 2026-07-26 run measured `[-2.68, +3.02]`). `scope` is `'fbs'` (default reporting population) or `'all_divisions'`; the two are different measurements, not a superset -- CFBD labels FCS/D2 playoff bracket games `season_type='regular'`, so those slates run long. **More than one row per `model_version` is expected** when the season range or `strength_share` changed; filter on `scope`/`season_start`/`season_end` rather than taking whichever row comes first. `seasons_covered` may be shorter than `[season_start, season_end]` (a season with no frozen S-1 fit is excluded), and seasons scored only to seed the residual sigma are not listed. `max_games_played_to_date` above 0 means some "week-1" feature vector already contained that season's own games and **every error metric on that row is understated**. `calibration` is `{"p_bowl_eligible": [{bucket, n, mean_predicted, observed}, ...], "p_ten_plus": [...]}` with empty buckets omitted. `respectable_win_mae` is the advisory bar (plan 4.5), not a verdict -- **no verdict is stored**, by design: apply your own bar. **NO ROW means the model was never backtested** -- render that as unmeasured; it is not an error and it is not zero error. `run_date` is exposed so a cached copy can be checked for staleness. Sweep runs (`--sweep-strength-share`) deliberately write nothing. |
@@ -907,38 +917,51 @@ These are the primary PostgREST-accessible views. Queries go through Supabase cl
 
 ### House Model Versions
 
-Three `model_version` values share `api.game_predictions`, `api.scored_matchup_edges` and
-`api.prediction_accuracy`. They are not interchangeable, and the differences are not
-visible from the column list -- a consumer that treats `model_version` as a label on
-otherwise-identical rows will quote the wrong number. Documented 2026-07-26 after cfb-app
-hit all three of the differences below.
+Three `model_version` values are published through `api.game_predictions` and
+`api.scored_matchup_edges`; each becomes eligible for `api.prediction_accuracy` only after
+a pre-kickoff publication has a completed outcome. They are not interchangeable, and the
+differences are not visible from the column list -- a consumer that treats `model_version`
+as a label on otherwise-identical rows will quote the wrong number. Documented 2026-07-26
+after cfb-app hit all three of the differences below.
 
-| `model_version` | First season | `expected_home_margin` | `home_win_prob` | `elo_margin` / `epa_margin` |
-|---|---|---|---|---|
-| `elo_v1` | 2015 | House Elo only | Elo logistic | populated / NULL |
-| `elo_epa_blend_v1` | 2015 | 0.6 x Elo + 0.4 x ridge-adjusted EPA | **the same Elo number as `elo_v1`** | populated / populated |
-| `fitted_v1` | **2018** | Ridge fit over `features.team_week` | **its own Platt-scaled probability** | **NULL / NULL** |
+The coverage column below records the dated pre-F04 reconstruction snapshot. It does not
+state current availability in the published-only `api.game_predictions` view: at F04 rollout,
+that view contained 3,247 published 2026 rows for each model.
+
+| `model_version` | Pre-F04 reconstruction coverage | F04 published availability | `expected_home_margin` | `home_win_prob` | `elo_margin` / `epa_margin` |
+|---|---|---|---|---|---|
+| `elo_v1` | 2015-2026 | 2026; 3,247 rows at rollout | House Elo only | Elo logistic | populated / NULL |
+| `elo_epa_blend_v1` | 2015-2026 | 2026; 3,247 rows at rollout | 0.6 x Elo + 0.4 x ridge-adjusted EPA | **the same Elo number as `elo_v1`** | populated / populated |
+| `fitted_v1` | **2018-2026** | 2026; 3,247 rows at rollout | Ridge fit over `features.team_week` | **its own Platt-scaled probability** | **NULL / NULL** |
 
 Three consequences, each of which broke something downstream before it was written down:
 
 1. **`fitted_v1` exists.** It is a full third model version, not only the engine behind
-   `api.season_outlook`: 23,453 rows in `api.game_predictions` covering 2018-2026, and
-   rows in `api.scored_matchup_edges` alongside the other two. A model constant listing
-   only the Elo pair makes it unselectable.
+   `api.season_outlook`. The pre-F04 snapshot has 23,453 `fitted_v1` rows covering
+   2018-2026; F04 retained them as `legacy_unknown` in `api.prediction_history`. The
+   published-only `api.game_predictions` began with 3,247 new 2026 `fitted_v1` rows, and
+   `api.scored_matchup_edges` carries the model alongside the other two. A model constant
+   listing only the Elo pair makes it unselectable.
 2. **Win probability is NOT constant across versions.** It is constant across the *Elo
    pair* -- `elo_epa_blend_v1` blends the margin and reuses `elo_v1`'s probability, which
-   is why the two report an identical Brier score to six decimals -- but `fitted_v1`
-   calibrates its own. Same game, verified: `elo_v1` 0.7000, `elo_epa_blend_v1` 0.7000,
-   `fitted_v1` 0.8772. Cache "win prob doesn't change with the model" and you will publish
-   a `fitted_v1` margin next to an Elo probability.
-3. **Coverage and decomposition differ.** `fitted_v1` has nothing before 2018, so
-   defaulting to it silently empties pre-2018 game lookups; fall back to an Elo version for
-   older games. Its `elo_margin`/`epa_margin` are NULL on every row -- a fitted ridge has
-   no Elo part and no EPA part to report, so this is a structural absence, not a gap in the
-   backfill, and a UI should omit the breakdown rather than render it as missing data.
+   is why the two reported an identical Brier score to six decimals in the retrospective
+   2025 snapshot below -- but `fitted_v1` calibrates its own. Same game, verified:
+   `elo_v1` 0.7000, `elo_epa_blend_v1` 0.7000, `fitted_v1` 0.8772. Cache "win prob doesn't
+   change with the model" and you will publish a `fitted_v1` margin next to an Elo
+   probability.
+3. **Historical coverage and decomposition differ.** `fitted_v1` has no pre-F04
+   reconstruction rows before 2018. A retrospective consumer needing older legacy history
+   can select an Elo version and must label its provenance `legacy_unknown`; no published
+   forecast exists for those historical dates. `fitted_v1`'s `elo_margin`/`epa_margin` are
+   NULL on every row -- a fitted ridge has no Elo part and no EPA part to report, so this is
+   a structural absence, not a gap in the backfill, and a UI should omit the breakdown
+   rather than render it as missing data.
 
-**Which is "best" depends on the question -- do not rank them.** 2025 measured numbers from
-`api.prediction_accuracy` at `edge_threshold = 0`:
+**Which is "best" depends on the question -- do not rank them.** The table below preserves
+a 2025 pre-F04 retrospective historical-reconstruction snapshot at `edge_threshold = 0`.
+Those source rows are now `legacy_unknown` history and do not appear in the strict
+prospective `api.prediction_accuracy` view, which had zero eligible completed outcomes at
+F04 rollout:
 
 | `model_version` | margin MAE | ATS hit rate | Brier | `cfbd_brier` |
 |---|---|---|---|---|
@@ -946,12 +969,13 @@ Three consequences, each of which broke something downstream before it was writt
 | `elo_epa_blend_v1` | 15.6860 | 0.4962 | 0.181503 | 0.157122 |
 | `elo_v1` | 15.8781 | 0.5038 | 0.181503 | 0.157122 |
 
-`fitted_v1` is the most accurate on margin by a full point of MAE and the worst against the
-spread -- 0.4765 is below a coin flip, i.e. betting its edges at standard juice loses money
-faster than guessing. Nobody beats the closing line (`elo_v1`'s 0.5038 is the best of the
-three and is not a real edge either), and **all three house models are beaten on Brier by
-CFBD's own pregame win probability**, which is carried in the same view as `cfbd_brier` for
-exactly this comparison. Pick per use case and say which model a number came from.
+In that retrospective snapshot, `fitted_v1` is the most accurate on margin by a full point
+of MAE and the worst against the spread -- 0.4765 is below a coin flip, i.e. betting its
+edges at standard juice loses money faster than guessing. Nobody beats the closing line
+(`elo_v1`'s 0.5038 is the best of the three and is not a real edge either), and **all three
+house models are beaten on Brier by CFBD's own pregame win probability in that same
+retrospective snapshot**. This comparison is historical context, not prospective evidence.
+Pick per use case and say which model and evaluation mode a number came from.
 
 ### Marts (schema: `marts`) -- Materialized Views
 
@@ -1004,7 +1028,7 @@ cfb-app for advanced features.
 | `marts.house_elo_game` | Deployed | Game-grain house Elo history: pregame/postgame Elo both sides, win probability, expected vs actual margin, plus derived `margin_error`. Grain: `(game_id)`. |
 | `marts.team_adjusted_epa` | Deployed | Ridge-regressed opponent-adjusted EPA (offense/defense/net, lambda=200) per team-season, 2004+, with CFBD's WEPA joined in as a sanity check. Grain: `(team, season)`. |
 | `marts.scored_matchup_edges` | Deployed | House expected margin/win probability vs. the market line for upcoming games only; legitimately empty out of season (no empty-guard by design). Grain: `(game_id, model_version)`. |
-| `marts.prediction_accuracy` | Deployed | Retroactive scoring of house predictions: margin MAE/RMSE, ATS record, Brier score (house vs. CFBD) by season/model/edge-threshold. Grain: `(model_version, season, edge_threshold)`. |
+| `marts.prediction_accuracy` | Deployed | Strict prospective scoring of `published_forecast` rows written before known kickoff: margin MAE/RMSE, ATS record, Brier score (house vs. CFBD) by season/model/edge-threshold. Historical reconstructions, hindsight experiments, and `legacy_unknown` rows are excluded; the mart can legitimately be empty until published games complete. Grain: `(model_version, season, edge_threshold)`. |
 | `marts.team_week_features` | Deployed | Thin denormalization of `features.team_week`, the as-of feature vector entering each team's game (`fitted_v1` modeling substrate). Grain: `(game_id, team)`, unique. ~52,934 rows. |
 | `marts.adjusted_epa_week` | Deployed | Thin denormalization of `analytics.adjusted_epa_week_build`, walk-forward ridge-adjusted-EPA coefficients entering each week (no leakage). Grain: `(team, season, week_index)`. ~70,900 rows. |
 
@@ -1157,19 +1181,23 @@ Tables: `drives`, `games`, `games__away_line_scores`, `games__home_line_scores`,
 
 ### predictions Schema
 
-Added 2026-07-21 (Tier 2 analytics). `predictions.game_predictions` is **readable**
-(`SELECT` granted to `anon`/`authenticated`; `INSERT`/`UPDATE`/`DELETE` are revoked) but it is
-pipeline output. F04 makes its grain one immutable `prediction_id`, with no daily
-uniqueness or update path. Prefer `api.game_predictions` for latest published
-forecasts and `api.prediction_history` for all explicitly labeled modes.
-Legacy rows have NULL provenance; a simulated as-of time does not prove historic
-input availability. New creation/publication timestamps come from the database
-INSERT statement, not a client-supplied date or transaction start.
+Added 2026-07-21 (Tier 2 analytics). Direct read access is intentional and narrowly
+documented for `predictions.game_predictions` and `predictions.model_artifacts`: both grant
+`SELECT` to `anon`/`authenticated`, with DML revoked. These model snapshots contain no
+private scouting data or secrets. `analyst_ro` remains API-only and cannot read the raw
+`predictions` schema. F04 makes the ledger grain one immutable `prediction_id`, with no
+daily uniqueness or update path. Prefer `api.game_predictions` for latest published
+forecasts and `api.prediction_history` for all explicitly labeled modes. The thin API omits
+the ledger's `input_snapshot` and the artifact JSON to keep its payload shape bounded, not
+because those fields form a confidentiality boundary; they remain available through the
+two direct-readable objects. Legacy rows have NULL provenance; a simulated as-of time does
+not prove historic input availability. New creation/publication timestamps come from the
+database INSERT statement, not a client-supplied date or transaction start.
 
 | Table | Description |
 |-------|-------------|
-| `predictions.game_predictions` | Immutable IDs, explicit evaluation mode, actual publication time, consumed artifact ID, and captured input snapshot/hash. Written by `compute_predictions.py` and `score_fitted.py`. |
-| `predictions.model_artifacts` | Immutable consumed-artifact snapshots keyed by SHA-256 `fit_id`; full artifact JSON and model version. This records scoring lineage, not an upstream training manifest. |
+| `predictions.game_predictions` | Immutable IDs, explicit evaluation mode, actual publication time, consumed artifact ID, and captured input snapshot/hash. Direct `SELECT` is granted to `anon`/`authenticated`; DML is revoked. Written by `compute_predictions.py` and `score_fitted.py`. |
+| `predictions.model_artifacts` | Immutable consumed-artifact snapshots keyed by SHA-256 `fit_id`; full artifact JSON and model version. Direct `SELECT` is granted to `anon`/`authenticated`; DML is revoked. This records scoring lineage, not an upstream training manifest. |
 | `predictions.season_projections` | Append-only daily Monte Carlo season-outcome snapshots (win-total distribution, SOS, conference title odds). Written by `scripts/simulate_season.py`. Prefer `api.season_outlook` for the latest-snapshot contract view -- `analyst_ro` cannot read this schema directly. |
 | `predictions.model_backtest` | Append-only preseason-backtest accuracy snapshots, one immutable row per `(model_version, UTC run_date, scope, season_start, season_end, strength_share)`. Written by `scripts/backtest_preseason.py`. Prefer `api.model_backtest` for the latest-snapshot contract view -- `analyst_ro` cannot read this schema directly. Query this table for run-by-run history (accuracy drift across annual refits), which the view deliberately does not expose. |
 

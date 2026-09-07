@@ -1,7 +1,7 @@
 # F06 — warehouse bootstrap and migration history
 
-Status: full baseline implemented; final integration/review in progress after
-PR #128 merged (`b6c8e98`).
+Status: implemented and locally verified; PR/CI review pending. Production
+ledger adoption and migration 065 application are separate rollout decisions.
 
 ## Deliverable and boundaries
 
@@ -99,7 +99,7 @@ credentials were exported, and no production schema changes were executed.
 
 A fresh PostgreSQL 17 restore succeeded after installing required public
 extensions and role stand-ins. All relation owners are postgres. The managed
-five-entry manifest contains platform prerequisites, generated structural
+initial five-entry manifest contains platform prerequisites, generated structural
 pre-F05 catalog, current static seeds, dependency-ordered initialization of 60
 materialized views, and the original migration 064. Full bootstrap matched the
 captured per-schema/per-kind object counts exactly. The nested line-score
@@ -110,3 +110,40 @@ seed referenced a table absent from production. That obsolete seed was removed;
 current era/PFF/Massey seeds remain. Catalog-derived definitions, including rp
 objects absent from tracked source DDL, are captured rather than guessed.
 See `docs/warehouse-bootstrap.md` for included schemas and platform/data limits.
+
+## Executed consumer-access finding
+
+Fresh and prior-version integration both reached actual-role checks and exposed
+one captured production ACL defect: anon/authenticated could not read
+`public.team_season_trajectory` because its invoker-rights dependency lacked
+SELECT. All 54 API views and the other 12 public wrappers passed. A reviewed
+sixth manifest entry (065) restores only SELECT on the public-source trajectory
+mart for these two roles; source013 retains that grant on recreation. It does
+not grant analyst_ro direct access or change any private-schema policy.
+
+The captured baseline remains unchanged. This is an explicit forward correction,
+executed in disposable databases only; production migration065 is not approved
+by the schema-export authorization and has not been run.
+
+## Final local verification
+
+- Full credential-free suite: **2,486 passed, 510 skipped**. The skipped live
+  integrations are not production evidence.
+- Mandatory disposable PostgreSQL 17 suite: **10 passed** (eight migration-engine
+  cases and both full warehouse paths). Both paths verify exact captured object
+  counts across all 31 schemas, all 60 materialized views initialized, static
+  seeds, extensions, partition and representative nested/variant dlt contracts.
+- Upgrade from the structural pre-F05 baseline preserves full synthetic game,
+  nested line-score and legacy-model row payloads through 064/065. Subsequent
+  upgrade is a no-op. The actual CLI was also executed against a fresh database
+  and an already managed database; 065 applied once and then skipped.
+- Actual roles read all 54 API views; anon/authenticated read all 13 public
+  wrappers after 065. Ledger/scouting and analyst raw-fit boundaries are enforced
+  with specific permission errors. Representative RPCs execute, and analyst SQL
+  rejects private reads and writes. Empty RPC paths are not populated-data tests.
+- A pre-existing text guard incorrectly rejected preserved raw `start_yardline`
+  column declarations. Its narrow declaration exception retains the analytical
+  ban, verified by view and CTAS counterexamples; six split-RPC tests passed.
+- Independent reviews are clean for the engine, baseline/manifest, access fix,
+  integration scope and adjusted guard. Ruff, formatting, whitespace and shared
+  agent-setup checks passed. No production DDL or data writes occurred.

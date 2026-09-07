@@ -24,6 +24,10 @@ Last updated: 2026-09-07
   and private scouting access. It contains schema definitions and repository
   seeds, not production data. Existing unledgered production databases require
   separate reviewed adoption; normal deployment does not replay the baseline.
+  Executed checks found a missing underlying-mart read grant for the public
+  invoker wrapper `team_season_trajectory`. Forward migration 065 restores SELECT
+  for anon/authenticated without changing view mode, granting writes, or exposing
+  the raw mart to analyst_ro; production application remains pending approval.
   See [bootstrap and upgrade instructions](warehouse-bootstrap.md) and
   [F06 verification](plans/2026-09-07-f06-warehouse-bootstrap.md).
 

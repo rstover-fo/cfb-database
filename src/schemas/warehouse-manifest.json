@@ -25,6 +25,11 @@
       "id": "warehouse.f05.064",
       "path": "src/schemas/migrations/064_immutable_training_fits.sql",
       "kind": "immutable"
+    },
+    {
+      "id": "warehouse.f06.065",
+      "path": "src/schemas/migrations/065_trajectory_wrapper_access.sql",
+      "kind": "immutable"
     }
   ]
 }

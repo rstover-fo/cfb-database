@@ -71,7 +71,7 @@ dependency installation does not provision data.
 ## Prior-baseline upgrade exercise
 
 On a second empty disposable database, stop at the structural pre-F05 baseline,
-then upgrade through the original migration 064:
+then upgrade through the original migration 064 and access correction 065:
 
 ```bash
 .venv/bin/python scripts/bootstrap_warehouse.py bootstrap \
@@ -121,3 +121,16 @@ not copy `_dlt_version`/`_dlt_pipeline_state` row contents. An existing producti
 warehouse remains unledgered and is deliberately rejected by managed upgrade.
 Adoption requires a separately reviewed catalog comparison and provenance plan;
 never mark historical transformations as applied solely from matching names.
+
+## Forward correction discovered by executed role checks
+
+The captured `public.team_season_trajectory` wrapper grants consumer access but
+uses invoker rights without SELECT on its underlying mart. All other public
+wrappers and API views passed. Migration 065 grants only SELECT on that
+public-source mart to anon/authenticated; analyst_ro retains its API-only
+boundary, and no consumer write grant is added. The source mart definition
+retains this grant on a later reviewed recreation. The generated captured
+baseline is unchanged; the managed manifest applies the fix as a forward step.
+
+This correction has been executed only in disposable databases. Production
+application of 065 requires separate authorization after review/merge.

@@ -131,3 +131,12 @@ jobs:
           if [ -n "$COMPUTE_SCRIPT_INPUT" ]; then ARGS+=(--compute-script "$COMPUTE_SCRIPT_INPUT"); fi
           if [ -n "$COMPUTE_ARGS_INPUT" ]; then ARGS+=("--compute-args=$COMPUTE_ARGS_INPUT"); fi
           python scripts/deploy_schema.py "${ARGS[@]}"
+
+      - name: Upload schema-only catalog
+        if: github.event_name == 'workflow_dispatch' && inputs.compute_script == 'export_warehouse_catalog'
+        uses: actions/upload-artifact@v4
+        with:
+          name: warehouse-catalog
+          path: /tmp/warehouse-catalog/
+          retention-days: 7
+          if-no-files-found: error

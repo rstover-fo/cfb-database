@@ -96,6 +96,35 @@ CREATE TABLE warehouse_control.repeatable_migration_executions (
 
 REVOKE ALL ON warehouse_control.schema_migrations FROM PUBLIC;
 REVOKE ALL ON warehouse_control.repeatable_migration_executions FROM PUBLIC;
+
+-- Host-level default privileges can grant named roles access independently of
+-- PUBLIC. Remove inherited ACL entries only from the new private ledger objects;
+-- preserve the owner and leave the host's defaults and other schemas untouched.
+DO $ledger_acl$
+DECLARE entry record; recipient text;
+BEGIN
+    FOR entry IN
+        SELECT DISTINCT 'SCHEMA' AS object_kind, format('%I', n.nspname) AS object_name,
+            acl.grantee
+        FROM pg_catalog.pg_namespace n
+        CROSS JOIN LATERAL pg_catalog.aclexplode(n.nspacl) acl
+        WHERE n.nspname='warehouse_control' AND acl.grantee<>n.nspowner
+        UNION
+        SELECT DISTINCT CASE WHEN c.relkind='S' THEN 'SEQUENCE' ELSE 'TABLE' END,
+            format('%I.%I', n.nspname, c.relname), acl.grantee
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+        CROSS JOIN LATERAL pg_catalog.aclexplode(c.relacl) acl
+        WHERE n.nspname='warehouse_control' AND c.relkind IN ('r','p','S')
+            AND acl.grantee<>c.relowner
+    LOOP
+        recipient := CASE WHEN entry.grantee=0 THEN 'PUBLIC'
+            ELSE format('%I', pg_catalog.pg_get_userbyid(entry.grantee)) END;
+        EXECUTE format('REVOKE ALL ON %s %s FROM %s',
+            entry.object_kind, entry.object_name, recipient);
+    END LOOP;
+END
+$ledger_acl$;
 """
 
 

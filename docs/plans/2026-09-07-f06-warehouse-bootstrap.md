@@ -73,3 +73,18 @@ change has run for F06. Full warehouse reconstruction is not yet verified.
 Full credential-free suite: 2,483 passed, 507 skipped (live integrations not
 opted in). Ruff, formatting, whitespace and agent setup checks passed. Final
 independent engine/CLI review is clean; the full-baseline review remains pending.
+
+## Follow-up: private ledger under host defaults
+
+Executed role checks exposed a real gap: revoking PUBLIC alone did not remove
+named-role privileges inherited from broad host defaults. Ledger creation now
+removes non-owner ACL entries from only its private schema, two tables and
+identity sequence. It does not modify host default privileges or other schemas.
+Actual anon/authenticated/analyst_ro reads and writes are denied; direct
+schema/table/sequence privilege checks are false, and the same roles retain
+default access to ordinary newly created objects. Owners/administrators remain
+trusted; this does not revoke their role memberships.
+
+Eight disposable PostgreSQL migration tests and 56 engine/CLI unit tests pass.
+Independent review cleared the ACL change. Catalog export approval remains
+pending; no production export was attempted after the approval rejection.

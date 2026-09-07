@@ -200,3 +200,65 @@ def test_autocommit_rejected_without_partial_database_work(warehouse_db, tmp_pat
     assert query(conn, "SELECT to_regnamespace('core'), to_regnamespace('warehouse_control')") == [
         (None, None)
     ]
+
+
+def test_ledger_stays_private_under_broad_host_default_grants(warehouse_db, tmp_path):
+    conn, _ = warehouse_db
+    query(
+        conn,
+        """
+        DO $$ BEGIN
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='anon') THEN CREATE ROLE anon; END IF;
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='authenticated') THEN
+                CREATE ROLE authenticated;
+            END IF;
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='analyst_ro') THEN
+                CREATE ROLE analyst_ro;
+            END IF;
+        END $$;
+        ALTER DEFAULT PRIVILEGES GRANT ALL ON SCHEMAS TO anon, authenticated, analyst_ro;
+        ALTER DEFAULT PRIVILEGES GRANT ALL ON TABLES TO anon, authenticated, analyst_ro;
+        ALTER DEFAULT PRIVILEGES GRANT ALL ON SEQUENCES TO anon, authenticated, analyst_ro;
+    """,
+    )
+    manifest = manifest_at(tmp_path, [("base", "immutable", "CREATE SCHEMA core;")])
+    apply_manifest(conn, manifest, mode="bootstrap")
+    for role in ("anon", "authenticated", "analyst_ro"):
+        assert query(
+            conn,
+            """
+            SELECT has_schema_privilege(%s, 'warehouse_control', 'USAGE,CREATE'),
+                has_table_privilege(%s, 'warehouse_control.schema_migrations',
+                    'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'),
+                has_table_privilege(%s, 'warehouse_control.repeatable_migration_executions',
+                    'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'),
+                has_sequence_privilege(%s,
+                    'warehouse_control.repeatable_migration_executions_execution_id_seq',
+                    'USAGE,SELECT,UPDATE'),
+                has_schema_privilege(%s, 'core', 'USAGE')
+        """,
+            (role, role, role, role, role),
+        ) == [(False, False, False, False, True)]
+        for command in (
+            "SELECT * FROM warehouse_control.schema_migrations",
+            "DELETE FROM warehouse_control.schema_migrations",
+            "TRUNCATE warehouse_control.schema_migrations CASCADE",
+            "SELECT * FROM warehouse_control.repeatable_migration_executions",
+            "DELETE FROM warehouse_control.repeatable_migration_executions",
+            "SELECT nextval('warehouse_control.repeatable_migration_executions_execution_id_seq')",
+        ):
+            with conn.cursor() as cur:
+                cur.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(role)))
+                with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                    cur.execute(command)
+            conn.rollback()
+    assert query(conn, "SELECT count(*) FROM warehouse_control.schema_migrations") == [(1,)]
+
+    # The private ledger policy must not rewrite the host's defaults.
+    query(conn, "CREATE SCHEMA f06_normal; CREATE TABLE f06_normal.rows(id int)")
+    with conn.cursor() as cur:
+        cur.execute("SET LOCAL ROLE anon")
+        cur.execute("INSERT INTO f06_normal.rows VALUES (1)")
+        cur.execute("SELECT id FROM f06_normal.rows")
+        assert cur.fetchall() == [(1,)]
+    conn.rollback()

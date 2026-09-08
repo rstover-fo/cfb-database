@@ -8,8 +8,7 @@ Usage:
     python scripts/refresh_marts.py --schema analytics # Only analytics schema
     python scripts/refresh_marts.py --dry-run          # Print SQL without executing
     python scripts/refresh_marts.py --views marts.house_elo,marts.house_elo_game
-                                                         # Refresh exactly these views, in order,
-                                                         # instead of the full layered list.
+    python scripts/refresh_marts.py --changed ratings.sdv_ratings_weekly --dry-run
 """
 
 import argparse
@@ -19,93 +18,15 @@ from datetime import datetime
 
 import dlt
 
+from src.pipelines.utils.refresh_plan import REFRESH_GRAPH
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-# Order matters: dependencies must refresh first
-# _game_epa_calc -> team_epa_season
-# team_season_summary -> conference_standings (analytics)
-#
-# NOTE: EPA views (_game_epa_calc, team_epa_season, situational_splits, defensive_havoc)
-# take 10-15 minutes each because they process 2.7M plays. For Supabase, these require
-# statement_timeout=0 which the script sets automatically.
+# Keep the public lists for existing callers, but derive both from the registry.
 
-MARTS_VIEWS = [
-    # Layer 1: No mart dependencies
-    "marts._game_epa_calc",
-    "marts.play_epa",
-    "marts.player_comparison",
-    "marts.conference_head_to_head",
-    "marts.team_wepa_season",
-    "marts.player_wepa_season",
-    "marts.returning_production",
-    "marts.player_usage",
-    "marts.team_ats_records",
-    "marts.core_ratings",
-    "marts.penalty_log",
-    "marts.team_penalty_box",
-    # 2026-08-30 expansion_views unit: passing charting (stats.passing_*) and
-    # coach_tenures (ref.coach_tenures) -- all read base tables only, no
-    # mart dependencies.
-    "marts.passing_charting_player_season",
-    "marts.passing_charting_target_season",
-    "marts.passing_charting_team_season",
-    "marts.coach_tenures",
-    # 2026-09-03 rushing-charting unit (U6): rushing charting
-    # (stats.rushing_player_season, stats.rushing_team_season) -- same shape
-    # as the passing charting marts above, all read base tables only, no
-    # mart dependencies.
-    "marts.rushing_charting_player_season",
-    "marts.rushing_charting_team_season",
-    "marts.rushing_charting_direction_season",
-    # Layer 2: Depends on Layer 1
-    "marts.team_epa_season",
-    "marts.team_season_summary",
-    "marts.player_game_epa",
-    "marts.defensive_havoc",
-    "marts.scoring_opportunities",
-    "marts.team_playcalling_tendencies",
-    "marts.team_situational_success",
-    # Layer 3: Depends on Layer 2
-    "marts.situational_splits",
-    "marts.player_season_epa",
-    "marts.coach_record",
-    "marts.matchup_history",
-    "marts.recruiting_class",
-    "marts.team_talent_composite",
-    "marts.team_tempo_metrics",
-    "marts.transfer_portal_impact",
-    # Layer 4: Depends on Layer 3
-    "marts.team_season_trajectory",
-    "marts.conference_era_summary",
-    "marts.team_style_profile",
-    "marts.coaching_tenure",
-    "marts.recruiting_roi",
-    "marts.conference_comparison",
-    # Layer 5: Depends on Layer 4 + standalone
-    "marts.matchup_edges",
-    "marts.data_freshness",
-    # Layer 6: Tier 2 analytics (read from analytics.* staging + predictions)
-    "marts.house_elo",
-    "marts.house_elo_game",
-    "marts.team_adjusted_epa",
-    "marts.scored_matchup_edges",
-    "marts.prediction_accuracy",
-    # Layer 7: Tier 3 analytics (computed from play/feature builds, depends on Layer 6)
-    "marts.team_week_features",
-    "marts.adjusted_epa_week",
-    # Reads marts.team_adjusted_epa (layer 6) + marts.team_epa_season (layer 2)
-    # against the external ratings tables; cheap (a few thousand rows).
-    "marts.epa_crossvalidation",
-]
-
-ANALYTICS_VIEWS = [
-    "analytics.team_season_summary",
-    "analytics.player_career_stats",
-    "analytics.conference_standings",  # Depends on team_season_summary
-    "analytics.team_recruiting_trend",
-    "analytics.game_results",
-]
+MARTS_VIEWS = list(REFRESH_GRAPH.plan(schema="marts").views)
+ANALYTICS_VIEWS = list(REFRESH_GRAPH.plan(schema="analytics").views)
 
 
 def get_db_url() -> str:
@@ -173,34 +94,24 @@ def refresh_marts(
     concurrently: bool = True,
     dry_run: bool = False,
     views: list[str] | None = None,
+    changed: list[str] | None = None,
 ) -> int:
-    """Refresh materialized views. Returns count of failures.
+    """Refresh selected SQL descendants; return failed plus blocked count.
 
-    If `views` is given, refresh exactly those views, in the given order,
-    instead of the full layered list (schema is ignored in that case). Each
-    name must be schema-qualified as marts.* or analytics.*; a name that
-    doesn't exist yet is not validated here -- Postgres will error on the
-    REFRESH and that failure surfaces per-view like any other.
+    Explicit views are registry-validated and dependency-ordered. Other parents
+    are assumed current, as with the existing targeted refresh contract.
+    Changed relations must already be committed; their SQL descendants are
+    selected automatically. This does not execute ingestion or compute jobs.
     """
-    if views is not None:
-        invalid = [v for v in views if not (v.startswith("marts.") or v.startswith("analytics."))]
-        if invalid:
-            logger.error(
-                f"Invalid --views entries (must be schema-qualified marts.* or "
-                f"analytics.*): {invalid}"
-            )
-            return 1
-    else:
-        # Build view list based on schema filter
-        views = []
-        if schema is None or schema == "marts":
-            views.extend(MARTS_VIEWS)
-        if schema is None or schema == "analytics":
-            views.extend(ANALYTICS_VIEWS)
-
-    if not views:
-        logger.error(f"No views found for schema: {schema}")
+    try:
+        plan = REFRESH_GRAPH.plan(views=views, changed=changed, schema=schema)
+    except ValueError as exc:
+        logger.error("Invalid refresh plan: %s", exc)
         return 1
+    views = list(plan.views)
+    if not views:
+        logger.info("No dependent materialized views require refresh")
+        return 0
 
     logger.info(f"Refreshing {len(views)} materialized view(s)")
     if concurrently:
@@ -232,14 +143,21 @@ def refresh_marts(
             _cur.execute("SET statement_timeout = 0")
         conn.commit()
 
+        unsuccessful: set[str] = set()
         for view in views:
-            if not refresh_view(view, conn, concurrently, dry_run):
+            blocked_by = REFRESH_GRAPH.ancestors(view).intersection(unsuccessful)
+            if blocked_by:
+                logger.error("Blocked %s after upstream failure: %s", view, sorted(blocked_by))
+                unsuccessful.add(view)
+                failures += 1
+            elif not refresh_view(view, conn, concurrently, dry_run):
+                unsuccessful.add(view)
                 failures += 1
     finally:
         conn.close()
 
     if failures:
-        logger.warning(f"{failures} view(s) failed to refresh")
+        logger.warning(f"{failures} view(s) failed or were blocked")
     else:
         logger.info("All views refreshed successfully")
 
@@ -266,19 +184,30 @@ def main() -> None:
     parser.add_argument(
         "--views",
         help=(
-            "Comma-separated fully-qualified matview names to refresh, in order "
+            "Comma-separated registered matview names to refresh in dependency order "
             "(overrides --schema and the full layered list)"
         ),
     )
+    parser.add_argument(
+        "--changed",
+        help="Committed relations; refresh SQL descendants (overrides --schema)",
+    )
     args = parser.parse_args()
+    if args.views is not None and args.changed is not None:
+        parser.error("--views and --changed cannot be combined")
 
-    view_list = [v.strip() for v in args.views.split(",") if v.strip()] if args.views else None
+    view_list = (
+        [v.strip() for v in args.views.split(",") if v.strip()] if args.views is not None else None
+    )
 
     failures = refresh_marts(
         schema=args.schema,
         concurrently=not args.no_concurrent,
         dry_run=args.dry_run,
         views=view_list,
+        changed=[v.strip() for v in args.changed.split(",") if v.strip()]
+        if args.changed is not None
+        else None,
     )
     sys.exit(failures)
 

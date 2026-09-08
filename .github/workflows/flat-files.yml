@@ -8,11 +8,24 @@ name: Flat File Load
 #   SUPABASE_DB_URL   - Supabase SESSION pooler URL (IPv4)
 #
 # Flat-file freshness verification is handled by scripts/verify_load.py inside the
-# existing daily-load workflow; this workflow does not run verify_load.py.
+# existing daily-load workflow, after this reusable workflow succeeds.
 
 on:
-  schedule:
-    - cron: "0 11 * * *" # 11:00 UTC, 1 hour after daily-load completes
+  workflow_call:
+    inputs:
+      source:
+        description: "Registry source names, space-separated; empty runs --due"
+        required: false
+        type: string
+        default: ""
+      seasons:
+        description: "Season years, space-separated; empty uses the current loader target"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      SUPABASE_DB_URL:
+        required: true
   workflow_dispatch:
     inputs:
       source:
@@ -103,6 +116,10 @@ jobs:
           else
             python scripts/load_flat_files.py --due
           fi
+      - name: Refresh external-rating consumers
+        # Also run after hash-skips or an empty due plan: a previous run may
+        # have committed the imports and then failed its refresh.
+        run: python scripts/refresh_marts.py --views marts.epa_crossvalidation
       - name: Open or update failure issue
         if: failure()
         uses: actions/github-script@v7

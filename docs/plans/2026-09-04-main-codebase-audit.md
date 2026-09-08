@@ -207,6 +207,10 @@ Evidence: [original indexes](https://github.com/rstover-fo/cfb-database/blob/4a7
 
 ### F10 — Workflow dependencies drift even though the full mart order is valid
 
+Immediate correction plan: [F10 workflow dependencies](2026-09-08-f10-workflow-dependencies.md).
+The missing refreshes and workflow completion ordering are addressed there; the
+broader shared dependency planner remains in the F10/F28 orchestration work.
+
 **P1 · Confirmed · L**
 
 Daily loading refreshes the full mart set before computing new model inputs, then refreshes a manually selected subset. That subset omits epa_crossvalidation, which depends on newly computed team-adjusted EPA. Flat-file loading runs on a separate time-based schedule with no completion dependency or downstream refresh, so external-rating consumers can lag. The coach-tenure backfill path explicitly skips refresh because its comment says it feeds no mart, while the new coach_tenures mart reads that table.

@@ -14,11 +14,12 @@ name: Backfill Sources
 # below, which shells out to load_season.py and validates sources against
 # that same SOURCE_ORDER. Dispatching with `runner: pipeline_run` bypasses
 # that validation on purpose and calls src/pipelines/run.py directly for a
-# single `--source` once, with no per-season loop -- and, because that path
-# skips the trailing mart refresh, its `sources` input is restricted by an
-# in-step allowlist to exactly coach_tenures and metrics_ppa_predicted;
-# anything in load_season's SOURCE_ORDER (ratings, recruiting, stats, wepa,
-# ...) must go through the default runner so its mart refresh still runs.
+# single `--source` once, with no per-season loop. Its `sources` input is
+# restricted by an in-step allowlist to exactly coach_tenures and
+# metrics_ppa_predicted: coach_tenures refreshes its dependent mart after a
+# successful load, while metrics_ppa_predicted has no affected mart. Anything
+# in load_season's SOURCE_ORDER (ratings, recruiting, stats, wepa, ...) must go
+# through the default runner so its full trailing mart refresh still runs.
 #
 # Requires repo secrets:
 #   CFBD_API_KEY    - collegefootballdata.com API key
@@ -40,7 +41,7 @@ on:
         required: true
         type: string
       runner:
-        description: "load_season: per-season loop via scripts/load_season.py (default). pipeline_run: single src.pipelines.run --source call, allowlisted to run.py-only sources not in load_season's SOURCE_ORDER (coach_tenures, metrics_ppa_predicted) -- any other source is rejected since this path skips the mart refresh."
+        description: "load_season: per-season loop via scripts/load_season.py (default). pipeline_run: single src.pipelines.run --source call, allowlisted to run.py-only sources not in load_season's SOURCE_ORDER (coach_tenures, metrics_ppa_predicted); coach_tenures refreshes its mart, while metrics_ppa_predicted has no affected mart."
         required: false
         type: choice
         default: load_season
@@ -135,13 +136,12 @@ jobs:
           # has a correct dispatch path through the default runner (loops
           # seasons, refreshes marts at the end); letting one of those
           # sources through here would load data and leave its dependent
-          # matviews silently stale, since this path skips the refresh
-          # step unconditionally. Only coach_tenures and
-          # metrics_ppa_predicted are run.py-only with no SOURCE_ORDER
-          # slot -- and neither feeds any mart, which is what makes
-          # skipping the refresh on this path safe, as long as this
-          # allowlist holds. A future run.py-only source gets added here
-          # deliberately, not implicitly.
+          # matviews silently stale. Only coach_tenures and
+          # metrics_ppa_predicted are run.py-only with no SOURCE_ORDER slot;
+          # coach_tenures gets its targeted refresh below, and
+          # metrics_ppa_predicted has no affected mart. A future run.py-only
+          # source gets added here deliberately, with its refresh contract,
+          # not implicitly.
           case "$SOURCES_INPUT" in
             coach_tenures|metrics_ppa_predicted) ;;
             *)
@@ -162,9 +162,14 @@ jobs:
           else
             python -m src.pipelines.run --source "$SOURCES_INPUT"
           fi
+          # Keep the refresh in this same fail-fast step: a failed pipeline
+          # command exits before the mart can publish a mixed generation.
+          if [ "$SOURCES_INPUT" = "coach_tenures" ]; then
+            python scripts/refresh_marts.py --views marts.coach_tenures
+          fi
       - name: Refresh marts
-        # Neither run.py-only source (coach_tenures, metrics_ppa_predicted)
-        # feeds any mart, so skip the refresh entirely on that path rather
-        # than pay for a no-op refresh.
+        # The default load_season path may affect any mart, so retain its full
+        # refresh. The allowlisted pipeline_run path handles its only affected
+        # mart (marts.coach_tenures) directly after that source succeeds.
         if: ${{ inputs.runner != 'pipeline_run' }}
         run: python scripts/refresh_marts.py

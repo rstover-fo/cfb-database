@@ -28,6 +28,7 @@ These commands operate on an explicitly selected, authorized warehouse; use
 | Inspect a season load plan and estimate | `scripts/load_season.py --dry-run` |
 | Season ingestion | `scripts/load_season.py --weekly` (explicit `--season` for backfills) |
 | Post-load verification | `scripts/verify_load.py` |
+| Inspect / maintain plays partitions | `scripts/maintain_play_partitions.py` (read-only); `--apply` creates missing partitions |
 | Refresh existing marts | `scripts/refresh_marts.py` |
 | Apply definitions / migrations | [Atomic mart releases](mart-releases.md); `scripts/run_migrations.py` for explicit non-mart migrations |
 | One-off SQL application | `scripts/run_migrations.py --file <path>`; follow that file's application contract |
@@ -40,6 +41,44 @@ transaction pooling does not accept all startup/session options these jobs use.
 Secrets belong in ignored config or the host's credential mechanism, never docs.
 The request budget is configured in `.dlt/config.toml`; historical estimates do
 not establish the cost of today's source/resource selection.
+
+## Plays partition rollover (F08)
+
+`run_plays_pipeline()` performs catalog preflight before constructing the source
+or fetching plays. It validates `core.plays` as `LIST (season)`, each child's
+attachment and single-season bound, and conflicting partition names. On an
+authorized ingestion run it creates missing partitions for the requested years
+and the current calendar year plus one following year, in a separate atomic
+transaction before dlt starts loading. Maintenance uses bounded lock waits;
+catalog inconsistencies fail the load rather than being silently repaired.
+
+Preview a target's catalog with
+`.venv/bin/python scripts/maintain_play_partitions.py`; use `--apply` only for an
+authorized target. An explicit historical `--years 2004` includes that partition
+in the required set. Existing historical partitions remain in place, so late
+records continue to route by their requested season; this does not change
+provider correction or re-fetch policy. Years before 2004 or beyond the next
+calendar year are rejected. No default partition is added, so NULL or unsupported
+season values cannot silently accumulate in catch-all storage. The parent must
+already be partitioned; this command does not replay the old table-swap migration.
+
+Historical source ranges keep fixed coverage starts and resolve their upper end
+to the calendar year on each lookup. This includes preseason data before August;
+incremental selection retains the existing August season boundary. Post-load
+verification checks catalog attachment/bounds and required horizon coverage.
+
+Read-only production inspection on 2026-09-08 found `core.plays` partitioned by
+`LIST (season)` with exactly 23 correctly attached, single-season partitions,
+`core.plays_y2004` through `core.plays_y2026`, and no detached names matching that
+pattern. The 2027 partition is absent. F08 development did not apply production
+DDL; the first authorized maintenance or ingestion run must provision it.
+
+Validation on disposable PostgreSQL 17 passed rollover and historical-row
+routing, inherited partition-index creation, idempotence, rejection of catalog
+drift, and rollback after the first of two partition creations succeeds. The
+partition tests run in the CI PostgreSQL job. This verifies executed SQL and
+loader preflight ordering with fakes; it does not represent a live CFBD/dlt
+end-to-end load or a production deployment.
 
 ## Box-score and roster request failures
 

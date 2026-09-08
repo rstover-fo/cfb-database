@@ -11,7 +11,7 @@ Usage:
     python scripts/verify_load.py --strict          # Treat staleness as failure year-round
 
 Checks:
-    1. plays partition for the season exists (core.plays_yNNNN)
+    1. plays partitions have correct attachment/bounds and cover the load horizon
     2. core.games row count for the season matches the CFBD /games count (1 API call)
     3. completed FBS-involved games have game_team_stats rows (lower-division
        games are excluded -- CFBD only reliably publishes box scores for games
@@ -91,12 +91,17 @@ class Report:
 
 
 def check_partition(cur, season: int, report: Report) -> None:
-    cur.execute("SELECT to_regclass(%s)", (f"core.plays_y{season}",))
-    exists = cur.fetchone()[0] is not None
+    from src.pipelines.utils.partitions import PartitionStateError, inspect_play_partitions
+
+    try:
+        plan = inspect_play_partitions(cur, [season])
+    except PartitionStateError as exc:
+        report.record(FAIL, "plays_partition", str(exc))
+        return
     report.record(
-        PASS if exists else FAIL,
+        FAIL if plan.missing_years else PASS,
         "plays_partition",
-        f"core.plays_y{season} {'exists' if exists else 'MISSING'}",
+        f"validated catalog; missing seasons: {list(plan.missing_years)}",
     )
 
 

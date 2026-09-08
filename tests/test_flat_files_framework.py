@@ -17,12 +17,27 @@ from src.pipelines.sources.flat_files import (
     resolve_parser,
 )
 from src.pipelines.utils import load_ledger
-from src.pipelines.utils.file_fetcher import fetch_file
+from src.pipelines.utils.file_fetcher import (
+    DEFAULT_MAX_TOTAL_RETRY_WAIT_SECONDS,
+    MAX_RETRIES,
+    RETRY_DELAY,
+    fetch_file,
+)
 from src.pipelines.utils.team_xwalk import XwalkResolver, normalize_name
 
 # ---------------------------------------------------------------------------
 # file_fetcher.fetch_file
 # ---------------------------------------------------------------------------
+
+
+class _FakeClock:
+    def __init__(self):
+        self.elapsed = 0.0
+        self.sleeps = []
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.elapsed += seconds
 
 
 class TestFetchFileLocalPath:
@@ -91,6 +106,100 @@ class TestFetchFileHttp:
 
         with pytest.raises(httpx.HTTPStatusError):
             fetch_file("https://example.com/missing.csv")
+
+    def test_terminal_429_preserves_http_error_and_never_sleeps_after_it(self, monkeypatch):
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            return httpx.Response(
+                429,
+                headers={"Retry-After": "86400", "X-Attempt": str(calls["n"])},
+                request=request,
+            )
+
+        transport = httpx.MockTransport(handler)
+        real_client_cls = httpx.Client
+        clock = _FakeClock()
+
+        import src.pipelines.utils.file_fetcher as ff_mod
+
+        def fake_client(*, follow_redirects, timeout):
+            return real_client_cls(
+                follow_redirects=follow_redirects, timeout=timeout, transport=transport
+            )
+
+        monkeypatch.setattr(ff_mod.httpx, "Client", fake_client)
+        monkeypatch.setattr(ff_mod.time, "sleep", clock.sleep)
+
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            fetch_file("https://example.com/rate-limited.csv")
+
+        assert calls["n"] == MAX_RETRIES + 1
+        assert exc_info.value.response.headers["X-Attempt"] == str(MAX_RETRIES + 1)
+        assert clock.sleeps == [120, 120, 120]
+        assert clock.elapsed == DEFAULT_MAX_TOTAL_RETRY_WAIT_SECONDS
+
+    def test_malformed_retry_after_uses_bounded_default(self, monkeypatch):
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return httpx.Response(429, headers={"Retry-After": "eventually"}, request=request)
+            return httpx.Response(200, content=b"ok", request=request)
+
+        transport = httpx.MockTransport(handler)
+        real_client_cls = httpx.Client
+        clock = _FakeClock()
+
+        import src.pipelines.utils.file_fetcher as ff_mod
+
+        def fake_client(*, follow_redirects, timeout):
+            return real_client_cls(
+                follow_redirects=follow_redirects, timeout=timeout, transport=transport
+            )
+
+        monkeypatch.setattr(ff_mod.httpx, "Client", fake_client)
+        monkeypatch.setattr(ff_mod.time, "sleep", clock.sleep)
+
+        result = fetch_file("https://example.com/eventual.csv")
+
+        assert result.content == b"ok"
+        assert clock.sleeps == [60]
+
+    @pytest.mark.parametrize("failure", ["500", "connection"])
+    def test_transient_failures_keep_existing_attempt_and_backoff_budget(
+        self, monkeypatch, failure
+    ):
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            if failure == "500":
+                return httpx.Response(500, request=request)
+            raise httpx.ConnectError("connection failed", request=request)
+
+        transport = httpx.MockTransport(handler)
+        real_client_cls = httpx.Client
+        clock = _FakeClock()
+
+        import src.pipelines.utils.file_fetcher as ff_mod
+
+        def fake_client(*, follow_redirects, timeout):
+            return real_client_cls(
+                follow_redirects=follow_redirects, timeout=timeout, transport=transport
+            )
+
+        monkeypatch.setattr(ff_mod.httpx, "Client", fake_client)
+        monkeypatch.setattr(ff_mod.time, "sleep", clock.sleep)
+
+        expected_error = httpx.HTTPStatusError if failure == "500" else httpx.ConnectError
+        with pytest.raises(expected_error):
+            fetch_file("https://example.com/transient.csv")
+
+        assert calls["n"] == MAX_RETRIES + 1
+        assert clock.sleeps == [RETRY_DELAY, RETRY_DELAY * 2, RETRY_DELAY * 3]
 
 
 # ---------------------------------------------------------------------------

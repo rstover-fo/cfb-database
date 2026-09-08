@@ -17,11 +17,18 @@ from pathlib import Path
 
 import httpx
 
+from .http_retries import (
+    DEFAULT_RETRY_AFTER_SECONDS,
+    MAX_RETRY_AFTER_SECONDS,
+    parse_retry_after,
+)
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 60.0
 MAX_RETRIES = 3
 RETRY_DELAY = 1.0
+DEFAULT_MAX_TOTAL_RETRY_WAIT_SECONDS = MAX_RETRIES * MAX_RETRY_AFTER_SECONDS
 USER_AGENT = "cfb-database/0.1 (+https://github.com/rstover-fo/cfb-database)"
 
 
@@ -60,8 +67,17 @@ def _get_with_retries(
                 return response.content
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:
-                    retry_after = int(e.response.headers.get("Retry-After", 60))
-                    logger.warning(f"Rate limited fetching {url}. Waiting {retry_after}s...")
+                    if attempt >= retries:
+                        raise
+                    retry_after = parse_retry_after(
+                        e.response.headers.get("Retry-After"),
+                        default_seconds=DEFAULT_RETRY_AFTER_SECONDS,
+                        max_seconds=MAX_RETRY_AFTER_SECONDS,
+                    )
+                    logger.warning(
+                        f"Rate limited fetching {url}. Waiting {retry_after}s "
+                        f"(retry {attempt + 1}/{retries})..."
+                    )
                     time.sleep(retry_after)
                     continue
                 elif e.response.status_code >= 500 and attempt < retries:

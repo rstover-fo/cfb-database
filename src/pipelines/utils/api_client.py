@@ -4,11 +4,12 @@ import logging
 import threading
 import time
 from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 from typing import Any
 
 import dlt
 import httpx
+
+from . import http_retries
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +205,7 @@ class CFBDClient:
 
     # Upper bound on a server-supplied Retry-After. Without it a hostile or
     # mistaken header could park the pipeline for hours inside one sleep.
-    MAX_RETRY_AFTER_SECONDS = 120
+    MAX_RETRY_AFTER_SECONDS = http_retries.MAX_RETRY_AFTER_SECONDS
 
     def __init__(self, api_key: str | None = None, breaker: RateLimitBreaker | None = None):
         """Initialize the client.
@@ -253,17 +254,8 @@ class CFBDClient:
 
         Never negative: a date already in the past means "retry now".
         """
-        try:
-            when = parsedate_to_datetime(text)
-        except (TypeError, ValueError):
-            return None
-        if when is None:
-            return None
-        if when.tzinfo is None:
-            # RFC 9110 fixes HTTP-dates to GMT; a missing offset is not local time.
-            when = when.replace(tzinfo=UTC)
         reference = now if now is not None else datetime.now(UTC)
-        return max(0, int((when - reference).total_seconds()))
+        return http_retries.http_date_delay(text, now=reference)
 
     @classmethod
     def _parse_retry_after(cls, raw: str | None, now: datetime | None = None) -> int:
@@ -281,22 +273,13 @@ class CFBDClient:
         Clamped to MAX_RETRY_AFTER_SECONDS either way, so a distant date or a
         hostile value cannot park the pipeline inside a single sleep.
         """
-        default = 60
-        if raw is None:
-            return default
-        text = str(raw).strip()
-        if not text:
-            return default
-        try:
-            seconds = int(text)
-        except (TypeError, ValueError):
-            seconds = cls._http_date_delay(text, now)
-            if seconds is None:
-                logger.warning("Unparseable Retry-After header %r; using %ds", raw, default)
-                return default
-        if seconds < 0:
-            return default
-        return min(seconds, cls.MAX_RETRY_AFTER_SECONDS)
+        reference = now if now is not None else datetime.now(UTC)
+        return http_retries.parse_retry_after(
+            raw,
+            default_seconds=http_retries.DEFAULT_RETRY_AFTER_SECONDS,
+            max_seconds=cls.MAX_RETRY_AFTER_SECONDS,
+            now=reference,
+        )
 
     def get(
         self,

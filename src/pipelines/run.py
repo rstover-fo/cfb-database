@@ -355,6 +355,7 @@ def run_plays_pipeline(years: list[int] | None = None, mode: str = "incremental"
 
     from .config.years import YEAR_RANGES, get_current_season
     from .utils.partitions import ensure_play_partitions
+    from .utils.play_indexes import validate_play_indexes
 
     if years is None:
         years = [get_current_season()] if mode == "incremental" else YEAR_RANGES["plays"].to_list()
@@ -370,6 +371,11 @@ def run_plays_pipeline(years: list[int] | None = None, mode: str = "incremental"
     try:
         plan = ensure_play_partitions(conn, years, create=True)
         logger.info("Plays partition preflight: %s", plan)
+        # Missing performance indexes are maintenance decisions. The dlt identity
+        # index is a load invariant and must cover every attached partition.
+        conn.set_session(readonly=True, isolation_level="REPEATABLE READ")
+        with conn.cursor() as cur:
+            validate_play_indexes(cur, ["plays_dlt_id_unique"])
     finally:
         conn.close()
 

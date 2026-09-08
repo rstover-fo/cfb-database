@@ -15,12 +15,12 @@ The design makes two operational claims verifiable:
    its coverage, rather than PostgreSQL maintenance activity or a cached age.
 
 Quota attempt accounting and publication receipts must be separate. The first
-answers how much provider capacity was consumed. The second answers which
+records conservative local reservations and separate provider observations. The second answers which
 warehouse asset generation is currently valid. Their grains, failure semantics,
 and retention needs differ.
 
 This proposal depends on the F10/F11/F28 foundation but does not expand its
-present scope. The foundation currently being implemented is limited to a
+present scope. The available foundation is limited to a
 static registry for 55 SQL materialized views and 48 external relation inputs,
 plus deterministic `--changed` descendant selection and failure gating. It
 does not define source/job metadata, work-unit coverage, durable generations,
@@ -134,6 +134,23 @@ refresh, or verification command.
 | `outcome` | `running`, `succeeded`, `failed`, `partial`, `blocked`, or `cancelled`. |
 | `error_summary` | Sanitized terminal error context, never secrets. |
 
+Before any independently committed attempt reservation or publication receipt,
+call the run-start primitive and **commit the `meta.operation_runs` parent**.
+Allocating a UUID or leaving its insert in the caller's open transaction is not
+sufficient. An uncertain start commit is retried with the same UUID and exact
+context; conflicting context is rejected. Admission must not start until the
+committed parent is confirmed visible from the reservation connection.
+
+At invocation completion, commit the terminal outcome, `finished_at`, and
+sanitized error summary through the run-finish primitive. `succeeded` requires
+all admitted attempts to be terminal and the requested work to be complete;
+other terminal outcomes record failed, partial, blocked, or cancelled work.
+Exact terminal replay is harmless; conflicting terminal updates are rejected.
+A crash can leave a run `running`: recovery must establish worker termination,
+classify unresolved attempts conservatively without refund, and close the run
+with an appropriate non-success outcome. Elapsed time alone does not prove
+success or authorize another dispatch of an uncertain attempt.
+
 An operation run is not a successful publication claim. It can have failures,
 partial results, or no affected assets.
 
@@ -168,6 +185,39 @@ An empty successful response is not automatically fresh. It is
 evaluated and completed. A zero-row expected-no-data receipt must remain
 distinct from a provider failure and from an unattempted unit.
 
+Define `meta.asset_current_generations` as the authoritative pointer relation,
+with primary key `(asset_key, coverage_key)` and non-null `generation_id`.
+The receipt relation must have a unique `(asset_key, coverage_key, generation_id)`
+key, referenced by a composite foreign key from the pointer; a generation from
+another scope cannot be selected. No pointer row means no published generation.
+Only the trusted publication primitive may change pointers, and it validates
+that the referenced receipt is complete and has `succeeded` or
+`expected_no_data` outcome. Readers join this pointer to its exact receipt;
+ordering receipts by timestamps is not a current-generation selection rule.
+
+For the first slice, serialize publication **per asset**, including different
+coverage keys, using a stable asset publication-lock row acquired `FOR UPDATE`
+before target writes or replacement/refresh begins. Create that uniquely keyed
+lock row with conflict-safe insertion before locking, so first publication is
+also serialized. Hold the lock through receipt insertion, pointer upsert, and
+commit. Capture the expected current generation (including absence) before
+preparing output; after acquiring the lock, reject and replan if it changed.
+Thus two publishers prepared against the same generation cannot both replace
+it. Independent non-overlapping units may publish sequentially; canonical
+coverage units must not overlap. A whole-mart refresh uses one source-wide
+coverage key. Mixed source-wide and narrower pointers for the same asset are
+unsupported until an explicit overlap/invalidation contract exists.
+
+The pointer upsert replaces exactly one `(asset_key, coverage_key)` row within
+that transaction. Target writes, success receipt, and pointer all roll back on
+conflict or failure. For staged outputs, staging may happen outside the lock,
+but generation validation and the visibility switch occur under it. Consumers
+read data and its pointer/receipt in one database snapshot (one statement, or a
+repeatable-read transaction across statements); separate read-committed reads
+can straddle a publication. Multi-asset publishers acquire asset locks in stable
+asset-key order. Uncontrolled direct target writers are unsupported for assets
+claiming this guarantee.
+
 Successful receipts and current-generation pointers must become visible
 atomically with the corresponding target data. For a directly controlled
 transaction, insert the success receipt and update the pointer in the same
@@ -199,11 +249,36 @@ retry ordinal; status/error category; and HTTP status where present.
 
 Admission is a database function such as `reserve_cfbd_attempt(...)`:
 
-1. Resolve the provider account and current provider billing period.
-2. Atomically lock or update that account-period budget.
-3. Refuse a reservation that would exceed the configured limit.
+1. Confirm the committed operation-run parent and resolve the provider account.
+2. Classify the exact endpoint through a trusted allowlist and select its budget:
+   normal extraction uses the account/provider-period allowance; reconciliation
+   uses the separate control allowance described below. Unknown endpoints use
+   normal admission, never an exemption supplied by a caller.
+3. Atomically lock or update the selected budget and refuse a reservation that
+   would exceed its configured limit or fall outside its active interval.
 4. Insert and commit one attempt reservation before HTTP bytes are sent.
-5. Return the attempt identifier to the HTTP client.
+5. Commit the single dispatch transition before transport; an uncertain dispatch
+   commit cannot authorize a second send. Return and retain the attempt id for
+   terminal result recording.
+
+Use a separately bounded durable reconciliation allowance for exact `/info`
+and `/info/usage` endpoints. Its account/window key and explicit limit are
+independent of the exhausted normal provider-period allowance. Each control
+attempt and retry reserves one unit, records its budget class, and follows the
+same committed-parent, dispatch, result, and conservative crash-accounting
+rules. Control attempts do not increment normal extraction reservations. A
+provider exemption alone does not grant control admission: `/scoreboard` and
+other exempt endpoints cannot borrow this reconciliation allowance.
+
+The reconciliation allowance must be configured before runtime adoption with
+finite windows, a small explicit cap, and retry/backoff limits; no unlimited or
+in-memory fallback is permitted. Missing configuration, exhausted control
+capacity, or unavailable PostgreSQL denies the call. Reconciliation records
+observed provider capacity and variance without refunding committed attempts
+or automatically increasing the extraction cap. Any cap adjustment uses the
+reviewed administrative path. PR #138's initial schema has one budget class;
+this distinct allowance and endpoint classification require a follow-up schema
+and transport change before claiming reconciliation works at the normal cap.
 
 The callback belongs at the actual `_client.get` transport boundary. Each 429
 or transient retry obtains a new reservation. A circuit-breaker refusal before
@@ -213,7 +288,7 @@ remain the authoritative admission decision.
 
 There is no transaction spanning Postgres and CFBD. If a process crashes after
 reservation commit, or a timeout leaves it unclear whether CFBD received the
-request, the reservation remains charged for the period and is marked
+request, the reservation remains charged to its selected budget window and is marked
 `unknown` or `transport_error` when possible. It must not be automatically
 released. This conservative rule prevents account-wide overspend and makes
 uncertainty inspectable. Provider reconciliation records variance against the
@@ -264,7 +339,7 @@ foundation to solve this broader catalog.
 
 ## Proposed delivery sequence
 
-1. **Registry foundation (in progress):** land the bounded F28
+1. **Registry foundation (merged in #136):** retain the bounded F28
    materialized-view/external-relation registry, deterministic `--changed`
    planning, and failure gating. No receipts, source metadata, or durable
    generations are claimed.
@@ -272,7 +347,9 @@ foundation to solve this broader catalog.
    parent, quota period/attempt tables, atomic reservation function, grants,
    and database-fixture tests. No callers
    change yet.
-3. **CFBD transport vertical slice:** create operation runs and route one
+3. **CFBD transport vertical slice:** commit operation-run parents, add the
+   separate bounded reconciliation allowance and trusted endpoint classification,
+   and route one
    daily, one historical-refresh, and one live caller through per-attempt
    reservations. Retire JSON admission control for those paths only.
 4. **Receipt schema plus controlled publication slice:** add asset
@@ -306,6 +383,14 @@ stacked on receipts and should merge in dependency order.
 - Attempt records distinguish logical expected-no-data from transport outcome;
   retry count is not inferred from one source-level success record.
 
+- Verify from a separate connection that the run parent is committed before the
+  first reservation; failed/uncertain parent creation sends no HTTP request.
+  Exercise exact/conflicting start and finish replay and crash recovery.
+- At an exhausted normal cap, `/info` can use available control capacity and
+  records its attempt without changing extraction usage. Exhausted or missing
+  control capacity and database failure send no HTTP request. Concurrent control
+  retries cannot exceed their separate cap; an arbitrary endpoint cannot select it.
+
 ### Receipts and freshness
 
 - A complete zero-row expected-no-data result, error, deferred unit, and
@@ -322,6 +407,11 @@ stacked on receipts and should merge in dependency order.
   transaction exposes either old data with its old receipt or new data with
   its new receipt, never new data labeled with an old generation. Staged output
   stays unpublished until its pointer and receipt commit together.
+- Race two publishers prepared against the same asset/coverage generation,
+  including first publication: exactly one succeeds, the loser replans, and
+  exactly one pointer names the visible data and matching receipt. Test rollback
+  after target writes and pointer updates, rejected cross-scope references,
+  overlapping coverage rejection, and readers under the supported snapshot rule.
 - A dlt adapter must prove the same visibility invariant; independent target
   commits followed by a receipt callback remain explicitly unsupported.
 

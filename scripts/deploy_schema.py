@@ -10,8 +10,8 @@ run_migrations.py, refresh_marts.py, load_season.py, and check_presence.py.
 Manifest schema:
     {
       "action": "presence_check" | "apply" | "backfill" | "compute",
-      "marts_from": "029",
-      "marts_only": "011",
+      "mart_release": "src/schemas/mart-releases/example.json",
+      "plan": false,
       "files": ["src/schemas/api/019_x.sql", ...],
       "refresh": true,
       "refresh_views": ["marts.team_week_features", "marts.adjusted_epa_week"],
@@ -19,13 +19,16 @@ Manifest schema:
       "compute": {"script": "compute_house_elo", "args": ["--full"]}
     }
 
-All fields besides "action" are optional and only consulted by the action
-that uses them (e.g. an "apply" manifest never looks at "backfill").
+All fields besides "action" are optional. A mart release is exclusive: it
+cannot be combined with legacy mart selectors, per-file SQL, refresh, backfill,
+or compute fields.
 
 Usage:
     python scripts/deploy_schema.py --manifest deploy-manifest.json
     python scripts/deploy_schema.py --action presence_check --strict
-    python scripts/deploy_schema.py --action apply --marts-only 011 \\
+    python scripts/deploy_schema.py --action apply \\
+        --mart-release src/schemas/mart-releases/example.json --plan
+    python scripts/deploy_schema.py --action apply \\
         --files src/schemas/functions/get_player_game_log.sql --refresh
     python scripts/deploy_schema.py --action backfill \\
         --backfill-start 2014 --backfill-end 2025 --sources stats,betting
@@ -50,6 +53,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 SCRIPTS_DIR = Path(__file__).parent
+REPO_ROOT = SCRIPTS_DIR.parent.resolve()
+MARTS_DIR = (REPO_ROOT / "src" / "schemas" / "marts").resolve()
 RUN_MARTS = SCRIPTS_DIR / "run_marts.py"
 RUN_MIGRATIONS = SCRIPTS_DIR / "run_migrations.py"
 REFRESH_MARTS = SCRIPTS_DIR / "refresh_marts.py"
@@ -136,6 +141,8 @@ class ComputeSpec:
 @dataclass
 class Plan:
     action: str
+    mart_release: str | None = None
+    plan: bool = False
     marts_from: str | None = None
     marts_only: str | None = None
     files: list[str] = field(default_factory=list)
@@ -176,6 +183,58 @@ def validate_plan(plan: Plan) -> None:
                 f"must be one of {sorted(COMPUTE_SCRIPTS)}"
             )
 
+    if not isinstance(plan.plan, bool):
+        raise ValueError("plan must be a boolean")
+    if plan.mart_release is not None and (
+        not isinstance(plan.mart_release, str) or not plan.mart_release.strip()
+    ):
+        raise ValueError("mart_release must be a nonempty manifest path")
+
+    if plan.plan and plan.mart_release is None:
+        raise ValueError("--plan requires a mart_release manifest")
+
+    if plan.mart_release is not None:
+        if plan.action != "apply":
+            raise ValueError("mart_release is valid only for the apply action")
+        conflicts = []
+        if plan.marts_from:
+            conflicts.append("marts_from")
+        if plan.marts_only:
+            conflicts.append("marts_only")
+        if plan.files:
+            conflicts.append("files")
+        if plan.refresh:
+            conflicts.append("refresh")
+        if plan.refresh_views:
+            conflicts.append("refresh_views")
+        if plan.backfill is not None:
+            conflicts.append("backfill")
+        if plan.compute is not None:
+            conflicts.append("compute")
+        if plan.strict:
+            conflicts.append("strict")
+        if conflicts:
+            raise ValueError(
+                "mart_release cannot be combined with legacy deploy fields: " + ", ".join(conflicts)
+            )
+
+    if plan.action == "apply" and (plan.marts_from or plan.marts_only):
+        raise ValueError(
+            "legacy mart selectors cannot execute real changes; "
+            "use mart_release with a dependency-complete release manifest"
+        )
+
+    for sql_file in plan.files:
+        candidate = Path(sql_file)
+        if not candidate.is_absolute():
+            candidate = REPO_ROOT / candidate
+        resolved = candidate.resolve()
+        if resolved == MARTS_DIR or MARTS_DIR in resolved.parents:
+            raise ValueError(
+                f"mart SQL file {sql_file!r} cannot use the per-file migration route; "
+                "use mart_release with a dependency-complete release manifest"
+            )
+
     if plan.refresh_views:
         for view in plan.refresh_views:
             if view.count(".") != 1:
@@ -189,6 +248,10 @@ def load_manifest(path: str) -> dict:
 
 def plan_from_manifest(manifest: dict) -> Plan:
     """Build and validate a Plan from a parsed deploy-manifest.json dict."""
+    raw_release_plan = manifest.get("plan", False)
+    if not isinstance(raw_release_plan, bool):
+        raise ValueError("plan must be a boolean")
+
     backfill = None
     bf = manifest.get("backfill")
     if bf:
@@ -208,6 +271,8 @@ def plan_from_manifest(manifest: dict) -> Plan:
 
     plan = Plan(
         action=manifest.get("action"),
+        mart_release=manifest.get("mart_release"),
+        plan=raw_release_plan,
         marts_from=manifest.get("marts_from"),
         marts_only=manifest.get("marts_only"),
         files=list(manifest.get("files") or []),
@@ -229,6 +294,8 @@ def plan_from_manifest(manifest: dict) -> Plan:
 def plan_from_cli(
     *,
     action: str,
+    mart_release: str | None = None,
+    plan: bool = False,
     marts_from: str | None = None,
     marts_only: str | None = None,
     files: str | None = None,
@@ -267,6 +334,8 @@ def plan_from_cli(
 
     plan = Plan(
         action=action,
+        mart_release=mart_release,
+        plan=plan,
         marts_from=marts_from,
         marts_only=marts_only,
         files=file_list,
@@ -301,21 +370,12 @@ def run_presence_check(plan: Plan) -> int:
 
 
 def run_apply(plan: Plan) -> int:
-    # --only takes precedence over --from, mirroring run_marts.py's own logic.
-    if plan.marts_only:
-        rc = run_cmd(
-            [sys.executable, str(RUN_MARTS), "--only", plan.marts_only],
-            f"run_marts --only {plan.marts_only}",
-        )
-        if rc:
-            return rc
-    elif plan.marts_from:
-        rc = run_cmd(
-            [sys.executable, str(RUN_MARTS), "--from", plan.marts_from],
-            f"run_marts --from {plan.marts_from}",
-        )
-        if rc:
-            return rc
+    validate_plan(plan)
+    if plan.mart_release:
+        cmd = [sys.executable, str(RUN_MARTS), "--release", plan.mart_release]
+        if plan.plan:
+            cmd.append("--plan")
+        return run_cmd(cmd, f"run_marts --release {plan.mart_release}")
 
     for sql_file in plan.files:
         rc = run_cmd(
@@ -419,8 +479,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Schema deploy driver")
     parser.add_argument("--manifest", help="Path to a JSON deploy manifest (see module docstring)")
     parser.add_argument("--action", choices=sorted(VALID_ACTIONS), help="Action to run")
-    parser.add_argument("--marts-from", dest="marts_from", help="run_marts.py --from value")
-    parser.add_argument("--marts-only", dest="marts_only", help="run_marts.py --only value")
+    parser.add_argument(
+        "--mart-release",
+        dest="mart_release",
+        help="Dependency-complete mart release manifest (apply only)",
+    )
+    parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="Preview --mart-release through a read-only transaction",
+    )
+    parser.add_argument(
+        "--marts-from",
+        dest="marts_from",
+        help="unsupported legacy selector; use --mart-release",
+    )
+    parser.add_argument(
+        "--marts-only",
+        dest="marts_only",
+        help="unsupported legacy selector; use --mart-release",
+    )
     parser.add_argument("--files", help="Comma-separated SQL files to apply via run_migrations.py")
     parser.add_argument("--refresh", action="store_true", help="Refresh marts schema after apply")
     parser.add_argument(
@@ -463,6 +541,8 @@ def main(argv: list[str] | None = None) -> None:
             parser.error("--action is required when --manifest is not given")
         plan = plan_from_cli(
             action=args.action,
+            mart_release=args.mart_release,
+            plan=args.plan,
             marts_from=args.marts_from,
             marts_only=args.marts_only,
             files=args.files,

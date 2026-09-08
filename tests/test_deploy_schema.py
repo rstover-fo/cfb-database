@@ -1,9 +1,11 @@
 """Unit tests for deploy_schema's pure plan-building (no DB, no subprocess)."""
 
 import json
+import sys
 
 import pytest
 
+import scripts.deploy_schema as deploy_schema
 from scripts.deploy_schema import (
     COMPUTE_SCRIPTS,
     VALID_ACTIONS,
@@ -82,20 +84,15 @@ class TestPlanFromManifestPresenceCheck:
 
 
 class TestPlanFromManifestApply:
-    def test_apply_fields(self):
+    def test_legacy_mart_selectors_are_rejected(self):
         manifest = {
             "action": "apply",
             "marts_from": "029",
-            "marts_only": "011",
             "files": ["src/schemas/api/019_x.sql", "src/schemas/functions/y.sql"],
             "refresh": True,
         }
-        plan = plan_from_manifest(manifest)
-        assert plan.action == "apply"
-        assert plan.marts_from == "029"
-        assert plan.marts_only == "011"
-        assert plan.files == ["src/schemas/api/019_x.sql", "src/schemas/functions/y.sql"]
-        assert plan.refresh is True
+        with pytest.raises(ValueError, match="legacy mart selectors"):
+            plan_from_manifest(manifest)
 
     def test_apply_defaults(self):
         plan = plan_from_manifest({"action": "apply"})
@@ -242,17 +239,13 @@ class TestPlanFromCli:
         plan = plan_from_cli(action="presence_check", strict=True)
         assert plan.strict is True
 
-    def test_apply_flags_mapped(self):
+    def test_apply_fields_mapped_without_legacy_mart_selector(self):
         plan = plan_from_cli(
             action="apply",
-            marts_from="029",
-            marts_only="011",
             files="src/schemas/api/019_x.sql, src/schemas/functions/y.sql",
             refresh=True,
         )
         assert plan.action == "apply"
-        assert plan.marts_from == "029"
-        assert plan.marts_only == "011"
         # Comma-separated CLI string is split and whitespace-stripped.
         assert plan.files == ["src/schemas/api/019_x.sql", "src/schemas/functions/y.sql"]
         assert plan.refresh is True
@@ -350,3 +343,116 @@ class TestLoadManifest:
         manifest_path.write_text(json.dumps({"action": "presence_check"}))
         manifest = load_manifest(str(manifest_path))
         assert manifest == {"action": "presence_check"}
+
+
+class TestMartReleasePlans:
+    def test_manifest_maps_release_and_read_only_plan(self):
+        plan = plan_from_manifest(
+            {
+                "action": "apply",
+                "mart_release": "src/schemas/mart-releases/example.json",
+                "plan": True,
+            }
+        )
+        assert plan.mart_release == "src/schemas/mart-releases/example.json"
+        assert plan.plan is True
+
+    def test_cli_maps_release_execution_by_default(self):
+        plan = plan_from_cli(action="apply", mart_release="release.json")
+        assert plan.mart_release == "release.json"
+        assert plan.plan is False
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("marts_from", "029"),
+            ("marts_only", "011"),
+            ("files", ["src/schemas/api/example.sql"]),
+            ("refresh", True),
+            ("refresh_views", ["marts.example"]),
+            ("backfill", BackfillSpec(start=2025, end=2025, sources="stats")),
+            ("compute", ComputeSpec(script="compute_house_elo")),
+        ],
+    )
+    def test_release_rejects_legacy_deploy_fields(self, field, value):
+        plan = Plan(action="apply", mart_release="release.json")
+        setattr(plan, field, value)
+        with pytest.raises(ValueError, match=field):
+            validate_plan(plan)
+
+    def test_plan_requires_release(self):
+        with pytest.raises(ValueError, match="requires a mart_release"):
+            plan_from_cli(action="apply", plan=True)
+
+    def test_manifest_plan_must_be_boolean(self):
+        with pytest.raises(ValueError, match="plan must be a boolean"):
+            plan_from_manifest({"action": "apply", "mart_release": "release.json", "plan": "false"})
+
+    def test_release_requires_apply_action(self):
+        with pytest.raises(ValueError, match="only for the apply action"):
+            plan_from_cli(action="presence_check", mart_release="release.json")
+
+    @pytest.mark.parametrize("selector", [{"marts_from": "029"}, {"marts_only": "011"}])
+    def test_real_apply_rejects_legacy_mart_selectors(self, selector):
+        with pytest.raises(ValueError, match="dependency-complete"):
+            plan_from_cli(action="apply", **selector)
+
+    @pytest.mark.parametrize(
+        "files",
+        [
+            "src/schemas/marts/001_example.sql",
+            "src/schemas/api/001_ok.sql,src/schemas/marts/002_blocked.sql",
+            "src/schemas/api/../marts/003_traversal.sql",
+        ],
+    )
+    def test_apply_rejects_mart_file_in_any_position_or_spelling(self, files):
+        with pytest.raises(ValueError, match="per-file migration route"):
+            plan_from_cli(action="apply", files=files)
+
+    def test_release_execute_dispatches_exactly_one_atomic_runner(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            deploy_schema,
+            "run_cmd",
+            lambda cmd, label: calls.append((cmd, label)) or 0,
+        )
+
+        rc = deploy_schema.execute_plan(
+            Plan(action="apply", mart_release="src/schemas/mart-releases/example.json")
+        )
+
+        assert rc == 0
+        assert calls == [
+            (
+                [
+                    sys.executable,
+                    str(deploy_schema.RUN_MARTS),
+                    "--release",
+                    "src/schemas/mart-releases/example.json",
+                ],
+                "run_marts --release src/schemas/mart-releases/example.json",
+            )
+        ]
+
+    def test_release_plan_dispatches_read_only_flag(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            deploy_schema,
+            "run_cmd",
+            lambda cmd, label: calls.append(cmd) or 0,
+        )
+
+        rc = deploy_schema.execute_plan(
+            Plan(action="apply", mart_release="release.json", plan=True)
+        )
+
+        assert rc == 0
+        assert calls == [
+            [
+                sys.executable,
+                str(deploy_schema.RUN_MARTS),
+                "--release",
+                "release.json",
+                "--plan",
+            ]
+        ]

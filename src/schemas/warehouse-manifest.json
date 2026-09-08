@@ -30,6 +30,11 @@
       "id": "warehouse.f06.065",
       "path": "src/schemas/migrations/065_trajectory_wrapper_access.sql",
       "kind": "immutable"
+    },
+    {
+      "id": "warehouse.f14.066",
+      "path": "src/schemas/migrations/066_operational_quota_ledger.sql",
+      "kind": "immutable"
     }
   ]
 }

@@ -4,6 +4,11 @@
       "id": "warehouse.production.catalog-adopted.20260907.288b4eaf817b",
       "kind": "immutable",
       "path": "src/schemas/adoptions/20260907_production_catalog_receipt.sql"
+    },
+    {
+      "id": "warehouse.f14.066",
+      "path": "src/schemas/migrations/066_operational_quota_ledger.sql",
+      "kind": "immutable"
     }
   ],
   "version": 1

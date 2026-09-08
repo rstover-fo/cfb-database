@@ -264,6 +264,10 @@ Evidence: [play-stat fan-out](https://github.com/rstover-fo/cfb-database/blob/4a
 
 ### F14 — API-budget accounting measures successful logical requests, not actual attempts
 
+The [quota foundation](2026-09-08-f14-quota-foundation.md) prepares private
+atomic reservation primitives. Runtime transport integration and production
+rollout remain open; this does not close F14.
+
 **P2 · Confirmed · M**
 
 The request wrapper records a call only after the client returns successfully. Retries and terminal failures consume attempts without equivalent accounting. Budget state is a local JSON file, so fresh workflow runners and separate jobs do not share one durable account-wide total. Source estimates also diverge from actual fan-out cost and cannot safely govern execution.

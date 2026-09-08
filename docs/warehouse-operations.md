@@ -29,6 +29,7 @@ These commands operate on an explicitly selected, authorized warehouse; use
 | Season ingestion | `scripts/load_season.py --weekly` (explicit `--season` for backfills) |
 | Post-load verification | `scripts/verify_load.py` |
 | Inspect / maintain plays partitions | `scripts/maintain_play_partitions.py` (read-only); `--apply` creates missing partitions |
+| Inspect / repair plays index ownership | `scripts/maintain_play_indexes.py` (read-only); explicit `--apply --index <name>` for a maintenance window |
 | Refresh existing marts | `scripts/refresh_marts.py` |
 | Apply definitions / migrations | [Atomic mart releases](mart-releases.md); `scripts/run_migrations.py` for explicit non-mart migrations |
 | One-off SQL application | `scripts/run_migrations.py --file <path>`; follow that file's application contract |
@@ -79,6 +80,50 @@ drift, and rollback after the first of two partition creations succeeds. The
 partition tests run in the CI PostgreSQL job. This verifies executed SQL and
 loader preflight ordering with fakes; it does not represent a live CFBD/dlt
 end-to-end load or a production deployment.
+
+## Plays index ownership (F09)
+
+The historical plays table swap could leave expected index names on `plays_old`.
+The current production catalog is already correct: read-only inspection on
+2026-09-08 found no old table and nine valid index families covering all 23
+partitions. See [the F09 evidence and scope](plans/2026-09-08-f09-plays-index-ownership.md)
+for definitions, executed query plans, and measurement limits.
+
+The plays runner now validates the `plays_dlt_id_unique` family after partition
+maintenance and before fetching data, on the same destination as dlt. Missing,
+misowned, structurally different, or incompletely attached identity indexes fail
+the load. This read-only check does not rebuild indexes during ingestion.
+
+To inspect all nine reviewed index families on an explicitly selected target:
+
+```bash
+WAREHOUSE_DB_URL='<authorized PostgreSQL URL>' \
+  .venv/bin/python scripts/maintain_play_indexes.py
+```
+
+For an affected warehouse, select each justified index explicitly:
+
+```bash
+WAREHOUSE_DB_URL='<authorized PostgreSQL URL>' \
+  .venv/bin/python scripts/maintain_play_indexes.py \
+  --apply --index plays_dlt_id_unique --index idx_plays_game_id
+```
+
+The command reads `WAREHOUSE_DB_URL` (or an explicit `--db-url`), not implicit dlt
+credentials. Inspection is read-only and returns a nonzero exit status for
+invalid selected state. Repair requires an idle dedicated connection and runs
+in one transaction with a 10-second lock timeout and 30-minute statement timeout.
+**Schedule repair for an authorized maintenance window:** ordinary parent index
+builds block writes while they run; this command does not claim concurrent online
+creation. It validates every selected repair first, renames recognized old-heap
+indexes to `plays_old_<index_name>`, creates missing selected parent indexes and
+their child indexes, and verifies the result before committing. Repeating a
+completed repair is a no-op. Any failure rolls back the selected batch.
+
+Unexpected targets or definitions, existing rename targets, equivalent differently
+named parent indexes, and invalid or incomplete index trees require separate investigation.
+The command does not drop old storage, alter consumer grants, recreate obsolete
+historical indexes, or choose which optional indexes are worth their write cost.
 
 ## Box-score and roster request failures
 

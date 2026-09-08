@@ -188,6 +188,13 @@ Evidence: [partition creation](https://github.com/rstover-fo/cfb-database/blob/4
 
 ### F09 — The plays table swap can leave expected indexes on the old table
 
+Investigation and implementation: [F09 plays index ownership](2026-09-08-f09-plays-index-ownership.md).
+Read-only production inspection on 2026-09-08 found no `plays_old` table and all
+nine captured index families valid, ready, and attached to the correct parent
+and all 23 partitions. No production repair is needed for the ownership defect.
+The finding below records the historical migration-sequence flaw; index tuning
+and per-index write overhead remain separate, unmeasured work.
+
 **P1 to inspect; P2 remediation if affected · Confirmed migration-sequence flaw · M**
 
 Initial core DDL creates named plays indexes. The partition migration renames the original table to plays_old, then creates indexes on the new table using the same names and IF NOT EXISTS. Existing index names stay associated with the old relation, so the later statements can skip creating the intended indexes. Subsequent same-name statements are not a repair. Production may already have been repaired manually; its catalog must decide that.

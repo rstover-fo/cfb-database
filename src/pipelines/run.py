@@ -352,9 +352,12 @@ def run_game_stats_weekly(
 def run_plays_pipeline(years: list[int] | None = None, mode: str = "incremental"):
     """Run the plays data pipeline."""
     import psycopg2
+    from dlt.common.configuration import inject_section
+    from dlt.common.configuration.specs import ConfigSectionContext
 
     from .config.years import YEAR_RANGES, get_current_season
     from .utils.partitions import ensure_play_partitions
+    from .utils.play_indexes import validate_play_indexes
 
     if years is None:
         years = [get_current_season()] if mode == "incremental" else YEAR_RANGES["plays"].to_list()
@@ -365,11 +368,21 @@ def run_plays_pipeline(years: list[int] | None = None, mode: str = "incremental"
     )
     # Validate the actual destination catalog before fetching any provider data.
     # A dedicated connection commits maintenance before dlt starts its load.
-    destination_client = pipeline.destination_client()
-    conn = psycopg2.connect(destination_client.config.credentials.to_native_representation())
+    # Resolve credentials in the pipeline scope, including on a first-ever load.
+    # This also preserves scoped target selection on older supported dlt versions.
+    with inject_section(ConfigSectionContext(pipeline_name=pipeline.pipeline_name, sections=())):
+        initial_config = pipeline.destination.spec()
+        initial_config.dataset_name = pipeline.dataset_name
+        destination_config = pipeline.destination.configuration(initial_config)
+    conn = psycopg2.connect(destination_config.credentials.to_native_representation())
     try:
         plan = ensure_play_partitions(conn, years, create=True)
         logger.info("Plays partition preflight: %s", plan)
+        # Missing performance indexes are maintenance decisions. The dlt identity
+        # index is a load invariant and must cover every attached partition.
+        conn.set_session(readonly=True, isolation_level="REPEATABLE READ")
+        with conn.cursor() as cur:
+            validate_play_indexes(cur, ["plays_dlt_id_unique"])
     finally:
         conn.close()
 

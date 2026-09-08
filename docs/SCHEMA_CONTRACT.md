@@ -1194,7 +1194,9 @@ reserved attempts are conservative capacity units, not provider-billed usage.
 No public view/RPC is added. `anon`, `authenticated`, `analyst_ro`, and other
 non-owner default grantees receive no access to these records. The dedicated
 `warehouse_ingest` role receives only the reviewed function privileges needed
-to create/finish runs, reserve attempts, and record dispatch/results; role
+in the owner-only `warehouse_quota` schema to create/finish runs, reserve
+attempts, and record dispatch/results. Existing `meta` schema grants remain
+unchanged; no non-owner can create overloads in the quota RPC namespace. Role
 membership and capacity configuration require a separate rollout.
 
 Existing HTTP callers and `public.get_data_freshness()` are unchanged. See the

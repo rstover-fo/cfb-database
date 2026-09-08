@@ -13,6 +13,59 @@
 
 CREATE SCHEMA IF NOT EXISTS meta;
 
+-- This namespace is dedicated to trusted quota routines. Existing meta writers
+-- may keep CREATE there; placing RPCs alongside them would permit hostile
+-- overloads to capture unknown/string arguments even with qualified calls.
+DO $namespace$
+DECLARE
+    schema_row record;
+BEGIN
+    SELECT oid, nspowner, nspacl INTO schema_row
+    FROM pg_catalog.pg_namespace WHERE nspname = 'warehouse_quota';
+    IF NOT FOUND THEN
+        CREATE SCHEMA warehouse_quota;
+    ELSE
+        IF schema_row.nspowner <> (SELECT oid FROM pg_catalog.pg_roles
+                WHERE rolname = current_user) THEN
+            RAISE EXCEPTION 'warehouse_quota must be owned by the migration role';
+        END IF;
+        IF EXISTS (
+            SELECT 1 FROM pg_catalog.aclexplode(schema_row.nspacl) acl
+            WHERE acl.grantee <> schema_row.nspowner AND acl.privilege_type = 'CREATE'
+        ) THEN
+            RAISE EXCEPTION 'existing warehouse_quota has untrusted CREATE grants';
+        END IF;
+        -- A same-named domain can turn a one-argument RPC call into a cast.
+        -- This dedicated routines-only namespace has no legitimate types.
+        IF EXISTS (
+            SELECT 1 FROM pg_catalog.pg_type WHERE typnamespace = schema_row.oid
+        ) THEN
+            RAISE EXCEPTION 'warehouse_quota contains an unexpected type';
+        END IF;
+        -- Do not adopt an already-compromised namespace by merely removing ACLs:
+        -- an attacker-owned routine can restore its own EXECUTE grants later.
+        IF EXISTS (
+            SELECT 1 FROM pg_catalog.pg_proc p
+            WHERE p.pronamespace = schema_row.oid AND (
+                p.proowner <> schema_row.nspowner OR p.prokind <> 'f'
+                OR p.provariadic <> 0 OR p.pronargdefaults <> 0
+                OR NOT COALESCE(p.oid = ANY(ARRAY[
+                    pg_catalog.to_regprocedure('warehouse_quota.guard_api_request_attempt_update()'),
+                    pg_catalog.to_regprocedure('warehouse_quota.reject_api_request_attempt_removal()'),
+                    pg_catalog.to_regprocedure('warehouse_quota.start_operation_run(uuid,text,text,jsonb,text,text)'),
+                    pg_catalog.to_regprocedure('warehouse_quota.finish_operation_run(uuid,text,text)'),
+                    pg_catalog.to_regprocedure('warehouse_quota.reserve_cfbd_attempt(uuid,uuid,text,timestamptz,text,integer,jsonb)'),
+                    pg_catalog.to_regprocedure('warehouse_quota.mark_cfbd_attempt_dispatched(uuid)'),
+                    pg_catalog.to_regprocedure('warehouse_quota.record_cfbd_attempt_result(uuid,text,integer,text)')
+                ]::oid[]), false)
+            )
+        ) THEN
+            RAISE EXCEPTION 'warehouse_quota contains an unexpected or untrusted routine';
+        END IF;
+    END IF;
+END
+$namespace$;
+
 -- Text equality in the account-scoped exclusion constraint comes from
 -- btree_gist. The DO block below discovers its actual installation schema, so
 -- this works both on plain PostgreSQL (normally public) and hosts that install
@@ -182,10 +235,15 @@ CREATE TABLE IF NOT EXISTS meta.api_request_attempts (
         OR
         (state = 'transport_error'
             AND dispatched_at IS NOT NULL AND result_recorded_at IS NOT NULL
-            AND error_category IS NOT NULL)
+            AND http_status IS NULL AND error_category IS NOT NULL)
         OR
         (state = 'unknown'
-            AND result_recorded_at IS NOT NULL)
+            AND result_recorded_at IS NOT NULL AND http_status IS NULL
+            AND error_category IS NOT NULL
+            AND (
+                (dispatched_at IS NULL AND error_category = 'dispatch_unconfirmed')
+                OR (dispatched_at IS NOT NULL AND error_category = 'response_unobserved')
+            ))
     )
 );
 
@@ -199,7 +257,7 @@ COMMENT ON COLUMN meta.api_request_attempts.request_context IS
 COMMENT ON COLUMN meta.api_request_attempts.state IS
     'Transport lifecycle, separate from source-level publication/freshness. reserved/dispatched can remain pending after a crash and remain locally charged.';
 
-CREATE OR REPLACE FUNCTION meta.guard_api_request_attempt_update()
+CREATE OR REPLACE FUNCTION warehouse_quota.guard_api_request_attempt_update()
 RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
@@ -233,9 +291,9 @@ $function$;
 DROP TRIGGER IF EXISTS guard_api_request_attempt_update ON meta.api_request_attempts;
 CREATE TRIGGER guard_api_request_attempt_update
     BEFORE UPDATE ON meta.api_request_attempts
-    FOR EACH ROW EXECUTE FUNCTION meta.guard_api_request_attempt_update();
+    FOR EACH ROW EXECUTE FUNCTION warehouse_quota.guard_api_request_attempt_update();
 
-CREATE OR REPLACE FUNCTION meta.reject_api_request_attempt_removal()
+CREATE OR REPLACE FUNCTION warehouse_quota.reject_api_request_attempt_removal()
 RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
@@ -248,9 +306,9 @@ $function$;
 DROP TRIGGER IF EXISTS reject_api_request_attempt_delete ON meta.api_request_attempts;
 CREATE TRIGGER reject_api_request_attempt_delete
     BEFORE DELETE OR TRUNCATE ON meta.api_request_attempts
-    FOR EACH STATEMENT EXECUTE FUNCTION meta.reject_api_request_attempt_removal();
+    FOR EACH STATEMENT EXECUTE FUNCTION warehouse_quota.reject_api_request_attempt_removal();
 
-CREATE OR REPLACE FUNCTION meta.start_operation_run(
+CREATE OR REPLACE FUNCTION warehouse_quota.start_operation_run(
     p_operation_run_id uuid,
     p_operation_kind text,
     p_initiator text,
@@ -300,7 +358,7 @@ BEGIN
 END
 $function$;
 
-CREATE OR REPLACE FUNCTION meta.finish_operation_run(
+CREATE OR REPLACE FUNCTION warehouse_quota.finish_operation_run(
     p_operation_run_id uuid,
     p_outcome text,
     p_error_summary text
@@ -360,7 +418,7 @@ BEGIN
 END
 $function$;
 
-CREATE OR REPLACE FUNCTION meta.reserve_cfbd_attempt(
+CREATE OR REPLACE FUNCTION warehouse_quota.reserve_cfbd_attempt(
     p_attempt_id uuid,
     p_operation_run_id uuid,
     p_account_key text,
@@ -477,7 +535,7 @@ BEGIN
 END
 $function$;
 
-CREATE OR REPLACE FUNCTION meta.mark_cfbd_attempt_dispatched(p_attempt_id uuid)
+CREATE OR REPLACE FUNCTION warehouse_quota.mark_cfbd_attempt_dispatched(p_attempt_id uuid)
 RETURNS timestamptz
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -533,7 +591,7 @@ BEGIN
 END
 $function$;
 
-CREATE OR REPLACE FUNCTION meta.record_cfbd_attempt_result(
+CREATE OR REPLACE FUNCTION warehouse_quota.record_cfbd_attempt_result(
     p_attempt_id uuid,
     p_state text,
     p_http_status integer,
@@ -571,9 +629,9 @@ BEGIN
             USING ERRCODE = '22023';
     END IF;
     IF p_state = 'transport_error' AND (
-        p_error_category IS NULL OR length(pg_catalog.btrim(p_error_category)) = 0
+        p_http_status IS NOT NULL OR p_error_category IS NULL OR length(pg_catalog.btrim(p_error_category)) = 0
     ) THEN
-        RAISE EXCEPTION 'transport error result requires an error category'
+        RAISE EXCEPTION 'transport error requires no HTTP status and an error category'
             USING ERRCODE = '22023';
     END IF;
 
@@ -583,6 +641,15 @@ BEGIN
     FOR UPDATE;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'attempt is not reserved' USING ERRCODE = '22023';
+    END IF;
+
+    IF p_state = 'unknown' AND (
+        p_http_status IS NOT NULL OR p_error_category IS DISTINCT FROM
+            CASE WHEN attempt_row.dispatched_at IS NULL THEN 'dispatch_unconfirmed'
+                 ELSE 'response_unobserved' END
+    ) THEN
+        RAISE EXCEPTION 'unknown result requires no HTTP status and the matching dispatch phase category'
+            USING ERRCODE = '22023';
     END IF;
 
     IF attempt_row.state IN (
@@ -623,9 +690,15 @@ DECLARE
     recipient text;
 BEGIN
     FOR entry IN
-        SELECT DISTINCT 'TABLE' AS object_kind,
-            pg_catalog.format('%I.%I', n.nspname, c.relname) AS object_name,
+        SELECT DISTINCT 'SCHEMA' AS object_kind,
+            pg_catalog.format('%I', n.nspname) AS object_name,
             acl.grantee, 'ALL' AS privileges
+        FROM pg_catalog.pg_namespace n
+        CROSS JOIN LATERAL pg_catalog.aclexplode(n.nspacl) acl
+        WHERE n.nspname = 'warehouse_quota' AND acl.grantee <> n.nspowner
+        UNION
+        SELECT DISTINCT 'TABLE',
+            pg_catalog.format('%I.%I', n.nspname, c.relname), acl.grantee, 'ALL'
         FROM pg_catalog.pg_class AS c
         JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
         CROSS JOIN LATERAL pg_catalog.aclexplode(c.relacl) AS acl
@@ -642,7 +715,7 @@ BEGIN
         CROSS JOIN LATERAL pg_catalog.aclexplode(
             COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))
         ) AS acl
-        WHERE n.nspname = 'meta'
+        WHERE n.nspname = 'warehouse_quota'
           AND p.proname IN (
               'guard_api_request_attempt_update', 'reject_api_request_attempt_removal',
               'start_operation_run', 'finish_operation_run', 'reserve_cfbd_attempt',
@@ -658,13 +731,11 @@ BEGIN
 END
 $quota_acl$;
 
-REVOKE CREATE ON SCHEMA meta FROM PUBLIC;
-REVOKE CREATE ON SCHEMA meta FROM warehouse_ingest;
-GRANT USAGE ON SCHEMA meta TO warehouse_ingest;
+GRANT USAGE ON SCHEMA warehouse_quota TO warehouse_ingest;
 
-GRANT EXECUTE ON FUNCTION meta.start_operation_run(uuid, text, text, jsonb, text, text),
-    meta.finish_operation_run(uuid, text, text),
-    meta.reserve_cfbd_attempt(uuid, uuid, text, timestamptz, text, integer, jsonb),
-    meta.mark_cfbd_attempt_dispatched(uuid),
-    meta.record_cfbd_attempt_result(uuid, text, integer, text)
+GRANT EXECUTE ON FUNCTION warehouse_quota.start_operation_run(uuid, text, text, jsonb, text, text),
+    warehouse_quota.finish_operation_run(uuid, text, text),
+    warehouse_quota.reserve_cfbd_attempt(uuid, uuid, text, timestamptz, text, integer, jsonb),
+    warehouse_quota.mark_cfbd_attempt_dispatched(uuid),
+    warehouse_quota.record_cfbd_attempt_result(uuid, text, integer, text)
     TO warehouse_ingest;

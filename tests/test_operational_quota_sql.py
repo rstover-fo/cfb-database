@@ -67,7 +67,7 @@ def start_run(conn, run_id=None):
     runtime_query(
         conn,
         """
-        SELECT meta.start_operation_run(%s, 'extract', 'pytest', %s::jsonb, %s, %s)
+        SELECT warehouse_quota.start_operation_run(%s, 'extract', 'pytest', %s::jsonb, %s, %s)
         """,
         (str(run_id), '{"sources":["games"]}', "fixture-plan", "fixture-revision"),
     )
@@ -95,7 +95,7 @@ def reserve(conn, attempt_id, run_id, period_start, *, endpoint="games", context
     return runtime_query(
         conn,
         """
-        SELECT * FROM meta.reserve_cfbd_attempt(
+        SELECT * FROM warehouse_quota.reserve_cfbd_attempt(
             %s, %s, %s, %s, %s, 0, %s::jsonb
         )
         """,
@@ -123,7 +123,7 @@ def test_schema_is_idempotent_private_and_runtime_is_bounded(quota_db):
                 has_table_privilege(%s, 'meta.api_quota_periods', 'SELECT,INSERT,UPDATE,DELETE'),
                 has_table_privilege(%s, 'meta.api_request_attempts', 'SELECT,INSERT,UPDATE,DELETE'),
                 has_function_privilege(%s,
-                    'meta.reserve_cfbd_attempt(uuid,uuid,text,timestamptz,text,integer,jsonb)',
+                    'warehouse_quota.reserve_cfbd_attempt(uuid,uuid,text,timestamptz,text,integer,jsonb)',
                     'EXECUTE'),
                 has_schema_privilege(%s, 'meta', 'CREATE')
             """,
@@ -138,11 +138,11 @@ def test_schema_is_idempotent_private_and_runtime_is_bounded(quota_db):
     assert query(
         conn,
         """
-        SELECT has_schema_privilege('warehouse_ingest','meta','USAGE'),
-            has_schema_privilege('warehouse_ingest','meta','CREATE'),
+        SELECT has_schema_privilege('warehouse_ingest','warehouse_quota','USAGE'),
+            has_schema_privilege('warehouse_ingest','warehouse_quota','CREATE'),
             has_table_privilege('warehouse_ingest','meta.api_quota_periods','SELECT'),
             has_function_privilege('warehouse_ingest',
-                'meta.reserve_cfbd_attempt(uuid,uuid,text,timestamptz,text,integer,jsonb)',
+                'warehouse_quota.reserve_cfbd_attempt(uuid,uuid,text,timestamptz,text,integer,jsonb)',
                 'EXECUTE')
         """,
     ) == [(True, False, False, True)]
@@ -154,7 +154,7 @@ def test_schema_is_idempotent_private_and_runtime_is_bounded(quota_db):
         CROSS JOIN LATERAL aclexplode(
             COALESCE(p.proacl, acldefault('f',p.proowner))
         ) acl
-        WHERE n.nspname='meta'
+        WHERE n.nspname='warehouse_quota'
           AND p.proname IN (
               'start_operation_run','finish_operation_run','reserve_cfbd_attempt',
               'mark_cfbd_attempt_dispatched','record_cfbd_attempt_result'
@@ -240,7 +240,7 @@ def test_rollback_is_free_but_committed_crash_reservation_stays_charged(quota_db
     with conn.cursor() as cur:
         cur.execute("SET LOCAL ROLE warehouse_ingest")
         cur.execute(
-            "SELECT * FROM meta.reserve_cfbd_attempt(%s,%s,%s,%s,'games',0,'{}')",
+            "SELECT * FROM warehouse_quota.reserve_cfbd_attempt(%s,%s,%s,%s,'games',0,'{}')",
             (str(rolled_back_id), str(run_id), ACCOUNT, period_start),
         )
     conn.rollback()
@@ -261,7 +261,7 @@ def test_rollback_is_free_but_committed_crash_reservation_stays_charged(quota_db
 
     assert runtime_query(
         conn,
-        "SELECT meta.finish_operation_run(%s, 'failed', 'fixture crash')",
+        "SELECT warehouse_quota.finish_operation_run(%s, 'failed', 'fixture crash')",
         (str(run_id),),
     ) == [(1,)]
     with pytest.raises(psycopg2.Error, match="already terminal"):
@@ -277,36 +277,38 @@ def test_dispatch_rechecks_period_and_terminal_results_do_not_refund(quota_db):
     reserve(conn, attempt_id, run_id, period_start)
     runtime_query(
         conn,
-        "SELECT meta.mark_cfbd_attempt_dispatched(%s)",
+        "SELECT warehouse_quota.mark_cfbd_attempt_dispatched(%s)",
         (str(attempt_id),),
     )
     with pytest.raises(psycopg2.Error, match="do not send it again"):
         runtime_query(
             conn,
-            "SELECT meta.mark_cfbd_attempt_dispatched(%s)",
+            "SELECT warehouse_quota.mark_cfbd_attempt_dispatched(%s)",
             (str(attempt_id),),
         )
     conn.rollback()
     completed_at = runtime_query(
         conn,
-        "SELECT meta.record_cfbd_attempt_result(%s,'http_error',429,'rate_limited')",
+        "SELECT warehouse_quota.record_cfbd_attempt_result(%s,'http_error',429,'rate_limited')",
         (str(attempt_id),),
     )[0][0]
     assert runtime_query(
         conn,
-        "SELECT meta.record_cfbd_attempt_result(%s,'http_error',429,'rate_limited')",
+        "SELECT warehouse_quota.record_cfbd_attempt_result(%s,'http_error',429,'rate_limited')",
         (str(attempt_id),),
     ) == [(completed_at,)]
     with pytest.raises(psycopg2.Error, match="different terminal result"):
         runtime_query(
             conn,
-            "SELECT meta.record_cfbd_attempt_result(%s,'succeeded',200,NULL)",
+            "SELECT warehouse_quota.record_cfbd_attempt_result(%s,'succeeded',200,NULL)",
             (str(attempt_id),),
         )
     conn.rollback()
     success_id = uuid.uuid4()
     reserve(conn, success_id, run_id, period_start)
-    runtime_query(conn, "SELECT meta.mark_cfbd_attempt_dispatched(%s)", (str(success_id),))
+    runtime_query(
+        conn, "SELECT warehouse_quota.mark_cfbd_attempt_dispatched(%s)", (str(success_id),)
+    )
     # The persisted invariant also rejects NULL (CHECK otherwise accepts UNKNOWN).
     for invalid_status in (None, 500):
         with pytest.raises(psycopg2.errors.CheckViolation):
@@ -321,21 +323,23 @@ def test_dispatch_rechecks_period_and_terminal_results_do_not_refund(quota_db):
         with pytest.raises(psycopg2.Error, match="requires 2xx"):
             runtime_query(
                 conn,
-                "SELECT meta.record_cfbd_attempt_result(%s,'succeeded',%s,NULL)",
+                "SELECT warehouse_quota.record_cfbd_attempt_result(%s,'succeeded',%s,NULL)",
                 (str(success_id), invalid_status),
             )
         conn.rollback()
     runtime_query(
         conn,
-        "SELECT meta.record_cfbd_attempt_result(%s,'succeeded',200,NULL)",
+        "SELECT warehouse_quota.record_cfbd_attempt_result(%s,'succeeded',200,NULL)",
         (str(success_id),),
     )
     no_data_id = uuid.uuid4()
     reserve(conn, no_data_id, run_id, period_start)
-    runtime_query(conn, "SELECT meta.mark_cfbd_attempt_dispatched(%s)", (str(no_data_id),))
+    runtime_query(
+        conn, "SELECT warehouse_quota.mark_cfbd_attempt_dispatched(%s)", (str(no_data_id),)
+    )
     runtime_query(
         conn,
-        "SELECT meta.record_cfbd_attempt_result(%s,'expected_no_data',204,NULL)",
+        "SELECT warehouse_quota.record_cfbd_attempt_result(%s,'expected_no_data',204,NULL)",
         (str(no_data_id),),
     )
     # Re-applying populated schema preserves the charged counter and terminal rows.
@@ -368,13 +372,14 @@ def test_expired_period_blocks_dispatch_but_not_unknown_result(quota_db):
     with pytest.raises(psycopg2.Error, match="not active at dispatch"):
         runtime_query(
             conn,
-            "SELECT meta.mark_cfbd_attempt_dispatched(%s)",
+            "SELECT warehouse_quota.mark_cfbd_attempt_dispatched(%s)",
             (str(attempt_id),),
         )
     conn.rollback()
     runtime_query(
         conn,
-        "SELECT meta.record_cfbd_attempt_result(%s,'unknown',NULL,'expired_before_dispatch')",
+        "SELECT warehouse_quota.record_cfbd_attempt_result("
+        "%s,'unknown',NULL,'dispatch_unconfirmed')",
         (str(attempt_id),),
     )
     assert query(
@@ -520,18 +525,18 @@ def test_ordinary_default_public_function_execution_is_revoked(request):
         "WHERE oid='public.quota_public_control()'::regprocedure",
     ) == [(True,)]
     query(conn, MIGRATION.read_text())
-    query(conn, "GRANT USAGE ON SCHEMA meta TO quota_bystander")
+    query(conn, "GRANT USAGE ON SCHEMA warehouse_quota TO quota_bystander")
     assert query(
         conn,
         "SELECT count(*), bool_and(NOT has_function_privilege('quota_bystander', "
         "p.oid, 'EXECUTE')) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace "
-        "WHERE n.nspname='meta'",
+        "WHERE n.nspname='warehouse_quota'",
     ) == [(7, True)]
     with conn.cursor() as cur:
         cur.execute("SET LOCAL ROLE quota_bystander")
         with pytest.raises(psycopg2.errors.InsufficientPrivilege):
             cur.execute(
-                "SELECT meta.start_operation_run(%s,'extract','fixture','{}',NULL,NULL)",
+                "SELECT warehouse_quota.start_operation_run(%s,'extract','fixture','{}',NULL,NULL)",
                 (str(uuid.uuid4()),),
             )
     conn.rollback()
@@ -540,3 +545,140 @@ def test_ordinary_default_public_function_execution_is_revoked(request):
         "SELECT has_function_privilege('quota_bystander', "
         "'public.quota_public_control()', 'EXECUTE')",
     ) == [(True,)]
+
+
+def test_meta_overload_cannot_capture_private_quota_rpc(quota_db):
+    conn, _ = quota_db
+    with conn.cursor() as cur:
+        cur.execute("SET LOCAL ROLE quota_bystander")
+        cur.execute("""
+            CREATE FUNCTION meta.reserve_cfbd_attempt(text,uuid,text,timestamptz,text,integer,jsonb)
+            RETURNS integer LANGUAGE sql AS 'SELECT -1'
+        """)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("SET LOCAL ROLE quota_bystander")
+        with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+            cur.execute("""
+                CREATE FUNCTION warehouse_quota.reserve_cfbd_attempt(
+                    text,uuid,text,timestamptz,text,integer,jsonb
+                ) RETURNS integer LANGUAGE sql AS 'SELECT -1'
+            """)
+    conn.rollback()
+    run_id = start_run(conn)
+    period_start, _ = add_period(conn)
+    result = reserve(conn, uuid.uuid4(), run_id, period_start)
+    assert result[2] == 1
+    assert query(conn, "SELECT reserved_attempts FROM meta.api_quota_periods") == [(1,)]
+
+
+def test_transport_and_unknown_results_cannot_claim_http_responses(quota_db):
+    conn, _ = quota_db
+    run_id = start_run(conn)
+    period_start, _ = add_period(conn, limit=3)
+    for dispatched in (False, True):
+        attempt_id = uuid.uuid4()
+        reserve(conn, attempt_id, run_id, period_start)
+        if dispatched:
+            runtime_query(
+                conn, "SELECT warehouse_quota.mark_cfbd_attempt_dispatched(%s)", (str(attempt_id),)
+            )
+        correct = "response_unobserved" if dispatched else "dispatch_unconfirmed"
+        wrong = "dispatch_unconfirmed" if dispatched else "response_unobserved"
+        for state, status, category in (
+            ("unknown", 500, correct),
+            ("unknown", None, wrong),
+            ("unknown", None, None),
+            ("transport_error", 429, "timeout"),
+        ):
+            with pytest.raises(psycopg2.Error):
+                runtime_query(
+                    conn,
+                    "SELECT warehouse_quota.record_cfbd_attempt_result(%s,%s,%s,%s)",
+                    (str(attempt_id), state, status, category),
+                )
+            conn.rollback()
+            with pytest.raises(psycopg2.Error):
+                query(
+                    conn,
+                    "UPDATE meta.api_request_attempts SET state=%s, http_status=%s, "
+                    "error_category=%s, result_recorded_at=clock_timestamp() WHERE attempt_id=%s",
+                    (state, status, category, str(attempt_id)),
+                )
+            conn.rollback()
+        runtime_query(
+            conn,
+            "SELECT warehouse_quota.record_cfbd_attempt_result(%s,'unknown',NULL,%s)",
+            (str(attempt_id), correct),
+        )
+    attempt_id = uuid.uuid4()
+    reserve(conn, attempt_id, run_id, period_start)
+    runtime_query(
+        conn, "SELECT warehouse_quota.mark_cfbd_attempt_dispatched(%s)", (str(attempt_id),)
+    )
+    runtime_query(
+        conn,
+        "SELECT warehouse_quota.record_cfbd_attempt_result(%s,'transport_error',NULL,'timeout')",
+        (str(attempt_id),),
+    )
+    assert query(
+        conn,
+        "SELECT state,http_status FROM meta.api_request_attempts ORDER BY period_attempt_number",
+    ) == [("unknown", None), ("unknown", None), ("transport_error", None)]
+
+
+@pytest.mark.parametrize(
+    "setup, message",
+    [
+        ("ALTER SCHEMA warehouse_quota OWNER TO quota_bystander", "owned by the migration role"),
+        ("GRANT CREATE ON SCHEMA warehouse_quota TO quota_bystander", "untrusted CREATE"),
+        (
+            "CREATE DOMAIN warehouse_quota.mark_cfbd_attempt_dispatched AS uuid; "
+            "ALTER DOMAIN warehouse_quota.mark_cfbd_attempt_dispatched OWNER TO quota_bystander",
+            "unexpected type",
+        ),
+        (
+            "CREATE FUNCTION warehouse_quota.mark_cfbd_attempt_dispatched(uuid) "
+            "RETURNS boolean LANGUAGE sql AS 'SELECT true'; "
+            "ALTER FUNCTION warehouse_quota.mark_cfbd_attempt_dispatched(uuid) "
+            "OWNER TO quota_bystander",
+            "unexpected or untrusted routine",
+        ),
+        (
+            "CREATE FUNCTION warehouse_quota.mark_cfbd_attempt_dispatched(text) "
+            "RETURNS boolean LANGUAGE sql AS 'SELECT true'",
+            "unexpected or untrusted routine",
+        ),
+        (
+            "CREATE FUNCTION warehouse_quota.mark_cfbd_attempt_dispatched(uuid, text DEFAULT '') "
+            "RETURNS boolean LANGUAGE sql AS 'SELECT true'",
+            "unexpected or untrusted routine",
+        ),
+        (
+            "CREATE FUNCTION warehouse_quota.mark_cfbd_attempt_dispatched(VARIADIC text[]) "
+            "RETURNS boolean LANGUAGE sql AS 'SELECT true'",
+            "unexpected or untrusted routine",
+        ),
+    ],
+)
+def test_untrusted_existing_namespace_is_rejected_without_adoption(request, setup, message):
+    conn, _ = request.getfixturevalue("_warehouse_db")
+    query(
+        conn,
+        "DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='quota_bystander') "
+        "THEN CREATE ROLE quota_bystander NOLOGIN; END IF; END $$; "
+        "CREATE SCHEMA warehouse_quota; " + setup,
+    )
+    snapshot_sql = """
+        SELECT n.nspowner, n.nspacl::text, p.oid, p.proowner, p.proacl::text,
+            t.oid, t.typowner
+        FROM pg_namespace n LEFT JOIN pg_proc p ON p.pronamespace=n.oid
+        LEFT JOIN pg_type t ON t.typnamespace=n.oid
+        WHERE n.nspname='warehouse_quota' ORDER BY p.oid, t.oid
+    """
+    before = query(conn, snapshot_sql)
+    with pytest.raises(psycopg2.Error, match=message):
+        query(conn, MIGRATION.read_text())
+    conn.rollback()
+    assert query(conn, snapshot_sql) == before
+    assert query(conn, "SELECT to_regclass('meta.api_request_attempts')") == [(None,)]

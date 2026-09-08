@@ -44,11 +44,11 @@ membership; no existing application role is automatically enrolled.
 
 | Function | Contract |
 |---|---|
-| `meta.start_operation_run` | Creates an invocation UUID, or returns it for an exact-context replay. |
-| `meta.finish_operation_run` | Closes a run; a successful finish cannot leave pending attempts. |
-| `meta.reserve_cfbd_attempt` | Locks the explicit account period, reserves one local unit, and rejects UUID/context conflicts. |
-| `meta.mark_cfbd_attempt_dispatched` | Allows only one reserved-to-dispatched transition, while the period and run remain active. |
-| `meta.record_cfbd_attempt_result` | Records a terminal transport result; an exact replay is harmless and a conflicting result is rejected. |
+| `warehouse_quota.start_operation_run` | Creates an invocation UUID, or returns it for an exact-context replay. |
+| `warehouse_quota.finish_operation_run` | Closes a run; a successful finish cannot leave pending attempts. |
+| `warehouse_quota.reserve_cfbd_attempt` | Locks the explicit account period, reserves one local unit, and rejects UUID/context conflicts. |
+| `warehouse_quota.mark_cfbd_attempt_dispatched` | Allows only one reserved-to-dispatched transition, while the period and run remain active. |
+| `warehouse_quota.record_cfbd_attempt_result` | Records a terminal transport result; an exact replay is harmless and a conflicting result is rejected. |
 
 `btree_gist` enforces non-overlapping `[start,end)` periods for each shared
 account. The migration discovers the extension's installed schema for its
@@ -58,13 +58,19 @@ an explicit schema so both an empty and normal session search path work.
 Successful and expected-empty transport results require 2xx status. A 404 is
 recorded as an HTTP error at this layer, even if a future source adapter treats
 it as expected missing data. That source outcome and publication coverage are
-separate from transport status.
+separate from transport status. `transport_error` requires NULL HTTP status.
+`unknown` also requires NULL HTTP status, with `dispatch_unconfirmed` before
+dispatch or `response_unobserved` after dispatch.
 
 The migration removes non-owner ACLs on only the new tables/functions, including
 implicit PUBLIC function execution and arbitrary host-default grantees, then
-grants the five entry points to the runtime role. Schema usage for existing
-ledgers and named writers' schema privileges are preserved. PUBLIC/runtime
-schema creation is denied. No existing public data surface is recreated.
+grants the five entry points to the runtime role. The routines live in the owner-only
+`warehouse_quota` schema; all existing `meta` schema grants are preserved.
+Pre-existing quota namespaces with a foreign owner, non-owner CREATE grants,
+types, or unexpected/untrusted routines are rejected without adoption. This prevents
+hostile overloads or same-named domain casts from capturing calls with string
+arguments. No existing
+public data surface is recreated.
 
 ## Provider evidence and initial allowance
 
@@ -107,7 +113,7 @@ by the schema-only PR.
 
 ## Executed verification
 
-- 11 quota SQL cases passed on an isolated local PostgreSQL 17 cluster. Tests
+- 26 quota SQL cases passed on an isolated local PostgreSQL 17 cluster. Tests
   use actual `warehouse_ingest` and public/bystander roles, ordinary and broad
   default grants, exact/conflicting concurrent UUID reuse, separate operation
   runs competing for one cap, committed-crash versus rollback accounting,
@@ -117,8 +123,12 @@ by the schema-only PR.
 - Both full managed bootstrap and prior-baseline upgrade passed, including
   catalog shape, unchanged representative data, public caller access, private
   quota access denial, restored session settings, and an idempotent second run.
-  The combined executed SQL suite passed all 13 cases.
-- 77 migration-runner/CLI unit tests passed. Ruff lint/format, actionlint for
+  The combined executed SQL suite passed all 28 cases.
+- Review regressions cover hostile overloads and domain casts, rejection of
+  pre-existing unsafe namespaces without adoption, phase-specific unknown
+  results, exact run replay, pending-attempt finish rejection, immutable
+  reservation context, and DELETE/TRUNCATE denial.
+- 77 migration-runner/CLI unit tests passed in the initial implementation. Ruff lint/format, actionlint for
   the changed CI workflow, and diff checks passed.
 - Independent review found and resolved implicit PUBLIC function execution,
   arbitrary host-default grants, and NULL/non-2xx success classification. The

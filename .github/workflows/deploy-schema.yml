@@ -29,14 +29,15 @@ on:
           - backfill
           - compute
         default: presence_check
-      marts_from:
-        description: "run_marts.py --from value, e.g. 029 (apply only)"
+      mart_release:
+        description: "Reviewed dependency-aware mart release manifest (apply only)"
         required: false
         type: string
-      marts_only:
-        description: "run_marts.py --only value, e.g. 011 (apply only, takes precedence over marts_from)"
+      plan:
+        description: "Read-only mart release dependency preview (requires mart_release)"
         required: false
-        type: string
+        type: boolean
+        default: false
       files:
         description: "Comma-separated SQL files for run_migrations.py --file (apply only)"
         required: false
@@ -109,8 +110,8 @@ jobs:
         # unchanged; only where each value comes from moves.
         env:
           ACTION_INPUT: ${{ inputs.action }}
-          MARTS_FROM_INPUT: ${{ inputs.marts_from }}
-          MARTS_ONLY_INPUT: ${{ inputs.marts_only }}
+          MART_RELEASE_INPUT: ${{ inputs.mart_release }}
+          PLAN_INPUT: ${{ inputs.plan }}
           FILES_INPUT: ${{ inputs.files }}
           REFRESH_INPUT: ${{ inputs.refresh }}
           BACKFILL_START_INPUT: ${{ inputs.backfill_start }}
@@ -121,8 +122,8 @@ jobs:
         run: |
           set -euo pipefail
           ARGS=(--action "$ACTION_INPUT")
-          if [ -n "$MARTS_FROM_INPUT" ]; then ARGS+=(--marts-from "$MARTS_FROM_INPUT"); fi
-          if [ -n "$MARTS_ONLY_INPUT" ]; then ARGS+=(--marts-only "$MARTS_ONLY_INPUT"); fi
+          if [ -n "$MART_RELEASE_INPUT" ]; then ARGS+=(--mart-release "$MART_RELEASE_INPUT"); fi
+          if [ "$PLAN_INPUT" = "true" ]; then ARGS+=(--plan); fi
           if [ -n "$FILES_INPUT" ]; then ARGS+=(--files "$FILES_INPUT"); fi
           if [ "$REFRESH_INPUT" = "true" ]; then ARGS+=(--refresh); fi
           if [ -n "$BACKFILL_START_INPUT" ]; then ARGS+=(--backfill-start "$BACKFILL_START_INPUT"); fi

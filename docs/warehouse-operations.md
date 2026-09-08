@@ -29,7 +29,7 @@ These commands operate on an explicitly selected, authorized warehouse; use
 | Season ingestion | `scripts/load_season.py --weekly` (explicit `--season` for backfills) |
 | Post-load verification | `scripts/verify_load.py` |
 | Refresh existing marts | `scripts/refresh_marts.py` |
-| Apply definitions / migrations | `scripts/run_marts.py`; `scripts/run_migrations.py` |
+| Apply definitions / migrations | [Atomic mart releases](mart-releases.md); `scripts/run_migrations.py` for explicit non-mart migrations |
 | One-off SQL application | `scripts/run_migrations.py --file <path>`; follow that file's application contract |
 | Flat-file ingestion | `scripts/load_flat_files.py --due` |
 | Check upstream preseason availability | `scripts/probe_offseason_availability.py` |

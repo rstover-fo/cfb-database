@@ -156,6 +156,8 @@ Evidence: [migration runner](https://github.com/rstover-fo/cfb-database/blob/4a7
 
 ### F07 — Generic mart deployment can remove consumer objects through CASCADE
 
+Implementation plan: [F07 dependency-aware mart releases](2026-09-08-f07-dependency-aware-marts.md).
+
 **P1 · Confirmed · L; shares work with F06**
 
 Many mart definition files drop materialized views with CASCADE. The generic runner applies sorted mart files with per-file commits and does not recreate dependent api/public objects. An individual --only deployment can remove a dependency closure beyond its requested file. Handwritten deployment manifests sometimes restore that closure, but the generic command does not enforce it.

@@ -27,6 +27,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 SCHEMAS_DIR = Path(__file__).parent.parent / "src" / "schemas"
+MARTS_DIR = (SCHEMAS_DIR / "marts").resolve()
 
 MIGRATION_ORDER = [
     "001_reference.sql",
@@ -111,6 +112,12 @@ def run_migration(sql_file: Path, conn, dry_run: bool = False) -> None:
         cursor.close()
 
 
+def _is_mart_sql_path(sql_path: Path) -> bool:
+    """Return whether a canonical path targets the managed marts directory."""
+    resolved = sql_path.resolve()
+    return resolved == MARTS_DIR or MARTS_DIR in resolved.parents
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run schema migrations")
     selectors = parser.add_mutually_exclusive_group()
@@ -147,6 +154,12 @@ def main() -> None:
         if not sql_path.exists():
             logger.error(f"SQL file not found: {sql_path}")
             sys.exit(1)
+
+        if not args.dry_run and _is_mart_sql_path(sql_path):
+            parser.error(
+                "mart SQL cannot use the per-file migration route; "
+                "use scripts/run_marts.py --release <manifest>"
+            )
 
         if args.dry_run:
             run_migration(sql_path, conn=None, dry_run=True)

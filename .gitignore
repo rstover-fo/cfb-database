@@ -54,3 +54,6 @@ logs/
 # Subagent worktrees (Agent tool isolation: "worktree"). Transient checkouts of
 # this repo, auto-removed when the agent finishes; never project content.
 .claude/worktrees/
+
+# PR Lens writes its previews here. They are rebuilt on demand.
+.pr-lens/

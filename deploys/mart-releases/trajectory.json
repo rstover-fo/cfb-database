@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "path": "src/schemas/marts/013_team_season_trajectory.sql",
+      "sha256": "f9a2e14b7e199c696a23ddfed181f346d5388259a790f9bd7fea022dd248b117"
+    },
+    {
+      "path": "deploys/mart-releases/trajectory-consumer.sql",
+      "sha256": "c1e966ddd0c0dcddd34465adcb48b0845c64f53d23e0a478351a5185715e68d9"
+    }
+  ],
+  "roots": [
+    "marts.team_season_trajectory"
+  ],
+  "restores": [
+    {
+      "kind": "relation",
+      "identity": "marts.team_season_trajectory"
+    },
+    {
+      "kind": "relation",
+      "identity": "public.team_season_trajectory"
+    }
+  ],
+  "validations": [
+    {
+      "name": "trajectory_anon",
+      "role": "anon",
+      "query": "SELECT count(*) >= 0 FROM public.team_season_trajectory",
+      "covers": []
+    },
+    {
+      "name": "trajectory_authenticated",
+      "role": "authenticated",
+      "query": "SELECT count(*) >= 0 FROM public.team_season_trajectory",
+      "covers": []
+    },
+    {
+      "name": "trajectory_rpc_anon",
+      "role": "anon",
+      "query": "SELECT count(*) >= 0 FROM public.get_trajectory_averages('SEC', 2020, 2025)",
+      "covers": [
+        "public.get_trajectory_averages(p_conference text, p_season_start integer, p_season_end integer)"
+      ]
+    },
+    {
+      "name": "trajectory_rpc_authenticated",
+      "role": "authenticated",
+      "query": "SELECT count(*) >= 0 FROM public.get_trajectory_averages('SEC', 2020, 2025)",
+      "covers": [
+        "public.get_trajectory_averages(p_conference text, p_season_start integer, p_season_end integer)"
+      ]
+    }
+  ],
+  "consumers": [
+    "public.get_trajectory_averages(p_conference text, p_season_start integer, p_season_end integer)"
+  ]
+}

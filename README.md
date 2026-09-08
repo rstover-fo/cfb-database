@@ -37,6 +37,11 @@ catalog reconciliation and adoption. Do not point bootstrap at them.
 
 ### Ingestion and explicit operations
 
+Mart replacement uses an explicit [dependency-aware release](docs/mart-releases.md).
+Preview with `scripts/run_marts.py --release <manifest> --plan`, then apply the
+same reviewed manifest. Real bare/number-selected mart deployments and raw mart
+files through the per-file migration runner are rejected to preserve consumers.
+
 Schema construction does not load game/roster data or certify warehouse coverage.
 For an authorized ingestion target, configure `.dlt/secrets.toml` from its example
 with a CFBD key and Supabase session-pooler connection, then run the selected

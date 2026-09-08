@@ -483,32 +483,36 @@ def main() -> None:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Fetch + compute + print only; no DB writes (workflow_dispatch smoke test).",
+        help="Fetch and print without snapshot writes; durable quota accounting still applies.",
     )
     args = parser.parse_args()
 
-    client = get_client()
-    try:
-        raw_games = client.get("/scoreboard", params={"classification": "fbs"})
-    finally:
-        client.close()
+    from src.pipelines.utils.quota_admission import quota_operation
 
-    if not raw_games:
-        logger.info("No games returned from /scoreboard (off-season or no games today)")
-        print("SCOREBOARD_POLL games=0 inserted=0 deduped=0 statuses={}")
-        return
+    # Dry-run still sends HTTP, so it must retain durable quota accounting.
+    with quota_operation("poll_scoreboard", {"classification": "fbs", "dry_run": args.dry_run}):
+        client = get_client()
+        try:
+            raw_games = client.get("/scoreboard", params={"classification": "fbs"})
+        finally:
+            client.close()
 
-    import psycopg2
+        if not raw_games:
+            logger.info("No games returned from /scoreboard (off-season or no games today)")
+            print("SCOREBOARD_POLL games=0 inserted=0 deduped=0 statuses={}")
+            return
 
-    conn = psycopg2.connect(get_db_url())
-    try:
-        run(conn, raw_games, dry_run=args.dry_run)
-    except Exception:
-        conn.rollback()
-        logger.exception("Scoreboard poll failed")
-        sys.exit(1)
-    finally:
-        conn.close()
+        import psycopg2
+
+        conn = psycopg2.connect(get_db_url())
+        try:
+            run(conn, raw_games, dry_run=args.dry_run)
+        except Exception:
+            conn.rollback()
+            logger.exception("Scoreboard poll failed")
+            sys.exit(1)
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

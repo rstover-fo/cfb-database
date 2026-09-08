@@ -1199,7 +1199,15 @@ attempts, and record dispatch/results. Existing `meta` schema grants remain
 unchanged; no non-owner can create overloads in the quota RPC namespace. Role
 membership and capacity configuration require a separate rollout.
 
-Existing HTTP callers and `public.get_data_freshness()` are unchanged. See the
+Migration `067_cfbd_transport_admission.sql` adds the `budget_class` dimension
+to periods and attempts, preserving existing rows as `extraction`. The new
+`warehouse_quota.reserve_cfbd_transport_attempt` RPC selects active configured
+windows and admits exact `/info` and `/info/usage` paths through a separate
+`reconciliation` allowance. The legacy reservation RPC remains extraction-only;
+the internal class-selecting helper is not executable by the runtime role.
+Selected HTTP entrypoints can opt into this protocol; workflow activation is
+separate. `public.get_data_freshness()` is unchanged. See the
+[transport implementation and rollout](plans/2026-09-08-f14-transport-admission.md) and the
 [F14 foundation and rollout boundary](plans/2026-09-08-f14-quota-foundation.md).
 
 ### Raw Data Tables

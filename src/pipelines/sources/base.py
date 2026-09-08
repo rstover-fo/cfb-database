@@ -4,6 +4,7 @@ import dlt
 from dlt.sources import DltResource
 
 from ..utils.api_client import CFBDClient, get_client
+from ..utils.quota_admission import transport_operation
 from ..utils.rate_limiter import get_rate_limiter
 
 
@@ -26,6 +27,9 @@ def make_request(
     Returns:
         API response data
     """
+    if transport_operation() is not None:
+        return client.get(endpoint, params=params)
+
     rate_limiter = get_rate_limiter()
 
     if not rate_limiter.check_budget():

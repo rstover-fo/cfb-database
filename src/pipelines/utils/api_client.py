@@ -163,6 +163,10 @@ def reset_rate_limit_circuit() -> None:
     waited out a quota reset, or a test isolating itself from a prior run.
     """
     _SHARED_BREAKER.reset()
+    _CONTROL_BREAKER.reset()
+
+
+_CONTROL_BREAKER = RateLimitBreaker()
 
 
 class CFBDClient:
@@ -281,6 +285,34 @@ class CFBDClient:
             now=reference,
         )
 
+    def _send_attempt(self, endpoint: str, params: dict | None, retry: int):
+        from .quota_admission import transport_operation
+
+        operation = transport_operation()
+        if operation is None:
+            return self._client.get(endpoint, params=params)
+        # Serialize admission through result recording within one invocation.
+        # Another extraction thread cannot send after a failed accounting write.
+        with operation.transport_lock:
+            attempt_id = operation.reserve(endpoint, retry, params)
+            operation.dispatch(attempt_id)
+            try:
+                response = self._client.get(endpoint, params=params)
+            except httpx.RequestError:
+                operation.result(attempt_id, "transport_error", None, "request_error")
+                raise
+            except BaseException:
+                operation.result(attempt_id, "unknown", None, "response_unobserved")
+                raise
+            status = response.status_code
+            operation.result(
+                attempt_id,
+                "succeeded" if 200 <= status < 300 else "http_error",
+                status,
+                None if 200 <= status < 300 else "http_error",
+            )
+            return response
+
     def get(
         self,
         endpoint: str,
@@ -325,9 +357,19 @@ class CFBDClient:
             httpx.RequestError: a network fault (connect/read timeout, etc.)
                 that outlasted the transient budget.
         """
-        if self._breaker.is_open():
+        from .quota_admission import transport_operation
+
+        operation = transport_operation()
+        breaker = (
+            _CONTROL_BREAKER
+            if operation is not None and endpoint in {"/info", "/info/usage"}
+            else self._breaker
+        )
+        if breaker.is_open():
+            if operation is not None:
+                operation.note_transport_failure("failed")
             raise RateLimitCircuitOpen(
-                f"{self._breaker.consecutive} consecutive HTTP 429 response(s) "
+                f"{breaker.consecutive} consecutive HTTP 429 response(s) "
                 f"before {endpoint}. The API is refusing everything -- "
                 "most likely the monthly quota is spent. Stopping instead of retrying; "
                 "further requests cannot succeed until the quota resets."
@@ -343,34 +385,38 @@ class CFBDClient:
         transient_failures = 0  # 5xx / network failures retried so far
         while True:
             try:
-                response = self._client.get(endpoint, params=params)
+                response = self._send_attempt(endpoint, params, attempt + transient_failures)
                 response.raise_for_status()
                 # Any success clears the breaker: a transient burst block that
                 # resolves must not accumulate toward the quota threshold.
-                self._breaker.record_success()
+                breaker.record_success()
                 return response.json()
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:  # Rate limited
                     retry_after = self._parse_retry_after(e.response.headers.get("Retry-After"))
                     # Every 429 counts, including the ones we are about to
                     # retry. See RateLimitBreaker.record_rate_limited.
-                    consecutive = self._breaker.record_rate_limited()
+                    consecutive = breaker.record_rate_limited()
                     if attempt >= retries:
                         # Out of attempts. Fail loudly -- falling through to an
                         # empty list here would tell the caller this endpoint
                         # has no data.
+                        if operation is not None:
+                            operation.note_transport_failure("failed")
                         raise RateLimitExhausted(
                             f"Rate limited on all {retries + 1} attempt(s) for {endpoint} "
                             f"(params={params}). Consecutive rate-limited responses: "
                             f"{consecutive}."
                         ) from e
-                    if self._breaker.is_open():
+                    if breaker.is_open():
                         # Checked BEFORE sleeping, not just at the top of get().
                         # Sleeping out a retry budget we already know is doomed
                         # is the exact waste the breaker exists to prevent, and
                         # the top-of-method guard alone cannot stop it because
                         # a single request can burn its whole budget without
                         # ever re-entering get().
+                        if operation is not None:
+                            operation.note_transport_failure("failed")
                         raise RateLimitCircuitOpen(
                             f"{consecutive} consecutive HTTP 429 response(s), most recently "
                             f"{endpoint}. The API is refusing everything -- most likely the "
@@ -396,6 +442,13 @@ class CFBDClient:
                     )
                     time.sleep(delay)
                     continue
+                if operation is not None:
+                    if e.response.status_code in {401, 403}:
+                        operation.note_transport_failure("failed")
+                    elif e.response.status_code >= 500 and operation.outcome != "failed":
+                        # Some source adapters deliberately retain a miss and
+                        # continue after exhausted transient failures.
+                        operation.note_transport_failure("partial")
                 # Non-retryable (4xx) or a 5xx past the transient budget: the
                 # final attempt fails HERE, inside the guarded loop.
                 raise
@@ -409,6 +462,8 @@ class CFBDClient:
                     )
                     time.sleep(delay)
                     continue
+                if operation is not None and operation.outcome != "failed":
+                    operation.note_transport_failure("partial")
                 raise
 
     def close(self):

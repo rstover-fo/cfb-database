@@ -795,7 +795,9 @@ def run_coach_profiles_pipeline(max_coaches: int = MAX_COACH_PROFILES_PER_RUN) -
         }
 
     rate_limiter = get_rate_limiter()
-    if not rate_limiter.check_budget(len(missing)):
+    from src.pipelines.utils.quota_admission import active_operation
+
+    if active_operation() is None and not rate_limiter.check_budget(len(missing)):
         msg = (
             f"API budget insufficient for {len(missing)} coach-profile calls "
             f"({rate_limiter.remaining} calls remaining this month)"
@@ -1053,7 +1055,9 @@ def run_metrics_wp_pipeline(
         }
 
     rate_limiter = get_rate_limiter()
-    if not rate_limiter.check_budget(len(game_ids)):
+    from src.pipelines.utils.quota_admission import active_operation
+
+    if active_operation() is None and not rate_limiter.check_budget(len(game_ids)):
         msg = (
             f"API budget insufficient for {len(game_ids)} win-probability calls "
             f"({rate_limiter.remaining} calls remaining this month)"
@@ -1415,7 +1419,9 @@ def run_player_overview_pipeline(
         }
 
     rate_limiter = get_rate_limiter()
-    if not rate_limiter.check_budget(len(missing)):
+    from src.pipelines.utils.quota_admission import active_operation
+
+    if active_operation() is None and not rate_limiter.check_budget(len(missing)):
         msg = (
             f"API budget insufficient for {len(missing)} player-overview calls "
             f"({rate_limiter.remaining} calls remaining this month)"

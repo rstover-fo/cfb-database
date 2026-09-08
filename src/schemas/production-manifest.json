@@ -9,6 +9,11 @@
       "id": "warehouse.f14.066",
       "path": "src/schemas/migrations/066_operational_quota_ledger.sql",
       "kind": "immutable"
+    },
+    {
+      "id": "warehouse.f14.067",
+      "path": "src/schemas/migrations/067_cfbd_transport_admission.sql",
+      "kind": "immutable"
     }
   ],
   "version": 1

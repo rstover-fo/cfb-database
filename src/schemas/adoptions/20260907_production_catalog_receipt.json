@@ -1,0 +1,39 @@
+{
+  "capture_provenance": {
+    "captured_at": "2026-09-07T21:30:42.358851+00:00",
+    "raw_catalog_sha256": "224560a915b56f17551777f14225cc6a2f876b347835f2113d31288f5fa9b84c",
+    "raw_schema_sha256": "2193ac7f33c95c2008c6760f6006cb468cfebde006073d443a8149e19231bdf1",
+    "reference": "https://github.com/rstover-fo/cfb-database/actions/runs/34163351331"
+  },
+  "fingerprint": {
+    "algorithm": "sha256",
+    "canonical_metadata_sha256": "16d7c955a7622b73797ef1070190221e0c155c5752c8707c8df919dc6c9feb35",
+    "canonical_schema_sha256": "82401a48b21eae01ca99f4713bcb96f87f43485a76c97db137c4b49443fed5d9",
+    "canonicalization": "warehouse-catalog-v1",
+    "digest": "288b4eaf817bc00f1bba71d4949c72a45d58a77ca0db6907c68a5ae0b337ab94",
+    "scopes": [
+      "schemas",
+      "extensions",
+      "object_counts",
+      "owners",
+      "relation_owners",
+      "function_owners",
+      "memberships",
+      "schema_owners",
+      "role_attributes",
+      "membership_options"
+    ]
+  },
+  "manifest": {
+    "root": {
+      "id": "warehouse.production.catalog-adopted.20260907.288b4eaf817b",
+      "kind": "immutable",
+      "path": "src/schemas/adoptions/20260907_production_catalog_receipt.sql"
+    },
+    "version": 1
+  },
+  "receipt_type": "warehouse-production-catalog-adoption",
+  "source_revision": "6316d1e81c2a84809324c3226c17ba027a6c29fb",
+  "statement": "Catalog equivalence observed; no historical migration was executed or recorded.",
+  "version": 1
+}

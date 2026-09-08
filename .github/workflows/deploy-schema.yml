@@ -140,3 +140,12 @@ jobs:
           path: /tmp/warehouse-catalog/
           retention-days: 7
           if-no-files-found: error
+
+      - name: Upload catalog adoption evidence
+        if: github.event_name == 'workflow_dispatch' && inputs.compute_script == 'adopt_warehouse_catalog'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: warehouse-adoption
+          path: /tmp/warehouse-adoption/
+          retention-days: 7
+          if-no-files-found: ignore

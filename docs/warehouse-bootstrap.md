@@ -100,7 +100,7 @@ and its SHA256/object inventory are recorded in
 `src/schemas/baseline/20260907_catalog.json`. The generated baseline is immutable
 once applied. The first capture exposed an untracked dependency on `rp` tables
 used by live returning-production marts; a second capture included that schema.
-No production migration or ledger adoption ran.
+That capture preceded production migration 065 and explicit ledger adoption.
 
 The restore requires the `postgres` owner. Platform roles are NOLOGIN stand-ins
 and include the captured analyst membership grants. Public extensions are
@@ -125,10 +125,64 @@ coverage or model outputs. Empty-view refresh proves executable definitions,
 not representative production refresh cost or populated warehouse completeness.
 
 Schema-only capture retains normalized dlt columns and relationships, but does
-not copy `_dlt_version`/`_dlt_pipeline_state` row contents. An existing production
-warehouse remains unledgered and is deliberately rejected by managed upgrade.
-Adoption requires a separately reviewed catalog comparison and provenance plan;
-never mark historical transformations as applied solely from matching names.
+not copy `_dlt_version`/`_dlt_pipeline_state` row contents. An unledgered existing
+warehouse is deliberately rejected by managed upgrade. Adoption requires a
+separately reviewed catalog comparison and provenance plan; never mark historical
+transformations as applied solely from matching names. This production warehouse
+now has a separately verified catalog-adoption root, described below.
+
+## Explicit production adoption
+
+`scripts/adopt_warehouse_catalog.py` prepares a schema-only capture and an
+immutable adoption receipt. It uses the approved Deploy Schema environment's
+`SUPABASE_DB_URL`, with the same complete-URL validation as the bootstrap CLI.
+It does not fall back to dlt configuration. Preparation writes schema definitions
+and ownership/access metadata, never table rows; review the artifact destination
+as part of the rollout scope.
+
+```bash
+python scripts/adopt_warehouse_catalog.py prepare \
+  --output /tmp/warehouse-adoption \
+  --source-revision <full-reviewed-git-sha> \
+  --capture-provenance <capture-run-reference> \
+  --root-path src/schemas/adoptions/20260907_production_catalog_receipt.sql
+```
+
+Review the generated catalog against the prior approved capture and explain
+every difference. Check in the receipt JSON, its exact generated root SQL, and
+the separate production manifest at its declared paths. The root binds the
+receipt bytes, capture provenance, and schema/metadata fingerprints. It attests
+to catalog equivalence observed at adoption; it does not claim historical
+baseline, seed, or migration execution. It also refuses ordinary bootstrap.
+
+During a window without other schema writers, run `status`, then `adopt`, then
+`status` again with explicit `--manifest` and `--receipt` paths. Adoption compares
+the reviewed fingerprint before creating the private ledger and records one
+root entry transactionally. A mismatch must be investigated and reviewed,
+never bypassed by substituting the currently observed hash. Preserve and restore
+the prior writer-workflow states around the maintenance window. The migration
+advisory lock coordinates managed tools; other administrators must avoid DDL.
+
+Future production changes append new immutable migrations to
+`src/schemas/production-manifest.json` and use
+`bootstrap_warehouse.py upgrade --manifest src/schemas/production-manifest.json`
+with an explicit `WAREHOUSE_DB_URL`. Do not use the disposable bootstrap manifest
+on production. The original receipt remains immutable after later upgrades;
+its fingerprint describes the adoption catalog, not those future schema changes.
+Once later managed migrations are recorded, adoption `status` and repeat `adopt`
+validate the complete migration history and explicitly report
+`catalog_verification: not_checked_after_managed_upgrades`, with null current
+fingerprint/match fields. They do not mistake expected schema evolution for
+adoption-time drift or claim to verify the evolved live catalog. A root-only
+ledger still requires the exact adoption fingerprint, and incomplete or tampered
+history fails validation.
+
+The approved production receipt is
+`src/schemas/adoptions/20260907_production_catalog_receipt.json`. It records only
+the observed catalog-adoption event; migration 065's actual executions are
+recorded in the rollout evidence, not fabricated as managed migration history.
+
+See [production rollout evidence](plans/2026-09-07-f06-production-rollout.md).
 
 ## Forward correction discovered by executed role checks
 
@@ -140,5 +194,6 @@ boundary, and no consumer write grant is added. The source mart definition
 retains this grant on a later reviewed recreation. The generated captured
 baseline is unchanged; the managed manifest applies the fix as a forward step.
 
-This correction has been executed only in disposable databases. Production
-application of 065 requires separate authorization after review/merge.
+Migration 065 was approved and applied twice in production. Actual-role checks
+passed for the trajectory wrapper, all 54 API views, and private/write boundaries;
+see the production rollout evidence above.

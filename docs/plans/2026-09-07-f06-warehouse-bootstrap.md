@@ -1,7 +1,9 @@
 # F06 — warehouse bootstrap and migration history
 
-Status: implemented; initial PR CI passed, automated review fixes in validation. Production
-ledger adoption and migration 065 application are separate rollout decisions.
+Status: merged in PR #129; CI and review fixes passed. Production migration 065
+was approved, applied, and verified. Explicit catalog-ledger adoption succeeded
+after the separately approved schema artifact export and catalog comparison.
+See [production rollout evidence](2026-09-07-f06-production-rollout.md).
 
 ## Deliverable and boundaries
 

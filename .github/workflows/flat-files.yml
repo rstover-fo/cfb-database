@@ -8,11 +8,24 @@ name: Flat File Load
 #   SUPABASE_DB_URL   - Supabase SESSION pooler URL (IPv4)
 #
 # Flat-file freshness verification is handled by scripts/verify_load.py inside the
-# existing daily-load workflow; this workflow does not run verify_load.py.
+# existing daily-load workflow, after this reusable workflow succeeds.
 
 on:
-  schedule:
-    - cron: "0 11 * * *" # 11:00 UTC, 1 hour after daily-load completes
+  workflow_call:
+    inputs:
+      source:
+        description: "Registry source names, space-separated; empty runs --due"
+        required: false
+        type: string
+        default: ""
+      seasons:
+        description: "Season years, space-separated; empty uses the current loader target"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      SUPABASE_DB_URL:
+        required: true
   workflow_dispatch:
     inputs:
       source:
@@ -69,6 +82,7 @@ jobs:
         # dlt requires the postgres:// scheme (see .dlt/secrets.toml.example)
         run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
       - name: Load flat-file sources
+        id: load_flat_files
         # Hardening (PR #75 review finding C): route the workflow_dispatch
         # `source` input through a step-level env: var (probe-endpoints.yml's
         # pattern) instead of interpolating ${{ inputs.source }} directly
@@ -103,6 +117,13 @@ jobs:
           else
             python scripts/load_flat_files.py --due
           fi
+      - name: Refresh external-rating consumers
+        # A failed multi-source load may still have committed new ratings.
+        # Refresh those rows, but preserve the failed load/job status. Skip
+        # cancellation and setup failures where the import step never ran.
+        if: ${{ !cancelled() && (steps.load_flat_files.outcome == 'success' || steps.load_flat_files.outcome == 'failure') }}
+        # Also retry after hash-skips or an empty due plan.
+        run: python scripts/refresh_marts.py --views marts.epa_crossvalidation
       - name: Open or update failure issue
         if: failure()
         uses: actions/github-script@v7

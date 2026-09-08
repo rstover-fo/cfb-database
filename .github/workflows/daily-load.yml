@@ -48,7 +48,7 @@ env:
 
 jobs:
   load:
-    name: Load season, refresh marts, verify
+    name: Load season and refresh marts
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -116,10 +116,60 @@ jobs:
       - name: Backtest season projections
         run: python scripts/backtest_preseason.py
       - name: Refresh Tier 2 + Tier 3 marts
-        run: python scripts/refresh_marts.py --views marts.house_elo,marts.house_elo_game,marts.team_adjusted_epa,marts.scored_matchup_edges,marts.prediction_accuracy,marts.team_week_features,marts.adjusted_epa_week
+        run: python scripts/refresh_marts.py --views marts.house_elo,marts.house_elo_game,marts.team_adjusted_epa,marts.epa_crossvalidation,marts.scored_matchup_edges,marts.prediction_accuracy,marts.team_week_features,marts.adjusted_epa_week
+      - name: Open or update failure issue
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = "Daily season load failing";
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const { data } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+            });
+            const existing = data.find((i) => i.title === title);
+            const body = `Run failed: ${runUrl} (${new Date().toISOString()})`;
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+              });
+            }
+
+  flat_files:
+    name: Load flat-file sources
+    needs: load
+    uses: ./.github/workflows/flat-files.yml
+    secrets:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+  verify:
+    name: Verify daily load
+    needs: flat_files
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[compute]"
       - name: Verify load
-        # Hardening (PR #75 review finding C): see the "Load season data"
-        # step above for the env-indirection rationale.
+        # Hardening (PR #75 review finding C): route the workflow_dispatch
+        # input through a step-level env var instead of interpolating it into
+        # the shell command directly.
         env:
           SEASON_INPUT: ${{ inputs.season }}
         run: |
@@ -160,7 +210,7 @@ jobs:
 
   recaps:
     name: Generate nightly game recaps
-    needs: load
+    needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:

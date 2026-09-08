@@ -43,6 +43,24 @@ Secrets belong in ignored config or the host's credential mechanism, never docs.
 The request budget is configured in `.dlt/config.toml`; historical estimates do
 not establish the cost of today's source/resource selection.
 
+## Workflow refresh dependencies (F10)
+
+The daily workflow runs load/compute, calls the reusable flat-file workflow,
+then verifies the combined result. Recaps wait for verification. The flat-file
+workflow remains manually dispatchable, but its former independent 11:00 UTC
+schedule is removed. A completed import step refreshes `marts.epa_crossvalidation`
+even after partial failure, while preserving the failed job status; cancellation
+and setup failures skip the refresh. Hash-skips and empty due plans also trigger
+refresh, allowing a failed refresh to be
+retried without reloading unchanged files.
+
+The final daily refresh includes crossvalidation after `marts.team_adjusted_epa`.
+The `pipeline_run` coach-tenure backfill refreshes `marts.coach_tenures` after
+loading; `metrics_ppa_predicted` still has no mart refresh. Direct script calls
+do not acquire these workflow dependencies automatically. See the
+[F10 plan](plans/2026-09-08-f10-workflow-dependencies.md) for scope and verification
+limits; historical schedule descriptions later in this document predate F10.
+
 ## Plays partition rollover (F08)
 
 `run_plays_pipeline()` performs catalog preflight before constructing the source

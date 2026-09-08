@@ -1185,6 +1185,21 @@ schema has no anon/authenticated grants (not PostgREST-reachable) by design.
 
 These objects are implementation details. Do not depend on them from downstream repos.
 
+### Operational quota records (prepared, not deployed)
+
+Migration `066_operational_quota_ledger.sql` adds private `meta.operation_runs`,
+`meta.api_quota_periods`, and `meta.api_request_attempts`. These are internal
+admission/audit records, not source freshness or publication receipts. Local
+reserved attempts are conservative capacity units, not provider-billed usage.
+No public view/RPC is added. `anon`, `authenticated`, `analyst_ro`, and other
+non-owner default grantees receive no access to these records. The dedicated
+`warehouse_ingest` role receives only the reviewed function privileges needed
+to create/finish runs, reserve attempts, and record dispatch/results; role
+membership and capacity configuration require a separate rollout.
+
+Existing HTTP callers and `public.get_data_freshness()` are unchanged. See the
+[F14 foundation and rollout boundary](plans/2026-09-08-f14-quota-foundation.md).
+
 ### Raw Data Tables
 
 | Schema | Tables |

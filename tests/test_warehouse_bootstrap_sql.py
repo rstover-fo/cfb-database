@@ -123,6 +123,10 @@ def _fixture_snapshot(conn):
 
 def _assert_catalog_shape(conn):
     catalog = json.loads(CATALOG_PATH.read_text())
+    expected_counts = {tuple(row[:2]): row[2] for row in catalog["object_counts"]}
+    # F14 adds three private tables and six indexes; keep baseline evidence immutable.
+    expected_counts[("meta", "r")] += 3
+    expected_counts[("meta", "i")] += 6
     assert query(
         conn,
         """
@@ -134,7 +138,7 @@ def _assert_catalog_shape(conn):
         ORDER BY 1, 2
         """,
         (catalog["schemas"],),
-    ) == [tuple(row) for row in catalog["object_counts"]]
+    ) == [(*key, count) for key, count in sorted(expected_counts.items())]
 
     assert query(
         conn,
@@ -145,7 +149,7 @@ def _assert_catalog_shape(conn):
         conn,
         "SELECT extname FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace "
         "WHERE n.nspname='public' ORDER BY extname",
-    ) == [("fuzzystrmatch",), ("pg_trgm",), ("vector",)]
+    ) == [("btree_gist",), ("fuzzystrmatch",), ("pg_trgm",), ("vector",)]
     assert query(
         conn,
         """
@@ -311,6 +315,9 @@ def _assert_fixture_and_access(conn):
     for role in CALLER_ROLES:
         _assert_denied(conn, role, "SELECT * FROM warehouse_control.schema_migrations")
         _assert_denied(conn, role, "SELECT * FROM scouting.players")
+    for role in (*CALLER_ROLES, "warehouse_ingest"):
+        for table in ("operation_runs", "api_quota_periods", "api_request_attempts"):
+            _assert_denied(conn, role, f"SELECT * FROM meta.{table}")
     for role in ("anon", "authenticated"):
         assert _query_as(conn, role, "SELECT count(*) FROM features.training_fits") == [(0,)]
         assert _query_as(conn, role, "SELECT count(*) FROM marts.team_season_trajectory") == [(0,)]
@@ -375,7 +382,7 @@ def test_managed_warehouse_catalog_data_and_access(
         _insert_representative_rows(conn)
         before_upgrade = _fixture_snapshot(conn)
         upgrade = apply_manifest(conn, manifest, mode="upgrade")
-        assert len(upgrade.pending) == 2
+        assert len(upgrade.pending) == 3
         assert [step.id for step in upgrade.pending] == [
             migration.id for migration in manifest.migrations[4:]
         ]

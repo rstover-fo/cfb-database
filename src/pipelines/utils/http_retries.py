@@ -1,6 +1,7 @@
 """Shared HTTP retry helpers that do not define provider retry policy."""
 
 import logging
+import math
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 
@@ -24,7 +25,7 @@ def http_date_delay(text: str, *, now: datetime | None = None) -> int | None:
     reference = now if now is not None else datetime.now(UTC)
     if reference.tzinfo is None:
         reference = reference.replace(tzinfo=UTC)
-    return max(0, int((when - reference).total_seconds()))
+    return max(0, math.ceil((when - reference).total_seconds()))
 
 
 def parse_retry_after(

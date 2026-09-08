@@ -53,3 +53,12 @@ def test_invalid_bounds_are_rejected(default_seconds, max_seconds):
 
 def test_default_is_also_capped():
     assert parse_retry_after(None, default_seconds=600, max_seconds=120) == 120
+
+
+@pytest.mark.parametrize(
+    "second,microsecond,expected",
+    [(0, 900000, 1), (0, 0, 1), (1, 0, 0), (1, 100000, 0)],
+)
+def test_http_date_never_retries_before_future_boundary(second, microsecond, expected):
+    received = NOW.replace(second=second, microsecond=microsecond)
+    assert parse_retry_after("Wed, 21 Oct 2026 07:28:01 GMT", now=received) == expected

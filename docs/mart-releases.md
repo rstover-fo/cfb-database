@@ -14,6 +14,14 @@ rebuild the trajectory mart and restore its public invoker-rights wrapper. The
 manifest pins exact file SHA256 checksums and declares relation roots, restoration
 identities, and caller-role boolean SELECT assertions.
 
+List known textual or dynamic function readers in the optional `consumers`
+array, using the exact qualified identity reported by
+`pg_get_function_identity_arguments` (including argument names). Each must
+exist and be named in an assertion's `covers` array. These declarations add
+validation coverage; they do not authorize recreating an unrelated function.
+The trajectory example declares its RPC this way. Catalog inspection cannot
+discover every such reader, so the release author must identify them.
+
 ```bash
 export SUPABASE_DB_URL='postgresql://postgres:local-password@127.0.0.1:55437/postgres'
 .venv/bin/python scripts/run_marts.py --release deploys/mart-releases/trajectory.json --plan
@@ -41,7 +49,7 @@ the reported error and rerun the unchanged read-only plan after fixing the
 reviewed release; do not repair consumers with a partially applied file list.
 
 Existing consumer column types/order, object kinds, owner/security properties,
-and permissions are preservation contracts. Version 1 does not authorize a
+population state, and permissions are preservation contracts. Version 1 does not authorize a
 breaking API change. Prepare a separately reviewed compatible migration when
 the intended consumer contract must change.
 

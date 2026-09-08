@@ -84,6 +84,7 @@ def _plan_payload(plan, *, read_only: bool) -> dict[str, object]:
         "read_only": read_only,
         "valid": plan.valid,
         "roots": list(plan.roots),
+        "declared_consumers": list(plan.declared_consumers),
         "live_closure": [{"kind": obj.kind, "identity": obj.identity} for obj in plan.live_closure],
         "declared_restores": [
             {"kind": obj.kind, "identity": obj.identity} for obj in plan.declared_restores

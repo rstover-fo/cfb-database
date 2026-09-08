@@ -19,7 +19,7 @@ def _release_warehouse_db(request):
     return request.getfixturevalue("_warehouse_db_fixture")
 
 
-def write_release(root, sources, *, restores=None, validations=None):
+def write_release(root, sources, *, restores=None, validations=None, consumers=None):
     root.mkdir(exist_ok=True)
     files = []
     for index, source in enumerate(sources):
@@ -45,6 +45,8 @@ def write_release(root, sources, *, restores=None, validations=None):
             }
         ],
     }
+    if consumers is not None:
+        data["consumers"] = consumers
     path = root / "release.json"
     path.write_text(json.dumps(data))
     from scripts.mart_release import load_release
@@ -177,6 +179,83 @@ def test_missing_index_rolls_back(warehouse_db, tmp_path):
         execute_release(conn, release)
     assert snapshot(conn) == before
     assert consumer_read(conn) == [(1, 7)]
+
+
+def test_unpopulated_replacement_rolls_back_without_consumer_assertion(warehouse_db, tmp_path):
+    from scripts.mart_release import ReleaseExecutionError, execute_release, plan_release
+
+    conn, _ = warehouse_db
+    query(conn, SETUP)
+    before = snapshot(conn)
+    parent = PARENT.replace(
+        "FROM public.release_source;", "FROM public.release_source WITH NO DATA;"
+    )
+    child = CHILD.replace("FROM marts.release_parent;", "FROM marts.release_parent WITH NO DATA;")
+    release = write_release(
+        tmp_path,
+        [parent, child],
+        validations=[{"name": "trivial", "role": "anon", "query": "SELECT true", "covers": []}],
+    )
+    assert plan_release(conn, release).valid
+    with pytest.raises(ReleaseExecutionError, match="contract"):
+        execute_release(conn, release)
+    assert snapshot(conn) == before
+    assert consumer_read(conn) == [(1, 7)]
+
+
+@pytest.mark.parametrize("assertion", ["SELECT 1", "SELECT 1::numeric"])
+def test_numeric_assertion_is_not_boolean_success(warehouse_db, tmp_path, assertion):
+    from scripts.mart_release import ReleaseExecutionError, execute_release
+
+    conn, _ = warehouse_db
+    query(conn, SETUP)
+    before = snapshot(conn)
+    release = write_release(
+        tmp_path,
+        [PARENT, CHILD],
+        validations=[{"name": "numeric", "role": "anon", "query": assertion, "covers": []}],
+    )
+    with pytest.raises(ReleaseExecutionError, match="boolean"):
+        execute_release(conn, release)
+    assert snapshot(conn) == before
+    assert consumer_read(conn) == [(1, 7)]
+
+
+def test_declared_dynamic_consumer_requires_and_runs_assertion(warehouse_db, tmp_path):
+    from scripts.mart_release import ReleaseBlockedError, execute_release, plan_release
+
+    conn, _ = warehouse_db
+    query(conn, SETUP)
+    query(
+        conn,
+        """
+        CREATE FUNCTION api.dynamic_release_value() RETURNS integer LANGUAGE plpgsql AS $$
+        DECLARE result integer;
+        BEGIN EXECUTE 'SELECT value FROM api.release_view' INTO result; RETURN result; END $$;
+        GRANT EXECUTE ON FUNCTION api.dynamic_release_value() TO anon;
+    """,
+    )
+    consumer = "api.dynamic_release_value()"
+    uncovered = write_release(tmp_path / "uncovered", [PARENT, CHILD], consumers=[consumer])
+    assert not plan_release(conn, uncovered).valid
+    with pytest.raises(ReleaseBlockedError):
+        execute_release(conn, uncovered)
+    covered = write_release(
+        tmp_path / "covered",
+        [PARENT, CHILD],
+        consumers=[consumer],
+        validations=[
+            {
+                "name": "dynamic",
+                "role": "anon",
+                "query": "SELECT api.dynamic_release_value() = 8",
+                "covers": [consumer],
+            }
+        ],
+    )
+    assert plan_release(conn, covered).valid
+    assert execute_release(conn, covered).valid
+    assert consumer_read(conn) == [(1, 8)]
 
 
 def test_unrelated_public_consumer_change_rolls_back(warehouse_db, tmp_path):

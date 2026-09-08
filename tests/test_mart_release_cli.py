@@ -70,6 +70,7 @@ def _valid_plan():
     return SimpleNamespace(
         valid=True,
         roots=("marts.upstream",),
+        declared_consumers=("api.dynamic_reader()",),
         live_closure=(SimpleNamespace(kind="view", identity="api.consumer"),),
         declared_restores=(SimpleNamespace(kind="view", identity="api.consumer"),),
         files=(SimpleNamespace(path=Path("src/schemas/marts/001.sql"), sha256="a" * 64),),
@@ -110,7 +111,9 @@ def test_plan_calls_only_read_only_engine_path(monkeypatch, capsys):
 
     assert calls == [("plan", conn, manifest)]
     assert conn.closed is True
-    assert '"read_only": true' in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert '"read_only": true' in output
+    assert '"api.dynamic_reader()"' in output
 
 
 def test_release_execution_calls_atomic_engine_once(monkeypatch):

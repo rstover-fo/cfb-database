@@ -1,8 +1,9 @@
 # F07 — dependency-aware mart releases
 
-Status: implemented and locally verified from merged PR #130 (`4291e88`), pending
-PR checks and review. Production rollout requires separate authorization; this
-goal uses disposable PostgreSQL.
+Status: implemented and locally verified in PR #131 from merged PR #130
+(`4291e88`). Initial CI passed; all four automated findings have verified fixes
+and independent review, pending CI on the follow-up commit. Production rollout
+requires separate authorization; this goal uses disposable PostgreSQL.
 
 ## Outcome
 
@@ -59,18 +60,23 @@ files remain immutable. Unrelated film/tracking work is preserved.
 
 ## Verification evidence
 
-- Executed PostgreSQL 17/pgvector: 12 F07 cases pass, including rollback after
+- Executed PostgreSQL 17/pgvector: 16 F07 cases pass, including rollback after
   downstream failure, successful/repeated populated rebuild, incomplete/new
   dependencies, incompatible columns, lost indexes/comments/column grants/view
   rules, public consumer changes, default-grant isolation, composite-type rejection,
   row-type function coverage, and the existing trajectory release/RPC caller roles.
+  PR regressions additionally cover population state, numeric assertions, and
+  explicitly declared dynamic consumers.
 - Combined F06 compatibility and F07 SQL suite: 26 passed before the final extra
   view-rule case; the final F07 suite was rerun successfully afterward.
-- Main suite: 2,563 passed, 527 skipped (database-dependent tests opt in separately).
-  MCP suite: 59 passed.
+- Main suite: 2,578 passed, 531 skipped (database-dependent tests opt in separately).
+  MCP suite: 59 passed. Final engine/CLI checks after the Unicode identifier
+  guard regression: 39 passed.
 - Ruff check and format pass for tracked/project changes. Whole-workspace lint
   also finds existing untracked `scripts/film/update_storage_uri.py` issues; that
   unrelated user work is unchanged and excluded from this PR.
 - Independent review findings on dependency closure, public objects, metadata,
   transaction parsing, and validation boundaries were addressed. See the release
   operations guide for remaining dynamic-SQL, grant-chain, and runtime limits.
+- PR Lens architecture and transaction SVGs are attached to PR #131. Generated
+  diagrams stay local in the ignored `.pr-lens/` directory.

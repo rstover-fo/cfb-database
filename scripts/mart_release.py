@@ -5,9 +5,10 @@ existing relation or function in the PostgreSQL downstream dependency closure.  
 read-only; execution repeats the plan under the warehouse migration advisory lock before any
 manifest SQL is run.
 
-PostgreSQL records parsed dependencies for views and SQL functions.  PL/pgSQL bodies can contain
-textual relation references which are not catalog dependencies, so affected PL/pgSQL functions
-also require role-scoped validation queries declared by the manifest.
+PostgreSQL records parsed dependencies for views and SQL functions. PL/pgSQL bodies and dynamic
+SQL can contain textual relation references which are not catalog dependencies, so manifests can
+declare existing function consumers which, like affected PL/pgSQL functions, require role-scoped
+validation queries.
 """
 
 from __future__ import annotations
@@ -80,6 +81,7 @@ class ReleaseManifest:
     files: tuple[ReleaseFile, ...]
     roots: tuple[str, ...]
     restores: tuple[ObjectIdentity, ...]
+    consumers: tuple[str, ...]
     validations: tuple[ValidationQuery, ...]
     source_path: Path
     root: Path
@@ -89,6 +91,7 @@ class ReleaseManifest:
 class ReleasePlan:
     files: tuple[ReleaseFile, ...]
     roots: tuple[str, ...]
+    declared_consumers: tuple[str, ...]
     declared_restores: tuple[ObjectIdentity, ...]
     live_closure: tuple[ObjectIdentity, ...]
     blockers: tuple[str, ...] = ()
@@ -179,6 +182,109 @@ def _validate_release_sql(sql: str, path: str) -> None:
                 f"release file {path!r} contains nontransactional or unsafe SQL: "
                 f"{' '.join(words[:4])}"
             )
+    _validate_no_set_config(sql, f"release file {path!r}")
+
+
+def _skip_sql_space_and_comments(sql: str, index: int) -> int:
+    """Skip whitespace and PostgreSQL comments starting at ``index``."""
+
+    length = len(sql)
+    while index < length:
+        if sql[index].isspace():
+            index += 1
+            continue
+        if sql.startswith("--", index):
+            newline = sql.find("\n", index + 2)
+            index = length if newline < 0 else newline + 1
+            continue
+        if sql.startswith("/*", index):
+            depth = 1
+            index += 2
+            while index < length and depth:
+                if sql.startswith("/*", index):
+                    depth += 1
+                    index += 2
+                elif sql.startswith("*/", index):
+                    depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            continue
+        break
+    return index
+
+
+def _validate_no_set_config(sql: str, context: str) -> None:
+    """Reject direct set_config calls without matching text inside inert SQL regions."""
+
+    index = 0
+    length = len(sql)
+    while index < length:
+        skipped = _skip_sql_space_and_comments(sql, index)
+        if skipped != index:
+            index = skipped
+            continue
+        if index >= length:
+            break
+        char = sql[index]
+        if char == "'":
+            escape_string = (
+                index > 0
+                and sql[index - 1] in {"e", "E"}
+                and (index < 2 or not (sql[index - 2].isalnum() or sql[index - 2] in {"_", "$"}))
+            )
+            index += 1
+            while index < length:
+                if sql[index] == "'":
+                    if index + 1 < length and sql[index + 1] == "'":
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                if escape_string and sql[index] == "\\" and index + 1 < length:
+                    index += 2
+                else:
+                    index += 1
+            continue
+        if char == "$":
+            tag_match = re.match(r"\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$", sql[index:])
+            if tag_match:
+                tag = tag_match.group(0)
+                end = sql.find(tag, index + len(tag))
+                index = length if end < 0 else end + len(tag)
+                continue
+        identifier = ""
+        if char == '"':
+            if sql[max(0, index - 2) : index].lower() == "u&":
+                raise ReleaseManifestError(
+                    f"{context} does not support Unicode-escaped identifiers"
+                )
+            index += 1
+            pieces: list[str] = []
+            while index < length:
+                if sql[index] == '"':
+                    if index + 1 < length and sql[index + 1] == '"':
+                        pieces.append('"')
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                pieces.append(sql[index])
+                index += 1
+            identifier = "".join(pieces)
+        elif char.isalpha() or char == "_":
+            end = index + 1
+            while end < length and (sql[end].isalnum() or sql[end] in {"_", "$"}):
+                end += 1
+            identifier = sql[index:end]
+            index = end
+        else:
+            index += 1
+            continue
+        if identifier.lower() == "set_config":
+            following = _skip_sql_space_and_comments(sql, index)
+            if following < length and sql[following] == "(":
+                raise ReleaseManifestError(f"{context} may not call set_config")
 
 
 def _require_exact_keys(value: object, keys: set[str], context: str) -> dict[str, object]:
@@ -197,11 +303,19 @@ def load_release(path: str | Path, root: str | Path) -> ReleaseManifest:
     if not root_path.is_dir():
         raise ReleaseManifestError(f"repository root is not a directory: {root_path}")
     source_path = Path(path).resolve(strict=False)
-    payload = _require_exact_keys(
-        _load_json(source_path),
-        {"version", "files", "roots", "restores", "validations"},
-        "release manifest",
-    )
+    raw_payload = _load_json(source_path)
+    if not isinstance(raw_payload, dict):
+        raise ReleaseManifestError("release manifest must be a JSON object")
+    required_keys = {"version", "files", "roots", "restores", "validations"}
+    if frozenset(raw_payload) not in {
+        frozenset(required_keys),
+        frozenset(required_keys | {"consumers"}),
+    }:
+        raise ReleaseManifestError(
+            "release manifest keys must be exactly: consumers (optional), files, restores, "
+            "roots, validations, version"
+        )
+    payload = raw_payload
     if type(payload["version"]) is not int or payload["version"] != 1:
         raise ReleaseManifestError("release manifest version must be integer 1")
 
@@ -268,6 +382,24 @@ def load_release(path: str | Path, root: str | Path) -> ReleaseManifest:
             f"release roots must also be declared as restores: {', '.join(sorted(missing_roots))}"
         )
 
+    consumers_raw = payload.get("consumers", [])
+    if not isinstance(consumers_raw, list):
+        raise ReleaseManifestError("release consumers must be a list")
+    consumers: list[str] = []
+    for identity in consumers_raw:
+        if (
+            not isinstance(identity, str)
+            or "\n" in identity
+            or "\r" in identity
+            or not re.fullmatch(r"[a-z_][a-z0-9_$]*\.[a-z_][a-z0-9_$]*\([^()]*\)", identity)
+        ):
+            raise ReleaseManifestError(
+                f"consumer must be an exact fully qualified function identity: {identity!r}"
+            )
+        if identity in consumers:
+            raise ReleaseManifestError(f"duplicate release consumer: {identity}")
+        consumers.append(identity)
+
     validations_raw = payload["validations"]
     if not isinstance(validations_raw, list):
         raise ReleaseManifestError("release validations must be a list")
@@ -293,6 +425,7 @@ def load_release(path: str | Path, root: str | Path) -> ReleaseManifest:
         if len(statements) != 1 or statements[0][0] != "SELECT":
             raise ReleaseManifestError(f"validation {name!r} must be one SELECT assertion")
         _validate_no_transaction_control(query, f"validation {name}")
+        _validate_no_set_config(query, f"validation {name!r}")
         if not isinstance(covers, list) or any(
             not isinstance(item, str) or not item for item in covers
         ):
@@ -305,6 +438,7 @@ def load_release(path: str | Path, root: str | Path) -> ReleaseManifest:
         tuple(files),
         tuple(roots),
         tuple(restores),
+        tuple(consumers),
         tuple(validations),
         source_path,
         root_path,
@@ -467,6 +601,7 @@ SELECT 'relation'::text,
        pg_catalog.pg_get_userbyid(relation.relowner),
        COALESCE(pg_catalog.pg_get_viewdef(relation.oid, false), ''),
        relation.relkind::text,
+       relation.relispopulated::text,
        COALESCE(relation.reloptions::text, ''),
        relation.relreplident::text,
        relation.relrowsecurity::text,
@@ -565,6 +700,7 @@ SELECT 'function',
            FROM pg_catalog.pg_roles AS role
            WHERE NOT role.rolsuper AND role.rolname !~ '^pg_'
        ), ''),
+       ''::text,
        ''::text,
        ''::text
 FROM pg_catalog.pg_proc AS procedure
@@ -678,21 +814,32 @@ def _build_plan(
             "manifest declares restore objects outside the live closure: "
             + ", ".join(f"{item.kind} {item.identity}" for item in sorted(extra))
         )
+    snapshot = _read_snapshot(cur)
+    declared_consumers = set(manifest.consumers)
+    existing_functions = {item.identity for item in snapshot if item.kind == "function"}
+    missing_consumers = declared_consumers - existing_functions
+    if missing_consumers:
+        blockers.append(
+            "declared textual/dynamic consumer functions do not exist: "
+            + ", ".join(sorted(missing_consumers))
+        )
     plpgsql = {row[0].identity for row in closure_rows if row[1] == "plpgsql"}
     covered = {identity for validation in manifest.validations for identity in validation.covers}
-    missing_validation = plpgsql - covered
-    unknown_coverage = covered - {item.identity for item in actual if item.kind == "function"}
+    missing_validation = (plpgsql | declared_consumers) - covered
+    permitted_coverage = {item.identity for item in actual if item.kind == "function"} | (
+        declared_consumers & existing_functions
+    )
+    unknown_coverage = covered - permitted_coverage
     if missing_validation:
         blockers.append(
-            "affected PL/pgSQL functions require caller-role validations: "
-            + ", ".join(sorted(missing_validation))
+            "affected PL/pgSQL and declared textual/dynamic consumers require "
+            "caller-role validations: " + ", ".join(sorted(missing_validation))
         )
     if unknown_coverage:
         blockers.append(
-            "validation covers identities outside the live function closure: "
-            + ", ".join(sorted(unknown_coverage))
+            "validation covers identities outside the live function closure or declared "
+            "existing consumers: " + ", ".join(sorted(unknown_coverage))
         )
-    snapshot = _read_snapshot(cur)
     unsnapshotted = actual - set(snapshot)
     if unsnapshotted:
         blockers.append(
@@ -701,7 +848,8 @@ def _build_plan(
         )
     warnings = (
         "PostgreSQL catalog dependencies do not include dynamic SQL or textual PL/pgSQL "
-        "references; declared caller-role validations cover affected PL/pgSQL functions.",
+        "references; manifests must declare those existing function consumers and cover them "
+        "with caller-role validations.",
         "Version 1 permits contract-preserving releases only and does not write the F06 "
         "warehouse migration ledger.",
     )
@@ -709,6 +857,7 @@ def _build_plan(
         ReleasePlan(
             manifest.files,
             tuple(identity for _, identity in resolved),
+            manifest.consumers,
             manifest.restores,
             live,
             tuple(blockers),
@@ -792,10 +941,12 @@ def _run_validations(cur: object, validations: tuple[ValidationQuery, ...]) -> N
         _execute(cur, "SAVEPOINT mart_release_validation")
         try:
             _execute(cur, "SET LOCAL standard_conforming_strings = on")
+            _execute(cur, "SET LOCAL lock_timeout = %s", (LOCK_TIMEOUT,))
+            _execute(cur, "SET LOCAL statement_timeout = %s", (STATEMENT_TIMEOUT,))
             _execute(cur, f"SET LOCAL ROLE {_quote_ident(validation.role)}")
             _execute(cur, validation.query)
             row = cur.fetchone()
-            if row != (True,):
+            if row is None or len(row) != 1 or row[0] is not True:
                 raise ReleaseExecutionError(
                     f"release validation {validation.name!r} must return exactly one true boolean"
                 )
@@ -878,6 +1029,8 @@ def execute_release(conn: object, manifest: ReleaseManifest) -> ReleasePlan:
         affected = set(plan.live_closure)
         for release_file in manifest.files:
             _execute(cur, "SET LOCAL standard_conforming_strings = on")
+            _execute(cur, "SET LOCAL lock_timeout = %s", (LOCK_TIMEOUT,))
+            _execute(cur, "SET LOCAL statement_timeout = %s", (STATEMENT_TIMEOUT,))
             _execute(cur, release_file.sql)
         _restore_security(cur, before, affected)
         _run_validations(cur, manifest.validations)

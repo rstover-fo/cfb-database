@@ -82,6 +82,7 @@ jobs:
         # dlt requires the postgres:// scheme (see .dlt/secrets.toml.example)
         run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
       - name: Load flat-file sources
+        id: load_flat_files
         # Hardening (PR #75 review finding C): route the workflow_dispatch
         # `source` input through a step-level env: var (probe-endpoints.yml's
         # pattern) instead of interpolating ${{ inputs.source }} directly
@@ -117,8 +118,11 @@ jobs:
             python scripts/load_flat_files.py --due
           fi
       - name: Refresh external-rating consumers
-        # Also run after hash-skips or an empty due plan: a previous run may
-        # have committed the imports and then failed its refresh.
+        # A failed multi-source load may still have committed new ratings.
+        # Refresh those rows, but preserve the failed load/job status. Skip
+        # cancellation and setup failures where the import step never ran.
+        if: ${{ !cancelled() && (steps.load_flat_files.outcome == 'success' || steps.load_flat_files.outcome == 'failure') }}
+        # Also retry after hash-skips or an empty due plan.
         run: python scripts/refresh_marts.py --views marts.epa_crossvalidation
       - name: Open or update failure issue
         if: failure()

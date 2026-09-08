@@ -62,7 +62,8 @@ def test_workflow_propagates_failures(tmp_path, failed_script):
     assert result == 17
     if failed_script == "scripts/load_flat_files.py":
         assert calls == [
-            ["scripts/load_flat_files.py", "--source", "sdv_fpi_weekly", "--season", "2024"]
+            ["scripts/load_flat_files.py", "--source", "sdv_fpi_weekly", "--season", "2024"],
+            ["scripts/refresh_marts.py", "--views", "marts.epa_crossvalidation"],
         ]
     else:
         assert len(calls) == 3
@@ -70,7 +71,7 @@ def test_workflow_propagates_failures(tmp_path, failed_script):
 
 
 def run_steps(tmp_path, sources, seasons, failed_script=""):
-    """Run the actual success-path shell steps with a logging command stub."""
+    """Run completed import and refresh commands while preserving failed status."""
     calls_path = tmp_path / "calls.jsonl"
     fake_python = tmp_path / "python"
     fake_python.write_text(
@@ -91,9 +92,15 @@ def run_steps(tmp_path, sources, seasons, failed_script=""):
         "Load flat-file sources",
         "Refresh external-rating consumers",
     ]
-    # GitHub's implicit success() must guard both, so a failed import cannot
-    # refresh its consumers or make the reusable job report success.
-    assert all("if" not in step and not step.get("continue-on-error") for step in selected)
+    assert selected[0]["id"] == "load_flat_files"
+    assert "if" not in selected[0]
+    assert selected[1]["if"] == (
+        "${{ !cancelled() && (steps.load_flat_files.outcome == 'success' "
+        "|| steps.load_flat_files.outcome == 'failure') }}"
+    )
+    # Refresh can recover committed rows after a partial import failure, but
+    # neither step may mask a failure from the reusable job's caller.
+    assert all(not step.get("continue-on-error") for step in selected)
     env = {
         **os.environ,
         "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
@@ -111,7 +118,7 @@ def run_steps(tmp_path, sources, seasons, failed_script=""):
             text=True,
             check=False,
         )
-        status = result.returncode
-        if status:
-            break
+        # Both success and failure outcomes of the completed import step
+        # satisfy the refresh condition; retain the first failing exit code.
+        status = status or result.returncode
     return status, [json.loads(line) for line in calls_path.read_text().splitlines()]

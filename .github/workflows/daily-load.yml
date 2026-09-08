@@ -151,7 +151,8 @@ jobs:
     name: Load flat-file sources
     needs: load
     uses: ./.github/workflows/flat-files.yml
-    secrets: inherit
+    secrets:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
 
   verify:
     name: Verify daily load

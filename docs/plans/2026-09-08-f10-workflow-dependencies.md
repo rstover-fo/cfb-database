@@ -32,13 +32,16 @@ verification job. The existing 10:00 UTC daily trigger remains.
 
 The flat-file workflow retains manual `source` and `seasons` inputs and its
 separate `flat-file-load` concurrency group. Reusing the caller's
-`daily-season-load` group would deadlock the nested call. After a successful
-import step it refreshes crossvalidation, including when the loader reports an
-empty due plan, hash-skips, or expected no-data. This is deliberate: imported
+`daily-season-load` group would deadlock the nested call. After a completed
+import step (success or failure) it refreshes crossvalidation, including when
+the loader reports an empty due plan, hash-skips, or expected no-data. This is deliberate: imported
 rows may already be committed when a prior refresh fails. Retrying must refresh
 consumers even if the next import has no new bytes. An import or refresh failure
-fails the reusable job. The daily job retains its own concurrency group for the
-entire chain; this is not a warehouse-wide lock across arbitrary CLI callers.
+fails the reusable job. Refresh is skipped on cancellation or when setup fails
+before imports run. A partially failed multi-source load can commit ratings, so
+refreshing those rows must not depend on unrelated sources succeeding. The
+reusable call receives only `SUPABASE_DB_URL`, not other caller secrets.
+The daily job retains its own concurrency group for the entire chain; this is not a warehouse-wide lock across arbitrary CLI callers.
 
 Coach-tenure backfills refresh their mart only after the pipeline command
 succeeds. The normal season-loop path still refreshes all marts after all

@@ -48,8 +48,10 @@ not establish the cost of today's source/resource selection.
 The daily workflow runs load/compute, calls the reusable flat-file workflow,
 then verifies the combined result. Recaps wait for verification. The flat-file
 workflow remains manually dispatchable, but its former independent 11:00 UTC
-schedule is removed. A successful import step refreshes `marts.epa_crossvalidation`
-even after hash-skips or an empty due plan, allowing a failed refresh to be
+schedule is removed. A completed import step refreshes `marts.epa_crossvalidation`
+even after partial failure, while preserving the failed job status; cancellation
+and setup failures skip the refresh. Hash-skips and empty due plans also trigger
+refresh, allowing a failed refresh to be
 retried without reloading unchanged files.
 
 The final daily refresh includes crossvalidation after `marts.team_adjusted_epa`.

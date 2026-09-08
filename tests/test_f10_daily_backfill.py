@@ -74,7 +74,7 @@ def test_daily_verification_waits_for_load_and_flat_files() -> None:
         "name": "Load flat-file sources",
         "needs": "load",
         "uses": "./.github/workflows/flat-files.yml",
-        "secrets": "inherit",
+        "secrets": {"SUPABASE_DB_URL": "${{ secrets.SUPABASE_DB_URL }}"},
     }
     assert "needs" not in workflow["jobs"]["load"]
     assert workflow["jobs"]["verify"]["needs"] == "flat_files"

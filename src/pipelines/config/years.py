@@ -1,8 +1,11 @@
 """Year range configuration for CFBD API endpoints.
 
-Different data types have different available year ranges.
+Different data types have different available start years. Historical loads run
+through the current calendar year so preseason data for the upcoming season is
+reachable before August.
 """
 
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 
 
@@ -27,26 +30,59 @@ class YearRange:
         return list(range(self.start, self.end + 1))
 
 
-# Year ranges by data category
-YEAR_RANGES = {
+# Fixed provider-coverage starts by data category. The end is resolved when a
+# range is requested so a long-lived loader process crosses New Year cleanly.
+YEAR_RANGE_STARTS = {
     # Games go back to 1869 but we'll start with modern era for most uses
-    "games": YearRange(start=1869, end=2026),
-    "games_modern": YearRange(start=2000, end=2026),
+    "games": 1869,
+    "games_modern": 2000,
     # Play-by-play only available from 2004
-    "plays": YearRange(start=2004, end=2026),
+    "plays": 2004,
     # Most stats available from 2004
-    "stats": YearRange(start=2004, end=2026),
+    "stats": 2004,
     # Advanced ratings from 2004 (FPI starts 2005)
-    "ratings": YearRange(start=2004, end=2026),
+    "ratings": 2004,
     # Recruiting from 2000
-    "recruiting": YearRange(start=2000, end=2026),
+    "recruiting": 2000,
     # Betting lines from 2013
-    "betting": YearRange(start=2013, end=2026),
+    "betting": 2013,
     # Draft from 2000
-    "draft": YearRange(start=2000, end=2026),
+    "draft": 2000,
     # Advanced metrics from 2014
-    "metrics": YearRange(start=2014, end=2026),
+    "metrics": 2014,
 }
+
+
+def get_historical_end_year() -> int:
+    """Return the rolling upper bound for historical ingestion.
+
+    Historical endpoints can publish upcoming-season data before the season
+    starts, so this intentionally uses the calendar year rather than
+    :func:`get_current_season`, which remains on the prior season until August.
+    """
+    from datetime import datetime
+
+    return datetime.now().year
+
+
+class _YearRanges(Mapping[str, YearRange]):
+    """Read-only ranges with a calendar-year end resolved on every lookup."""
+
+    def __getitem__(self, category: str) -> YearRange:
+        return YearRange(
+            start=YEAR_RANGE_STARTS[category],
+            end=get_historical_end_year(),
+        )
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(YEAR_RANGE_STARTS)
+
+    def __len__(self) -> int:
+        return len(YEAR_RANGE_STARTS)
+
+
+# Dict-like compatibility for existing source configuration lookups.
+YEAR_RANGES: Mapping[str, YearRange] = _YearRanges()
 
 
 def get_current_season() -> int:

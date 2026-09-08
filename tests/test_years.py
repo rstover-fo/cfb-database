@@ -3,9 +3,11 @@
 from unittest.mock import patch
 
 from src.pipelines.config.years import (
+    YEAR_RANGE_STARTS,
     YEAR_RANGES,
     YearRange,
     get_current_season,
+    get_historical_end_year,
     get_projection_seasons,
 )
 
@@ -68,6 +70,15 @@ class TestYearRange:
         assert yr.to_list() == [2024]
         assert 2024 in yr
 
+    def test_explicit_range_stays_fixed_across_calendar_rollover(self):
+        from datetime import datetime
+
+        yr = YearRange(start=2020, end=2026)
+        with patch("datetime.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2027, 1, 1)
+            assert yr.end == 2026
+            assert yr.to_list()[0] == 2026
+
 
 class TestYearRangesConfig:
     def test_all_categories_exist(self):
@@ -90,9 +101,36 @@ class TestYearRangesConfig:
     def test_ratings_start_2004(self):
         assert YEAR_RANGES["ratings"].start == 2004
 
-    def test_all_ranges_end_2026(self):
-        for name, yr in YEAR_RANGES.items():
-            assert yr.end == 2026, f"{name} should end at 2026, got {yr.end}"
+    def test_config_starts_are_fixed(self):
+        assert YEAR_RANGE_STARTS["games"] == 1869
+        assert YEAR_RANGE_STARTS["metrics"] == 2014
+
+    def test_all_ranges_end_at_current_calendar_year(self):
+        from datetime import datetime
+
+        with patch("datetime.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2027, 3, 15)
+            for name, yr in YEAR_RANGES.items():
+                assert yr.end == 2027, f"{name} should end at 2027, got {yr.end}"
+
+    def test_long_lived_import_resolves_end_on_each_lookup(self):
+        from datetime import datetime
+
+        with patch("datetime.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 12, 31)
+            assert YEAR_RANGES["plays"].end == 2026
+
+            mock_dt.now.return_value = datetime(2027, 1, 1)
+            assert YEAR_RANGES["plays"].end == 2027
+
+    def test_offseason_historical_range_includes_upcoming_season(self):
+        from datetime import datetime
+
+        with patch("datetime.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2027, 3, 15)
+            assert get_current_season() == 2026
+            assert get_historical_end_year() == 2027
+            assert YEAR_RANGES["stats"].end == 2027
 
 
 class TestGetCurrentSeason:

@@ -170,6 +170,12 @@ Evidence: [mart runner](https://github.com/rstover-fo/cfb-database/blob/4a798fde
 
 ### F08 — Partition and historical-year configuration stops at 2026
 
+Implemented in the plays runner preflight, `scripts/maintain_play_partitions.py`,
+and rolling year configuration. Operational behavior and read-only production
+catalog evidence: [warehouse operations](../warehouse-operations.md#plays-partition-rollover-f08).
+Production provisioning remains a separate authorized operation. The finding
+below records the original audit state.
+
 **P1 before 2027 ingestion · Confirmed repository limit; validate live catalog · M**
 
 The plays partition migration creates years 2004–2026. No automated future-partition lifecycle was found. Configured historical year ranges also end at 2026. The load verifier checks a partition's name after ingestion, rather than ensuring an attached partition with correct bounds exists before loading.

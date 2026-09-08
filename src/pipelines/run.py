@@ -351,14 +351,30 @@ def run_game_stats_weekly(
 
 def run_plays_pipeline(years: list[int] | None = None, mode: str = "incremental"):
     """Run the plays data pipeline."""
-    years_str = f"years={years}" if years else f"mode={mode}"
-    print(f"\n=== Loading Plays Data ({years_str}) ===\n")
+    import psycopg2
 
+    from .config.years import YEAR_RANGES, get_current_season
+    from .utils.partitions import ensure_play_partitions
+
+    if years is None:
+        years = [get_current_season()] if mode == "incremental" else YEAR_RANGES["plays"].to_list()
     pipeline = dlt.pipeline(
         pipeline_name="cfbd_plays",
         destination="postgres",
         dataset_name="core",
     )
+    # Validate the actual destination catalog before fetching any provider data.
+    # A dedicated connection commits maintenance before dlt starts its load.
+    destination_client = pipeline.destination_client()
+    conn = psycopg2.connect(destination_client.config.credentials.to_native_representation())
+    try:
+        plan = ensure_play_partitions(conn, years, create=True)
+        logger.info("Plays partition preflight: %s", plan)
+    finally:
+        conn.close()
+
+    years_str = f"years={years}" if years else f"mode={mode}"
+    print(f"\n=== Loading Plays Data ({years_str}) ===\n")
 
     source = plays_source(years=years, mode=mode)
     info = pipeline.run(source)

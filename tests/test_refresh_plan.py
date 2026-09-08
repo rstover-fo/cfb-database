@@ -21,17 +21,58 @@ from src.pipelines.utils.refresh_plan import REFRESH_GRAPH, RefreshGraph
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def relations(node):
+CATALOG_TELEMETRY_RELATIONS = {
+    "pg_class",
+    "pg_stat_user_tables",
+    "pg_catalog.pg_class",
+    "pg_catalog.pg_stat_user_tables",
+}
+
+
+def relations(node, cte_scopes=()):
     if isinstance(node, dict):
+        if "SelectStmt" in node:
+            yield from select_relations(node["SelectStmt"], cte_scopes)
+            return
         if "RangeVar" in node:
             relation = node["RangeVar"]
-            if relation.get("schemaname"):
-                yield relation["schemaname"] + "." + relation["relname"]
+            schema = relation.get("schemaname")
+            name = f"{schema}.{relation['relname']}" if schema else relation["relname"]
+            if name in CATALOG_TELEMETRY_RELATIONS:
+                # These relations provide database-maintenance telemetry rather
+                # than refresh lineage and therefore are intentionally exempt.
+                return
+            if schema:
+                yield name
+                return
+            if any(name in scope for scope in reversed(cte_scopes)):
+                return
+            raise AssertionError(
+                f"unqualified relation {name!r}; qualify source relations or declare a CTE"
+            )
         for value in node.values():
-            yield from relations(value)
+            yield from relations(value, cte_scopes)
     elif isinstance(node, list):
         for value in node:
-            yield from relations(value)
+            yield from relations(value, cte_scopes)
+
+
+def select_relations(select, outer_cte_scopes):
+    with_clause = select.get("withClause")
+    if not with_clause:
+        yield from relations(select, outer_cte_scopes)
+        return
+
+    ctes = [entry["CommonTableExpr"] for entry in with_clause["ctes"]]
+    all_cte_names = frozenset(cte["ctename"] for cte in ctes)
+    visible_cte_names = all_cte_names if with_clause.get("recursive") else frozenset()
+    for cte in ctes:
+        yield from relations(cte["ctequery"], (*outer_cte_scopes, visible_cte_names))
+        if not with_clause.get("recursive"):
+            visible_cte_names = visible_cte_names | {cte["ctename"]}
+
+    query = {key: value for key, value in select.items() if key != "withClause"}
+    yield from relations(query, (*outer_cte_scopes, all_cte_names))
 
 
 # Explicit catalog-function allowlist: a newly introduced function requires
@@ -53,6 +94,77 @@ def functions(node):
     elif isinstance(node, list):
         for value in node:
             yield from functions(value)
+
+
+def parsed_relations(sql):
+    statement = json.loads(parser.parse_sql_json(sql))["stmts"][0]["stmt"]
+    return set(relations(statement))
+
+
+def test_relation_extraction_rejects_unqualified_source():
+    with pytest.raises(AssertionError, match="unqualified relation 'games'"):
+        parsed_relations("SELECT * FROM games")
+
+
+def test_relation_extraction_respects_cte_declaration_order():
+    assert parsed_relations(
+        """
+        WITH games AS (SELECT * FROM core.games),
+             completed AS (SELECT * FROM games)
+        SELECT * FROM completed
+        """
+    ) == {"core.games"}
+
+    with pytest.raises(AssertionError, match="unqualified relation 'completed'"):
+        parsed_relations(
+            """
+            WITH games AS (SELECT * FROM completed),
+                 completed AS (SELECT * FROM core.games)
+            SELECT * FROM games
+            """
+        )
+
+
+def test_relation_extraction_respects_recursive_and_shadowed_ctes():
+    assert parsed_relations(
+        """
+        WITH RECURSIVE games AS (
+            SELECT id FROM core.games
+            UNION ALL
+            SELECT id FROM games
+        )
+        SELECT * FROM games
+        """
+    ) == {"core.games"}
+
+    assert parsed_relations(
+        """
+        WITH source AS (SELECT * FROM core.games)
+        SELECT * FROM source
+        WHERE EXISTS (
+            WITH source AS (SELECT * FROM ratings.elo_ratings)
+            SELECT 1 FROM source
+        )
+        """
+    ) == {"core.games", "ratings.elo_ratings"}
+
+
+def test_relation_extraction_exempts_catalog_telemetry():
+    assert not parsed_relations(
+        """
+        SELECT *
+        FROM pg_stat_user_tables stats
+        JOIN pg_class class ON class.oid = stats.relid
+        JOIN pg_catalog.pg_class qualified ON qualified.oid = class.oid
+        """
+    )
+
+
+def test_relation_extraction_collects_qualified_sources():
+    assert parsed_relations("SELECT * FROM core.games JOIN ratings.elo_ratings ON true") == {
+        "core.games",
+        "ratings.elo_ratings",
+    }
 
 
 def test_reviewed_function_definitions_have_not_changed():

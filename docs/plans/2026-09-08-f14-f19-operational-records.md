@@ -28,6 +28,22 @@ or operational receipts. This design uses its stable asset keys and dependency
 edges when available; it does not require the foundation to solve the broader
 ingestion registry first.
 
+## Accepted direction — 2026-09-08
+
+The user accepted these rollout choices:
+
+- Production CFBD admission fails closed when the shared quota database is
+  unavailable. A future local-development bypass must be explicit; there is
+  no silent fallback to the JSON counter.
+- Preserve the existing freshness consumer interface while receipt-backed
+  freshness is introduced alongside it and verified before consumer cutover.
+- Deliver quota accounting first, then prove publication receipts for one
+  controlled load and one derived mart before expanding.
+
+PRs #135 and #136 are merged. The SQL registry foundation is available; durable
+quota enforcement and publication receipts are still implementation work.
+Production migration application is a separate rollout decision.
+
 ## Current evidence and boundaries
 
 ### Existing records are useful but not interchangeable
@@ -55,12 +71,40 @@ Operational receipts must not replace or weaken those contracts. A later,
 explicit compatibility decision may link a prediction publication to an asset
 generation.
 
+### Provider contract evidence
+
+The official CFBD repository at revision
+[`0d5559e`](https://github.com/CFBD/cfb-api-v2/tree/0d5559e337966cba08005feceac4f483209329f9)
+provides these implementation contracts:
+
+- [`/info` service](https://github.com/CFBD/cfb-api-v2/blob/0d5559e337966cba08005feceac4f483209329f9/src/app/info/service.ts):
+  `resetAt` is the first of the next month at 00:00 UTC. `monthlyLimit`,
+  `remainingCalls`, `usedCalls`, `sharedPool`, and `products` describe capacity.
+  Admin counters may be null. The account's live values were not queried.
+- [`quota middleware`](https://github.com/CFBD/cfb-api-v2/blob/0d5559e337966cba08005feceac4f483209329f9/src/config/middleware/quotas.ts):
+  non-2xx responses are refunded, and `/info`, `/info/usage`, `/scoreboard`,
+  and `/auth/graphql` are excluded from metering. A local reserved attempt is
+  therefore a conservative admission unit, not a claimed provider charge.
+- [`usage controller/service`](https://github.com/CFBD/cfb-api-v2/blob/0d5559e337966cba08005feceac4f483209329f9/src/app/info/controller.ts):
+  `/info/usage` reports trailing request metrics (default 7 days, 1–31 days;
+  row limit 1–50), not an authoritative monthly billing total. Use `/info`
+  for capacity reconciliation and retain request metrics separately.
+
+The first schema slice uses explicitly configured period bounds and local
+capacity, with no automatic month reset. Before runtime adoption, verify the
+live account's remaining capacity, reserve headroom for other callers, and
+configure only the remaining allowance. Starting midmonth with a full monthly
+cap would be unsafe. Strict shared enforcement requires every relevant caller
+to participate; external callers can still consume the same provider pool.
+
 ### Current gaps
 
 `make_request` checks a process-local JSON rate limiter, runs the whole
 retrying HTTP call, then records one call only when the request returns. A
-failed 404, exhausted 429 retries, or exhausted transient retries consumes
-provider capacity without durable accounting. The limiter state is not shared
+failed 404, exhausted 429 retries, or exhausted transient retries leaves
+transport attempts without durable accounting. These attempts are not
+necessarily provider-billed calls: the current official middleware refunds
+non-2xx responses. Our local admission count deliberately remains conservative. The limiter state is not shared
 by a new CI runner or another job.
 
 The current `marts.data_freshness` materialized view uses PostgreSQL
@@ -283,18 +327,19 @@ stacked on receipts and should merge in dependency order.
 
 ## Open decisions and rollout gates
 
-1. Confirm CFBD billing-reset timezone and exact `/info/usage` semantics.
-   The repository lists it as recent usage for a shared CFB/CBB pool, but
-   reconciliation fields need narrow authorized evidence or official contract.
-2. Decide whether production callers fail closed when the warehouse is
-   unavailable. Strict shared quota enforcement requires it; any local
-   development bypass must be explicit and never silently use JSON admission.
+1. Confirm live account capacity before runtime adoption. The pinned official
+   source above resolves UTC reset reporting and the distinction between
+   `/info` capacity and `/info/usage` request metrics; live deployment parity
+   and current account values remain unverified.
+2. Implement the accepted fail-closed production policy. Any local development
+   bypass must be explicit and never silently use JSON admission.
 3. Define canonical coverage encodings per source: source-wide, season,
    `(season, season_type, week)`, game, or another provider-grain key.
 4. Decide the dlt publication boundary before asserting exact load receipts; a
    post-run callback alone cannot close a crash gap after an independent commit.
-5. Review public/API consumers before changing `get_data_freshness()` or its
-   grants. Preserve owner-rights boundaries and restore grants after recreation.
+5. Implement the accepted compatibility-first freshness rollout. Review
+   consumers before cutover, preserve owner rights, and restore any grants
+   after recreation.
 6. Measure attempt/receipt volume before finalizing retention and indexes.
 
 ## Verification limits

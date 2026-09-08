@@ -321,3 +321,16 @@ hash-skip ledger in `meta.flat_file_loads` to avoid re-processing unchanged file
 repo secret `SUPABASE_DB_URL` only. `.github/workflows/live-scoreboard.yml` separately polls
 CFBD's `/scoreboard` every 5 minutes on Saturdays (games-today guard) to feed
 `live.scoreboard_snapshots` and the house live win-probability model.
+
+### SQL refresh dependency planning (2026-09-08)
+
+The Python refresher now uses the checked SQL registry described in the
+[dependency foundation](plans/2026-09-08-refresh-dependency-foundation.md).
+Use `python scripts/refresh_marts.py --changed <schema.relation> --dry-run` to
+inspect materialized-view descendants of inputs whose writes have committed.
+Remove `--dry-run` only when refresh execution is intended. This command does not
+run source ingestion or computation jobs. Existing `--views` calls remain exact
+selections, now validated and dependency-ordered. Failed selected refreshes block
+their selected descendants while independent views continue; the command fails
+if any view failed or was blocked. Durable cross-run generation checks and the
+SQL `refresh_all_marts()` RPC are outside this implementation.

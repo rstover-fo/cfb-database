@@ -210,6 +210,9 @@ Evidence: [original indexes](https://github.com/rstover-fo/cfb-database/blob/4a7
 Immediate correction plan: [F10 workflow dependencies](2026-09-08-f10-workflow-dependencies.md).
 The missing refreshes and workflow completion ordering are addressed there; the
 broader shared dependency planner remains in the F10/F28 orchestration work.
+The [SQL refresh foundation](2026-09-08-refresh-dependency-foundation.md) adds
+a checked materialized-view registry, descendant selection, and invocation-local
+failure gating; source/job metadata and durable generations remain open.
 
 **P1 · Confirmed · L**
 

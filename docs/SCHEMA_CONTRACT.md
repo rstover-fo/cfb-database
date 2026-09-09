@@ -1298,6 +1298,15 @@ provider-wide coverage or prospective model eligibility. The existing public
 freshness RPC, consumer grants and automatic refresh behavior remain unchanged.
 See the [source publication contract](plans/2026-09-09-step7-sdv-ratings-publication.md).
 
+Migration `072_sdv_source_batch_publication.sql` extends season receipts to
+`ratings.espn_fpi_weekly`, `ref.team_id_xwalk` and `ref.game_id_xwalk` through
+the private, fixed-source `warehouse_source_batch` RPCs. Existing keys, nullable
+provider IDs, source timestamps and consumer grants are preserved. The
+crosswalk files have no season column: receipts label scope assigned from the
+registered artifact name or explicitly declared by the local-file caller.
+Selecting several sources creates independent source/season publications and
+separate outcomes. See the [batch contract](plans/2026-09-09-step7-sdv-source-batch.md).
+
 ### Raw Data Tables
 
 | Schema | Tables |

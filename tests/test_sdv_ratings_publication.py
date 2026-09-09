@@ -176,6 +176,22 @@ def test_only_canonical_registry_spec_is_supported():
         publication._validate_supported_spec(REGISTRY["sdv_ratings_weekly"], 2201)
 
 
+def test_run_preserves_failed_result_contract_for_invalid_spec(monkeypatch):
+    install_ids(monkeypatch)
+    monkeypatch.setattr(
+        publication,
+        "get_db_url",
+        lambda: pytest.fail("preflight must run before database configuration"),
+    )
+    result = publication.run_sdv_ratings_publication(
+        replace(REGISTRY["sdv_ratings_weekly"]), season=2025
+    )
+    assert result["status"] == "failed"
+    assert "source publication failed" in result["error"]
+    assert result["run_id"] == RUN_ID
+    assert result["generation_id"] == GENERATION_ID
+
+
 def test_plan_requires_exact_protocol_and_keys():
     assert publication._validated_plan(plan(), 2025) == plan()
     with pytest.raises(publication.SourcePublicationError, match="invalid.*plan"):
@@ -533,7 +549,7 @@ def test_cas_readiness_error_records_blocked(monkeypatch, tmp_path):
 
 def test_known_stage_failure_records_failure_and_drops_run_table(monkeypatch, tmp_path):
     events = []
-    path, _ = install_success_fakes(monkeypatch, tmp_path, events)
+    path, sha = install_success_fakes(monkeypatch, tmp_path, events)
     failures = []
     monkeypatch.setattr(
         publication,
@@ -551,6 +567,7 @@ def test_known_stage_failure_records_failure_and_drops_run_table(monkeypatch, tm
     )
 
     assert result["status"] == "failed"
+    assert result["sha"] == sha
     assert failures == ["failed"]
     assert events[-1] == ("drop", publication._stage_table_name(RUN_ID))
 

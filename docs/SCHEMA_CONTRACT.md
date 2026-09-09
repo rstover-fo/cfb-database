@@ -1265,6 +1265,23 @@ no generic quota operation access. Superseded originals require a present,
 matching reviewed replacement before complete coverage is published. See the
 [publication protocol and rollout](plans/2026-09-09-f14-publication-receipts.md).
 
+### Generation-enforced refresh (prepared, not deployed)
+
+Migration `070_generation_enforced_refresh.sql` adds private `warehouse_refresh`
+RPCs and a bounded `warehouse_refresher` NOLOGIN role. The opt-in
+`refresh_marts.py --views marts.house_elo_game --require-receipts` path pins the
+exact `analytics.house_elo_game` input generation and declared source cadence,
+revalidates them under locks, and commits an ordinary mart refresh with its
+receipt, exact input edge, current pointer and terminal run outcome atomically.
+Missing, incomplete, stale or latest-unsuccessful source evidence blocks this
+path. Unknown source cadence also blocks; no policy is activated by migration.
+
+The proof stops at the declared house Elo source boundary: unversioned
+`core.games` still prevents a full upstream freshness claim. The F19 public RPC
+shape and legacy refresh behavior remain compatible. No public grants, runtime
+membership or scheduled activation are added. See the
+[protocol, concurrency and rollout](plans/2026-09-09-f11-generation-enforcement.md).
+
 ### Raw Data Tables
 
 | Schema | Tables |

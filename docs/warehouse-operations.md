@@ -73,6 +73,17 @@ the six-column `get_data_freshness()` consumer RPC remain compatible.
 See the [evidence meanings and rollout limits](plans/2026-09-09-f19-receipt-freshness.md)
 before interpreting either surface as a source-freshness guarantee.
 
+## Generation-enforced refresh (prepared)
+
+After migration 070 and a separately authorized role/cadence rollout, use
+`python scripts/refresh_marts.py --views marts.house_elo_game --require-receipts`
+for atomic refresh and receipt publication at the house Elo source boundary.
+The source must have complete, current, non-stale receipt evidence and a
+successful latest attempt. Unsupported/mixed plans fail before execution; dry
+runs remain offline. This mode uses an ordinary refresh and blocks mart reads
+until commit. Existing refresh commands do not opt in automatically.
+See the [F11 protocol and recovery limits](plans/2026-09-09-f11-generation-enforcement.md).
+
 ## Plays partition rollover (F08)
 
 `run_plays_pipeline()` performs catalog preflight before constructing the source

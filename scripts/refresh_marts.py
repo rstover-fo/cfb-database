@@ -9,11 +9,13 @@ Usage:
     python scripts/refresh_marts.py --dry-run          # Print SQL without executing
     python scripts/refresh_marts.py --views marts.house_elo,marts.house_elo_game
     python scripts/refresh_marts.py --changed ratings.sdv_ratings_weekly --dry-run
+    python scripts/refresh_marts.py --views marts.house_elo_game --require-receipts
 """
 
 import argparse
 import logging
 import sys
+import uuid
 from datetime import datetime
 
 import dlt
@@ -27,6 +29,149 @@ logger = logging.getLogger(__name__)
 
 MARTS_VIEWS = list(REFRESH_GRAPH.plan(schema="marts").views)
 ANALYTICS_VIEWS = list(REFRESH_GRAPH.plan(schema="analytics").views)
+
+RECEIPT_REFRESH_VIEW = "marts.house_elo_game"
+RECEIPT_REFRESH_INPUT = "analytics.house_elo_game"
+
+
+def _validate_receipt_refresh_plan(views: tuple[str, ...]) -> None:
+    """Keep the first receipt-enforced adapter intentionally narrow."""
+    if views != (RECEIPT_REFRESH_VIEW,):
+        raise ValueError(
+            "--require-receipts supports only --views marts.house_elo_game; "
+            "mixed, schema, full, and changed-relation plans are not yet supported"
+        )
+    dependency = REFRESH_GRAPH.assets[RECEIPT_REFRESH_VIEW].depends_on
+    if dependency != (RECEIPT_REFRESH_INPUT,):
+        raise ValueError(
+            f"{RECEIPT_REFRESH_VIEW} receipt adapter requires the sole declared input "
+            f"{RECEIPT_REFRESH_INPUT}; found {dependency}"
+        )
+
+
+def _print_receipt_refresh_dry_run() -> None:
+    print(
+        f"  [DRY RUN] receipt-required ordinary refresh: {RECEIPT_REFRESH_VIEW} "
+        f"<= {RECEIPT_REFRESH_INPUT}/source-wide"
+    )
+    print("  SELECT warehouse_refresh.get_house_elo_game_plan();")
+    print("  SELECT warehouse_refresh.start_house_elo_game_refresh(<run_id>, <opaque_plan>);")
+    print(
+        "  SELECT * FROM warehouse_refresh.publish_house_elo_game_refresh("
+        "<run_id>, <generation_id>);"
+    )
+    print(
+        "  On a known failure after rollback: "
+        "warehouse_refresh.fail_house_elo_game_refresh(<run_id>, <generation_id>, <outcome>)"
+    )
+    print("  Live generation, cadence, and staleness validation is not run during --dry-run.")
+
+
+def _receipt_failure_outcome(exc: BaseException) -> str:
+    """Generation races and no-longer-ready inputs are blocked, not failed."""
+    return "blocked" if getattr(exc, "pgcode", None) in {"40001", "55000"} else "failed"
+
+
+def _refresh_house_elo_game_with_receipts(conn) -> bool:
+    """Refresh the supported mart through the atomic generation RPC protocol."""
+    from psycopg2.extras import Json
+
+    run_id = str(uuid.uuid4())
+    generation_id = str(uuid.uuid4())
+    started = False
+    start_commit_pending = False
+    publication_commit_pending = False
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL ROLE warehouse_refresher")
+            cur.execute("SELECT warehouse_refresh.get_house_elo_game_plan()")
+            plan = cur.fetchone()[0]
+            cur.execute(
+                "SELECT warehouse_refresh.start_house_elo_game_refresh(%s,%s::jsonb)",
+                (run_id, Json(plan)),
+            )
+            cur.fetchone()
+        start_commit_pending = True
+        conn.commit()
+        started = True
+        start_commit_pending = False
+
+        with conn.cursor() as cur:
+            cur.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+            cur.execute("SET LOCAL ROLE warehouse_refresher")
+            cur.execute(
+                "SELECT * FROM warehouse_refresh.publish_house_elo_game_refresh(%s,%s)",
+                (run_id, generation_id),
+            )
+            published_generation, replayed, published_rows = cur.fetchone()
+        publication_commit_pending = True
+        conn.commit()
+        publication_commit_pending = False
+        logger.info(
+            "Receipt publication committed for %s: generation=%s rows=%s replayed=%s",
+            RECEIPT_REFRESH_VIEW,
+            published_generation,
+            published_rows,
+            replayed,
+        )
+        return True
+    except BaseException as exc:  # noqa: BLE001 - interruptions need the same durable cleanup
+        interrupted = not isinstance(exc, Exception)
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001 - a broken connection cannot be recovered here
+            pass
+
+        if start_commit_pending:
+            logger.error(
+                "Receipt refresh operation start has an unknown commit outcome: run=%s "
+                "generation=%s; inspect durable records before retrying",
+                run_id,
+                generation_id,
+            )
+            if interrupted:
+                raise
+            return False
+        if publication_commit_pending:
+            logger.error(
+                "Receipt refresh publication has an unknown commit outcome: run=%s "
+                "generation=%s; inspect the generation before retrying",
+                run_id,
+                generation_id,
+            )
+            if interrupted:
+                raise
+            return False
+        if not started:
+            logger.error("Receipt refresh could not start for %s: %s", RECEIPT_REFRESH_VIEW, exc)
+            if interrupted:
+                raise
+            return False
+
+        outcome = _receipt_failure_outcome(exc)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL ROLE warehouse_refresher")
+                cur.execute(
+                    "SELECT warehouse_refresh.fail_house_elo_game_refresh(%s,%s,%s)",
+                    (run_id, generation_id, outcome),
+                )
+                cur.fetchone()
+            conn.commit()
+        except Exception:  # noqa: BLE001 - retain the original publication error
+            logger.exception("Could not persist receipt refresh failure for run=%s", run_id)
+        logger.error(
+            "Receipt refresh %s for %s: run=%s generation=%s: %s",
+            outcome,
+            RECEIPT_REFRESH_VIEW,
+            run_id,
+            generation_id,
+            exc,
+        )
+        if interrupted:
+            raise
+        return False
 
 
 def get_db_url() -> str:
@@ -95,6 +240,7 @@ def refresh_marts(
     dry_run: bool = False,
     views: list[str] | None = None,
     changed: list[str] | None = None,
+    require_receipts: bool = False,
 ) -> int:
     """Refresh selected SQL descendants; return failed plus blocked count.
 
@@ -109,17 +255,28 @@ def refresh_marts(
         logger.error("Invalid refresh plan: %s", exc)
         return 1
     views = list(plan.views)
+    if require_receipts:
+        try:
+            _validate_receipt_refresh_plan(plan.views)
+        except ValueError as exc:
+            logger.error("Invalid receipt refresh plan: %s", exc)
+            return 1
     if not views:
         logger.info("No dependent materialized views require refresh")
         return 0
 
     logger.info(f"Refreshing {len(views)} materialized view(s)")
-    if concurrently:
+    if require_receipts:
+        logger.info("Receipt-required publication uses an ordinary atomic refresh (reads block)")
+    elif concurrently:
         logger.info("Using CONCURRENTLY (reads not blocked)")
     else:
         logger.info("Not using CONCURRENTLY (reads blocked during refresh)")
 
     if dry_run:
+        if require_receipts:
+            _print_receipt_refresh_dry_run()
+            return 0
         for view in views:
             refresh_view(view, conn=None, concurrently=concurrently, dry_run=True)
         return 0
@@ -143,16 +300,19 @@ def refresh_marts(
             _cur.execute("SET statement_timeout = 0")
         conn.commit()
 
-        unsuccessful: set[str] = set()
-        for view in views:
-            blocked_by = REFRESH_GRAPH.ancestors(view).intersection(unsuccessful)
-            if blocked_by:
-                logger.error("Blocked %s after upstream failure: %s", view, sorted(blocked_by))
-                unsuccessful.add(view)
-                failures += 1
-            elif not refresh_view(view, conn, concurrently, dry_run):
-                unsuccessful.add(view)
-                failures += 1
+        if require_receipts:
+            failures = 0 if _refresh_house_elo_game_with_receipts(conn) else 1
+        else:
+            unsuccessful: set[str] = set()
+            for view in views:
+                blocked_by = REFRESH_GRAPH.ancestors(view).intersection(unsuccessful)
+                if blocked_by:
+                    logger.error("Blocked %s after upstream failure: %s", view, sorted(blocked_by))
+                    unsuccessful.add(view)
+                    failures += 1
+                elif not refresh_view(view, conn, concurrently, dry_run):
+                    unsuccessful.add(view)
+                    failures += 1
     finally:
         conn.close()
 
@@ -192,6 +352,11 @@ def main() -> None:
         "--changed",
         help="Committed relations; refresh SQL descendants (overrides --schema)",
     )
+    parser.add_argument(
+        "--require-receipts",
+        action="store_true",
+        help="Require atomic generation validation/publication (marts.house_elo_game only)",
+    )
     args = parser.parse_args()
     if args.views is not None and args.changed is not None:
         parser.error("--views and --changed cannot be combined")
@@ -208,6 +373,7 @@ def main() -> None:
         changed=[v.strip() for v in args.changed.split(",") if v.strip()]
         if args.changed is not None
         else None,
+        require_receipts=args.require_receipts,
     )
     sys.exit(failures)
 

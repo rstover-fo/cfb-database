@@ -342,3 +342,13 @@ See the [F14 transport rollout guide](plans/2026-09-08-f14-transport-admission.m
 for migration 067, dedicated role/connection configuration, independent control
 allowances, commit-failure behavior, and activation checks. Production defaults
 remain unchanged until that separate rollout is authorized.
+
+## Prepared house Elo publication receipts
+
+The opt-in `compute_house_elo.py --full --publish-receipts` path publishes full
+game output, the current team snapshot, the game mart and private receipts in
+one transaction after validating its prepared input snapshot. Migration 068 and
+runtime role membership must be deployed separately before using it. Existing
+incremental computation and later mart refreshes invalidate current evidence.
+See the [publication rollout guide](plans/2026-09-09-f14-publication-receipts.md)
+for receipt semantics, lost-commit recovery, locking and activation boundaries.

@@ -15,6 +15,10 @@ Retuned 2026-07-22 (user-approved tune_params walk-forward advisory): K
 200 -> 100. Blend margin MAE 13.60 -> 13.20 over 2015-2025, ATS flat.
 
 Usage:
+    python scripts/compute_house_elo.py --full --publish-receipts
+        Opt-in atomic game output, current snapshot, mart and private receipts.
+        Requires migration 068 and warehouse_publisher role membership.
+
     python scripts/compute_house_elo.py --full
         Recompute all of history: seasons 1869..max(core.games.season),
         rewriting analytics.house_elo_game season by season and the
@@ -37,14 +41,20 @@ season >= 2015 rows where CFBD's value is present (expect r >~ 0.9).
 """
 
 import argparse
+import json
 import logging
 import math
 import sys
+import uuid
 from collections import Counter, defaultdict
 
 import dlt
 
-from src.pipelines.game_identity import eligible_game_sql
+from src.pipelines.game_identity import (
+    CANCELLED_GAME_IDS,
+    SUPERSEDED_GAME_REPLACEMENTS,
+    eligible_game_sql,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -608,6 +618,131 @@ def run_full(conn, start_season: int, end_season: int) -> list[dict]:
     return all_rows
 
 
+class PublicationError(RuntimeError):
+    """Publication failed or commit acknowledgement was lost; no automatic retry."""
+
+
+def _publication_json(value):
+    from datetime import date, datetime
+
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    raise TypeError(f"Unsupported publication value: {type(value).__name__}")
+
+
+def run_full_published(conn) -> list[dict]:
+    """Opt-in full replacement: data, mart, receipts and pointers commit together.
+
+    Preparation reads a repeatable snapshot. It ends BEFORE publication, which
+    rechecks the input digest and expected generations under locks in a fresh
+    READ COMMITTED transaction. A lost commit acknowledgement is left unresolved
+    for receipt-ID inspection; it must never produce a contradictory failure.
+    """
+    from psycopg2.extras import Json
+
+    run_id, source_id, mart_id = (str(uuid.uuid4()) for _ in range(3))
+    logger.info(
+        "Publication run=%s source_generation=%s mart_generation=%s", run_id, source_id, mart_id
+    )
+    started = False
+    commit_pending = False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL ROLE warehouse_publisher")
+            cur.execute(
+                "SELECT warehouse_publication.start_house_elo_run(%s)",
+                (run_id,),
+            )
+        conn.commit()
+        started = True
+
+        with conn.cursor() as cur:
+            cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            cur.execute("SET LOCAL TIME ZONE 'UTC'")
+        end_season = fetch_max_season(conn) or DEFAULT_START_SEASON
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL ROLE warehouse_publisher")
+            cur.execute(
+                "SELECT * FROM warehouse_publication.get_house_elo_state(%s,%s)",
+                (DEFAULT_START_SEASON, end_season),
+            )
+            expected_source, expected_mart, input_digest = cur.fetchone()
+            cur.execute("RESET ROLE")
+        buckets = load_games_by_season(conn, DEFAULT_START_SEASON, end_season)
+        counts = fetch_scheduled_counts(conn, DEFAULT_START_SEASON, end_season)
+        conn.commit()
+
+        engine = EloEngine()
+        rows = []
+        for season in sorted(buckets):
+            season_games = buckets[season]
+            engine.start_season(
+                season, counts.get(season) or compute_team_game_counts(season_games)
+            )
+            rows.extend(engine.process_game(to_engine_game(game)) for game in season_games)
+        snapshot = engine.current_snapshot(max(buckets)) if buckets else []
+        excluded = sorted(set(SUPERSEDED_GAME_REPLACEMENTS) | set(CANCELLED_GAME_IDS))
+
+        def dumps(value):
+            return json.dumps(value, default=_publication_json, allow_nan=False)
+
+        with conn.cursor() as cur:
+            cur.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+            cur.execute("SET LOCAL ROLE warehouse_publisher")
+            cur.execute(
+                "SELECT * FROM warehouse_publication.publish_house_elo("
+                "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::bigint[])",
+                (
+                    run_id,
+                    source_id,
+                    mart_id,
+                    expected_source,
+                    expected_mart,
+                    input_digest,
+                    Json(rows, dumps=dumps),
+                    Json(snapshot, dumps=dumps),
+                    DEFAULT_START_SEASON,
+                    end_season,
+                    excluded,
+                ),
+            )
+            cur.fetchone()
+            cur.execute(
+                "SELECT warehouse_publication.finish_house_elo_run(%s,'succeeded')", (run_id,)
+            )
+        commit_pending = True
+        conn.commit()
+        commit_pending = False
+        logger.info("Publication committed: %s games, %s snapshot teams", len(rows), len(snapshot))
+        return rows
+    except Exception:
+        try:
+            conn.rollback()
+            if started and not commit_pending:
+                with conn.cursor() as cur:
+                    cur.execute("SET LOCAL ROLE warehouse_publisher")
+                    cur.execute(
+                        "SELECT * FROM warehouse_publication.record_house_elo_failure("
+                        "%s,%s,%s,'failed','publication_failed')",
+                        (run_id, source_id, mart_id),
+                    )
+                    cur.execute(
+                        "SELECT warehouse_publication.finish_house_elo_run(%s,'failed')",
+                        (run_id,),
+                    )
+                conn.commit()
+        except Exception:
+            logger.error("Could not persist failure evidence for publication run=%s", run_id)
+        detail = (
+            "commit acknowledgement unavailable; inspect receipt IDs"
+            if commit_pending
+            else "failed"
+        )
+        raise PublicationError(
+            f"House Elo publication {detail}; run={run_id} source={source_id} mart={mart_id}"
+        ) from None
+
+
 def run_season(conn, season: int) -> list[dict]:
     engine = EloEngine()
     logger.info(f"Seeding engine state from analytics.house_elo_game (season < {season})")
@@ -660,13 +795,23 @@ def main() -> None:
         action="store_true",
         help="Recompute the current season (max season in core.games with completed games)",
     )
+    parser.add_argument(
+        "--publish-receipts",
+        action="store_true",
+        help="With --full only: atomically publish output, snapshot, mart and receipts "
+        "(migration 068 required)",
+    )
     args = parser.parse_args()
+    if args.publish_receipts and not args.full:
+        parser.error("--publish-receipts requires --full")
 
     import psycopg2
 
     conn = psycopg2.connect(get_db_url())
     try:
-        if args.full:
+        if args.publish_receipts:
+            rows = run_full_published(conn)
+        elif args.full:
             max_season = fetch_max_season(conn)
             if max_season is None:
                 logger.error("core.games is empty -- nothing to compute")

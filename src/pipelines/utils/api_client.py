@@ -248,9 +248,11 @@ class CFBDClient:
         """Clear this client's breaker so it can issue requests again.
 
         Resets the run-wide breaker unless a private one was injected, since
-        that is the one blocking every client in the run.
+        that is the one blocking every client in the run. Also clears the shared
+        control breaker used by durable reconciliation requests.
         """
         self._breaker.reset()
+        _CONTROL_BREAKER.reset()
 
     @staticmethod
     def _http_date_delay(text: str, now: datetime | None = None) -> int | None:
@@ -285,7 +287,9 @@ class CFBDClient:
             now=reference,
         )
 
-    def _send_attempt(self, endpoint: str, params: dict | None, retry: int):
+    def _send_attempt(
+        self, endpoint: str, params: dict | None, retry: int, expected_empty: bool = False
+    ):
         from .quota_admission import transport_operation
 
         operation = transport_operation()
@@ -305,9 +309,19 @@ class CFBDClient:
                 operation.result(attempt_id, "unknown", None, "response_unobserved")
                 raise
             status = response.status_code
+            state = "succeeded" if 200 <= status < 300 else "http_error"
+            if state == "succeeded" and expected_empty:
+                # Only a caller with an explicit empty-response contract may
+                # classify no-data. Invalid JSON is still a received 2xx;
+                # get() will surface its decoding error after recording it.
+                try:
+                    if response.json() == []:
+                        state = "expected_no_data"
+                except ValueError:
+                    pass
             operation.result(
                 attempt_id,
-                "succeeded" if 200 <= status < 300 else "http_error",
+                state,
                 status,
                 None if 200 <= status < 300 else "http_error",
             )
@@ -318,6 +332,8 @@ class CFBDClient:
         endpoint: str,
         params: dict[str, Any] | None = None,
         retries: int = MAX_RETRIES,
+        *,
+        expected_empty: bool = False,
     ) -> list[dict]:
         """Make a GET request to the API.
 
@@ -341,6 +357,9 @@ class CFBDClient:
             retries: Number of retries on 429 rate-limited responses.
                 Transient faults use the separate TRANSIENT_MAX_RETRIES
                 budget regardless of this value.
+            expected_empty: Caller confirms an empty JSON list is expected no-data.
+                Durable admission records that terminal classification before
+                returning the response. Other payloads remain transport successes.
 
         Returns:
             JSON response as a list of dicts
@@ -385,7 +404,9 @@ class CFBDClient:
         transient_failures = 0  # 5xx / network failures retried so far
         while True:
             try:
-                response = self._send_attempt(endpoint, params, attempt + transient_failures)
+                response = self._send_attempt(
+                    endpoint, params, attempt + transient_failures, expected_empty
+                )
                 response.raise_for_status()
                 # Any success clears the breaker: a transient burst block that
                 # resolves must not accumulate toward the quota threshold.

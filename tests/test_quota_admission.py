@@ -238,6 +238,9 @@ def test_live_dry_run_still_enrolls_transport(monkeypatch):
     poll_scoreboard.main()
     assert seen[0][0][0] == "poll_scoreboard"
     assert seen[0][1].get("enabled", True)
+    client.get.assert_called_once_with(
+        "/scoreboard", params={"classification": "fbs"}, expected_empty=True
+    )
     client.close.assert_called_once()
 
 
@@ -278,3 +281,48 @@ def test_exhausted_transient_failure_cannot_leave_successful_run(admitted, monke
     with pytest.raises((httpx.HTTPStatusError, httpx.RequestError)):
         client.get("/games")
     assert operation.outcome == "partial"
+
+
+@pytest.mark.parametrize(
+    "payload,expected_empty,state",
+    [
+        ([], True, "expected_no_data"),
+        ([], False, "succeeded"),
+        ([{"id": 1}], True, "succeeded"),
+        ({}, True, "succeeded"),
+    ],
+)
+def test_explicit_empty_contract_records_terminal_classification(
+    admitted, monkeypatch, payload, expected_empty, state
+):
+    operation, client = admitted
+    reply = httpx.Response(200, json=payload, request=httpx.Request("GET", "https://fixture"))
+    monkeypatch.setattr(client._client, "get", Mock(return_value=reply))
+    assert client.get("/scoreboard", expected_empty=expected_empty) == payload
+    assert operation.calls[-1][1][1:3] == (state, 200)
+    assert sum("record_cfbd_attempt_result" in sql for sql, _ in operation.calls) == 1
+
+
+def test_invalid_json_is_not_recorded_as_expected_no_data(admitted, monkeypatch):
+    operation, client = admitted
+    reply = httpx.Response(
+        200, content=b"bad json", request=httpx.Request("GET", "https://fixture")
+    )
+    monkeypatch.setattr(client._client, "get", Mock(return_value=reply))
+    with pytest.raises(ValueError):
+        client.get("/scoreboard", expected_empty=True)
+    assert operation.calls[-1][1][1:3] == ("succeeded", 200)
+
+
+def test_client_reset_reopens_control_without_restarting(admitted, monkeypatch):
+    _, client = admitted
+    for _ in range(api_client._CONTROL_BREAKER.threshold):
+        api_client._CONTROL_BREAKER.record_rate_limited()
+    send = Mock(return_value=response(200))
+    monkeypatch.setattr(client._client, "get", send)
+    with pytest.raises(api_client.RateLimitCircuitOpen):
+        client.get("/info")
+    send.assert_not_called()
+    client.reset_rate_limit_circuit()
+    assert client.get("/info") == []
+    send.assert_called_once()

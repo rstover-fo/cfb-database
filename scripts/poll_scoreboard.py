@@ -493,7 +493,9 @@ def main() -> None:
     with quota_operation("poll_scoreboard", {"classification": "fbs", "dry_run": args.dry_run}):
         client = get_client()
         try:
-            raw_games = client.get("/scoreboard", params={"classification": "fbs"})
+            raw_games = client.get(
+                "/scoreboard", params={"classification": "fbs"}, expected_empty=True
+            )
         finally:
             client.close()
 

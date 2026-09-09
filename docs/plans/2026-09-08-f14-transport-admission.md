@@ -70,8 +70,11 @@ after extraction exhaustion. Control requests also use a separate 429 circuit
 breaker so extraction refusal cannot prevent reconciliation. Database/accounting
 failure blocks both classes. Existing bounded HTTP retry/backoff rules remain.
 
-Success records a 2xx transport outcome; logical expected-no-data classification
-remains the source adapter's responsibility. HTTP failures preserve their status;
+Success records a 2xx transport outcome. Callers with an explicit empty-list
+contract can pass `expected_empty=True`; scoreboard polling does so, recording
+`expected_no_data` before returning an empty result. Other callers keep ordinary
+transport-success classification, and malformed JSON is surfaced as a decoding
+error rather than no-data. HTTP failures preserve their status;
 network failures have NULL HTTP status. Arbitrary request values, headers,
 credentials, and exception text are not written into the quota ledger. Stored
 request context contains only supported numeric/boolean work-unit identifiers.

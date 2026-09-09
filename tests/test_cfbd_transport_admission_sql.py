@@ -159,7 +159,10 @@ def test_control_replay_context_and_expiry(transport_db):
     conn.rollback()
 
 
-def test_real_adapter_commits_parent_attempt_and_response(transport_db, monkeypatch):
+@pytest.mark.parametrize("expected_empty", [False, True])
+def test_real_adapter_commits_parent_attempt_and_response(
+    transport_db, monkeypatch, expected_empty
+):
     import httpx
 
     from src.pipelines.utils.api_client import CFBDClient
@@ -185,7 +188,7 @@ def test_real_adapter_commits_parent_attempt_and_response(transport_db, monkeypa
         client = CFBDClient(api_key="fixture")
         monkeypatch.setattr(client._client, "get", http_send)
         try:
-            assert client.get("/games", {"year": 2026}) == []
+            assert client.get("/scoreboard", expected_empty=expected_empty) == []
         finally:
             client.close()
     assert observed == [[("dispatched",)]]
@@ -195,7 +198,7 @@ def test_real_adapter_commits_parent_attempt_and_response(transport_db, monkeypa
         (operation.run_id,),
     ) == [("succeeded",)]
     assert query(conn, "SELECT state,http_status FROM meta.api_request_attempts") == [
-        ("succeeded", 200)
+        ("expected_no_data" if expected_empty else "succeeded", 200)
     ]
 
 

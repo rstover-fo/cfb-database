@@ -578,6 +578,42 @@ def test_migration_is_idempotent_and_role_has_only_bounded_rpc_access(generation
     denied(conn, "warehouse_refresher", "SELECT * FROM meta.asset_receipts")
 
 
+@pytest.mark.parametrize("reapply", [False, True])
+@pytest.mark.parametrize("direction", ["member", "parent"])
+def test_migration_rejects_existing_memberships(request, reapply, direction):
+    conn, _ = request.getfixturevalue("_freshness_db")
+    if reapply:
+        query(conn, MIGRATION.read_text())
+    else:
+        query(
+            conn,
+            "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles "
+            "WHERE rolname='warehouse_refresher') THEN "
+            "CREATE ROLE warehouse_refresher NOLOGIN NOINHERIT; END IF; END $$",
+        )
+    other_role = "generation_member_" + uuid.uuid4().hex
+    query(conn, sql.SQL("CREATE ROLE {} LOGIN").format(sql.Identifier(other_role)))
+    granted, member = (
+        ("warehouse_refresher", other_role)
+        if direction == "member"
+        else (other_role, "warehouse_refresher")
+    )
+    try:
+        query(
+            conn, sql.SQL("GRANT {} TO {}").format(sql.Identifier(granted), sql.Identifier(member))
+        )
+        with pytest.raises(psycopg2.Error, match="bounded NOLOGIN role"):
+            query(conn, MIGRATION.read_text())
+        conn.rollback()
+        if not reapply:
+            assert query(
+                conn, "SELECT to_regprocedure('warehouse_refresh.get_house_elo_game_plan()')"
+            ) == [(None,)]
+    finally:
+        conn.rollback()
+        query(conn, sql.SQL("DROP ROLE {}").format(sql.Identifier(other_role)))
+
+
 def test_reapply_rejects_preexisting_refresher_direct_read_access(generation_db):
     conn, _ = generation_db
     query(conn, "GRANT SELECT ON meta.asset_receipts TO warehouse_refresher")

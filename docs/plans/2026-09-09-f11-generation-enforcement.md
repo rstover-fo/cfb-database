@@ -83,6 +83,11 @@ bootstrap and production manifests. Runtime login membership and an appropriate
 source cadence must be separately configured before activation. No scheduled
 workflow is switched to the new mode by this change.
 
+Migration application rejects preexisting memberships in either direction for
+`warehouse_refresher`, including runtime logins already granted the role. A direct
+reapplication after activation therefore requires membership to be removed first;
+the managed runner normally skips an already recorded migration.
+
 The existing trusted-administrator boundary still applies: administrators must
 clear current pointers before disabling publication event guards. This protocol
 checks guard presence and refuses new publication when it cannot trust them;

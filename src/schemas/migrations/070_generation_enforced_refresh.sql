@@ -37,7 +37,8 @@ BEGIN
     ELSIF EXISTS (SELECT 1 FROM pg_catalog.pg_roles r WHERE r.rolname='warehouse_refresher'
         AND (r.rolcanlogin OR r.rolinherit OR r.rolsuper OR r.rolcreatedb
             OR r.rolcreaterole OR r.rolreplication OR r.rolbypassrls
-            OR EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members WHERE member=r.oid))) THEN
+            OR EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members
+                WHERE member=r.oid OR roleid=r.oid))) THEN
         RAISE EXCEPTION 'warehouse_refresher must be a bounded NOLOGIN role';
     END IF;
 END

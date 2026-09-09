@@ -50,14 +50,16 @@ class _Connection:
         self,
         *,
         plan=None,
-        plan_error: Exception | None = None,
-        publish_error: Exception | None = None,
+        plan_error: BaseException | None = None,
+        publish_error: BaseException | None = None,
         fail_on_commit: int | None = None,
+        commit_error: BaseException | None = None,
     ):
         self.plan = plan if plan is not None else {"opaque": {"generation": "source-a"}}
         self.plan_error = plan_error
         self.publish_error = publish_error
         self.fail_on_commit = fail_on_commit
+        self.commit_error = commit_error or ConnectionError("commit acknowledgement lost")
         self.events = []
         self.commits = 0
         self.rollbacks = 0
@@ -70,7 +72,7 @@ class _Connection:
         self.commits += 1
         self.events.append(("commit", self.commits))
         if self.commits == self.fail_on_commit:
-            raise ConnectionError("commit acknowledgement lost")
+            raise self.commit_error
 
     def rollback(self):
         self.rollbacks += 1
@@ -200,6 +202,24 @@ def test_definite_refresh_failure_records_failed(monkeypatch):
     assert failure[2][2] == "failed"
 
 
+def test_keyboard_interrupt_during_publication_records_failure_then_reraises(monkeypatch):
+    connection = _Connection(publish_error=KeyboardInterrupt())
+
+    with pytest.raises(KeyboardInterrupt):
+        _run(monkeypatch, connection)
+
+    failures = [
+        event
+        for event in connection.events
+        if event[0] == "execute" and "fail_house_elo_game_refresh" in event[1]
+    ]
+    assert len(failures) == 1
+    assert failures[0][2][2] == "failed"
+    assert connection.rollbacks == 1
+    assert connection.commits == 3  # setup, durable operation start, failure receipt
+    assert connection.closed
+
+
 def test_unknown_publication_commit_never_records_failure_or_retries(monkeypatch, caplog):
     connection = _Connection(fail_on_commit=3)
 
@@ -230,4 +250,38 @@ def test_unknown_operation_start_commit_stops_before_publication(monkeypatch, ca
     assert not any("publish_house_elo_game_refresh" in statement for statement in statements)
     assert not any("fail_house_elo_game_refresh" in statement for statement in statements)
     assert "operation start has an unknown commit outcome" in caplog.text
+    assert connection.closed
+
+
+@pytest.mark.parametrize("commit_number", [2, 3])
+def test_keyboard_interrupt_during_uncertain_commit_never_records_failure(
+    monkeypatch, commit_number
+):
+    connection = _Connection(
+        fail_on_commit=commit_number,
+        commit_error=KeyboardInterrupt(),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        _run(monkeypatch, connection)
+
+    statements = [event[1] for event in connection.events if event[0] == "execute"]
+    assert sum("start_house_elo_game_refresh" in statement for statement in statements) == 1
+    assert sum("publish_house_elo_game_refresh" in statement for statement in statements) == (
+        commit_number == 3
+    )
+    assert not any("fail_house_elo_game_refresh" in statement for statement in statements)
+    assert connection.closed
+
+
+def test_keyboard_interrupt_before_start_reraises_without_failure_receipt(monkeypatch):
+    connection = _Connection(plan_error=KeyboardInterrupt())
+
+    with pytest.raises(KeyboardInterrupt):
+        _run(monkeypatch, connection)
+
+    statements = [event[1] for event in connection.events if event[0] == "execute"]
+    assert any("get_house_elo_game_plan" in statement for statement in statements)
+    assert not any("start_house_elo_game_refresh" in statement for statement in statements)
+    assert not any("fail_house_elo_game_refresh" in statement for statement in statements)
     assert connection.closed

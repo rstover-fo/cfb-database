@@ -67,7 +67,7 @@ def _print_receipt_refresh_dry_run() -> None:
     print("  Live generation, cadence, and staleness validation is not run during --dry-run.")
 
 
-def _receipt_failure_outcome(exc: Exception) -> str:
+def _receipt_failure_outcome(exc: BaseException) -> str:
     """Generation races and no-longer-ready inputs are blocked, not failed."""
     return "blocked" if getattr(exc, "pgcode", None) in {"40001", "55000"} else "failed"
 
@@ -94,8 +94,8 @@ def _refresh_house_elo_game_with_receipts(conn) -> bool:
             cur.fetchone()
         start_commit_pending = True
         conn.commit()
-        start_commit_pending = False
         started = True
+        start_commit_pending = False
 
         with conn.cursor() as cur:
             cur.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
@@ -116,7 +116,8 @@ def _refresh_house_elo_game_with_receipts(conn) -> bool:
             replayed,
         )
         return True
-    except Exception as exc:  # noqa: BLE001 - preserve definite vs uncertain commit outcomes
+    except BaseException as exc:  # noqa: BLE001 - interruptions need the same durable cleanup
+        interrupted = not isinstance(exc, Exception)
         try:
             conn.rollback()
         except Exception:  # noqa: BLE001 - a broken connection cannot be recovered here
@@ -129,6 +130,8 @@ def _refresh_house_elo_game_with_receipts(conn) -> bool:
                 run_id,
                 generation_id,
             )
+            if interrupted:
+                raise
             return False
         if publication_commit_pending:
             logger.error(
@@ -137,9 +140,13 @@ def _refresh_house_elo_game_with_receipts(conn) -> bool:
                 run_id,
                 generation_id,
             )
+            if interrupted:
+                raise
             return False
         if not started:
             logger.error("Receipt refresh could not start for %s: %s", RECEIPT_REFRESH_VIEW, exc)
+            if interrupted:
+                raise
             return False
 
         outcome = _receipt_failure_outcome(exc)
@@ -162,6 +169,8 @@ def _refresh_house_elo_game_with_receipts(conn) -> bool:
             generation_id,
             exc,
         )
+        if interrupted:
+            raise
         return False
 
 

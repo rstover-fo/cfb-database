@@ -237,6 +237,66 @@ def test_fpi_raw_values_are_checked_before_lossy_parser_coercion(column, value, 
         publication._raw_row_count(_parquet_bytes(raw), SDV_FPI_PUBLICATION, 2025)
 
 
+@pytest.mark.parametrize("column", ["fpi", "projectedt", "totefficiencyrank"])
+@pytest.mark.parametrize("value", [True, "1.25", float("nan"), float("inf"), 2**53 + 1])
+def test_fpi_raw_metrics_reject_type_drift_and_lossy_values(column, value):
+    raw = fpi_row(**{column: value})
+    with pytest.raises(publication.SourcePublicationError, match=f"raw column {column}"):
+        publication._raw_row_count(_parquet_bytes(raw), SDV_FPI_PUBLICATION, 2025)
+
+
+@pytest.mark.parametrize("value", [None, 0, 2**53, -1.25, 0.0, 1.25])
+def test_fpi_raw_metrics_accept_null_and_lossless_finite_numbers(value):
+    raw = fpi_row(fpi=value)
+    assert publication._raw_row_count(_parquet_bytes(raw), SDV_FPI_PUBLICATION, 2025) == 1
+
+
+@pytest.mark.parametrize("value", [True, "1.25"])
+def test_bad_raw_fpi_metric_fails_before_parser_staging_or_publication(
+    monkeypatch, tmp_path, value
+):
+    install_ids(monkeypatch)
+    raw = _parquet_bytes(fpi_row(fpi=value))
+    sha = hashlib.sha256(raw).hexdigest()
+    path = tmp_path / "fpi.parquet"
+    path.write_bytes(raw)
+    failures = []
+    reached = []
+    monkeypatch.setattr(publication, "get_db_url", lambda: "postgres://fixture")
+    monkeypatch.setattr(publication, "_get_plan", lambda dsn, asset, season: plan(asset))
+
+    def start(dsn, run_id, selected_plan, state):
+        state.started = True
+
+    def forbidden(*args, **kwargs):
+        reached.append("parser_or_publication")
+        raise AssertionError("invalid raw metrics must not reach the parser or publication")
+
+    monkeypatch.setattr(publication, "_start_run", start)
+    monkeypatch.setattr(
+        publication,
+        "fetch_file",
+        lambda target: FetchedFile(content=raw, sha256=sha, source_url=str(path)),
+    )
+    for name in ("resolve_parser", "_stage_rows", "_publish"):
+        monkeypatch.setattr(publication, name, forbidden)
+    monkeypatch.setattr(
+        publication,
+        "_fail_run",
+        lambda dsn, run_id, generation_id, outcome, state: failures.append(outcome),
+    )
+
+    result = publication.run_source_publication(
+        REGISTRY["sdv_fpi_weekly"], file_path=str(path), season=2025
+    )
+
+    assert result["status"] == "failed"
+    assert "raw column fpi" in result["error"]
+    assert result["sha"] == sha
+    assert failures == ["failed"]
+    assert reached == []
+
+
 def test_fpi_raw_season_must_match_selected_season():
     raw = fpi_row(season=2024)
     raw["last_updated"] = "2024-08-01T00:00:00Z"

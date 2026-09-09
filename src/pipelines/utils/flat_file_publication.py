@@ -415,6 +415,18 @@ def _is_lossless_bigint(value: Any) -> bool:
     return value is None or type(value) is int and -(1 << 63) <= value < (1 << 63)
 
 
+def _is_lossless_double(value: Any) -> bool:
+    if value is None:
+        return True
+    if type(value) not in (int, float):
+        return False
+    try:
+        converted = float(value)
+    except OverflowError:
+        return False
+    return math.isfinite(converted) and converted == value
+
+
 def _raw_row_count(raw: bytes, asset: SourcePublicationAsset, season: int) -> int:
     try:
         parquet_file = pyarrow.parquet.ParquetFile(io.BytesIO(raw))
@@ -426,16 +438,22 @@ def _raw_row_count(raw: bytes, asset: SourcePublicationAsset, season: int) -> in
         row_count = parquet_file.metadata.num_rows
         if row_count > MAX_SOURCE_ROWS:
             raise SourcePublicationError(f"{asset.source_name} exceeds {MAX_SOURCE_ROWS} rows")
-        integer_columns, _, boolean_columns, _, _, _ = _type_sets(asset)
+        integer_columns, double_columns, boolean_columns, _, _, _ = _type_sets(asset)
         raw_integer_columns = sorted(integer_columns.intersection(names))
+        raw_double_columns = sorted(double_columns.intersection(names))
         raw_boolean_columns = sorted(boolean_columns.intersection(names))
-        checked_columns = [*raw_integer_columns, *raw_boolean_columns]
+        checked_columns = [*raw_integer_columns, *raw_double_columns, *raw_boolean_columns]
         for batch in parquet_file.iter_batches(batch_size=4_096, columns=checked_columns):
             values_by_name = batch.to_pydict()
             for column in raw_integer_columns:
                 if any(not _is_lossless_bigint(value) for value in values_by_name[column]):
                     raise SourcePublicationError(
                         f"{asset.source_name} raw column {column} has a non-integer value"
+                    )
+            for column in raw_double_columns:
+                if any(not _is_lossless_double(value) for value in values_by_name[column]):
+                    raise SourcePublicationError(
+                        f"{asset.source_name} raw column {column} is not a lossless finite number"
                     )
             for column in raw_boolean_columns:
                 if any(

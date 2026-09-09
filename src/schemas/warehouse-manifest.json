@@ -60,6 +60,11 @@
       "id": "warehouse.source.071",
       "path": "src/schemas/migrations/071_sdv_ratings_publication.sql",
       "kind": "immutable"
+    },
+    {
+      "id": "warehouse.source.072",
+      "path": "src/schemas/migrations/072_sdv_source_batch_publication.sql",
+      "kind": "immutable"
     }
   ]
 }

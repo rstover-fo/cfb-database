@@ -14,7 +14,6 @@ import logging
 import math
 import os
 import tempfile
-import time
 import uuid
 from dataclasses import dataclass, replace
 from datetime import date
@@ -39,6 +38,18 @@ from src.pipelines.sources.flat_files import (
     resolve_parser,
 )
 from src.pipelines.utils.file_fetcher import fetch_file
+from src.pipelines.utils.flat_file_publication import (
+    PostCommitError as PostCommitError,
+)
+from src.pipelines.utils.flat_file_publication import (
+    SourcePublicationError,
+    UncertainCommitError,
+    _execute_rpc,
+    _LifecycleHooks,
+    _MutationState,
+    _run_publication_lifecycle,
+    _RunContext,
+)
 from src.pipelines.utils.load_ledger import get_db_url
 
 logger = logging.getLogger(__name__)
@@ -65,59 +76,11 @@ _STAGE_SYSTEM_COLUMNS = ("_dlt_id", "_dlt_load_id")
 _EXPECTED_STAGE_COLUMNS = frozenset((*SDV_RATINGS_PUBLICATION.columns, *_STAGE_SYSTEM_COLUMNS))
 
 
-class SourcePublicationError(RuntimeError):
-    """A known pre-commit publication failure."""
-
-
-class UncertainCommitError(RuntimeError):
-    """The client cannot determine whether a mutating RPC committed."""
-
-
-class PostCommitError(RuntimeError):
-    """A non-transactional error occurred after a confirmed RPC commit."""
-
-
 @dataclass(frozen=True)
 class _StageResult:
     table: str
     rows: list[dict[str, Any]]
     evidence: dict[str, Any]
-
-
-@dataclass
-class _MutationState:
-    start_pending: bool = False
-    started: bool = False
-    publish_pending: bool = False
-    published: bool = False
-    failure_pending: bool = False
-    failure_recorded: bool = False
-
-    def set_pending(self, phase: str) -> None:
-        setattr(self, f"{phase}_pending", True)
-
-    def set_committed(self, phase: str) -> None:
-        committed = {"start": "started", "publish": "published", "failure": "failure_recorded"}
-        setattr(self, committed[phase], True)
-        # Keep the conservative pending state until the confirmed state is set.
-        # An asynchronous interrupt between these assignments can therefore
-        # never make a successful commit look safe to relabel as failed.
-        setattr(self, f"{phase}_pending", False)
-
-
-def _base_result(run_id: str, generation_id: str) -> dict[str, Any]:
-    return {
-        "source": SDV_RATINGS_PUBLICATION.source_name,
-        "status": "failed",
-        "rows": 0,
-        "sha": None,
-        "duration_s": 0.0,
-        "error": None,
-        "unmapped": None,
-        "gaps": None,
-        "run_id": run_id,
-        "generation_id": generation_id,
-    }
 
 
 def _validate_supported_spec(spec: FlatFileSpec, season: int) -> None:
@@ -175,61 +138,15 @@ def _rpc(
     state: _MutationState | None = None,
     phase: str | None = None,
 ) -> tuple[Any, ...] | None:
-    if mutating != (state is not None and phase in {"start", "publish", "failure"}):
-        raise ValueError("mutating RPCs require an explicit mutation phase and state")
-    conn = _connect(dsn)
-    try:
-        with conn.cursor() as cur:
-            cur.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(_ROLE)))
-            cur.execute("SET LOCAL statement_timeout = '60s'")
-            cur.execute(statement, args)
-            row = cur.fetchone() if cur.description else None
-    except BaseException:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        try:
-            conn.close()
-        except Exception:
-            pass
-        raise
-
-    if mutating:
-        assert state is not None and phase is not None
-        state.set_pending(phase)
-    try:
-        conn.commit()
-    except BaseException as error:
-        try:
-            conn.close()
-        except Exception:
-            pass
-        if mutating:
-            raise UncertainCommitError(
-                "source publication RPC commit outcome is uncertain"
-            ) from error
-        raise
-    if mutating:
-        state.set_committed(phase)
-    try:
-        conn.close()
-    except BaseException as error:
-        if mutating:
-            if isinstance(error, Exception):
-                logger.warning(
-                    "Source publication RPC committed but connection close failed; "
-                    "phase=%s error_type=%s",
-                    phase,
-                    type(error).__name__,
-                )
-            else:
-                raise PostCommitError(
-                    "source publication RPC committed before close was interrupted"
-                ) from error
-        else:
-            raise
-    return row
+    return _execute_rpc(
+        _connect,
+        dsn,
+        statement,
+        args,
+        mutating=mutating,
+        state=state,
+        phase=phase,
+    )
 
 
 def _get_plan(dsn: str, season: int) -> dict[str, Any]:
@@ -583,6 +500,60 @@ def _known_error_text(error: BaseException, run_id: str, generation_id: str) -> 
     return f"{detail}; run_id={run_id}; generation_id={generation_id}"[:ERROR_MESSAGE_LIMIT]
 
 
+def _ratings_work(
+    dsn: str,
+    spec: FlatFileSpec,
+    file_path: str | None,
+    season: int,
+    run_id: str,
+    generation_id: str,
+    state: _MutationState,
+    context: _RunContext,
+) -> tuple[str, int]:
+    if file_path is not None:
+        local_path = Path(file_path)
+        if "://" in file_path or not local_path.is_file():
+            raise SourcePublicationError("receipt file override must be an existing local file")
+        target = file_path
+        artifact_origin = "local_file"
+    else:
+        target = resolve_fetch_url(spec, season)
+        artifact_origin = "registered_url"
+    if not target:
+        raise SourcePublicationError("sdv_ratings_weekly has no fetch target")
+    fetched = fetch_file(target)
+    if fetched.sha256 != hashlib.sha256(fetched.content).hexdigest():
+        raise SourcePublicationError("fetched SDV ratings SHA-256 does not match its bytes")
+    context.source_sha = fetched.sha256
+    ctx = ParseContext(
+        source=spec.name,
+        snapshot_date=date.today(),
+        season=season,
+        source_url=fetched.source_url,
+        file_name=os.path.basename(fetched.source_url),
+    )
+    raw_count = _raw_row_count(fetched.content)
+    if raw_count > MAX_SOURCE_ROWS:
+        raise SourcePublicationError(f"sdv_ratings_weekly exceeds {MAX_SOURCE_ROWS} rows")
+    parser = resolve_parser(spec.parser)
+    parsed_rows = list(parser(fetched.content, ctx))
+    _validate_parsed_rows(parsed_rows, raw_count, season)
+    context.stage_table = _stage_table_name(run_id)
+    stage = _stage_rows(
+        dsn,
+        spec,
+        fetched.content,
+        ctx,
+        run_id,
+        len(parsed_rows),
+        artifact_origin,
+    )
+    if stage.table != context.stage_table:
+        raise SourcePublicationError("dlt returned a mismatched staging table")
+    _, _, published_rows = _publish(dsn, run_id, generation_id, fetched.sha256, stage, state)
+    return fetched.sha256, published_rows
+
+
 def run_sdv_ratings_publication(
     spec: FlatFileSpec,
     *,
@@ -590,145 +561,19 @@ def run_sdv_ratings_publication(
     season: int,
 ) -> dict[str, Any]:
     """Publish one complete SDV ratings season through the bounded SQL RPCs."""
-
-    started_at = time.monotonic()
-    run_id = str(uuid.uuid4())
-    generation_id = str(uuid.uuid4())
-    result = _base_result(run_id, generation_id)
-    stage_table: str | None = None
-    state = _MutationState()
-    terminal_confirmed = False
-
-    try:
-        _validate_supported_spec(spec, season)
-        dsn = get_db_url()
-        plan = _get_plan(dsn, season)
-        _start_run(dsn, run_id, plan, state)
-
-        if file_path is not None:
-            local_path = Path(file_path)
-            if "://" in file_path or not local_path.is_file():
-                raise SourcePublicationError("receipt file override must be an existing local file")
-            target = file_path
-            artifact_origin = "local_file"
-        else:
-            target = resolve_fetch_url(spec, season)
-            artifact_origin = "registered_url"
-        if not target:
-            raise SourcePublicationError("sdv_ratings_weekly has no fetch target")
-        fetched = fetch_file(target)
-        if fetched.sha256 != hashlib.sha256(fetched.content).hexdigest():
-            raise SourcePublicationError("fetched SDV ratings SHA-256 does not match its bytes")
-        result["sha"] = fetched.sha256
-        ctx = ParseContext(
-            source=spec.name,
-            snapshot_date=date.today(),
-            season=season,
-            source_url=fetched.source_url,
-            file_name=os.path.basename(fetched.source_url),
-        )
-        raw_count = _raw_row_count(fetched.content)
-        if raw_count > MAX_SOURCE_ROWS:
-            raise SourcePublicationError(f"sdv_ratings_weekly exceeds {MAX_SOURCE_ROWS} rows")
-        parser = resolve_parser(spec.parser)
-        parsed_rows = list(parser(fetched.content, ctx))
-        _validate_parsed_rows(parsed_rows, raw_count, season)
-
-        # Set before dlt starts so a known stage failure or interrupt can clean
-        # up a table created before pipeline.run returned to us.
-        stage_table = _stage_table_name(run_id)
-        stage = _stage_rows(
-            dsn,
-            spec,
-            fetched.content,
-            ctx,
-            run_id,
-            len(parsed_rows),
-            artifact_origin,
-        )
-        if stage.table != stage_table:
-            raise SourcePublicationError("dlt returned a mismatched staging table")
-        _, _, published_rows = _publish(dsn, run_id, generation_id, fetched.sha256, stage, state)
-        terminal_confirmed = True
-        result.update(status="loaded", rows=published_rows)
-        return result
-    except UncertainCommitError as error:
-        # Never retry or write a contradictory failure after an uncertain commit.
-        terminal_confirmed = state.published
-        logger.error(
-            "SDV ratings commit/result is uncertain; run_id=%s generation_id=%s",
-            run_id,
-            generation_id,
-        )
-        if isinstance(error.__cause__, (KeyboardInterrupt, SystemExit)):
-            raise error.__cause__
-        result["error"] = (f"{error}; run_id={run_id}; generation_id={generation_id}")[
-            :ERROR_MESSAGE_LIMIT
-        ]
-        logger.error(result["error"])
-        return result
-    except BaseException as error:
-        interrupt = (
-            error
-            if isinstance(error, (KeyboardInterrupt, SystemExit))
-            else error.__cause__
-            if isinstance(error.__cause__, (KeyboardInterrupt, SystemExit))
-            else None
-        )
-        deferred = isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 404
-        blocked = isinstance(error, psycopg2.Error) and error.pgcode in {"40001", "55000"}
-        outcome = "deferred" if deferred else "blocked" if blocked else "failed"
-        result["status"] = "not_published" if deferred else outcome
-        result["error"] = _known_error_text(error, run_id, generation_id)
-        if state.published:
-            # The publish commit is authoritative even if connection close or
-            # local response handling was interrupted afterward.
-            terminal_confirmed = True
-        elif state.started and not state.publish_pending:
-            try:
-                _fail_run(dsn, run_id, generation_id, outcome, state)
-                terminal_confirmed = True
-            except UncertainCommitError as failure_error:
-                logger.error(
-                    "SDV ratings failure commit outcome is uncertain; run_id=%s generation_id=%s",
-                    run_id,
-                    generation_id,
-                )
-                if isinstance(failure_error.__cause__, (KeyboardInterrupt, SystemExit)):
-                    raise failure_error.__cause__
-            except PostCommitError as failure_error:
-                terminal_confirmed = state.failure_recorded
-                logger.error(
-                    "SDV ratings failure committed before connection close failed; "
-                    "run_id=%s generation_id=%s",
-                    run_id,
-                    generation_id,
-                )
-                if isinstance(failure_error.__cause__, (KeyboardInterrupt, SystemExit)):
-                    raise failure_error.__cause__
-            except Exception:
-                terminal_confirmed = state.failure_recorded
-                logger.error(
-                    "SDV ratings failure receipt was not confirmed; run_id=%s generation_id=%s",
-                    run_id,
-                    generation_id,
-                )
-        if interrupt is not None:
-            raise interrupt
-        return result
-    finally:
-        if stage_table is not None and (
-            terminal_confirmed or state.published or state.failure_recorded
-        ):
-            try:
-                _drop_stage_table(dsn, stage_table)
-            except Exception:
-                logger.warning(
-                    "Could not drop terminal SDV ratings stage table %s; run_id=%s",
-                    stage_table,
-                    run_id,
-                )
-        result["duration_s"] = time.monotonic() - started_at
+    hooks = _LifecycleHooks(
+        source_name=SDV_RATINGS_PUBLICATION.source_name,
+        new_id=uuid.uuid4,
+        preflight=_validate_supported_spec,
+        get_db_url=get_db_url,
+        get_plan=_get_plan,
+        start_run=_start_run,
+        work=_ratings_work,
+        fail_run=_fail_run,
+        drop_stage=_drop_stage_table,
+        known_error_text=_known_error_text,
+    )
+    return _run_publication_lifecycle(spec, file_path=file_path, season=season, hooks=hooks)
 
 
 __all__ = ["run_sdv_ratings_publication"]

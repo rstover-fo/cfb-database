@@ -78,7 +78,7 @@ from datetime import UTC, date, datetime
 import dlt
 import httpx
 
-from src.pipelines.config.source_publication_assets import SDV_RATINGS_PUBLICATION
+from src.pipelines.config.source_publication_assets import SOURCE_PUBLICATION_ASSETS
 from src.pipelines.sources.flat_files import (
     LOAD_SEASON_MONTHS,
     REGISTRY,
@@ -478,8 +478,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--require-receipts",
         action="store_true",
-        help="Atomically publish one sdv_ratings_weekly season with a generation receipt; "
-        "requires --source sdv_ratings_weekly and an explicit --season",
+        help="Publish each selected enrolled source/season atomically with a generation receipt; "
+        "requires explicit --source selections and --season",
     )
     parser.add_argument(
         "--dry-run",
@@ -531,43 +531,60 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--file requires exactly one --source")
 
     if args.require_receipts:
-        contract = SDV_RATINGS_PUBLICATION
-        if args.source != [contract.source_name] or args.due:
-            parser.error("--require-receipts supports exactly --source sdv_ratings_weekly")
+        if not args.source or args.due:
+            parser.error("--require-receipts requires explicit --source selections without --due")
+        if len(args.source) != len(set(args.source)):
+            parser.error("--require-receipts requires unique --source selections")
+        unsupported = set(args.source) - SOURCE_PUBLICATION_ASSETS.keys()
+        if unsupported:
+            parser.error(
+                "--require-receipts supports only: " + ", ".join(SOURCE_PUBLICATION_ASSETS)
+            )
+        contracts = [SOURCE_PUBLICATION_ASSETS[name] for name in args.source]
         try:
-            coverage_key = contract.coverage_key(args.season)
+            coverage_key = contracts[0].coverage_key(args.season)
         except ValueError as exc:
             parser.error(str(exc))
         if args.dry_run:
             from src.pipelines.utils.refresh_plan import REFRESH_GRAPH
 
-            descendants = REFRESH_GRAPH.plan(changed=[contract.asset_key]).views
-            print(f"[DRY RUN] receipt publication: {contract.asset_key}/{coverage_key}")
-            print("  Stage and validate the complete file, then replace only the selected season.")
-            print("  Reparse unchanged bytes; no legacy hash skip or older-season fallback.")
-            fetch_target = _fetch_target_display(
-                REGISTRY[contract.source_name], args.file, args.season
-            )
-            print(f"  Fetch: {fetch_target}")
-            print(f"  Declared descendants (not refreshed): {', '.join(descendants)}")
+            for contract in contracts:
+                print(f"[DRY RUN] receipt publication: {contract.asset_key}/{coverage_key}")
+                print("  Stage and validate the complete file, then replace only this season.")
+                print("  Reparse unchanged bytes; no legacy hash skip or older-season fallback.")
+                fetch_target = _fetch_target_display(
+                    REGISTRY[contract.source_name], args.file, args.season
+                )
+                print(f"  Fetch: {fetch_target}")
+                origin = "local_file" if args.file else "registered_url"
+                print(f"  Season basis: {contract.season_basis(origin)}")
+                if contract.asset_key in REFRESH_GRAPH.dependencies:
+                    descendants = REFRESH_GRAPH.plan(changed=[contract.asset_key]).views
+                    print(f"  Declared descendants (not refreshed): {', '.join(descendants)}")
+                else:
+                    print("  Descendants: source is not registered in the SQL refresh graph.")
+            print("  Each source/season has a separate operation and publication transaction.")
             print("  Live generation and schema validation is not run during --dry-run.")
             return 0
 
-        from src.pipelines.utils.sdv_ratings_publication import run_sdv_ratings_publication
+        from src.pipelines.utils.flat_file_publication import run_source_publication
 
-        result = run_sdv_ratings_publication(
-            REGISTRY[contract.source_name], file_path=args.file, season=args.season
-        )
-        print(_gate_line(result))
-        if result["status"] != "loaded":
-            print(
-                f"Receipt publication {result['status']}: "
-                f"{result.get('error') or 'No error detail was returned'}; "
-                f"run_id={result.get('run_id') or 'unavailable'}; "
-                f"generation_id={result.get('generation_id') or 'unavailable'}",
-                file=sys.stderr,
+        exit_code = 0
+        for contract in contracts:
+            result = run_source_publication(
+                REGISTRY[contract.source_name], file_path=args.file, season=args.season
             )
-        return 0 if result["status"] == "loaded" else 1
+            print(_gate_line(result))
+            if result["status"] != "loaded":
+                exit_code = 1
+                print(
+                    f"Receipt publication {result['status']}: "
+                    f"{result.get('error') or 'No error detail was returned'}; "
+                    f"run_id={result.get('run_id') or 'unavailable'}; "
+                    f"generation_id={result.get('generation_id') or 'unavailable'}",
+                    file=sys.stderr,
+                )
+        return exit_code
 
     if args.file is not None and args.season is None:
         spec = REGISTRY[args.source[0]]

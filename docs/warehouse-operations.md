@@ -96,6 +96,13 @@ advance the current pointer. It does not refresh the crossvalidation mart or
 extend the public freshness RPC. See the
 [source contract and recovery limits](plans/2026-09-09-step7-sdv-ratings-publication.md).
 
+Migration 072 extends this opt-in mode to `sdv_fpi_weekly`, `sdv_team_xwalk` and
+`sdv_game_xwalk`. Repeat `--source` to select several enrolled sources for one
+explicit season. Each commits independently; a source failure reports receipt
+IDs, permits the remaining sources to run and makes the overall exit nonzero.
+Crosswalk local files use a caller-declared season because they have no in-file
+season field. See the [batch scope and verification](plans/2026-09-09-step7-sdv-source-batch.md).
+
 ## Plays partition rollover (F08)
 
 `run_plays_pipeline()` performs catalog preflight before constructing the source

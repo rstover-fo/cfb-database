@@ -389,7 +389,7 @@ def test_managed_warehouse_catalog_data_and_access(
         _insert_representative_rows(conn)
         before_upgrade = _fixture_snapshot(conn)
         upgrade = apply_manifest(conn, manifest, mode="upgrade")
-        assert len(upgrade.pending) == 8
+        assert len(upgrade.pending) == 9
         assert [step.id for step in upgrade.pending] == [
             migration.id for migration in manifest.migrations[4:]
         ]

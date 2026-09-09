@@ -84,6 +84,18 @@ runs remain offline. This mode uses an ordinary refresh and blocks mart reads
 until commit. Existing refresh commands do not opt in automatically.
 See the [F11 protocol and recovery limits](plans/2026-09-09-f11-generation-enforcement.md).
 
+## Source receipt publication (prepared)
+
+After migration 071 and a separate runtime-permission rollout,
+`python scripts/load_flat_files.py --source sdv_ratings_weekly --season 2025 --require-receipts`
+stages the complete season file and atomically replaces that season with its
+receipt. Add `--dry-run` for an offline plan. This opt-in mode reparses unchanged
+bytes, rejects mixed source plans, and does not fall back to an older season.
+Missing files are deferred with a nonzero exit; empty or incomplete files cannot
+advance the current pointer. It does not refresh the crossvalidation mart or
+extend the public freshness RPC. See the
+[source contract and recovery limits](plans/2026-09-09-step7-sdv-ratings-publication.md).
+
 ## Plays partition rollover (F08)
 
 `run_plays_pipeline()` performs catalog preflight before constructing the source

@@ -363,6 +363,13 @@ foundation to solve this broader catalog.
 7. **Incremental migration:** register source coverage/correction metadata and
    adapt remaining dlt, flat-file, compute, and prediction-verification paths.
 
+Delivery progress (2026-09-09): steps 1–6 have merged through PR #142 with
+bounded opt-in adapters. The first step-7 slice is
+[SDV ratings season publication](2026-09-09-step7-sdv-ratings-publication.md):
+explicit source coverage metadata and staged dlt output published atomically
+for one season. Remaining sources, crossvalidation generation closure, public
+source freshness, and production activation remain separate work.
+
 Steps 2 and 4 share database primitives but should remain separate PRs so
 quota-safety review is not coupled to a broad freshness API change. Step 3 can
 start after step 2; step 4 requires registry asset keys. Steps 5 and 6 are

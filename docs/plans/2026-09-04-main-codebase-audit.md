@@ -311,6 +311,13 @@ Evidence: [file fetching](https://github.com/rstover-fo/cfb-database/blob/4a798f
 
 ### F17 — Hash-only load receipts prevent clean replay after parser or mapping fixes
 
+**Implementation progress (2026-09-09):** the first opt-in source publication
+adapter reparses and republishes `sdv_ratings_weekly` season artifacts even when
+the legacy hash ledger already contains those bytes. Its atomic receipt is
+bound to `sdv-ratings-v1` and the artifact hash. General version-aware skip and
+reprocessing across sources remain open. See the
+[step-7 source slice](2026-09-09-step7-sdv-ratings-publication.md).
+
 **P2 · Confirmed · M**
 
 An already-loaded decision uses only source and file SHA-256. Identical bytes remain skipped after a parser, schema, or team crosswalk changes. A previously accepted file with some dropped unmapped records is especially important: fixing the mapping alone does not make the source eligible again. The existing cadence override is not a complete content-reprocessing contract.

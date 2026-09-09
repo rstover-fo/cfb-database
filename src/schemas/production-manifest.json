@@ -29,6 +29,11 @@
       "id": "warehouse.f11.070",
       "path": "src/schemas/migrations/070_generation_enforced_refresh.sql",
       "kind": "immutable"
+    },
+    {
+      "id": "warehouse.source.071",
+      "path": "src/schemas/migrations/071_sdv_ratings_publication.sql",
+      "kind": "immutable"
     }
   ],
   "version": 1

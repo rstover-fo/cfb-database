@@ -1282,6 +1282,22 @@ shape and legacy refresh behavior remain compatible. No public grants, runtime
 membership or scheduled activation are added. See the
 [protocol, concurrency and rollout](plans/2026-09-09-f11-generation-enforcement.md).
 
+### Source coverage receipts (prepared, not deployed)
+
+Migration `071_sdv_ratings_publication.sql` enrolls
+`ratings.sdv_ratings_weekly` with canonical `season:<YYYY>` coverage. Its opt-in
+flat-file adapter preserves the existing primary key and stages genuine dlt
+output before atomically replacing only the selected season with its receipt,
+current pointer, legacy load-ledger observation and terminal operation outcome.
+Other receipt assets retain source-wide coverage. Legacy mutations invalidate
+affected season pointers, and relevant DDL invalidates all pointers for this
+source. Private `warehouse_source` RPCs are bounded to the source publisher.
+
+Complete coverage describes the selected artifact's rows, not expected
+provider-wide coverage or prospective model eligibility. The existing public
+freshness RPC, consumer grants and automatic refresh behavior remain unchanged.
+See the [source publication contract](plans/2026-09-09-step7-sdv-ratings-publication.md).
+
 ### Raw Data Tables
 
 | Schema | Tables |

@@ -130,6 +130,10 @@ def _assert_catalog_shape(conn):
     # The bounded house-Elo publication ledger adds four tables and nine indexes.
     expected_counts[("meta", "r")] += 4
     expected_counts[("meta", "i")] += 9
+    # F19 policy plus two receipt lookup indexes and the ordinary public projection.
+    expected_counts[("meta", "r")] += 1
+    expected_counts[("meta", "i")] += 3
+    expected_counts[("marts", "v")] = expected_counts.get(("marts", "v"), 0) + 1
     assert query(
         conn,
         """
@@ -385,7 +389,7 @@ def test_managed_warehouse_catalog_data_and_access(
         _insert_representative_rows(conn)
         before_upgrade = _fixture_snapshot(conn)
         upgrade = apply_manifest(conn, manifest, mode="upgrade")
-        assert len(upgrade.pending) == 5
+        assert len(upgrade.pending) == 6
         assert [step.id for step in upgrade.pending] == [
             migration.id for migration in manifest.migrations[4:]
         ]

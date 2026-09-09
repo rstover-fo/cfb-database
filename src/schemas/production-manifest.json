@@ -19,6 +19,11 @@
       "id": "warehouse.f14.068",
       "path": "src/schemas/migrations/068_asset_publication_receipts.sql",
       "kind": "immutable"
+    },
+    {
+      "id": "warehouse.f19.069",
+      "path": "src/schemas/migrations/069_receipt_backed_freshness.sql",
+      "kind": "immutable"
     }
   ],
   "version": 1

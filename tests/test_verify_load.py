@@ -588,3 +588,177 @@ class TestCheckVariantTwinsSavepoint:
         assert report.failures == 0
         out = capsys.readouterr().out
         assert "[WARN] variant_twins:" in out
+
+
+class ReceiptCursor:
+    def __init__(self, rows, installed=True, error=None):
+        self.rows = rows
+        self.installed = installed
+        self.error = error
+        self.queries = []
+
+    def execute(self, statement):
+        self.queries.append(statement)
+        if self.error and "to_jsonb" in statement:
+            raise self.error
+
+    def fetchone(self):
+        return ("get_asset_freshness()" if self.installed else None,)
+
+    def fetchall(self):
+        return [(row,) for row in self.rows]
+
+
+def receipt_rows(**changes):
+    result = []
+    for asset in ("analytics.house_elo_game", "marts.house_elo_game"):
+        row = {
+            "asset_key": asset,
+            "coverage_key": "source-wide",
+            "generation_id": "generation",
+            "published_at": "2026-09-09T00:00:00Z",
+            "age_seconds": 5,
+            "expected_refresh_interval": None,
+            "is_stale": None,
+            "publication_state": "current",
+            "current_outcome": "succeeded",
+            "coverage": {"complete": True},
+            "recorded_inputs_current": True if asset.startswith("marts.") else None,
+            "input_closure_current": None,
+            "latest_outcome": "succeeded",
+        }
+        row.update(changes)
+        result.append(row)
+    return result
+
+
+def receipt_check(rows=None, *, installed=True, strict=False, in_season=True):
+    from scripts.verify_load import Report, check_receipt_freshness
+
+    report = Report()
+    cur = ReceiptCursor(receipt_rows() if rows is None else rows, installed=installed)
+    check_receipt_freshness(cur, in_season=in_season, strict=strict, report=report)
+    return report, cur
+
+
+def test_receipt_missing_migration_warns_without_querying_missing_rpc(capsys):
+    report, cur = receipt_check(installed=False, strict=True)
+    assert report.failures == 0
+    assert len(cur.queries) == 1
+    assert "[WARN]" in capsys.readouterr().out
+
+
+def test_receipt_unknown_cadence_and_closure_never_claim_freshness(capsys):
+    report, _ = receipt_check()
+    assert report.failures == 0
+    output = capsys.readouterr().out
+    assert "[PASS]" not in output
+    assert "policy is undeclared" in output
+    assert "upstream closure unverified" in output
+
+
+def test_receipt_unrecorded_stays_optional_under_strict(capsys):
+    report, _ = receipt_check(
+        receipt_rows(publication_state="unrecorded", generation_id=None), strict=True
+    )
+    assert report.failures == 0
+    assert "optional publisher has no receipts" in capsys.readouterr().out
+
+
+def test_receipt_missing_current_with_history_is_strict_failure(capsys):
+    values = receipt_rows(publication_state="unpublished", generation_id=None)
+    assert receipt_check(values)[0].failures == 0
+    assert receipt_check(values, strict=True)[0].failures == 2
+    assert "no valid current publication" in capsys.readouterr().out
+
+
+def test_receipt_incomplete_or_failed_current_is_never_valid():
+    assert receipt_check(receipt_rows(coverage={"complete": False}))[0].failures == 2
+    assert receipt_check(receipt_rows(current_outcome="failed"))[0].failures == 2
+    assert receipt_check(receipt_rows(published_at=None))[0].failures == 2
+
+
+def test_receipt_expected_no_data_is_not_failure(capsys):
+    assert receipt_check(receipt_rows(current_outcome="expected_no_data"))[0].failures == 0
+    assert "expected_no_data" in capsys.readouterr().out
+
+
+def test_receipt_broken_or_unverified_required_mart_edge_fails():
+    assert receipt_check(receipt_rows(recorded_inputs_current=False))[0].failures == 2
+    assert receipt_check(receipt_rows(recorded_inputs_current=None))[0].failures == 1
+    assert receipt_check(receipt_rows(input_closure_current=False))[0].failures == 2
+
+
+def test_receipt_declared_staleness_respects_existing_severity_rule():
+    values = receipt_rows(is_stale=True, expected_refresh_interval="1 day")
+    assert receipt_check(values, in_season=True)[0].failures == 2
+    assert receipt_check(values, in_season=False)[0].failures == 0
+    assert receipt_check(values, in_season=False, strict=True)[0].failures == 2
+
+
+def test_receipt_failed_attempt_warns_without_replacing_current(capsys):
+    for outcome in ("failed", "deferred", "blocked", "partial"):
+        assert receipt_check(receipt_rows(latest_outcome=outcome))[0].failures == 0
+        output = capsys.readouterr().out
+        assert f"latest attempt {outcome}" in output
+        assert "current succeeded publication" in output
+
+
+def test_receipt_missing_duplicate_or_wrong_grain_rows_fail():
+    values = receipt_rows()
+    for bad in ([], values[:1], [values[0], values[0]], receipt_rows(coverage_key="season")):
+        assert receipt_check(bad)[0].failures == 1
+
+
+def test_receipt_rpc_error_propagates_instead_of_silent_pass():
+    import pytest
+
+    from scripts.verify_load import Report, check_receipt_freshness
+
+    cur = ReceiptCursor([], error=RuntimeError("permission denied"))
+    with pytest.raises(RuntimeError, match="permission denied"):
+        check_receipt_freshness(cur, in_season=True, strict=False, report=Report())
+
+
+def test_verify_includes_receipt_check_after_legacy_check(monkeypatch):
+    from unittest.mock import MagicMock
+
+    import psycopg2
+
+    from scripts import refresh_marts, verify_load
+
+    checks = [
+        "check_partition",
+        "check_game_counts",
+        "check_completed_have_team_stats",
+        "check_completed_have_plays",
+        "check_fitted_coverage",
+        "check_backtest_freshness",
+        "check_freshness",
+        "check_receipt_freshness",
+        "check_variant_twins",
+        "check_massey_composite",
+        "check_availability_archive",
+    ]
+    seen = []
+    for name in checks:
+        monkeypatch.setattr(verify_load, name, lambda *args, _name=name: seen.append(_name))
+    conn = MagicMock()
+    monkeypatch.setattr(psycopg2, "connect", lambda _: conn)
+    monkeypatch.setattr(refresh_marts, "get_db_url", lambda: "unused")
+    assert verify_load.verify(2026, strict=False) == 0
+    assert seen == checks
+    conn.close.assert_called_once()
+
+
+def test_receipt_unversioned_inputs_prevent_pass_even_if_closure_claim_disagrees(capsys):
+    values = receipt_rows(
+        is_stale=False,
+        expected_refresh_interval="1 day",
+        input_closure_current=True,
+        unversioned_input_assets=["core.games"],
+    )
+    assert receipt_check(values)[0].failures == 0
+    output = capsys.readouterr().out
+    assert "[PASS]" not in output
+    assert "upstream closure unverified" in output

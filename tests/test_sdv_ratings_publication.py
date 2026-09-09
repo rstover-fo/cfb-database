@@ -8,6 +8,8 @@ from dataclasses import replace
 
 import httpx
 import psycopg2
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from src.pipelines.config.source_publication_assets import SDV_RATINGS_PUBLICATION
@@ -40,6 +42,14 @@ def source_row(**overrides):
     }
     row.update(overrides)
     return row
+
+
+def raw_parquet(**overrides):
+    row = source_row(team_id="333")
+    row.update(overrides)
+    buffer = publication.io.BytesIO()
+    pq.write_table(pa.Table.from_pylist([row]), buffer)
+    return buffer.getvalue()
 
 
 def plan(season=2025):
@@ -358,6 +368,65 @@ def test_oversized_parquet_is_rejected_before_parser_materialization(monkeypatch
     assert failures == ["failed"]
 
 
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("season", 2025.5),
+        ("through_week", 1.5),
+        ("team_id", 333.5),
+        ("games", 1.5),
+        ("off_rank", 2.5),
+        ("def_rank", 3.5),
+        ("net_rank", 1.5),
+    ],
+)
+def test_raw_parquet_fractional_integer_columns_are_rejected_before_parser(
+    monkeypatch, tmp_path, column, value
+):
+    real_raw_row_count = publication._raw_row_count
+    events = []
+    path, _ = install_success_fakes(monkeypatch, tmp_path, events)
+    raw = raw_parquet(**{column: value})
+    path.write_bytes(raw)
+    failures = []
+    monkeypatch.setattr(publication, "_raw_row_count", real_raw_row_count)
+    monkeypatch.setattr(
+        publication,
+        "fetch_file",
+        lambda target: FetchedFile(
+            content=raw,
+            sha256=hashlib.sha256(raw).hexdigest(),
+            source_url=str(path),
+        ),
+    )
+    monkeypatch.setattr(
+        publication,
+        "resolve_parser",
+        lambda ref: pytest.fail("fractional raw integers must be rejected before parsing"),
+    )
+    monkeypatch.setattr(
+        publication,
+        "_fail_run",
+        lambda dsn, run_id, generation_id, outcome, state: failures.append(outcome),
+    )
+
+    result = publication.run_sdv_ratings_publication(
+        REGISTRY["sdv_ratings_weekly"], file_path=str(path), season=2025
+    )
+
+    assert result["status"] == "failed"
+    assert column in result["error"]
+    assert "non-integer" in result["error"]
+    assert failures == ["failed"]
+    assert not any(event[0] == "stage" for event in events)
+
+
+def test_raw_parquet_accepts_lossless_string_float_and_null_integer_values():
+    raw = raw_parquet(season=2025.0, through_week=1.0, games=None)
+
+    assert publication._raw_row_count(raw) == 1
+
+
 def test_404_is_deferred_and_never_staged(monkeypatch, tmp_path):
     events = []
     install_success_fakes(monkeypatch, tmp_path, events)
@@ -623,3 +692,65 @@ def test_publish_close_interrupt_preserves_confirmed_commit_state(monkeypatch):
     assert state.published is True
     assert state.publish_pending is False
     assert conn.closed is True
+
+
+class _CommittedRowCloseFailureConnection(_CommitFailureConnection):
+    def __init__(self, row):
+        self.row = row
+
+    @property
+    def description(self):
+        return (object(),)
+
+    def fetchone(self):
+        return self.row
+
+    def commit(self):
+        return None
+
+    def close(self):
+        raise OSError("socket close failed")
+
+
+def test_confirmed_publish_close_error_returns_loaded_rows(monkeypatch, tmp_path, caplog):
+    real_publish = publication._publish
+    events = []
+    path, _ = install_success_fakes(monkeypatch, tmp_path, events)
+    monkeypatch.setattr(publication, "_publish", real_publish)
+    monkeypatch.setattr(
+        publication,
+        "_connect",
+        lambda dsn: _CommittedRowCloseFailureConnection((GENERATION_ID, False, 1)),
+    )
+
+    with caplog.at_level("WARNING"):
+        result = publication.run_sdv_ratings_publication(
+            REGISTRY["sdv_ratings_weekly"], file_path=str(path), season=2025
+        )
+
+    assert result["status"] == "loaded"
+    assert result["rows"] == 1
+    assert result["error"] is None
+    assert events[-1] == ("drop", publication._stage_table_name(RUN_ID))
+    assert "committed but connection close failed" in caplog.text
+
+
+def test_malformed_publish_response_after_close_error_is_not_success(monkeypatch, tmp_path):
+    real_publish = publication._publish
+    events = []
+    path, _ = install_success_fakes(monkeypatch, tmp_path, events)
+    monkeypatch.setattr(publication, "_publish", real_publish)
+    monkeypatch.setattr(
+        publication,
+        "_connect",
+        lambda dsn: _CommittedRowCloseFailureConnection((GENERATION_ID, False, 2)),
+    )
+
+    result = publication.run_sdv_ratings_publication(
+        REGISTRY["sdv_ratings_weekly"], file_path=str(path), season=2025
+    )
+
+    assert result["status"] == "failed"
+    assert result["rows"] == 0
+    assert "mismatched publication result" in result["error"]
+    assert events[-1] == ("drop", publication._stage_table_name(RUN_ID))

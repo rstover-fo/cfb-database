@@ -216,8 +216,19 @@ def _rpc(
         conn.close()
     except BaseException as error:
         if mutating:
-            raise PostCommitError("source publication RPC committed before close failed") from error
-        raise
+            if isinstance(error, Exception):
+                logger.warning(
+                    "Source publication RPC committed but connection close failed; "
+                    "phase=%s error_type=%s",
+                    phase,
+                    type(error).__name__,
+                )
+            else:
+                raise PostCommitError(
+                    "source publication RPC committed before close was interrupted"
+                ) from error
+        else:
+            raise
     return row
 
 
@@ -297,9 +308,49 @@ def _fail_run(
 
 def _raw_row_count(raw: bytes) -> int:
     try:
-        return pyarrow.parquet.ParquetFile(io.BytesIO(raw)).metadata.num_rows
+        parquet_file = pyarrow.parquet.ParquetFile(io.BytesIO(raw))
+        row_count = parquet_file.metadata.num_rows
+        if row_count > MAX_SOURCE_ROWS:
+            raise SourcePublicationError(f"sdv_ratings_weekly exceeds {MAX_SOURCE_ROWS} rows")
+
+        # The legacy parser calls int(value), which truncates fractional Arrow
+        # values. Inspect only the seven integer-contract columns in bounded
+        # batches before materializing the full table in that parser.
+        columns = sorted(_INT_COLUMNS.intersection(parquet_file.schema_arrow.names))
+        row_offset = 0
+        for batch in parquet_file.iter_batches(batch_size=4_096, columns=columns):
+            for column_index, column in enumerate(columns):
+                for batch_index, value in enumerate(batch.column(column_index).to_pylist()):
+                    if not _is_lossless_bigint(value):
+                        raise SourcePublicationError(
+                            f"sdv_ratings_weekly raw column {column} has a non-integer "
+                            f"value at row {row_offset + batch_index}"
+                        )
+            row_offset += batch.num_rows
+        return row_count
+    except SourcePublicationError:
+        raise
     except Exception as error:
         raise SourcePublicationError("sdv_ratings_weekly is not a readable parquet file") from error
+
+
+def _is_lossless_bigint(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return False
+    try:
+        integer = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if integer < -(1 << 63) or integer >= 1 << 63:
+        return False
+    if isinstance(value, (str, bytes, bytearray)):
+        return bool(value.strip())
+    try:
+        return bool(value == integer)
+    except Exception:
+        return False
 
 
 def _validate_parsed_rows(rows: list[dict[str, Any]], raw_count: int, season: int) -> None:

@@ -559,6 +559,14 @@ def main(argv: list[str] | None = None) -> int:
             REGISTRY[contract.source_name], file_path=args.file, season=args.season
         )
         print(_gate_line(result))
+        if result["status"] != "loaded":
+            print(
+                f"Receipt publication {result['status']}: "
+                f"{result.get('error') or 'No error detail was returned'}; "
+                f"run_id={result.get('run_id') or 'unavailable'}; "
+                f"generation_id={result.get('generation_id') or 'unavailable'}",
+                file=sys.stderr,
+            )
         return 0 if result["status"] == "loaded" else 1
 
     if args.file is not None and args.season is None:

@@ -82,14 +82,24 @@ def test_receipt_dry_run_is_offline_and_does_not_refresh_descendants(monkeypatch
 
 
 @pytest.mark.parametrize(
-    "status,exit_code", [("loaded", 0), ("failed", 1), ("deferred", 1), ("blocked", 1)]
+    "status,exit_code",
+    [("loaded", 0), ("failed", 1), ("deferred", 1), ("not_published", 1), ("blocked", 1)],
 )
-def test_receipt_cli_routes_exact_scope_and_fails_closed(monkeypatch, status, exit_code):
+def test_receipt_cli_routes_exact_scope_and_fails_closed(monkeypatch, capsys, status, exit_code):
     calls = []
 
     def adapter(spec, **kwargs):
         calls.append((spec, kwargs))
-        return {"source": spec.name, "status": status, "rows": 2, "sha": None, "duration_s": 0.1}
+        return {
+            "source": spec.name,
+            "status": status,
+            "rows": 2,
+            "sha": None,
+            "duration_s": 0.1,
+            "error": None if status == "loaded" else "Selected artifact cannot be published",
+            "run_id": "run-fixture",
+            "generation_id": "generation-fixture",
+        }
 
     monkeypatch.setitem(
         sys.modules,
@@ -113,3 +123,12 @@ def test_receipt_cli_routes_exact_scope_and_fails_closed(monkeypatch, status, ex
     assert calls == [
         (REGISTRY["sdv_ratings_weekly"], {"season": 2025, "file_path": "fixture.parquet"})
     ]
+    output = capsys.readouterr()
+    assert "sdv_ratings_weekly" in output.out
+    if exit_code:
+        assert "Selected artifact cannot be published" in output.err
+        assert "run_id=run-fixture" in output.err
+        assert "generation_id=generation-fixture" in output.err
+        assert status in output.err
+    else:
+        assert output.err == ""

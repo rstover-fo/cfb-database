@@ -22,11 +22,13 @@ Checks:
        off-season and FAILs in-season (or with --strict)
     6. Optional house Elo receipts: publication age and exact recorded inputs;
        unknown cadence/upstream closure WARN, broken required inputs FAIL
-    7. ratings.massey_composite has a recent, full-coverage snapshot for the
+    7. Optional season-scoped SDV source receipts: exact complete publication
+       evidence and owner-declared age policy for the selected season
+    8. ratings.massey_composite has a recent, full-coverage snapshot for the
        season (in-season only; WARNs if migration 041 isn't applied yet)
-    8. meta.flat_file_loads has a recent successful 'availability' load
+    9. meta.flat_file_loads has a recent successful 'availability' load
        (in-season only; never FAILs -- external conference sites are flaky)
-    9. no unexpected dlt VARIANT (__v_double) twin has appeared on a
+    10. no unexpected dlt VARIANT (__v_double) twin has appeared on a
        charting source table since the mart(s) reading it were authored
        (KTD7 tripwire; see src/pipelines/utils/variant_twins.py) -- FAILs
        naming the column, since it means a metric is silently reading NULL
@@ -40,6 +42,7 @@ already have rows for the upcoming season).
 
 import argparse
 import logging
+import math
 import sys
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -610,6 +613,234 @@ def check_receipt_freshness(cur, in_season: bool, strict: bool, report: Report) 
         report.record(status, "receipt_freshness", "; ".join(details))
 
 
+SOURCE_FRESHNESS_IDENTITIES = (
+    ("sdv_ratings_weekly", "ratings.sdv_ratings_weekly"),
+    ("sdv_fpi_weekly", "ratings.espn_fpi_weekly"),
+    ("sdv_team_xwalk", "ref.team_id_xwalk"),
+    ("sdv_game_xwalk", "ref.game_id_xwalk"),
+)
+SOURCE_FRESHNESS_FIELDS = frozenset(
+    {
+        "source_name",
+        "asset_key",
+        "season",
+        "coverage_key",
+        "generation_id",
+        "published_at",
+        "age_seconds",
+        "expected_refresh_interval",
+        "is_stale",
+        "publication_state",
+        "current_outcome",
+        "is_complete",
+        "source_rows",
+        "published_rows",
+        "artifact_origin",
+        "season_basis",
+        "latest_outcome",
+        "latest_recorded_at",
+        "last_failure_outcome",
+        "last_failure_at",
+        "last_failure_category",
+    }
+)
+_SOURCE_CURRENT_FIELDS = (
+    "generation_id",
+    "published_at",
+    "age_seconds",
+    "is_stale",
+    "current_outcome",
+    "is_complete",
+    "source_rows",
+    "published_rows",
+    "artifact_origin",
+    "season_basis",
+)
+_SOURCE_PUBLICATION_STATES = {"unrecorded", "unpublished", "invalid", "current"}
+_SOURCE_TERMINAL_OUTCOMES = {
+    "succeeded",
+    "expected_no_data",
+    *NONCURRENT_RECEIPT_OUTCOMES,
+}
+
+
+def _nonempty_string(value) -> bool:
+    return type(value) is str and bool(value)
+
+
+def _source_row_contract_error(row: dict, source_name: str) -> str | None:
+    """Return why a typed source-freshness row is internally inconsistent."""
+    state = row["publication_state"]
+    if state not in _SOURCE_PUBLICATION_STATES:
+        return "unknown publication state"
+
+    interval = row["expected_refresh_interval"]
+    if interval is not None and not _nonempty_string(interval):
+        return "invalid refresh interval"
+    if row["is_stale"] is not None and type(row["is_stale"]) is not bool:
+        return "invalid staleness value"
+
+    latest_outcome = row["latest_outcome"]
+    latest_at = row["latest_recorded_at"]
+    if state == "unrecorded":
+        if latest_outcome is not None or latest_at is not None:
+            return "unrecorded source has receipt history"
+    elif latest_outcome not in _SOURCE_TERMINAL_OUTCOMES or not _nonempty_string(latest_at):
+        return "receipt history is malformed"
+
+    failure_outcome = row["last_failure_outcome"]
+    failure_at = row["last_failure_at"]
+    failure_category = row["last_failure_category"]
+    if state == "unrecorded" and any(
+        value is not None for value in (failure_outcome, failure_at, failure_category)
+    ):
+        return "unrecorded source has receipt history"
+    if failure_outcome is None:
+        if failure_at is not None or failure_category is not None:
+            return "failure history is malformed"
+    elif (
+        failure_outcome not in NONCURRENT_RECEIPT_OUTCOMES
+        or not _nonempty_string(failure_at)
+        or failure_category not in {None, "source_publication_failed"}
+    ):
+        return "failure history is malformed"
+
+    if state != "current":
+        if any(row[field] is not None for field in _SOURCE_CURRENT_FIELDS):
+            return "non-current source exposes current publication evidence"
+        return None
+
+    if (
+        not _nonempty_string(row["generation_id"])
+        or not _nonempty_string(row["published_at"])
+        or row["current_outcome"] != "succeeded"
+        or row["is_complete"] is not True
+        or type(row["source_rows"]) is not int
+        or type(row["published_rows"]) is not int
+        or not 1 <= row["source_rows"] <= 100_000
+        or row["published_rows"] != row["source_rows"]
+        or row["artifact_origin"] not in {"registered_url", "local_file"}
+    ):
+        return "invalid current publication evidence"
+    age = row["age_seconds"]
+    if (
+        isinstance(age, bool)
+        or not isinstance(age, (int, float))
+        or not math.isfinite(age)
+        or age < 0
+    ):
+        return "invalid publication age"
+
+    if source_name in {"sdv_ratings_weekly", "sdv_fpi_weekly"}:
+        expected_basis = "artifact_field"
+    elif row["artifact_origin"] == "registered_url":
+        expected_basis = "registered_artifact_name"
+    else:
+        expected_basis = "caller_declared"
+    if row["season_basis"] != expected_basis:
+        return "invalid season evidence"
+    return None
+
+
+def check_source_freshness(cur, season: int, in_season: bool, strict: bool, report: Report) -> None:
+    """Inspect optional complete-file publication evidence for one SDV season."""
+    cur.execute("SELECT to_regprocedure('public.get_source_freshness(bigint)')")
+    if cur.fetchone()[0] is None:
+        report.record(
+            WARN,
+            "source_freshness",
+            "season source freshness migration is not installed",
+        )
+        return
+
+    cur.execute(
+        "SELECT to_jsonb(f) FROM public.get_source_freshness(%s) f",
+        (season,),
+    )
+    rows = [item[0] for item in cur.fetchall()]
+    if any(type(row) is not dict or frozenset(row) != SOURCE_FRESHNESS_FIELDS for row in rows):
+        report.record(FAIL, "source_freshness", "source freshness row shape is invalid")
+        return
+
+    coverage_key = f"season:{season}"
+    expected = {
+        (source_name, asset_key, season, coverage_key)
+        for source_name, asset_key in SOURCE_FRESHNESS_IDENTITIES
+    }
+    identities = [
+        (row["source_name"], row["asset_key"], row["season"], row["coverage_key"]) for row in rows
+    ]
+    identities_are_typed = all(
+        _nonempty_string(source_name)
+        and _nonempty_string(asset_key)
+        and type(row_season) is int
+        and _nonempty_string(row_coverage)
+        for source_name, asset_key, row_season, row_coverage in identities
+    )
+    if not identities_are_typed or len(identities) != len(expected) or set(identities) != expected:
+        report.record(
+            FAIL,
+            "source_freshness",
+            f"expected exactly four SDV source assets for {coverage_key}",
+        )
+        return
+
+    by_source = {row["source_name"]: row for row in rows}
+    for source_name, asset_key in SOURCE_FRESHNESS_IDENTITIES:
+        row = by_source[source_name]
+        contract_error = _source_row_contract_error(row, source_name)
+        if contract_error is not None:
+            report.record(
+                FAIL,
+                "source_freshness",
+                f"{asset_key}/{coverage_key}: {contract_error}",
+            )
+            continue
+
+        latest_outcome = row["latest_outcome"]
+        if latest_outcome in NONCURRENT_RECEIPT_OUTCOMES:
+            report.record(
+                WARN,
+                "source_receipt_attempt",
+                f"{asset_key}/{coverage_key}: latest attempt {latest_outcome}; "
+                "this does not replace current publication evidence",
+            )
+
+        state = row["publication_state"]
+        if state == "unrecorded":
+            report.record(
+                WARN,
+                "source_freshness",
+                f"{asset_key}/{coverage_key}: optional publisher has no receipts",
+            )
+            continue
+        if state == "unpublished":
+            report.record(
+                FAIL if strict else WARN,
+                "source_freshness",
+                f"{asset_key}/{coverage_key}: receipt history exists but no valid "
+                "current publication",
+            )
+            continue
+        if state == "invalid":
+            report.record(
+                FAIL,
+                "source_freshness",
+                f"{asset_key}/{coverage_key}: current publication pointer is invalid",
+            )
+            continue
+
+        status = PASS
+        details = [f"{asset_key}/{coverage_key}: current succeeded complete publication"]
+        if row["is_stale"] is True:
+            status = FAIL if in_season or strict else WARN
+            details.append("age exceeds declared publication interval")
+        elif row["is_stale"] is None or row["expected_refresh_interval"] is None:
+            status = WARN
+            details.append("publication age policy is undeclared or unknown")
+        report.record(status, "source_freshness", "; ".join(details))
+
+
 def verify(season: int, strict: bool) -> int:
     """Run all checks. Returns the number of failures."""
     from datetime import datetime
@@ -632,6 +863,7 @@ def verify(season: int, strict: bool) -> int:
             check_backtest_freshness(cur, report)
             check_freshness(cur, in_season, strict, report)
             check_receipt_freshness(cur, in_season, strict, report)
+            check_source_freshness(cur, season, in_season, strict, report)
             check_variant_twins(cur, report)
             check_massey_composite(cur, season, report)
             check_availability_archive(cur, season, report)

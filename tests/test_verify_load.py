@@ -720,6 +720,301 @@ def test_receipt_rpc_error_propagates_instead_of_silent_pass():
         check_receipt_freshness(cur, in_season=True, strict=False, report=Report())
 
 
+SOURCE_IDENTITIES = (
+    ("sdv_ratings_weekly", "ratings.sdv_ratings_weekly"),
+    ("sdv_fpi_weekly", "ratings.espn_fpi_weekly"),
+    ("sdv_team_xwalk", "ref.team_id_xwalk"),
+    ("sdv_game_xwalk", "ref.game_id_xwalk"),
+)
+
+
+class SourceReceiptCursor:
+    def __init__(self, rows, installed=True, error=None):
+        self.rows = rows
+        self.installed = installed
+        self.error = error
+        self.queries = []
+
+    def execute(self, statement, params=None):
+        self.queries.append((statement, params))
+        if self.error and "to_jsonb" in statement:
+            raise self.error
+
+    def fetchone(self):
+        return ("get_source_freshness(bigint)" if self.installed else None,)
+
+    def fetchall(self):
+        return [(row,) for row in self.rows]
+
+
+def source_receipt_rows(season=2025, **changes):
+    rows = []
+    for source_name, asset_key in SOURCE_IDENTITIES:
+        origin = "registered_url"
+        basis = (
+            "artifact_field"
+            if source_name in {"sdv_ratings_weekly", "sdv_fpi_weekly"}
+            else "registered_artifact_name"
+        )
+        row = {
+            "source_name": source_name,
+            "asset_key": asset_key,
+            "season": season,
+            "coverage_key": f"season:{season}",
+            "generation_id": "11111111-1111-4111-8111-111111111111",
+            "published_at": "2026-09-09T00:00:00Z",
+            "age_seconds": 5.0,
+            "expected_refresh_interval": "8 days",
+            "is_stale": False,
+            "publication_state": "current",
+            "current_outcome": "succeeded",
+            "is_complete": True,
+            "source_rows": 10,
+            "published_rows": 10,
+            "artifact_origin": origin,
+            "season_basis": basis,
+            "latest_outcome": "succeeded",
+            "latest_recorded_at": "2026-09-09T00:00:00Z",
+            "last_failure_outcome": None,
+            "last_failure_at": None,
+            "last_failure_category": None,
+        }
+        row.update(changes)
+        rows.append(row)
+    return rows
+
+
+def noncurrent_source_rows(state, season=2025, **changes):
+    rows = source_receipt_rows(season)
+    for row in rows:
+        row.update(
+            publication_state=state,
+            generation_id=None,
+            published_at=None,
+            age_seconds=None,
+            is_stale=None,
+            current_outcome=None,
+            is_complete=None,
+            source_rows=None,
+            published_rows=None,
+            artifact_origin=None,
+            season_basis=None,
+        )
+        if state == "unrecorded":
+            row.update(latest_outcome=None, latest_recorded_at=None)
+        row.update(changes)
+    return rows
+
+
+def source_receipt_check(
+    rows=None, *, season=2025, installed=True, strict=False, in_season=True, error=None
+):
+    from scripts.verify_load import Report, check_source_freshness
+
+    report = Report()
+    cur = SourceReceiptCursor(
+        source_receipt_rows(season) if rows is None else rows,
+        installed=installed,
+        error=error,
+    )
+    check_source_freshness(cur, season=season, in_season=in_season, strict=strict, report=report)
+    return report, cur
+
+
+def test_source_receipt_query_is_season_scoped_and_fresh_rows_pass(capsys):
+    report, cur = source_receipt_check(season=2025)
+    assert report.failures == 0
+    assert cur.queries == [
+        ("SELECT to_regprocedure('public.get_source_freshness(bigint)')", None),
+        ("SELECT to_jsonb(f) FROM public.get_source_freshness(%s) f", (2025,)),
+    ]
+    output = capsys.readouterr().out
+    assert output.count("[PASS] source_freshness:") == 4
+
+
+def test_source_receipt_missing_rpc_warns_under_strict_without_querying(capsys):
+    report, cur = source_receipt_check(installed=False, strict=True)
+    assert report.failures == 0
+    assert len(cur.queries) == 1
+    output = capsys.readouterr().out
+    assert "[WARN] source_freshness:" in output
+    assert "[PASS]" not in output
+
+
+def test_source_receipt_scope_requires_exact_four_selected_season_rows():
+    valid = source_receipt_rows()
+    wrong_season = source_receipt_rows()
+    wrong_season[0]["season"] = 2024
+    wrong_coverage = source_receipt_rows()
+    wrong_coverage[0]["coverage_key"] = "season:2024"
+    wrong_source = source_receipt_rows()
+    wrong_source[0]["source_name"] = "unknown"
+    for rows in (
+        [],
+        valid[:3],
+        [*valid, valid[0]],
+        [valid[0], valid[0], *valid[2:]],
+        wrong_season,
+        wrong_coverage,
+        wrong_source,
+    ):
+        assert source_receipt_check(rows)[0].failures == 1
+
+
+def test_source_receipt_requires_exact_flat_rpc_shape():
+    missing = source_receipt_rows()
+    missing[0].pop("source_rows")
+    extra = source_receipt_rows()
+    extra[0]["coverage"] = {"complete": True}
+    malformed_identity = source_receipt_rows()
+    malformed_identity[0]["season"] = {"year": 2025}
+    for rows in (missing, extra, malformed_identity):
+        assert source_receipt_check(rows)[0].failures == 1
+
+
+def test_source_receipt_unrecorded_is_optional_even_under_strict(capsys):
+    report, _ = source_receipt_check(noncurrent_source_rows("unrecorded"), strict=True)
+    assert report.failures == 0
+    output = capsys.readouterr().out
+    assert output.count("optional publisher has no receipts") == 4
+    assert "[PASS]" not in output
+
+
+def test_source_receipt_unpublished_history_fails_only_when_strict(capsys):
+    rows = noncurrent_source_rows(
+        "unpublished",
+        latest_outcome="failed",
+        last_failure_outcome="failed",
+        last_failure_at="2026-09-09T00:00:00Z",
+        last_failure_category="source_publication_failed",
+    )
+    assert source_receipt_check(rows, strict=False)[0].failures == 0
+    assert source_receipt_check(rows, strict=True)[0].failures == 4
+    assert "latest attempt failed" in capsys.readouterr().out
+
+
+def test_source_receipt_invalid_pointer_always_fails():
+    rows = noncurrent_source_rows("invalid")
+    assert source_receipt_check(rows, in_season=False, strict=False)[0].failures == 4
+
+
+def test_source_receipt_current_evidence_is_exact_and_complete():
+    mutations = (
+        {"current_outcome": "failed"},
+        {"is_complete": False},
+        {"source_rows": 0, "published_rows": 0},
+        {"source_rows": 10, "published_rows": 9},
+        {"artifact_origin": "unknown"},
+        {"age_seconds": float("nan")},
+    )
+    for mutation in mutations:
+        rows = source_receipt_rows()
+        rows[0].update(mutation)
+        assert source_receipt_check(rows)[0].failures == 1
+
+
+def test_source_receipt_season_basis_matches_source_and_origin():
+    wrong_fpi = source_receipt_rows()
+    wrong_fpi[1]["season_basis"] = "caller_declared"
+    wrong_local_xwalk = source_receipt_rows()
+    wrong_local_xwalk[2].update(
+        artifact_origin="local_file", season_basis="registered_artifact_name"
+    )
+    valid_local_xwalk = source_receipt_rows()
+    valid_local_xwalk[2].update(artifact_origin="local_file", season_basis="caller_declared")
+    assert source_receipt_check(wrong_fpi)[0].failures == 1
+    assert source_receipt_check(wrong_local_xwalk)[0].failures == 1
+    assert source_receipt_check(valid_local_xwalk)[0].failures == 0
+
+
+def test_source_receipt_declared_staleness_uses_existing_severity_rule():
+    rows = source_receipt_rows(is_stale=True)
+    assert source_receipt_check(rows, in_season=True)[0].failures == 4
+    assert source_receipt_check(rows, in_season=False)[0].failures == 0
+    assert source_receipt_check(rows, in_season=False, strict=True)[0].failures == 4
+
+
+def test_source_receipt_unknown_policy_warns_and_never_claims_freshness(capsys):
+    rows = source_receipt_rows(expected_refresh_interval=None, is_stale=None)
+    report, _ = source_receipt_check(rows, strict=True)
+    assert report.failures == 0
+    output = capsys.readouterr().out
+    assert output.count("[WARN] source_freshness:") == 4
+    assert "[PASS]" not in output
+
+
+def test_source_receipt_latest_bad_attempt_does_not_replace_readable_current(capsys):
+    for outcome in ("failed", "deferred", "blocked", "partial"):
+        rows = source_receipt_rows(
+            latest_outcome=outcome,
+            last_failure_outcome=outcome,
+            last_failure_at="2026-09-09T01:00:00Z",
+            last_failure_category="source_publication_failed",
+        )
+        report, _ = source_receipt_check(rows)
+        assert report.failures == 0
+        output = capsys.readouterr().out
+        assert f"latest attempt {outcome}" in output
+        assert "current succeeded complete publication" in output
+
+
+def test_source_receipt_expected_no_data_is_diagnostic_only(capsys):
+    unpublished = noncurrent_source_rows("unpublished", latest_outcome="expected_no_data")
+    assert source_receipt_check(unpublished, strict=False)[0].failures == 0
+    assert source_receipt_check(unpublished, strict=True)[0].failures == 4
+
+    current_diagnostic = source_receipt_rows(latest_outcome="expected_no_data")
+    assert source_receipt_check(current_diagnostic)[0].failures == 0
+
+    invalid_current = source_receipt_rows(current_outcome="expected_no_data")
+    assert source_receipt_check(invalid_current)[0].failures == 4
+    output = capsys.readouterr().out
+    assert "latest attempt expected_no_data" not in output
+    assert "invalid current publication evidence" in output
+
+
+def test_source_receipt_historical_failure_after_recovery_does_not_warn(capsys):
+    rows = source_receipt_rows(
+        last_failure_outcome="failed",
+        last_failure_at="2026-09-08T00:00:00Z",
+        last_failure_category="source_publication_failed",
+    )
+    assert source_receipt_check(rows)[0].failures == 0
+    output = capsys.readouterr().out
+    assert "[WARN] source_receipt_attempt:" not in output
+    assert output.count("[PASS] source_freshness:") == 4
+
+
+def test_source_receipt_malformed_state_and_history_always_fail():
+    cases = (
+        ("publication_state", "mystery"),
+        ("latest_recorded_at", None),
+        ("last_failure_outcome", "failed"),
+        ("expected_refresh_interval", 8),
+    )
+    for field, value in cases:
+        rows = source_receipt_rows()
+        rows[0][field] = value
+        assert source_receipt_check(rows)[0].failures == 1
+
+
+def test_source_receipt_rejects_arbitrary_failure_category(capsys):
+    rows = source_receipt_rows(
+        last_failure_outcome="failed",
+        last_failure_at="2026-09-08T00:00:00Z",
+        last_failure_category="raw-secret-error",
+    )
+    assert source_receipt_check(rows)[0].failures == 4
+    assert "failure history is malformed" in capsys.readouterr().out
+
+
+def test_source_receipt_rpc_error_propagates_instead_of_silent_pass():
+    import pytest
+
+    with pytest.raises(RuntimeError, match="permission denied"):
+        source_receipt_check(error=RuntimeError("permission denied"))
+
+
 def test_verify_includes_receipt_check_after_legacy_check(monkeypatch):
     from unittest.mock import MagicMock
 
@@ -736,6 +1031,7 @@ def test_verify_includes_receipt_check_after_legacy_check(monkeypatch):
         "check_backtest_freshness",
         "check_freshness",
         "check_receipt_freshness",
+        "check_source_freshness",
         "check_variant_twins",
         "check_massey_composite",
         "check_availability_archive",

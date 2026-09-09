@@ -367,11 +367,13 @@ Delivery progress (2026-09-09): steps 1–6 have merged through PR #142 with
 bounded opt-in adapters. The first step-7 slice merged in PR #143 is
 [SDV ratings season publication](2026-09-09-step7-sdv-ratings-publication.md):
 explicit source coverage metadata and staged dlt output published atomically
-for one season. Remaining sources, crossvalidation generation closure, public
-source freshness, and production activation remain separate work. The next
+for one season. The
 [three-source SDV batch](2026-09-09-step7-sdv-source-batch.md) extends season
 publication to weekly FPI and the team/game crosswalks using shared plumbing
-and independent source outcomes.
+and independent source outcomes and merged in PR #144. The next bounded slice
+adds [SDV season freshness and verification](2026-09-09-step7-sdv-source-freshness.md)
+while retaining both existing public freshness contracts. Crossvalidation
+generation enforcement still requires receipts for its remaining inputs.
 
 Steps 2 and 4 share database primitives but should remain separate PRs so
 quota-safety review is not coupled to a broad freshness API change. Step 3 can

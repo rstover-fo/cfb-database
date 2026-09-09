@@ -39,6 +39,11 @@
       "id": "warehouse.source.072",
       "path": "src/schemas/migrations/072_sdv_source_batch_publication.sql",
       "kind": "immutable"
+    },
+    {
+      "id": "warehouse.f19.073",
+      "path": "src/schemas/migrations/073_sdv_source_freshness.sql",
+      "kind": "immutable"
     }
   ],
   "version": 1

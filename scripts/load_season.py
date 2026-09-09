@@ -747,15 +747,22 @@ def main() -> None:
     # which targets a finished season by definition -- so the skip is off.
     allow_skip_final = args.season is None and not args.sources and not args.no_skip_final
 
-    summary = load_season(
-        season=season,
-        sources=sources,
-        dry_run=args.dry_run,
-        skip_refresh=args.skip_refresh,
-        weekly=args.weekly,
-        upcoming_schedule=upcoming,
-        allow_skip_final=allow_skip_final,
-    )
+    from src.pipelines.utils.quota_admission import quota_operation
+
+    with quota_operation(
+        "load_season", {"season": season, "sources": sources}, enabled=not args.dry_run
+    ) as operation:
+        summary = load_season(
+            season=season,
+            sources=sources,
+            dry_run=args.dry_run,
+            skip_refresh=args.skip_refresh,
+            weekly=args.weekly,
+            upcoming_schedule=upcoming,
+            allow_skip_final=allow_skip_final,
+        )
+        if operation and (summary.get("error") or summary.get("errors", 0)):
+            operation.outcome = "failed"
 
     # Validation failures return {"error": str} (singular) before any source
     # runs; per-source failures count up {"errors": int} via _count_failures,

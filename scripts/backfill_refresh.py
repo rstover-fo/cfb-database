@@ -896,7 +896,9 @@ def run_campaign(
     from src.pipelines.utils.rate_limiter import get_rate_limiter
 
     local_limiter = get_rate_limiter()
-    if not local_limiter.check_budget(this_run_total):
+    from src.pipelines.utils.quota_admission import active_operation
+
+    if active_operation() is None and not local_limiter.check_budget(this_run_total):
         print(
             f"Local rate limiter shows only {local_limiter.remaining} call(s) remaining "
             "this month (advisory only on ephemeral CI runners); stopping before spending "
@@ -1087,18 +1089,32 @@ def main() -> None:
             print_status(conn, args.campaign, max_calls=args.max_calls)
             sys.exit(0)
 
-        result = run_campaign(
-            conn,
-            campaign=args.campaign,
-            create=args.create,
-            seasons_spec=args.seasons,
-            tasks_spec=args.tasks,
-            max_calls=args.max_calls,
-            monthly_cap=args.monthly_cap,
-            batch_size=args.batch_size,
-            dry_run=args.dry_run,
-            description=args.description,
-        )
+        from src.pipelines.utils.quota_admission import quota_operation
+
+        with quota_operation(
+            "backfill_refresh", {"campaign": args.campaign}, enabled=not args.dry_run
+        ) as operation:
+            result = run_campaign(
+                conn,
+                campaign=args.campaign,
+                create=args.create,
+                seasons_spec=args.seasons,
+                tasks_spec=args.tasks,
+                max_calls=args.max_calls,
+                monthly_cap=args.monthly_cap,
+                batch_size=args.batch_size,
+                dry_run=args.dry_run,
+                description=args.description,
+            )
+            if operation:
+                status = result.get("status")
+                if status == "finalize_failed":
+                    operation.outcome = "failed"
+                elif status == "not_created":
+                    operation.outcome = "blocked"
+                elif status not in {"complete", "already_complete", "finalized"}:
+                    operation.outcome = "partial"
+
     finally:
         conn.close()
 

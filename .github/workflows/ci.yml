@@ -108,7 +108,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: ./scripts/setup_dev.sh
       - name: Managed bootstrap and upgrade integration
-        run: .venv/bin/python -m pytest tests/test_warehouse_migrations_sql.py tests/test_warehouse_bootstrap_sql.py tests/test_adopt_warehouse_catalog_sql.py tests/test_f06_verification_transactions_sql.py tests/test_mart_release_sql.py tests/test_play_partitions.py tests/test_play_indexes_sql.py tests/test_operational_quota_sql.py tests/test_operational_quota_lifecycle_sql.py -q --tb=short
+        run: .venv/bin/python -m pytest tests/test_warehouse_migrations_sql.py tests/test_warehouse_bootstrap_sql.py tests/test_adopt_warehouse_catalog_sql.py tests/test_f06_verification_transactions_sql.py tests/test_mart_release_sql.py tests/test_play_partitions.py tests/test_play_indexes_sql.py tests/test_operational_quota_sql.py tests/test_operational_quota_lifecycle_sql.py tests/test_cfbd_transport_admission_sql.py -q --tb=short
         env:
           F06_TEST_DB_URL: postgresql://postgres:f06-disposable-ci@127.0.0.1:5432/postgres
           F06_REQUIRE_DB: "1"

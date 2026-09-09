@@ -334,3 +334,11 @@ selections, now validated and dependency-ordered. Failed selected refreshes bloc
 their selected descendants while independent views continue; the command fails
 if any view failed or was blocked. Durable cross-run generation checks and the
 SQL `refresh_all_marts()` RPC are outside this implementation.
+
+## Prepared durable CFBD admission
+
+The daily, historical, and live entrypoints have an opt-in durable quota path.
+See the [F14 transport rollout guide](plans/2026-09-08-f14-transport-admission.md)
+for migration 067, dedicated role/connection configuration, independent control
+allowances, commit-failure behavior, and activation checks. Production defaults
+remain unchanged until that separate rollout is authorized.

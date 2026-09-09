@@ -4,7 +4,7 @@
 > only depend on objects listed here as **public**. Everything else is internal and may change
 > without notice.
 
-Last updated: 2026-09-07
+Last updated: 2026-09-09
 
 > **Note on cfb-analytics:** the retired OU-only app (rstover-fo/cfb-analytics) was never a
 > warehouse consumer -- it ran its own DuckDB ingestion. Its unique features (rivals page,
@@ -14,6 +14,15 @@ Last updated: 2026-09-07
 ---
 
 ## Recent Contract Changes
+
+- **2026-09-09 — F19 receipt freshness (prepared, not deployed).**
+  Migration `069_receipt_backed_freshness.sql` adds the separate
+  `public.get_asset_freshness()` RPC for the two controlled house Elo assets.
+  It exposes query-time publication age and exact recorded dependency evidence,
+  with NULL cadence/stale policy until declared. Unversioned `core.games`
+  prevents a complete upstream freshness claim. The existing six-column
+  `get_data_freshness()` RPC and its maintenance heuristic remain compatible.
+  See the [receipt freshness contract and rollout](plans/2026-09-09-f19-receipt-freshness.md).
 
 - **2026-09-07 — F06 managed bootstrap and explicit production adoption.**
   `src/schemas/warehouse-manifest.json` reconstructs the reviewed catalog and
@@ -1111,8 +1120,33 @@ Server-side functions callable via `supabase.rpc()`.
 | `get_available_weeks` | `public` | `(p_season)` | List of weeks for a given season |
 | `is_garbage_time` | `public` | `(period, score_diff)` | Returns true if play is in garbage time |
 | `get_conference_head_to_head` | `public` | `(p_conf1, p_conf2, p_season_start?, p_season_end?)` | Conference vs conference head-to-head records by season. Flips results to match caller's conference order. |
-| `get_data_freshness` | `public` | `()` | Returns data freshness status for all tracked tables. Useful for cfb-app "data last updated" indicators. |
+| `get_data_freshness` | `public` | `()` | Legacy six-column maintenance heuristic for 24 tracked tables; vacuum/analyze activity does not prove publication freshness. Existing cfb-app/MCP contract preserved. |
+| `get_asset_freshness` | `public` | `()` | **Prepared, not deployed.** Query-time publication evidence for the two source-wide house Elo assets; see the contract below. |
 | `run_analyst_query` | `public` | `(query_sql text)` | Guarded free-form read-only SQL for the cfb-app MCP `run_sql` tool (added 2026-07-22). Single SELECT/WITH statement only; executes as the `analyst_ro` role (SELECT on `api` schema only, read-only transaction); rows hard-capped at 200; returns a `jsonb` array. Timeout is enforced by the calling role's Supabase statement_timeout, not in-function. Defined in `src/schemas/public/012_run_analyst_query.sql`. |
+
+### Receipt freshness compatibility (prepared, not deployed)
+
+`public.get_asset_freshness()` returns one row per `asset_key, coverage_key` for
+`analytics.house_elo_game` and `marts.house_elo_game` (`source-wide`). It is an
+invoker RPC over an ordinary owner-rights view, with SELECT/EXECUTE granted to
+`anon` and `authenticated`. Consumers receive no private ledger/policy access.
+
+| Fields | Meaning |
+|---|---|
+| `asset_key`, `coverage_key` | Stable asset identity and receipt grain. |
+| `generation_id`, `published_at`, `current_outcome`, `coverage`, `row_delta` | Exact current complete receipt only; absent pointers do not fall back to historic successes. `expected_no_data` is evaluated empty coverage. |
+| `age_seconds`, `expected_refresh_interval`, `is_stale` | Statement-time age as numeric seconds; nullable interval and nullable age-based stale flag. No declared interval or no current publication means unknown, not fresh. |
+| `publication_state` | `unrecorded`, `unpublished` (history exists but no current pointer), or `current`. |
+| `source_watermark` | For these producers, opaque `core.games` input digest; not a provider timestamp. |
+| `required_input_generations`, `recorded_inputs_current` | Recorded mart-to-source generation comparison; source/no-current input comparison is NULL. A missing or mismatched required mart edge is false. |
+| `input_closure_current`, `unversioned_input_assets` | Closure is unknown because `core.games` is unversioned, or false for a known broken mart edge. Never claims complete provider freshness. |
+| `latest_outcome`, `latest_recorded_at` | Latest attempt diagnostic; does not select current data. |
+| `last_failure_at`, `last_failure_outcome`, `last_failure_category` | Most recent failed/partial/deferred/blocked receipt, retained after recovery. Category is allowlisted; raw errors and operation scopes are private. |
+
+The private `meta.asset_freshness_policies` table stores optional positive
+publication intervals. Neither runtime policy configuration nor workflow
+activation is part of applying the prepared code. See the
+[implementation and rollout limits](plans/2026-09-09-f19-receipt-freshness.md).
 
 ### Reference Tables (Direct Access Allowed)
 

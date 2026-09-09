@@ -332,6 +332,13 @@ Evidence: [flat-file retry loop](https://github.com/rstover-fo/cfb-database/blob
 
 **P1 for trustworthy monitoring · Confirmed · M/L**
 
+**Implementation progress (2026-09-09):** the receipt compatibility slice is
+prepared in migration 069: query-time publication age, separate failure evidence,
+recorded house Elo dependency checks, and incremental verifier adoption. The
+legacy six-column RPC remains compatible. This does not close F19: the remaining
+sources still need receipts, cadence declarations, generation enforcement, and
+consumer cutover. See the [bounded implementation](2026-09-09-f19-receipt-freshness.md).
+
 The freshness mart infers loading from vacuum/analyze timestamps, with a server-start fallback. Maintenance can occur without fresh source data, and fresh ingestion need not immediately trigger maintenance. More fundamentally, days-since-activity and is_stale are stored in a materialized view: if the refresher stops, their values stop aging. The tracked-table list also trails the expanding source surface. Existing load verification does not consistently prove that outputs belong to the latest required generation.
 
 Evidence: [freshness definition](https://github.com/rstover-fo/cfb-database/blob/4a798fde40480ac01d60a4d08c9c4eba42bed2c2/src/schemas/marts/028_data_freshness.sql#L65), [cached age/status](https://github.com/rstover-fo/cfb-database/blob/4a798fde40480ac01d60a4d08c9c4eba42bed2c2/src/schemas/marts/028_data_freshness.sql#L108), [load verification](https://github.com/rstover-fo/cfb-database/blob/4a798fde40480ac01d60a4d08c9c4eba42bed2c2/scripts/verify_load.py).

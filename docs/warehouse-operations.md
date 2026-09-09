@@ -61,6 +61,18 @@ do not acquire these workflow dependencies automatically. See the
 [F10 plan](plans/2026-09-08-f10-workflow-dependencies.md) for scope and verification
 limits; historical schedule descriptions later in this document predate F10.
 
+## Receipt-backed freshness (prepared)
+
+Migration 069 adds `public.get_asset_freshness()` for the two controlled house
+Elo assets. It reports publication age at query time, current generation,
+recorded dependency status and separate failure diagnostics. Initial cadence
+policy and full upstream freshness remain unknown; `core.games` has no receipt.
+`verify_load.py` checks this surface when installed and warns when the optional
+receipts or policy are absent. Existing maintenance-based freshness checks and
+the six-column `get_data_freshness()` consumer RPC remain compatible.
+See the [evidence meanings and rollout limits](plans/2026-09-09-f19-receipt-freshness.md)
+before interpreting either surface as a source-freshness guarantee.
+
 ## Plays partition rollover (F08)
 
 `run_plays_pipeline()` performs catalog preflight before constructing the source

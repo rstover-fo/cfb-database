@@ -20,11 +20,13 @@ Checks:
     5. marts.data_freshness is_stale flags -- heuristic only: the matview infers
        freshness from pg_stat vacuum/analyze timestamps, so staleness WARNs
        off-season and FAILs in-season (or with --strict)
-    6. ratings.massey_composite has a recent, full-coverage snapshot for the
+    6. Optional house Elo receipts: publication age and exact recorded inputs;
+       unknown cadence/upstream closure WARN, broken required inputs FAIL
+    7. ratings.massey_composite has a recent, full-coverage snapshot for the
        season (in-season only; WARNs if migration 041 isn't applied yet)
-    7. meta.flat_file_loads has a recent successful 'availability' load
+    8. meta.flat_file_loads has a recent successful 'availability' load
        (in-season only; never FAILs -- external conference sites are flaky)
-    8. no unexpected dlt VARIANT (__v_double) twin has appeared on a
+    9. no unexpected dlt VARIANT (__v_double) twin has appeared on a
        charting source table since the mart(s) reading it were authored
        (KTD7 tripwire; see src/pipelines/utils/variant_twins.py) -- FAILs
        naming the column, since it means a metric is silently reading NULL
@@ -530,6 +532,84 @@ def check_freshness(cur, in_season: bool, strict: bool, report: Report) -> None:
         )
 
 
+RECEIPT_FRESHNESS_ASSETS = ("analytics.house_elo_game", "marts.house_elo_game")
+NONCURRENT_RECEIPT_OUTCOMES = {"failed", "deferred", "partial", "blocked"}
+
+
+def check_receipt_freshness(cur, in_season: bool, strict: bool, report: Report) -> None:
+    """Inspect optional source-wide publication evidence, not season/provider coverage."""
+    cur.execute("SELECT to_regprocedure('public.get_asset_freshness()')")
+    if cur.fetchone()[0] is None:
+        report.record(WARN, "receipt_freshness", "receipt freshness migration is not installed")
+        return
+    # A permission/transport/query error must propagate as a failed verification,
+    # not be swallowed or leave a silently aborted transaction for later checks.
+    cur.execute("SELECT to_jsonb(f) FROM public.get_asset_freshness() f")
+    rows = [row[0] for row in cur.fetchall()]
+    keys = [(row.get("asset_key"), row.get("coverage_key")) for row in rows]
+    expected = {(asset, "source-wide") for asset in RECEIPT_FRESHNESS_ASSETS}
+    if len(keys) != len(expected) or set(keys) != expected:
+        report.record(
+            FAIL, "receipt_freshness", "expected exactly both source-wide house Elo assets"
+        )
+        return
+
+    for row in rows:
+        asset = row["asset_key"]
+        if row.get("latest_outcome") in NONCURRENT_RECEIPT_OUTCOMES:
+            report.record(
+                WARN,
+                "receipt_attempt",
+                f"{asset}: latest attempt {row['latest_outcome']}; "
+                "this does not replace current publication evidence",
+            )
+        state = row.get("publication_state")
+        if state == "unrecorded" and row.get("generation_id") is None:
+            report.record(WARN, "receipt_freshness", f"{asset}: optional publisher has no receipts")
+            continue
+        if state == "unpublished" and row.get("generation_id") is None:
+            report.record(
+                FAIL if strict else WARN,
+                "receipt_freshness",
+                f"{asset}: receipt history exists but no valid current publication",
+            )
+            continue
+        if (
+            state != "current"
+            or not row.get("generation_id")
+            or not row.get("published_at")
+            or row.get("current_outcome") not in {"succeeded", "expected_no_data"}
+            or (row.get("coverage") or {}).get("complete") is not True
+        ):
+            report.record(FAIL, "receipt_freshness", f"{asset}: invalid current receipt evidence")
+            continue
+        if (
+            row.get("recorded_inputs_current") is False
+            or row.get("input_closure_current") is False
+            or (asset == "marts.house_elo_game" and row.get("recorded_inputs_current") is not True)
+        ):
+            report.record(
+                FAIL, "receipt_freshness", f"{asset}: required input generation is not current"
+            )
+            continue
+        details = [f"{asset}: current {row['current_outcome']} publication"]
+        status = PASS
+        if row.get("is_stale") is True:
+            status = FAIL if in_season or strict else WARN
+            details.append(f"age {row.get('age_seconds')}s exceeds declared publication interval")
+        elif row.get("is_stale") is None or row.get("expected_refresh_interval") is None:
+            status = WARN
+            details.append("publication age policy is undeclared")
+        if (
+            row.get("input_closure_current") is not True
+            or row.get("unversioned_input_assets") != []
+        ):
+            if status == PASS:
+                status = WARN
+            details.append("upstream closure unverified (core.games is unversioned)")
+        report.record(status, "receipt_freshness", "; ".join(details))
+
+
 def verify(season: int, strict: bool) -> int:
     """Run all checks. Returns the number of failures."""
     from datetime import datetime
@@ -551,6 +631,7 @@ def verify(season: int, strict: bool) -> int:
             check_fitted_coverage(cur, report)
             check_backtest_freshness(cur, report)
             check_freshness(cur, in_season, strict, report)
+            check_receipt_freshness(cur, in_season, strict, report)
             check_variant_twins(cur, report)
             check_massey_composite(cur, season, report)
             check_availability_archive(cur, season, report)
@@ -575,7 +656,7 @@ def main() -> None:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="Treat weekly-table staleness as failure even off-season",
+        help="Fail weekly staleness off-season and missing current receipt publications",
     )
     args = parser.parse_args()
 

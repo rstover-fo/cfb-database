@@ -15,6 +15,14 @@ Last updated: 2026-09-09
 
 ## Recent Contract Changes
 
+- **2026-09-09 — SDV season receipt freshness (prepared, not deployed).**
+  Migration `073_sdv_source_freshness.sql` adds
+  `public.get_source_freshness(p_season bigint)` for exactly the four enrolled
+  SDV sources. It reports current publication evidence, statement-time age,
+  explicit per-season freshness policy and separate failure diagnostics.
+  Existing house Elo and legacy freshness RPCs remain compatible. See the
+  [SDV freshness contract](plans/2026-09-09-step7-sdv-source-freshness.md).
+
 - **2026-09-09 — F19 receipt freshness (prepared, not deployed).**
   Migration `069_receipt_backed_freshness.sql` adds the separate
   `public.get_asset_freshness()` RPC for the two controlled house Elo assets.
@@ -1122,6 +1130,7 @@ Server-side functions callable via `supabase.rpc()`.
 | `get_conference_head_to_head` | `public` | `(p_conf1, p_conf2, p_season_start?, p_season_end?)` | Conference vs conference head-to-head records by season. Flips results to match caller's conference order. |
 | `get_data_freshness` | `public` | `()` | Legacy six-column maintenance heuristic for 24 tracked tables; vacuum/analyze activity does not prove publication freshness. Existing cfb-app/MCP contract preserved. |
 | `get_asset_freshness` | `public` | `()` | **Prepared, not deployed.** Query-time publication evidence for the two source-wide house Elo assets; see the contract below. |
+| `get_source_freshness` | `public` | `(p_season bigint)` | **Prepared, not deployed.** Exactly four SDV source/season rows with current publication evidence, nullable freshness policy and separate failure diagnostics. |
 | `run_analyst_query` | `public` | `(query_sql text)` | Guarded free-form read-only SQL for the cfb-app MCP `run_sql` tool (added 2026-07-22). Single SELECT/WITH statement only; executes as the `analyst_ro` role (SELECT on `api` schema only, read-only transaction); rows hard-capped at 200; returns a `jsonb` array. Timeout is enforced by the calling role's Supabase statement_timeout, not in-function. Defined in `src/schemas/public/012_run_analyst_query.sql`. |
 
 ### Receipt freshness compatibility (prepared, not deployed)
@@ -1147,6 +1156,26 @@ The private `meta.asset_freshness_policies` table stores optional positive
 publication intervals. Neither runtime policy configuration nor workflow
 activation is part of applying the prepared code. See the
 [implementation and rollout limits](plans/2026-09-09-f19-receipt-freshness.md).
+
+### SDV season freshness (prepared, not deployed)
+
+`public.get_source_freshness(p_season bigint)` requires an explicit season from
+1869 through 2200. It returns exactly one row for each of
+`sdv_ratings_weekly`, `sdv_fpi_weekly`, `sdv_team_xwalk` and `sdv_game_xwalk`,
+including missing receipt histories. This owner-rights RPC grants EXECUTE to
+`anon` and `authenticated` and exposes only its 21 typed scalar fields; private
+ledger/policy tables, raw JSON and arbitrary errors remain inaccessible.
+
+Current publication states distinguish `unrecorded`, `unpublished`, `invalid`
+and `current`. Only exact complete successful season receipts populate current
+generation, age, row counts and provenance. Missing policy leaves stale status
+NULL; no threshold is inferred from fetching cadence. Latest receipt outcome
+and historical failure diagnostics are independent of current publication.
+Crosswalk season evidence remains registered-name or caller-declared.
+
+The private policy table permits the four SDV season scopes alongside the
+existing two Elo source-wide scopes. Existing Elo policy values and RPC
+contracts are preserved. See the [complete output contract and verifier rules](plans/2026-09-09-step7-sdv-source-freshness.md).
 
 ### Reference Tables (Direct Access Allowed)
 

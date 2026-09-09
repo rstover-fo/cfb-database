@@ -73,6 +73,14 @@ the six-column `get_data_freshness()` consumer RPC remain compatible.
 See the [evidence meanings and rollout limits](plans/2026-09-09-f19-receipt-freshness.md)
 before interpreting either surface as a source-freshness guarantee.
 
+Migration 073 adds `public.get_source_freshness(p_season bigint)` and an additive
+SDV check in `verify_load.py`. It reports all four enrolled sources for the
+requested season, including absent or invalid current evidence and separate
+latest-failure diagnostics. Publication intervals are explicitly configured per
+source/season; missing thresholds remain unknown. The verifier warns for
+unrecorded optional sources or undeclared policy, and fails malformed evidence.
+See the [SDV response contract, strict-mode grading and rollout limits](plans/2026-09-09-step7-sdv-source-freshness.md).
+
 ## Generation-enforced refresh (prepared)
 
 After migration 070 and a separately authorized role/cadence rollout, use

@@ -127,6 +127,9 @@ def _assert_catalog_shape(conn):
     # F14 adds three private tables and six indexes; keep baseline evidence immutable.
     expected_counts[("meta", "r")] += 3
     expected_counts[("meta", "i")] += 6
+    # The bounded house-Elo publication ledger adds four tables and nine indexes.
+    expected_counts[("meta", "r")] += 4
+    expected_counts[("meta", "i")] += 9
     assert query(
         conn,
         """
@@ -382,7 +385,7 @@ def test_managed_warehouse_catalog_data_and_access(
         _insert_representative_rows(conn)
         before_upgrade = _fixture_snapshot(conn)
         upgrade = apply_manifest(conn, manifest, mode="upgrade")
-        assert len(upgrade.pending) == 4
+        assert len(upgrade.pending) == 5
         assert [step.id for step in upgrade.pending] == [
             migration.id for migration in manifest.migrations[4:]
         ]

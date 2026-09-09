@@ -40,6 +40,11 @@
       "id": "warehouse.f14.067",
       "path": "src/schemas/migrations/067_cfbd_transport_admission.sql",
       "kind": "immutable"
+    },
+    {
+      "id": "warehouse.f14.068",
+      "path": "src/schemas/migrations/068_asset_publication_receipts.sql",
+      "kind": "immutable"
     }
   ]
 }

@@ -1210,6 +1210,24 @@ separate. `public.get_data_freshness()` is unchanged. See the
 [transport implementation and rollout](plans/2026-09-08-f14-transport-admission.md) and the
 [F14 foundation and rollout boundary](plans/2026-09-08-f14-quota-foundation.md).
 
+### Controlled publication receipts (prepared, not deployed)
+
+Migration `068_asset_publication_receipts.sql` adds private
+`meta.asset_publication_locks`, `meta.asset_receipts`,
+`meta.asset_current_generations`, and `meta.asset_receipt_inputs`. The first
+producer is opt-in full house Elo computation: game output, the current team
+snapshot, the game mart and both game-asset receipts commit together. The mart
+receipt names its exact source generation; upstream `core.games` is recorded
+as an unversioned input observation. Current pointers require complete success
+or evaluated expected-no-data coverage. Legacy target writes and relevant DDL
+invalidate current evidence. These records do not change
+`public.get_data_freshness()` or prove provider completeness.
+
+The owner-controlled `warehouse_publication` namespace grants only bounded RPCs
+to `warehouse_publisher`; no runtime membership is granted. Published timestamps
+are transaction-local clock observations, not exact commit times. See the
+[publication protocol and rollout](plans/2026-09-09-f14-publication-receipts.md).
+
 ### Raw Data Tables
 
 | Schema | Tables |

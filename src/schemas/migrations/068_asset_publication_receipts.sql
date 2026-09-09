@@ -47,6 +47,8 @@ BEGIN
                     pg_catalog.to_regprocedure('warehouse_publication.invalidate_house_elo_pointers()'),
                     pg_catalog.to_regprocedure('warehouse_publication.invalidate_asset_pointer_ddl()'),
                     pg_catalog.to_regprocedure('warehouse_publication.invalidate_asset_pointer_drop()'),
+                    pg_catalog.to_regprocedure('warehouse_publication.start_house_elo_run(uuid)'),
+                    pg_catalog.to_regprocedure('warehouse_publication.finish_house_elo_run(uuid,text)'),
                     pg_catalog.to_regprocedure('warehouse_publication.get_house_elo_state(bigint,bigint)'),
                     pg_catalog.to_regprocedure('warehouse_publication.publish_house_elo(uuid,uuid,uuid,uuid,uuid,text,jsonb,jsonb,bigint,bigint,bigint[])'),
                     pg_catalog.to_regprocedure('warehouse_publication.record_house_elo_failure(uuid,uuid,uuid,text,text)')
@@ -320,6 +322,73 @@ BEGIN
 END
 $function$;
 
+-- Bounded lifecycle wrappers keep the runtime role away from generic quota
+-- helpers that can create arbitrary operation kinds/scopes.
+CREATE OR REPLACE FUNCTION warehouse_publication.start_house_elo_run(
+    p_operation_run_id uuid
+)
+RETURNS uuid
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $function$
+DECLARE run_row meta.operation_runs%ROWTYPE;
+BEGIN
+    IF p_operation_run_id IS NULL THEN
+        RAISE EXCEPTION 'operation_run_id is required' USING ERRCODE = '22023';
+    END IF;
+    PERFORM warehouse_quota.start_operation_run(
+        p_operation_run_id,
+        'compute',
+        'compute_house_elo',
+        '{"assets":["analytics.house_elo_game","marts.house_elo_game"],"mode":"full","start_season":1869}'::jsonb,
+        NULL,
+        NULL
+    );
+    -- start_operation_run retains its advisory transaction lock. Validate the
+    -- actor after an insert or replay so another login cannot adopt the UUID.
+    SELECT r.* INTO STRICT run_row FROM meta.operation_runs r
+    WHERE r.operation_run_id = p_operation_run_id;
+    IF run_row.recorded_by <> session_user
+        OR run_row.operation_kind <> 'compute'
+        OR run_row.initiator <> 'compute_house_elo'
+        OR run_row.requested_scope IS DISTINCT FROM
+            '{"assets":["analytics.house_elo_game","marts.house_elo_game"],"mode":"full","start_season":1869}'::jsonb
+        OR run_row.plan_digest IS NOT NULL OR run_row.code_revision IS NOT NULL THEN
+        RAISE EXCEPTION 'operation run does not belong to this house Elo publisher'
+            USING ERRCODE = '22023';
+    END IF;
+    RETURN p_operation_run_id;
+END
+$function$;
+
+CREATE OR REPLACE FUNCTION warehouse_publication.finish_house_elo_run(
+    p_operation_run_id uuid,
+    p_outcome text
+)
+RETURNS integer
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $function$
+DECLARE run_row meta.operation_runs%ROWTYPE;
+BEGIN
+    IF p_operation_run_id IS NULL OR p_outcome NOT IN ('succeeded', 'failed') THEN
+        RAISE EXCEPTION 'house Elo operation outcome is invalid' USING ERRCODE = '22023';
+    END IF;
+    SELECT r.* INTO run_row FROM meta.operation_runs r
+    WHERE r.operation_run_id = p_operation_run_id FOR UPDATE;
+    IF NOT FOUND OR run_row.recorded_by <> session_user
+        OR run_row.operation_kind <> 'compute'
+        OR run_row.initiator <> 'compute_house_elo'
+        OR run_row.requested_scope IS DISTINCT FROM
+            '{"assets":["analytics.house_elo_game","marts.house_elo_game"],"mode":"full","start_season":1869}'::jsonb
+        OR run_row.plan_digest IS NOT NULL OR run_row.code_revision IS NOT NULL THEN
+        RAISE EXCEPTION 'operation run does not belong to this house Elo publisher'
+            USING ERRCODE = '22023';
+    END IF;
+    RETURN warehouse_quota.finish_operation_run(
+        p_operation_run_id,
+        p_outcome,
+        CASE WHEN p_outcome = 'failed' THEN 'publication_failed' ELSE NULL END
+    );
+END
+$function$;
+
 CREATE OR REPLACE FUNCTION warehouse_publication.publish_house_elo(
     p_operation_run_id uuid,
     p_source_generation_id uuid,
@@ -512,6 +581,32 @@ BEGIN
     IF fresh_input_digest IS DISTINCT FROM p_input_digest THEN
         RAISE EXCEPTION 'core.games changed during house Elo preparation'
             USING ERRCODE = '40001';
+    END IF;
+
+    -- Excluding a reviewed postponed original is safe only while its reviewed
+    -- replacement is present and carries the same non-NULL game identity.
+    -- This mirrors select_canonical_game_rows() without changing raw rows.
+    IF EXISTS (
+        SELECT 1
+        FROM (VALUES
+            (401866625::bigint, 401917058::bigint),
+            (401549719::bigint, 401611307::bigint),
+            (401550299::bigint, 401611308::bigint),
+            (401552878::bigint, 401611306::bigint),
+            (401552884::bigint, 401612659::bigint)
+        ) mapping(original_id, replacement_id)
+        JOIN core.games original_game ON original_game.id = mapping.original_id
+        LEFT JOIN core.games replacement_game ON replacement_game.id = mapping.replacement_id
+        WHERE replacement_game.id IS NULL
+           OR original_game.season IS NULL
+           OR original_game.home_team IS NULL
+           OR original_game.away_team IS NULL
+           OR original_game.season IS DISTINCT FROM replacement_game.season
+           OR original_game.home_team IS DISTINCT FROM replacement_game.home_team
+           OR original_game.away_team IS DISTINCT FROM replacement_game.away_team
+    ) THEN
+        RAISE EXCEPTION 'reviewed superseded game is missing a matching replacement'
+            USING ERRCODE = '22023';
     END IF;
 
     IF EXISTS (
@@ -1069,6 +1164,11 @@ $acl$;
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE
     ON analytics.house_elo_game, analytics.house_elo_current
     FROM warehouse_publisher;
+REVOKE EXECUTE ON FUNCTION
+    warehouse_quota.start_operation_run(uuid, text, text, jsonb, text, text),
+    warehouse_quota.finish_operation_run(uuid, text, text)
+FROM warehouse_publisher;
+REVOKE USAGE ON SCHEMA warehouse_quota FROM warehouse_publisher;
 
 DO $publisher_boundary$
 BEGIN
@@ -1083,19 +1183,27 @@ BEGIN
     ) OR pg_catalog.has_table_privilege(
             'warehouse_publisher', 'analytics.house_elo_game', 'INSERT,UPDATE,DELETE,TRUNCATE')
        OR pg_catalog.has_table_privilege(
-            'warehouse_publisher', 'analytics.house_elo_current', 'INSERT,UPDATE,DELETE,TRUNCATE') THEN
+            'warehouse_publisher', 'analytics.house_elo_current', 'INSERT,UPDATE,DELETE,TRUNCATE')
+       OR pg_catalog.has_function_privilege(
+            'warehouse_publisher',
+            'warehouse_quota.start_operation_run(uuid,text,text,jsonb,text,text)',
+            'EXECUTE')
+       OR pg_catalog.has_function_privilege(
+            'warehouse_publisher',
+            'warehouse_quota.finish_operation_run(uuid,text,text)',
+            'EXECUTE') THEN
         RAISE EXCEPTION 'warehouse_publisher has unsafe direct target privileges';
     END IF;
 END
 $publisher_boundary$;
 
-GRANT USAGE ON SCHEMA warehouse_publication, warehouse_quota TO warehouse_publisher;
+GRANT USAGE ON SCHEMA warehouse_publication TO warehouse_publisher;
 GRANT EXECUTE ON FUNCTION
+    warehouse_publication.start_house_elo_run(uuid),
+    warehouse_publication.finish_house_elo_run(uuid, text),
     warehouse_publication.get_house_elo_state(bigint, bigint),
     warehouse_publication.publish_house_elo(
         uuid, uuid, uuid, uuid, uuid, text, jsonb, jsonb, bigint, bigint, bigint[]
     ),
-    warehouse_publication.record_house_elo_failure(uuid, uuid, uuid, text, text),
-    warehouse_quota.start_operation_run(uuid, text, text, jsonb, text, text),
-    warehouse_quota.finish_operation_run(uuid, text, text)
+    warehouse_publication.record_house_elo_failure(uuid, uuid, uuid, text, text)
 TO warehouse_publisher;

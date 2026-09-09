@@ -28,6 +28,10 @@ failure or partially computed result cannot stand in for an empty result.
 Unlike the legacy writer's silent filtering, this mode rejects eligible games
 marked completed without final scores or team names: those rows require input
 repair before complete publication can be claimed.
+If a superseded original is present, its reviewed replacement must also be
+present with matching, non-NULL season and team identities. The publisher
+validates these pairs under the input lock before excluding originals and
+claiming complete coverage.
 
 `published_at` is a clock observation inside the publishing transaction, visible
 only when that transaction commits. It is not the exact commit time.
@@ -99,6 +103,12 @@ and production manifests. It adds private ledger tables and the owner-controlled
 execution and no direct ledger/target DML privileges. The migration does not
 grant login membership or change any public API, freshness response, RLS policy,
 mart definition or workflow activation.
+
+Operation lifecycle access goes through `start_house_elo_run(uuid)` and
+`finish_house_elo_run(uuid, outcome)` in `warehouse_publication`. The start
+wrapper fixes the compute kind, initiator and full-history asset scope; both
+wrappers enforce the calling session's ownership of the run. The runtime role
+cannot call the generic quota operation helpers or finish unrelated runs.
 
 Before a production rollout, verify event-trigger privileges on the actual
 platform, review the migration and role ownership, then separately authorize

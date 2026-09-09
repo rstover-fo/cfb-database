@@ -184,14 +184,7 @@ def start_run(conn, run_id=None):
     run_id = run_id or uuid.uuid4()
     publisher_query(
         conn,
-        """
-        SELECT warehouse_quota.start_operation_run(
-            %s, 'compute', 'compute_house_elo',
-            '{"assets":["analytics.house_elo_game","marts.house_elo_game"],
-              "mode":"full","start_season":1869}'::jsonb,
-            NULL, NULL
-        )
-        """,
+        "SELECT warehouse_publication.start_house_elo_run(%s)",
         (str(run_id),),
     )
     return run_id
@@ -817,3 +810,125 @@ def test_administrator_clears_pointers_before_disabling_event_guard(publication_
     conn.rollback()
     assert query(conn, "SELECT count(*) FROM meta.asset_receipts") == [(2,)]
     assert query(conn, "SELECT count(*) FROM meta.asset_current_generations") == [(0,)]
+
+
+def add_reviewed_game(conn, game_id, *, completed=False, season=2025, home="Alpha", away="Beta"):
+    query(
+        conn,
+        """
+        INSERT INTO core.games(id,season,week,season_type,start_date,completed,
+            neutral_site,home_team,away_team,home_points,away_points,
+            _dlt_load_id,_dlt_id)
+        VALUES (%s,%s,1,'regular','2025-08-31 17:00+00',%s,false,%s,%s,28,14,'fixture',%s)
+        """,
+        (game_id, season, completed, home, away, str(game_id)),
+    )
+
+
+@pytest.mark.parametrize(
+    "defect",
+    ["missing", "season", "home", "away", "original_season", "original_home", "original_away"],
+)
+def test_superseded_pair_defects_cannot_advance_complete_receipts(publication_db, defect):
+    conn, _ = publication_db
+    publish(conn, publication_args(conn))
+    before = current_snapshot(conn)
+    args = list(publication_args(conn, expected=state(conn)))
+    original, replacement = next(iter(SUPERSEDED_GAME_REPLACEMENTS.items()))
+    original_values = {}
+    if defect.startswith("original_"):
+        original_values[defect.removeprefix("original_")] = None
+    add_reviewed_game(conn, original, **original_values)
+    if defect != "missing":
+        replacement_values = {}
+        if defect in {"season", "home", "away"}:
+            replacement_values[defect] = 2024 if defect == "season" else "Different"
+        add_reviewed_game(conn, replacement, **replacement_values)
+    # Supply the current digest directly to exercise locked publication validation,
+    # even when the optional preparation lookup rejects the broken pair first.
+    args[5] = query(
+        conn,
+        "SELECT md5(coalesce(string_agg(md5(to_jsonb(g)::text),'' ORDER BY id),'')) "
+        "FROM core.games g",
+    )[0][0]
+    with pytest.raises(psycopg2.Error, match="replacement|superseded"):
+        publish(conn, tuple(args))
+    conn.rollback()
+    assert current_snapshot(conn) == before
+
+
+@pytest.mark.parametrize("original,replacement", list(SUPERSEDED_GAME_REPLACEMENTS.items()))
+def test_every_reviewed_replacement_pair_can_publish(publication_db, original, replacement):
+    from scripts.compute_house_elo import run_full_published
+
+    conn, _ = publication_db
+    add_reviewed_game(conn, original, completed=True)
+    add_reviewed_game(conn, replacement, completed=True)
+    rows = run_full_published(conn)
+    assert {row["game_id"] for row in rows} == {101, replacement}
+    assert query(conn, "SELECT count(*) FROM meta.asset_current_generations") == [(2,)]
+
+
+def test_publisher_cannot_use_generic_operation_rpcs_even_after_migration_reapply(publication_db):
+    conn, _ = publication_db
+    # Simulate grants from the original PR version before reapplying the fix.
+    query(
+        conn,
+        """
+        GRANT USAGE ON SCHEMA warehouse_quota TO warehouse_publisher;
+        GRANT EXECUTE ON FUNCTION
+            warehouse_quota.start_operation_run(uuid,text,text,jsonb,text,text),
+            warehouse_quota.finish_operation_run(uuid,text,text) TO warehouse_publisher;
+        """,
+    )
+    query(conn, MIGRATIONS[-1].read_text())
+    for statement in (
+        "SELECT warehouse_quota.start_operation_run(%s,'extract','forged','{}',NULL,NULL)",
+        "SELECT warehouse_quota.finish_operation_run(%s,'failed','forged')",
+    ):
+        with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+            publisher_query(conn, statement, (str(uuid.uuid4()),))
+        conn.rollback()
+    assert query(conn, "SELECT count(*) FROM meta.operation_runs") == [(0,)]
+
+
+def test_elo_wrappers_reject_other_principal_and_unrelated_operation(publication_db):
+    conn, target = publication_db
+    unrelated = str(uuid.uuid4())
+    query(
+        conn,
+        "SELECT warehouse_quota.start_operation_run(%s,'extract','fixture','{}',NULL,NULL)",
+        (unrelated,),
+    )
+    for statement in (
+        "SELECT warehouse_publication.start_house_elo_run(%s)",
+        "SELECT warehouse_publication.finish_house_elo_run(%s,'failed')",
+    ):
+        with pytest.raises(psycopg2.Error):
+            publisher_query(conn, statement, (unrelated,))
+        conn.rollback()
+    other_role = "publication_caller_" + uuid.uuid4().hex
+    query(conn, f"CREATE ROLE {other_role} NOLOGIN")
+    query(conn, f"GRANT warehouse_publisher TO {other_role}")
+    other = psycopg2.connect(target)
+    try:
+        query(other, f"SET SESSION AUTHORIZATION {other_role}")
+        other_run = str(start_run(other))
+        for statement in (
+            "SELECT warehouse_publication.start_house_elo_run(%s)",
+            "SELECT warehouse_publication.finish_house_elo_run(%s,'failed')",
+        ):
+            with pytest.raises(psycopg2.Error):
+                publisher_query(conn, statement, (other_run,))
+            conn.rollback()
+        assert query(
+            conn,
+            "SELECT recorded_by,outcome FROM meta.operation_runs WHERE operation_run_id=%s",
+            (other_run,),
+        ) == [(other_role, "running")]
+        assert query(
+            conn, "SELECT outcome FROM meta.operation_runs WHERE operation_run_id=%s", (unrelated,)
+        ) == [("running",)]
+    finally:
+        other.close()
+        query(conn, f"DROP ROLE {other_role}")

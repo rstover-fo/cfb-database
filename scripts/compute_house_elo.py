@@ -641,11 +641,6 @@ def run_full_published(conn) -> list[dict]:
     from psycopg2.extras import Json
 
     run_id, source_id, mart_id = (str(uuid.uuid4()) for _ in range(3))
-    scope = {
-        "assets": ["analytics.house_elo_game", "marts.house_elo_game"],
-        "mode": "full",
-        "start_season": DEFAULT_START_SEASON,
-    }
     logger.info(
         "Publication run=%s source_generation=%s mart_generation=%s", run_id, source_id, mart_id
     )
@@ -655,8 +650,8 @@ def run_full_published(conn) -> list[dict]:
         with conn.cursor() as cur:
             cur.execute("SET LOCAL ROLE warehouse_publisher")
             cur.execute(
-                "SELECT warehouse_quota.start_operation_run(%s,'compute',%s,%s,NULL,NULL)",
-                (run_id, "compute_house_elo", Json(scope)),
+                "SELECT warehouse_publication.start_house_elo_run(%s)",
+                (run_id,),
             )
         conn.commit()
         started = True
@@ -713,7 +708,7 @@ def run_full_published(conn) -> list[dict]:
             )
             cur.fetchone()
             cur.execute(
-                "SELECT warehouse_quota.finish_operation_run(%s,'succeeded',NULL)", (run_id,)
+                "SELECT warehouse_publication.finish_house_elo_run(%s,'succeeded')", (run_id,)
             )
         commit_pending = True
         conn.commit()
@@ -732,8 +727,7 @@ def run_full_published(conn) -> list[dict]:
                         (run_id, source_id, mart_id),
                     )
                     cur.execute(
-                        "SELECT warehouse_quota.finish_operation_run("
-                        "%s,'failed','publication_failed')",
+                        "SELECT warehouse_publication.finish_house_elo_run(%s,'failed')",
                         (run_id,),
                     )
                 conn.commit()

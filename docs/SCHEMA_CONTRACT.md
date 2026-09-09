@@ -1225,7 +1225,10 @@ invalidate current evidence. These records do not change
 
 The owner-controlled `warehouse_publication` namespace grants only bounded RPCs
 to `warehouse_publisher`; no runtime membership is granted. Published timestamps
-are transaction-local clock observations, not exact commit times. See the
+are transaction-local clock observations, not exact commit times. Elo-scoped
+operation wrappers enforce fixed scope and session ownership; the publisher has
+no generic quota operation access. Superseded originals require a present,
+matching reviewed replacement before complete coverage is published. See the
 [publication protocol and rollout](plans/2026-09-09-f14-publication-receipts.md).
 
 ### Raw Data Tables

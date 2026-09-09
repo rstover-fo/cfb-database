@@ -50,6 +50,11 @@
       "id": "warehouse.f19.069",
       "path": "src/schemas/migrations/069_receipt_backed_freshness.sql",
       "kind": "immutable"
+    },
+    {
+      "id": "warehouse.f11.070",
+      "path": "src/schemas/migrations/070_generation_enforced_refresh.sql",
+      "kind": "immutable"
     }
   ]
 }

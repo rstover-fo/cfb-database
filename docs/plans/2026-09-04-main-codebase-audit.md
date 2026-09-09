@@ -228,6 +228,13 @@ Evidence: [daily sequence](https://github.com/rstover-fo/cfb-database/blob/4a798
 
 **P1 for dependency gating; P2 for cost · Confirmed / Opportunity · L**
 
+**Implementation progress (2026-09-09):** an opt-in generation-enforced
+house Elo mart adapter is prepared in migration 070. It pins source/target
+receipts and source cadence, rejects invalid inputs, and publishes refresh data,
+receipt, dependency edge and current pointer atomically. This is a bounded
+source-wide edge; broader source generation coverage and production activation
+remain open. See the [F11 protocol](2026-09-09-f11-generation-enforcement.md).
+
 The loader can refresh marts after a source fails. The Python refresher continues after an upstream view fails, allowing descendants to refresh from old upstream contents. Per-view commits make mixed generations visible. The SQL refresh-all function uses a different, nonconcurrent transaction pattern. Separately, daily full refreshes repeatedly scan historical play data across several large marts.
 
 Evidence: [load failure/refresh flow](https://github.com/rstover-fo/cfb-database/blob/4a798fde40480ac01d60a4d08c9c4eba42bed2c2/scripts/load_season.py#L604), [refresh loop](https://github.com/rstover-fo/cfb-database/blob/4a798fde40480ac01d60a4d08c9c4eba42bed2c2/scripts/refresh_marts.py#L235), [SQL refresher](https://github.com/rstover-fo/cfb-database/blob/4a798fde40480ac01d60a4d08c9c4eba42bed2c2/src/schemas/functions/refresh_all_marts.sql), [game EPA aggregation](https://github.com/rstover-fo/cfb-database/blob/4a798fde40480ac01d60a4d08c9c4eba42bed2c2/src/schemas/marts/002_game_epa_calc.sql).

@@ -24,6 +24,18 @@ def test_flat_file_workflow_is_reusable_and_keeps_manual_backfills():
         assert triggers["workflow_call"]["inputs"][name]["type"] == "string"
         assert triggers["workflow_call"]["inputs"][name]["default"] == ""
         assert triggers["workflow_dispatch"]["inputs"][name]["required"] is False
+    assert triggers["workflow_call"]["inputs"]["receipt_canary_action"] == {
+        "description": "Explicit FPI receipt canary action; none preserves the legacy loader",
+        "required": False,
+        "type": "string",
+        "default": "none",
+    }
+    assert triggers["workflow_call"]["inputs"]["receipt_expected_sha256"]["default"] == ""
+    dispatch_canary = triggers["workflow_dispatch"]["inputs"]["receipt_canary_action"]
+    assert dispatch_canary["type"] == "choice"
+    assert dispatch_canary["default"] == "none"
+    assert dispatch_canary["options"] == ["none", "preflight", "publish"]
+    assert triggers["workflow_dispatch"]["inputs"]["receipt_expected_sha256"]["type"] == ("string")
     assert triggers["workflow_call"]["secrets"]["SUPABASE_DB_URL"]["required"] is True
     # The caller owns daily-season-load for its entire run; reusing that group
     # here would make the called workflow wait for its own parent to finish.
@@ -70,6 +82,80 @@ def test_workflow_propagates_failures(tmp_path, failed_script):
         assert calls[-1][0] == "scripts/refresh_marts.py"
 
 
+@pytest.mark.parametrize("action", ["preflight", "publish"])
+def test_receipt_canary_routes_every_input_as_one_quoted_argument(tmp_path, action):
+    calls_path = tmp_path / "calls.jsonl"
+    fake_python = tmp_path / "python"
+    fake_python.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "with open(os.environ['TEST_CALLS'], 'a') as log:\n"
+        "    log.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+    )
+    fake_python.chmod(0o755)
+    canary_step = next(
+        step
+        for step in workflow()["jobs"]["load"]["steps"]
+        if step.get("name") == "Run source receipt canary"
+    )
+    source = "sdv_fpi_weekly --source injected"
+    season = "2026 2025"
+    sha = "a" * 64 + "; touch never"
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+        "TEST_CALLS": str(calls_path),
+        "RECEIPT_CANARY_ACTION": action,
+        "RECEIPT_CANARY_SOURCE": source,
+        "RECEIPT_CANARY_SEASON": season,
+        "RECEIPT_EXPECTED_SHA256": sha,
+        "RECEIPT_EXPECTED_PROJECT_REF": "ibobsbwlewpqslkqbrjd",
+    }
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", canary_step["run"]],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert [json.loads(line) for line in calls_path.read_text().splitlines()] == [
+        [
+            "scripts/run_source_receipt_canary.py",
+            action,
+            "--source",
+            source,
+            "--season",
+            season,
+            "--expected-sha256",
+            sha,
+            "--expected-project-ref",
+            "ibobsbwlewpqslkqbrjd",
+        ]
+    ]
+    assert "${{" not in canary_step["run"]
+
+
+def test_canary_is_excluded_from_legacy_refresh_and_failure_issue():
+    steps = workflow()["jobs"]["load"]["steps"]
+    by_name = {step.get("name"): step for step in steps}
+    assert by_name["Load flat-file sources"]["if"] == (
+        "${{ inputs.receipt_canary_action == 'none' }}"
+    )
+    assert by_name["Run source receipt canary"]["if"] == (
+        "${{ inputs.receipt_canary_action != 'none' }}"
+    )
+    assert by_name["Refresh external-rating consumers"]["if"] == (
+        "${{ inputs.receipt_canary_action == 'none' && !cancelled() && "
+        "(steps.load_flat_files.outcome == 'success' || "
+        "steps.load_flat_files.outcome == 'failure') }}"
+    )
+    assert by_name["Open or update failure issue"]["if"] == (
+        "${{ failure() && inputs.receipt_canary_action == 'none' }}"
+    )
+
+
 def run_steps(tmp_path, sources, seasons, failed_script=""):
     """Run completed import and refresh commands while preserving failed status."""
     calls_path = tmp_path / "calls.jsonl"
@@ -93,10 +179,11 @@ def run_steps(tmp_path, sources, seasons, failed_script=""):
         "Refresh external-rating consumers",
     ]
     assert selected[0]["id"] == "load_flat_files"
-    assert "if" not in selected[0]
+    assert selected[0]["if"] == "${{ inputs.receipt_canary_action == 'none' }}"
     assert selected[1]["if"] == (
-        "${{ !cancelled() && (steps.load_flat_files.outcome == 'success' "
-        "|| steps.load_flat_files.outcome == 'failure') }}"
+        "${{ inputs.receipt_canary_action == 'none' && !cancelled() && "
+        "(steps.load_flat_files.outcome == 'success' || "
+        "steps.load_flat_files.outcome == 'failure') }}"
     )
     # Refresh can recover committed rows after a partial import failure, but
     # neither step may mask a failure from the reusable job's caller.

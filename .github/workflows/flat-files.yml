@@ -74,6 +74,7 @@ on:
 
 concurrency:
   group: flat-file-load
+  queue: max # preserve every pending flat-file writer instead of replacing one
   cancel-in-progress: false # never kill a mid-merge load; a queued run waits
 
 permissions:

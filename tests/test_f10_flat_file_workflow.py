@@ -39,7 +39,11 @@ def test_flat_file_workflow_is_reusable_and_keeps_manual_backfills():
     assert triggers["workflow_call"]["secrets"]["SUPABASE_DB_URL"]["required"] is True
     # The caller owns daily-season-load for its entire run; reusing that group
     # here would make the called workflow wait for its own parent to finish.
-    assert workflow()["concurrency"]["group"] == "flat-file-load"
+    assert workflow()["concurrency"] == {
+        "group": "flat-file-load",
+        "queue": "max",
+        "cancel-in-progress": False,
+    }
 
 
 @pytest.mark.parametrize(

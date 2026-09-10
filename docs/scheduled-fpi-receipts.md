@@ -47,11 +47,22 @@ The receipt must have registered-URL provenance, in-file season evidence,
 the declared 36-hour interval, a successful latest attempt, and a non-stale
 current publication. Results include operation and generation IDs for recovery.
 
-The standalone workflow and legacy flat-file workflow share the
-`flat-file-load` concurrency group with cancellation disabled. The standalone
-job refreshes `marts.epa_crossvalidation` after an attempted publication, even
-if publication or verification failed, because a commit may already have
-happened. Refreshing does not erase the earlier failure status. The refresh
+The standalone workflow first acquires `daily-season-load`, then its publish
+job acquires `flat-file-load`. This matches the daily parent's order and
+serializes publication and refresh with daily, historical, backfill, recovery,
+and flat-file work. The FPI job can run after an unsuccessful daily workflow;
+it does not require that workflow to succeed. When activation is off, it uses
+a unique outer group and cannot delay the daily queue.
+
+All workflows sharing those groups use `queue: max` with cancellation disabled
+so a new arrival preserves existing pending runs. GitHub permits up to 100
+pending runs per group; excess runs are canceled. Long warehouse jobs can delay
+the requested 10:17 start and can make the publication exceed its declared age
+limit. See [GitHub's concurrency documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+
+The standalone job refreshes `marts.epa_crossvalidation` after an attempted
+publication, even if publication or verification failed, because a commit may
+already have happened. Refreshing does not erase the earlier failure status. The refresh
 uses the existing ordinary refresh mode.
 
 While the switch is active, both implicit-current-season and explicit-season
@@ -61,16 +72,18 @@ legacy `--due` commands receive:
 --exclude-source-season sdv_fpi_weekly:2026
 ```
 
-The exclusion applies only when the resolved load season is 2026. Other
-sources, historical 2025 FPI, and explicit manual `--source` commands retain
-their existing behavior. Direct/manual legacy FPI writes can still invalidate
-the current receipt pointer; operators must choose the receipt path when
+The exclusion is applied to the planned season before any fetch or fallback.
+When that planned season is 2026, the entire legacy FPI attempt is omitted,
+including its possible fallback to an older artifact. Explicit historical
+2025 due plans still include FPI. Other sources and explicit manual `--source`
+commands retain their existing behavior. Direct/manual legacy FPI writes can
+still invalidate the current receipt pointer; operators must choose the receipt path when
 current evidence is required. The exclusion option is restricted to `--due`.
 
 ## Rollout and recovery
 
-1. Review and merge the workflow, driver, and exclusion changes while the
-   repository activation variable is absent.
+1. Review and merge the workflow, driver, exclusion, and shared-queue changes
+   while the repository activation variable is absent.
 2. Pause competing flat-file producers and drain existing executions. Capture
    workflow states, target data, policy rows, and current receipt identities.
 3. Configure only the exact 36-hour FPI/2026 policy after validating the owner,

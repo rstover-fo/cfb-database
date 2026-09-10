@@ -22,6 +22,7 @@ RUN_ID = "1c74bd2a-c85f-4a28-bd5f-b5473ed30779"
 GENERATION_ID = "78699d90-51a8-4729-b41c-8232ed7c98f0"
 SHA256 = "a" * 64
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/sdv-fpi-receipts.yml"
+WORKFLOWS = WORKFLOW.parent
 
 
 def args() -> argparse.Namespace:
@@ -42,6 +43,10 @@ def loaded_result() -> dict:
 
 def workflow():
     return yaml.safe_load(WORKFLOW.read_text())
+
+
+def named_workflow(name: str):
+    return yaml.safe_load((WORKFLOWS / name).read_text())
 
 
 @pytest.mark.parametrize("season", ["2025", "2027", "2026 2027"])
@@ -524,21 +529,89 @@ def test_scheduled_workflow_is_daily_bounded_and_default_off():
     triggers = config[True]
     assert triggers == {"schedule": [{"cron": "17 10 * * *"}], "workflow_dispatch": None}
     assert config["concurrency"] == {
-        "group": "flat-file-load",
+        "group": "${{ vars.SDV_FPI_RECEIPT_SEASON == '2026' && 'daily-season-load' || "
+        "format('sdv-fpi-inactive-{0}', github.run_id) }}",
+        "queue": "max",
         "cancel-in-progress": False,
     }
     assert config["permissions"] == {"contents": "read"}
     job = config["jobs"]["publish"]
     assert job["if"] == "${{ vars.SDV_FPI_RECEIPT_SEASON == '2026' }}"
     assert job["timeout-minutes"] == 30
+    assert job["concurrency"] == {
+        "group": "flat-file-load",
+        "queue": "max",
+        "cancel-in-progress": False,
+    }
+    assert "SUPABASE_DB_URL" not in config["env"]
     assert config["env"]["SDV_FPI_RECEIPT_SEASON"] == ("${{ vars.SDV_FPI_RECEIPT_SEASON }}")
     steps = {step.get("name"): step for step in job["steps"]}
+    assert "Set dlt destination credentials" not in steps
     assert steps["Publish and verify FPI receipt"]["id"] == "publish_fpi"
     assert steps["Refresh external-rating consumers"]["if"] == (
         "${{ !cancelled() && steps.publish_fpi.outputs.publication_attempted == 'true' && "
         "(steps.publish_fpi.outcome == 'success' || steps.publish_fpi.outcome == 'failure') }}"
     )
     assert "${{" not in steps["Publish and verify FPI receipt"]["run"]
+
+
+def test_database_secret_is_scoped_only_to_operational_steps():
+    config = workflow()
+    steps = config["jobs"]["publish"]["steps"]
+    secret_reference = "${{ secrets.SUPABASE_DB_URL }}"
+    credential_steps = [
+        step.get("name")
+        for step in steps
+        if step.get("env", {}).get("SUPABASE_DB_URL") == secret_reference
+    ]
+
+    assert credential_steps == [
+        "Publish and verify FPI receipt",
+        "Refresh external-rating consumers",
+    ]
+    for step in steps:
+        if step.get("name") not in credential_steps:
+            assert secret_reference not in str(step)
+    assert "SUPABASE_DB_URL" not in config["env"]
+    assert "SUPABASE_DB_URL" not in config["jobs"]["publish"].get("env", {})
+    assert "DESTINATION__POSTGRES__CREDENTIALS" not in WORKFLOW.read_text()
+
+
+def test_every_shared_concurrency_holder_preserves_all_pending_runs():
+    expected_daily_groups = {
+        "daily-load.yml": "daily-season-load",
+        "historical-refresh.yml": "daily-season-load",
+        "backfill-sources.yml": "daily-season-load",
+        "deploy-schema.yml": (
+            "${{ inputs.compute_script == 'recover_season_projections' && "
+            "'daily-season-load' || 'deploy-schema' }}"
+        ),
+    }
+    for name, expected_group in expected_daily_groups.items():
+        assert named_workflow(name)["concurrency"] == {
+            "group": expected_group,
+            "queue": "max",
+            "cancel-in-progress": False,
+        }
+
+    assert named_workflow("flat-files.yml")["concurrency"] == {
+        "group": "flat-file-load",
+        "queue": "max",
+        "cancel-in-progress": False,
+    }
+
+
+def test_fpi_and_daily_acquire_shared_groups_in_the_same_order():
+    daily = named_workflow("daily-load.yml")
+    flat_files = named_workflow("flat-files.yml")
+    fpi = workflow()
+
+    assert daily["concurrency"]["group"] == "daily-season-load"
+    assert daily["jobs"]["flat_files"]["needs"] == "load"
+    assert daily["jobs"]["flat_files"]["uses"] == "./.github/workflows/flat-files.yml"
+    assert flat_files["concurrency"]["group"] == "flat-file-load"
+    assert "'daily-season-load'" in fpi["concurrency"]["group"]
+    assert fpi["jobs"]["publish"]["concurrency"]["group"] == "flat-file-load"
 
 
 @pytest.mark.parametrize(

@@ -64,6 +64,7 @@ on:
 # the same tables while the scheduled load is mid-run; it queues instead.
 concurrency:
   group: daily-season-load
+  queue: max # keep every pending shared writer while a long backfill holds the group
   cancel-in-progress: false
 
 permissions:

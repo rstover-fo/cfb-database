@@ -34,11 +34,27 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname='warehouse_refresher') THEN
         CREATE ROLE warehouse_refresher NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB
             NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-    ELSIF EXISTS (SELECT 1 FROM pg_catalog.pg_roles r WHERE r.rolname='warehouse_refresher'
+    END IF;
+
+    -- This migration is still pending in production, so its role guard is
+    -- amended in place for PostgreSQL 17's non-superuser CREATEROLE behavior.
+    -- CREATE ROLE gives the creator an inbound ADMIN membership with neither
+    -- SET nor INHERIT.  Stock PG17 records its bootstrap superuser as grantor,
+    -- so the creator identity and the three option columns define the edge.
+    -- Retaining that exact administration edge lets the migration owner grant
+    -- a SET-only runtime membership during activation.
+    -- Every outbound, unrelated, inherited or already-activated edge remains
+    -- unsafe and makes a direct reapplication fail closed.
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles r WHERE r.rolname='warehouse_refresher'
         AND (r.rolcanlogin OR r.rolinherit OR r.rolsuper OR r.rolcreatedb
             OR r.rolcreaterole OR r.rolreplication OR r.rolbypassrls
-            OR EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members
-                WHERE member=r.oid OR roleid=r.oid))) THEN
+            OR EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m
+                WHERE m.member=r.oid
+                    OR (m.roleid=r.oid AND NOT (
+                        m.member=(SELECT oid FROM pg_catalog.pg_roles
+                            WHERE rolname=current_user)
+                        AND m.admin_option AND NOT m.inherit_option AND NOT m.set_option
+                    ))))) THEN
         RAISE EXCEPTION 'warehouse_refresher must be a bounded NOLOGIN role';
     END IF;
 END

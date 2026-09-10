@@ -4,8 +4,9 @@
 Reads a plan from either a JSON manifest (pushed to a `deploy/**` branch as
 `deploy-manifest.json`, the mechanism `docs/plans/2026-07-19-tier1-analytics-unlock-plan.md`
 describes) or CLI flags (workflow_dispatch, for human-triggered runs), then
-executes it by shelling out to the existing driver scripts: run_marts.py,
-run_migrations.py, refresh_marts.py, load_season.py, and check_presence.py.
+executes it by shelling out to the existing driver scripts. Managed production
+schema actions are workflow-dispatch-only and always use the repository's fixed
+production manifest.
 
 Manifest schema:
     {
@@ -32,6 +33,9 @@ Usage:
         --files src/schemas/functions/get_player_game_log.sql --refresh
     python scripts/deploy_schema.py --action backfill \\
         --backfill-start 2014 --backfill-end 2025 --sources stats,betting
+    python scripts/deploy_schema.py --action managed_plan
+    python scripts/deploy_schema.py --action managed_upgrade
+    python scripts/deploy_schema.py --action managed_status
 
 Plan-building (plan_from_manifest / plan_from_cli / validate_plan) is pure --
 no subprocesses, no DB -- so it can be unit tested directly; execute_plan is
@@ -43,6 +47,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -60,8 +65,15 @@ RUN_MIGRATIONS = SCRIPTS_DIR / "run_migrations.py"
 REFRESH_MARTS = SCRIPTS_DIR / "refresh_marts.py"
 LOAD_SEASON = SCRIPTS_DIR / "load_season.py"
 CHECK_PRESENCE = SCRIPTS_DIR / "check_presence.py"
+BOOTSTRAP_WAREHOUSE = SCRIPTS_DIR / "bootstrap_warehouse.py"
+PRODUCTION_MANIFEST = "src/schemas/production-manifest.json"
 
-VALID_ACTIONS = {"presence_check", "apply", "backfill", "compute"}
+MANAGED_ACTION_MODES = {
+    "managed_plan": "plan",
+    "managed_upgrade": "upgrade",
+    "managed_status": "status",
+}
+VALID_ACTIONS = {"presence_check", "apply", "backfill", "compute", *MANAGED_ACTION_MODES}
 
 # Allowlist of compute scripts the "compute" action may run (scripts/<name>.py).
 # These land in later Tier 2 + Tier 3 phases -- membership is checked, not file
@@ -162,6 +174,34 @@ def validate_plan(plan: Plan) -> None:
     """Raise ValueError if the plan is not executable. Called by both builders."""
     if plan.action not in VALID_ACTIONS:
         raise ValueError(f"invalid action {plan.action!r}; must be one of {sorted(VALID_ACTIONS)}")
+
+    if plan.action in MANAGED_ACTION_MODES:
+        conflicts = []
+        if plan.mart_release:
+            conflicts.append("mart_release")
+        if plan.plan:
+            conflicts.append("plan")
+        if plan.marts_from:
+            conflicts.append("marts_from")
+        if plan.marts_only:
+            conflicts.append("marts_only")
+        if plan.files:
+            conflicts.append("files")
+        if plan.refresh:
+            conflicts.append("refresh")
+        if plan.refresh_views:
+            conflicts.append("refresh_views")
+        if plan.backfill is not None:
+            conflicts.append("backfill")
+        if plan.strict:
+            conflicts.append("strict")
+        if plan.compute is not None:
+            conflicts.append("compute")
+        if conflicts:
+            raise ValueError(
+                f"{plan.action} uses the fixed production manifest and cannot be combined "
+                "with legacy deploy fields: " + ", ".join(conflicts)
+            )
 
     if plan.action == "backfill":
         if plan.backfill is None:
@@ -283,6 +323,11 @@ def plan_from_manifest(manifest: dict) -> Plan:
         compute=compute,
     )
     validate_plan(plan)
+    if plan.action in MANAGED_ACTION_MODES:
+        raise ValueError(
+            f"{plan.action} requires workflow_dispatch; managed production actions "
+            "cannot run from deploy-manifest.json"
+        )
     if plan.compute and plan.compute.script == "recover_season_projections":
         raise ValueError(
             "recover_season_projections requires workflow_dispatch with compute_script; "
@@ -327,6 +372,9 @@ def plan_from_cli(
             sources=sources or "",
         )
 
+    if compute_args and compute_script is None:
+        raise ValueError("--compute-args requires --compute-script")
+
     compute = None
     if compute_script is not None:
         arg_list = [a.strip() for a in compute_args.split(",") if a.strip()] if compute_args else []
@@ -354,10 +402,10 @@ def plan_from_cli(
 # --------------------------------------------------------------------------
 
 
-def run_cmd(cmd: list[str], label: str) -> int:
+def run_cmd(cmd: list[str], label: str, *, env: dict[str, str] | None = None) -> int:
     """Run a subprocess, inheriting stdout/stderr so CI logs show it live."""
     logger.info(f"--- {label}: {' '.join(cmd)} ---")
-    proc = subprocess.run(cmd)
+    proc = subprocess.run(cmd, env=env)
     logger.info(f"--- {label} exit={proc.returncode} ---")
     return proc.returncode
 
@@ -457,6 +505,36 @@ def run_compute(plan: Plan) -> int:
     return 0
 
 
+def run_managed_production(plan: Plan) -> int:
+    """Dispatch one managed action against the fixed production manifest."""
+    validate_plan(plan)
+    mode = MANAGED_ACTION_MODES[plan.action]
+
+    # bootstrap_warehouse.py intentionally accepts WAREHOUSE_DB_URL only. Keep
+    # legacy/dlt connection aliases out of its subprocess even when a caller's
+    # ambient environment contains them; the workflow supplies WAREHOUSE_DB_URL
+    # only on managed steps.
+    managed_env = os.environ.copy()
+    for variable in (
+        "SUPABASE_DB_URL",
+        "DATABASE_URL",
+        "DESTINATION__POSTGRES__CREDENTIALS",
+    ):
+        managed_env.pop(variable, None)
+
+    return run_cmd(
+        [
+            sys.executable,
+            str(BOOTSTRAP_WAREHOUSE),
+            mode,
+            "--manifest",
+            PRODUCTION_MANIFEST,
+        ],
+        f"managed production {mode}",
+        env=managed_env,
+    )
+
+
 def execute_plan(plan: Plan) -> int:
     logger.info(f"executing plan: {plan}")
     if plan.action == "presence_check":
@@ -467,6 +545,8 @@ def execute_plan(plan: Plan) -> int:
         return run_backfill(plan)
     if plan.action == "compute":
         return run_compute(plan)
+    if plan.action in MANAGED_ACTION_MODES:
+        return run_managed_production(plan)
     raise ValueError(f"unknown action: {plan.action}")  # unreachable after validate_plan
 
 
@@ -534,6 +614,33 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     if args.manifest:
+        conflicting_flags = []
+        for field_name in (
+            "action",
+            "mart_release",
+            "marts_from",
+            "marts_only",
+            "files",
+            "refresh_views",
+            "backfill_start",
+            "backfill_end",
+            "sources",
+            "compute_script",
+            "compute_args",
+        ):
+            if getattr(args, field_name) is not None:
+                conflicting_flags.append("--" + field_name.replace("_", "-"))
+        for enabled, flag in (
+            (args.plan, "--plan"),
+            (args.refresh, "--refresh"),
+            (args.strict, "--strict"),
+        ):
+            if enabled:
+                conflicting_flags.append(flag)
+        if conflicting_flags:
+            parser.error(
+                "--manifest cannot be combined with CLI plan flags: " + ", ".join(conflicting_flags)
+            )
         manifest = load_manifest(args.manifest)
         plan = plan_from_manifest(manifest)
     else:

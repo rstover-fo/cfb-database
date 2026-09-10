@@ -2,12 +2,15 @@
 
 import json
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 import scripts.deploy_schema as deploy_schema
 from scripts.deploy_schema import (
     COMPUTE_SCRIPTS,
+    MANAGED_ACTION_MODES,
+    PRODUCTION_MANIFEST,
     VALID_ACTIONS,
     BackfillSpec,
     ComputeSpec,
@@ -34,7 +37,21 @@ class TestValidActions:
         assert plan.compute.args == ["--execute"]
 
     def test_expected_actions(self):
-        assert VALID_ACTIONS == {"presence_check", "apply", "backfill", "compute"}
+        assert MANAGED_ACTION_MODES == {
+            "managed_plan": "plan",
+            "managed_upgrade": "upgrade",
+            "managed_status": "status",
+        }
+        assert PRODUCTION_MANIFEST == "src/schemas/production-manifest.json"
+        assert VALID_ACTIONS == {
+            "presence_check",
+            "apply",
+            "backfill",
+            "compute",
+            "managed_plan",
+            "managed_upgrade",
+            "managed_status",
+        }
 
 
 class TestComputeScripts:
@@ -311,6 +328,10 @@ class TestPlanFromCli:
         with pytest.raises(ValueError, match="compute block"):
             plan_from_cli(action="compute")
 
+    def test_compute_args_without_script_rejected(self):
+        with pytest.raises(ValueError, match="--compute-script"):
+            plan_from_cli(action="compute", compute_args="--full")
+
     def test_compute_refresh_flag_mapped(self):
         plan = plan_from_cli(action="compute", compute_script="compute_house_elo", refresh=True)
         assert plan.refresh is True
@@ -456,3 +477,166 @@ class TestMartReleasePlans:
                 "--plan",
             ]
         ]
+
+
+class TestManagedProductionActions:
+    @pytest.mark.parametrize(
+        ("action", "mode"),
+        sorted(MANAGED_ACTION_MODES.items()),
+    )
+    def test_cli_maps_explicit_managed_action(self, action, mode):
+        plan = plan_from_cli(action=action)
+
+        assert plan.action == action
+        assert MANAGED_ACTION_MODES[plan.action] == mode
+
+    @pytest.mark.parametrize("action", sorted(MANAGED_ACTION_MODES))
+    def test_push_manifest_rejects_managed_actions(self, action):
+        with pytest.raises(ValueError, match="requires workflow_dispatch"):
+            plan_from_manifest({"action": action})
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("mart_release", "release.json"),
+            ("plan", True),
+            ("marts_from", "029"),
+            ("marts_only", "011"),
+            ("files", ["src/schemas/api/example.sql"]),
+            ("refresh", True),
+            ("refresh_views", ["marts.example"]),
+            ("backfill", BackfillSpec(start=2026, end=2026, sources="stats")),
+            ("strict", True),
+            ("compute", ComputeSpec(script="compute_house_elo")),
+        ],
+    )
+    def test_managed_action_rejects_legacy_deploy_fields(self, field, value):
+        plan = Plan(action="managed_plan")
+        setattr(plan, field, value)
+
+        with pytest.raises(ValueError, match=field):
+            validate_plan(plan)
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"mart_release": "release.json"},
+            {"plan": True},
+            {"marts_from": "029"},
+            {"marts_only": "011"},
+            {"files": "src/schemas/api/example.sql"},
+            {"refresh": True},
+            {"refresh_views": "marts.example"},
+            {"backfill_start": 2026},
+            {"backfill_end": 2026},
+            {"sources": "stats"},
+            {"strict": True},
+            {"compute_script": "compute_house_elo"},
+            {"compute_args": "--full"},
+        ],
+    )
+    def test_managed_cli_rejects_each_incompatible_input(self, kwargs):
+        with pytest.raises(ValueError):
+            plan_from_cli(action="managed_status", **kwargs)
+
+    @pytest.mark.parametrize(
+        ("action", "mode"),
+        sorted(MANAGED_ACTION_MODES.items()),
+    )
+    def test_dispatches_fixed_manifest_and_managed_environment(self, monkeypatch, action, mode):
+        secret = "postgresql://deploy-user:sensitive-password@db.example:5432/postgres"
+        monkeypatch.setenv("WAREHOUSE_DB_URL", secret)
+        monkeypatch.setenv("SUPABASE_DB_URL", secret)
+        monkeypatch.setenv("DATABASE_URL", secret)
+        monkeypatch.setenv("DESTINATION__POSTGRES__CREDENTIALS", secret)
+        calls = []
+
+        def fake_run_cmd(cmd, label, *, env=None):
+            calls.append((cmd, label, env))
+            return 0
+
+        monkeypatch.setattr(deploy_schema, "run_cmd", fake_run_cmd)
+
+        assert deploy_schema.execute_plan(Plan(action=action)) == 0
+        assert len(calls) == 1
+        cmd, label, env = calls[0]
+        assert cmd == [
+            sys.executable,
+            str(deploy_schema.BOOTSTRAP_WAREHOUSE),
+            mode,
+            "--manifest",
+            PRODUCTION_MANIFEST,
+        ]
+        assert label == f"managed production {mode}"
+        assert env["WAREHOUSE_DB_URL"] == secret
+        assert "SUPABASE_DB_URL" not in env
+        assert "DATABASE_URL" not in env
+        assert "DESTINATION__POSTGRES__CREDENTIALS" not in env
+        assert secret not in " ".join(cmd)
+        assert secret not in label
+
+    def test_managed_runner_failure_is_returned_and_not_retried(self, monkeypatch):
+        calls = []
+
+        def fake_run_cmd(cmd, label, *, env=None):
+            calls.append((cmd, label, env))
+            return 23
+
+        monkeypatch.setattr(deploy_schema, "run_cmd", fake_run_cmd)
+
+        assert deploy_schema.execute_plan(Plan(action="managed_upgrade")) == 23
+        assert len(calls) == 1
+
+    def test_managed_secret_is_not_logged(self, monkeypatch, caplog):
+        secret = "postgresql://deploy-user:sensitive-password@db.example:5432/postgres"
+        caplog.set_level("INFO", logger=deploy_schema.__name__)
+        monkeypatch.setenv("WAREHOUSE_DB_URL", secret)
+        monkeypatch.setattr(
+            deploy_schema.subprocess,
+            "run",
+            lambda cmd, env=None: SimpleNamespace(returncode=1),
+        )
+
+        assert deploy_schema.execute_plan(Plan(action="managed_status")) == 1
+        assert secret not in caplog.text
+        assert "sensitive-password" not in caplog.text
+
+    def test_manifest_and_cli_flags_are_mutually_exclusive(self, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            deploy_schema.main(["--manifest", "deploy-manifest.json", "--action", "managed_status"])
+
+        assert exc_info.value.code == 2
+        assert "--manifest cannot be combined" in capsys.readouterr().err
+
+
+def test_workflow_scopes_managed_credentials_and_observes_upgrade_status():
+    workflow = (deploy_schema.REPO_ROOT / ".github/workflows/deploy-schema.yml").read_text()
+    workflow_env = workflow.split("env:\n", 1)[1].split("jobs:\n", 1)[0]
+    managed_step = workflow.split("      - name: Run managed production action\n", 1)[1].split(
+        "      - name: Observe managed status after upgrade attempt\n", 1
+    )[0]
+
+    for action in MANAGED_ACTION_MODES:
+        assert f"          - {action}\n" in workflow
+    assert "id: managed_deploy" in workflow
+    for input_name in (
+        "MART_RELEASE_INPUT",
+        "PLAN_INPUT",
+        "FILES_INPUT",
+        "REFRESH_INPUT",
+        "BACKFILL_START_INPUT",
+        "BACKFILL_END_INPUT",
+        "SOURCES_INPUT",
+        "COMPUTE_SCRIPT_INPUT",
+        "COMPUTE_ARGS_INPUT",
+    ):
+        assert input_name in managed_step
+    assert 'python scripts/deploy_schema.py "${ARGS[@]}"' in managed_step
+    assert "inputs.action == 'managed_upgrade'" in workflow
+    assert "steps.managed_deploy.outcome != 'skipped'" in workflow
+    assert "run: python scripts/deploy_schema.py --action managed_status" in workflow
+    assert "WAREHOUSE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}" in workflow
+    assert "SUPABASE_DB_URL:" not in workflow_env
+    assert "WAREHOUSE_DB_URL:" not in workflow_env
+    assert "          SUPABASE_DB_URL:" not in managed_step
+    assert "run: python scripts/deploy_schema.py --action ${{ inputs.action }}" not in workflow

@@ -125,15 +125,26 @@ BEGIN
         WHERE t.tgrelid = ledger_oid AND NOT t.tgisinternal) THEN
         RAISE EXCEPTION 'meta.flat_file_loads is not a trusted migration-owned ordinary table';
     END IF;
+    -- 071 and 072 are both pending in production.  Under PostgreSQL 17 a
+    -- non-superuser CREATEROLE migration owner receives an automatic inbound
+    -- ADMIN membership in the role created by 071; stock PG17 records the
+    -- bootstrap superuser as grantor.  Accept only that exact
+    -- creator edge while SET and INHERIT remain false.  Any runtime
+    -- activation, unrelated member or outbound membership still fails closed.
     IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles r
         WHERE r.rolname = 'warehouse_source_publisher'
           AND NOT r.rolcanlogin AND NOT r.rolinherit AND NOT r.rolsuper
           AND NOT r.rolcreatedb AND NOT r.rolcreaterole AND NOT r.rolreplication
           AND NOT r.rolbypassrls
           AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m
-              WHERE m.member = r.oid OR m.roleid = r.oid)) THEN
+              WHERE m.member = r.oid
+                 OR (m.roleid = r.oid AND NOT (
+                    m.member = (SELECT oid FROM pg_catalog.pg_roles
+                        WHERE rolname = current_user)
+                    AND m.admin_option AND NOT m.inherit_option AND NOT m.set_option
+                )))) THEN
         RAISE EXCEPTION
-            'warehouse_source_publisher must be a bounded membership-free NOLOGIN role';
+            'warehouse_source_publisher must be a bounded NOLOGIN role';
     END IF;
 END
 $dependencies$;

@@ -35,6 +35,7 @@ on:
 
 concurrency:
   group: daily-season-load
+  queue: max # keep every pending shared writer while a long run holds the group
   cancel-in-progress: false # never kill a mid-merge load; a queued run waits
 
 permissions:

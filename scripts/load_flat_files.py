@@ -21,6 +21,9 @@ Usage:
                                                                   # non-manual source, cadence
                                                                   # gating off (hash-skip keeps
                                                                   # it cheap)
+    python scripts/load_flat_files.py --due \
+        --exclude-source-season sdv_fpi_weekly:2026              # leave this exact source/season
+                                                                  # out of the due plan
 
 Row counting (kind="dlt"): ``build_flat_file_source`` already materializes the
 parsed rows into in-memory list resources, so re-iterating those resources
@@ -444,6 +447,30 @@ def run_source(
     return result
 
 
+def _parse_excluded_source_season(value: str) -> tuple[str, int]:
+    """Parse one canonical ``SOURCE:SEASON`` exclusion for a due plan."""
+    if value.count(":") != 1:
+        raise argparse.ArgumentTypeError("expected SOURCE:SEASON with exactly one colon")
+
+    source, season_text = value.split(":")
+    if source not in REGISTRY:
+        raise argparse.ArgumentTypeError(
+            f"unknown source {source!r}; choose one of: {', '.join(sorted(REGISTRY))}"
+        )
+
+    try:
+        season = int(season_text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "season must be a canonical integer from 1869 through 2200"
+        ) from exc
+    if season_text != str(season) or not 1869 <= season <= 2200:
+        raise argparse.ArgumentTypeError(
+            "season must be a canonical integer from 1869 through 2200"
+        )
+    return source, season
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Fetch, parse, and load the flat-file sources (massey, nflverse, sbr, "
@@ -476,6 +503,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "404 fallback -- a backfill request is never silently substituted.",
     )
     parser.add_argument(
+        "--exclude-source-season",
+        action="append",
+        type=_parse_excluded_source_season,
+        default=[],
+        metavar="SOURCE:SEASON",
+        help="Exclude this exact source and resolved season from a --due plan (repeatable)",
+    )
+    parser.add_argument(
         "--require-receipts",
         action="store_true",
         help="Publish each selected enrolled source/season atomically with a generation receipt; "
@@ -494,8 +529,8 @@ def _planned_sources(
     args: argparse.Namespace, today: date, season: int, *, season_explicit: bool
 ) -> list[str]:
     if args.source:
-        return list(args.source)
-    if args.due:
+        names = list(args.source)
+    elif args.due:
         if season_explicit:
             # An explicit --season is a backfill request: cadence freshness
             # describes only the current season's file, so gating a
@@ -503,13 +538,18 @@ def _planned_sources(
             # every weekly source off-season). Plan every non-manual source
             # instead -- the ledger hash-skip makes over-planning free, and
             # manual-cadence sources still need --file so they stay excluded.
-            return [name for name, spec in REGISTRY.items() if spec.cadence != "manual"]
-        return [
-            name
-            for name, spec in REGISTRY.items()
-            if is_due(spec, _cadence_last_checked(spec, season), today)
-        ]
-    return list(REGISTRY)
+            names = [name for name, spec in REGISTRY.items() if spec.cadence != "manual"]
+        else:
+            names = [
+                name
+                for name, spec in REGISTRY.items()
+                if is_due(spec, _cadence_last_checked(spec, season), today)
+            ]
+    else:
+        names = list(REGISTRY)
+
+    exclusions = set(args.exclude_source_season)
+    return [name for name in names if (name, season) not in exclusions]
 
 
 def _fetch_target_display(spec: FlatFileSpec, file_override: str | None, season: int) -> str:
@@ -526,6 +566,14 @@ def _fetch_target_display(spec: FlatFileSpec, file_override: str | None, season:
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
+
+    if args.exclude_source_season:
+        if args.require_receipts:
+            parser.error("--exclude-source-season cannot be used with --require-receipts")
+        if args.source:
+            parser.error("--exclude-source-season cannot be used with explicit --source")
+        if not args.due:
+            parser.error("--exclude-source-season requires --due")
 
     if args.file is not None and (not args.source or len(args.source) != 1):
         parser.error("--file requires exactly one --source")

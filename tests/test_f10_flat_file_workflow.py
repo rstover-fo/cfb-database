@@ -39,7 +39,11 @@ def test_flat_file_workflow_is_reusable_and_keeps_manual_backfills():
     assert triggers["workflow_call"]["secrets"]["SUPABASE_DB_URL"]["required"] is True
     # The caller owns daily-season-load for its entire run; reusing that group
     # here would make the called workflow wait for its own parent to finish.
-    assert workflow()["concurrency"]["group"] == "flat-file-load"
+    assert workflow()["concurrency"] == {
+        "group": "flat-file-load",
+        "queue": "max",
+        "cancel-in-progress": False,
+    }
 
 
 @pytest.mark.parametrize(
@@ -64,6 +68,53 @@ def test_imports_finish_before_refresh(tmp_path, sources, seasons, expected):
     assert calls == [["scripts/load_flat_files.py", *args] for args in expected] + [
         ["scripts/refresh_marts.py", "--views", "marts.epa_crossvalidation"]
     ]
+
+
+@pytest.mark.parametrize(
+    "sources,seasons,expected",
+    [
+        (
+            "",
+            "",
+            [["--due", "--exclude-source-season", "sdv_fpi_weekly:2026"]],
+        ),
+        (
+            "",
+            "2025 2026",
+            [
+                [
+                    "--due",
+                    "--season",
+                    season,
+                    "--exclude-source-season",
+                    "sdv_fpi_weekly:2026",
+                ]
+                for season in ("2025", "2026")
+            ],
+        ),
+        ("sdv_fpi_weekly", "", [["--source", "sdv_fpi_weekly"]]),
+        (
+            "sdv_fpi_weekly",
+            "2026",
+            [["--source", "sdv_fpi_weekly", "--season", "2026"]],
+        ),
+    ],
+)
+def test_receipt_activation_excludes_only_fpi_2026_from_due_routes(
+    tmp_path, sources, seasons, expected
+):
+    result, calls = run_steps(tmp_path, sources, seasons, activation="2026")
+    assert result == 0
+    assert calls == [["scripts/load_flat_files.py", *values] for values in expected] + [
+        ["scripts/refresh_marts.py", "--views", "marts.epa_crossvalidation"]
+    ]
+
+
+@pytest.mark.parametrize("activation", ["", "2025", "02026", "2026 "])
+def test_receipt_exclusion_is_off_unless_activation_is_exact(tmp_path, activation):
+    result, calls = run_steps(tmp_path, "", "", activation=activation)
+    assert result == 0
+    assert calls[0] == ["scripts/load_flat_files.py", "--due"]
 
 
 @pytest.mark.parametrize(
@@ -156,7 +207,7 @@ def test_canary_is_excluded_from_legacy_refresh_and_failure_issue():
     )
 
 
-def run_steps(tmp_path, sources, seasons, failed_script=""):
+def run_steps(tmp_path, sources, seasons, failed_script="", activation=""):
     """Run completed import and refresh commands while preserving failed status."""
     calls_path = tmp_path / "calls.jsonl"
     fake_python = tmp_path / "python"
@@ -193,6 +244,7 @@ def run_steps(tmp_path, sources, seasons, failed_script=""):
         "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
         "SOURCE_INPUT": sources,
         "SEASONS_INPUT": seasons,
+        "SDV_FPI_RECEIPT_SEASON": activation,
         "TEST_CALLS": str(calls_path),
         "TEST_FAIL_SCRIPT": failed_script,
     }

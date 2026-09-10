@@ -1,0 +1,52 @@
+name: SDV FPI Receipts
+
+on:
+  schedule:
+    - cron: "17 10 * * *"
+  workflow_dispatch:
+
+concurrency:
+  # Active receipt runs serialize outside the daily workflow, which owns this
+  # group while it calls the reusable flat-file workflow. Inactive runs are unique.
+  group: ${{ vars.SDV_FPI_RECEIPT_SEASON == '2026' && 'daily-season-load' || format('sdv-fpi-inactive-{0}', github.run_id) }}
+  queue: max
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  SDV_FPI_RECEIPT_SEASON: ${{ vars.SDV_FPI_RECEIPT_SEASON }}
+  EXPECTED_PROJECT_REF: "ibobsbwlewpqslkqbrjd"
+
+jobs:
+  publish:
+    name: Publish FPI receipt
+    if: ${{ vars.SDV_FPI_RECEIPT_SEASON == '2026' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: flat-file-load
+      queue: max
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[flatfiles]"
+      - name: Publish and verify FPI receipt
+        id: publish_fpi
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          python scripts/run_scheduled_fpi_receipts.py \
+            --season "$SDV_FPI_RECEIPT_SEASON" \
+            --expected-project-ref "$EXPECTED_PROJECT_REF"
+      - name: Refresh external-rating consumers
+        if: ${{ !cancelled() && steps.publish_fpi.outputs.publication_attempted == 'true' && (steps.publish_fpi.outcome == 'success' || steps.publish_fpi.outcome == 'failure') }}
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python scripts/refresh_marts.py --views marts.epa_crossvalidation

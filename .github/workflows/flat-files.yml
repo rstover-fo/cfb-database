@@ -74,6 +74,7 @@ on:
 
 concurrency:
   group: flat-file-load
+  queue: max # preserve every pending flat-file writer instead of replacing one
   cancel-in-progress: false # never kill a mid-merge load; a queued run waits
 
 permissions:
@@ -115,7 +116,12 @@ jobs:
         env:
           SOURCE_INPUT: ${{ inputs.source }}
           SEASONS_INPUT: ${{ inputs.seasons }}
+          SDV_FPI_RECEIPT_SEASON: ${{ vars.SDV_FPI_RECEIPT_SEASON }}
         run: |
+          due_exclusions=()
+          if [ "$SDV_FPI_RECEIPT_SEASON" = "2026" ]; then
+            due_exclusions+=(--exclude-source-season "sdv_fpi_weekly:2026")
+          fi
           if [ -n "$SEASONS_INPUT" ]; then
             # $SEASONS_INPUT is deliberately unquoted -- it is a
             # space-separated list of years and this loop relies on the
@@ -129,7 +135,7 @@ jobs:
                 # one becomes its own --source flag below.
                 python scripts/load_flat_files.py $(printf -- '--source %s ' $SOURCE_INPUT) --season "$season"
               else
-                python scripts/load_flat_files.py --due --season "$season"
+                python scripts/load_flat_files.py --due --season "$season" "${due_exclusions[@]}"
               fi
               echo "::endgroup::"
             done
@@ -139,7 +145,7 @@ jobs:
             # its own --source flag below.
             python scripts/load_flat_files.py $(printf -- '--source %s ' $SOURCE_INPUT)
           else
-            python scripts/load_flat_files.py --due
+            python scripts/load_flat_files.py --due "${due_exclusions[@]}"
           fi
       - name: Run source receipt canary
         id: receipt_canary

@@ -121,6 +121,68 @@ class TestArgParsing:
         with pytest.raises(SystemExit):
             load_flat_files.main(["--source", "not_a_real_source"])
 
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "sdv_fpi_weekly",
+            "sdv_fpi_weekly:2026:extra",
+            "not_a_real_source:2026",
+            "sdv_fpi_weekly:not-a-season",
+            "sdv_fpi_weekly:02026",
+            "sdv_fpi_weekly:+2026",
+            "sdv_fpi_weekly:1868",
+            "sdv_fpi_weekly:2201",
+        ],
+    )
+    def test_excluded_source_season_must_be_canonical_and_in_range(self, value):
+        with pytest.raises(SystemExit):
+            _parse(["--due", "--exclude-source-season", value])
+
+    @pytest.mark.parametrize(
+        "argv, message",
+        [
+            (
+                ["--exclude-source-season", "sdv_fpi_weekly:2026"],
+                "requires --due",
+            ),
+            (
+                [
+                    "--source",
+                    "sdv_fpi_weekly",
+                    "--exclude-source-season",
+                    "sdv_fpi_weekly:2026",
+                ],
+                "cannot be used with explicit --source",
+            ),
+            (
+                [
+                    "--source",
+                    "sdv_fpi_weekly",
+                    "--season",
+                    "2026",
+                    "--require-receipts",
+                    "--exclude-source-season",
+                    "sdv_fpi_weekly:2026",
+                ],
+                "cannot be used with --require-receipts",
+            ),
+        ],
+    )
+    def test_exclusions_reject_non_due_modes_before_planning_or_db(
+        self, monkeypatch, capsys, argv, message
+    ):
+        def boom(*args, **kwargs):
+            raise AssertionError("invalid exclusions must fail before planning or DB access")
+
+        monkeypatch.setattr(load_flat_files, "_planned_sources", boom)
+        monkeypatch.setattr(load_flat_files, "last_checked", boom)
+        monkeypatch.setattr(load_flat_files, "run_source", boom)
+
+        with pytest.raises(SystemExit):
+            load_flat_files.main(argv)
+
+        assert message in capsys.readouterr().err
+
 
 class TestDryRun:
     def test_dry_run_prints_all_registry_sources_and_exits_zero(self, monkeypatch, capsys):
@@ -156,6 +218,47 @@ class TestDryRun:
 
         rc = load_flat_files.main(["--dry-run"])
         assert rc == 0
+
+    def test_due_dry_run_excludes_only_current_matching_source_season(self, monkeypatch, capsys):
+        class Current2026(date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 9, 10)
+
+        def boom(*args, **kwargs):
+            raise AssertionError("dry-run must not access files, providers, or production")
+
+        monkeypatch.setattr(load_flat_files, "date", Current2026)
+        monkeypatch.setattr(load_flat_files, "_cadence_last_checked", lambda *args: None)
+        monkeypatch.setattr(
+            load_flat_files,
+            "is_due",
+            lambda spec, last, today: (
+                spec.name in {"sdv_fpi_weekly", "sdv_team_xwalk", "sdv_ratings_weekly"}
+            ),
+        )
+        monkeypatch.setattr(load_flat_files, "fetch_file", boom)
+        monkeypatch.setattr(load_flat_files, "build_flat_file_source", boom)
+        monkeypatch.setattr(load_flat_files, "record_load", boom)
+        monkeypatch.setattr(load_flat_files, "run_source", boom)
+
+        rc = load_flat_files.main(
+            [
+                "--due",
+                "--dry-run",
+                "--exclude-source-season",
+                "sdv_fpi_weekly:2026",
+                "--exclude-source-season",
+                "sdv_team_xwalk:2026",
+            ]
+        )
+
+        assert rc == 0
+        output = capsys.readouterr().out
+        assert "[DRY RUN] 1 flat-file source(s) planned for season 2026" in output
+        assert "  sdv_fpi_weekly" not in output
+        assert "  sdv_team_xwalk" not in output
+        assert "  sdv_ratings_weekly" in output
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +322,48 @@ class TestPlannedSources:
         args = _parse(["--source", "massey", "--source", "sbr"])
         names = load_flat_files._planned_sources(args, IN_SEASON_DAY, 2025, season_explicit=False)
         assert names == ["massey", "sbr"]
+
+    def test_nonmatching_season_exclusion_preserves_current_source(self, monkeypatch):
+        monkeypatch.setattr(load_flat_files, "_cadence_last_checked", lambda *args: None)
+        monkeypatch.setattr(
+            load_flat_files,
+            "is_due",
+            lambda spec, last, today: spec.name in {"sdv_fpi_weekly", "sdv_ratings_weekly"},
+        )
+
+        args = _parse(["--due", "--exclude-source-season", "sdv_fpi_weekly:2025"])
+        names = load_flat_files._planned_sources(
+            args, date(2026, 9, 10), 2026, season_explicit=False
+        )
+
+        assert names == ["sdv_fpi_weekly", "sdv_ratings_weekly"]
+
+    @pytest.mark.parametrize(
+        "excluded_season, fpi_is_planned",
+        [(2025, False), (2026, True)],
+    )
+    def test_explicit_historical_due_exclusion_matches_resolved_season_only(
+        self, monkeypatch, excluded_season, fpi_is_planned
+    ):
+        def boom(*args, **kwargs):
+            raise AssertionError("historical --due planning must not consult cadence or DB")
+
+        monkeypatch.setattr(load_flat_files, "is_due", boom)
+        monkeypatch.setattr(load_flat_files, "_cadence_last_checked", boom)
+
+        args = _parse(
+            [
+                "--due",
+                "--season",
+                "2025",
+                "--exclude-source-season",
+                f"sdv_fpi_weekly:{excluded_season}",
+            ]
+        )
+        names = load_flat_files._planned_sources(args, OFF_SEASON_DAY, 2025, season_explicit=True)
+
+        assert ("sdv_fpi_weekly" in names) is fpi_is_planned
+        assert "sdv_ratings_weekly" in names
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,44 @@
+name: SDV FPI Receipts
+
+on:
+  schedule:
+    - cron: "17 10 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: flat-file-load
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+  SDV_FPI_RECEIPT_SEASON: ${{ vars.SDV_FPI_RECEIPT_SEASON }}
+  EXPECTED_PROJECT_REF: "ibobsbwlewpqslkqbrjd"
+
+jobs:
+  publish:
+    name: Publish FPI receipt
+    if: ${{ vars.SDV_FPI_RECEIPT_SEASON == '2026' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[flatfiles]"
+      - name: Set dlt destination credentials
+        run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
+      - name: Publish and verify FPI receipt
+        id: publish_fpi
+        run: |
+          python scripts/run_scheduled_fpi_receipts.py \
+            --season "$SDV_FPI_RECEIPT_SEASON" \
+            --expected-project-ref "$EXPECTED_PROJECT_REF"
+      - name: Refresh external-rating consumers
+        if: ${{ !cancelled() && steps.publish_fpi.outputs.publication_attempted == 'true' && (steps.publish_fpi.outcome == 'success' || steps.publish_fpi.outcome == 'failure') }}
+        run: python scripts/refresh_marts.py --views marts.epa_crossvalidation

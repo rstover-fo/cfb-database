@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
+import json
 from pathlib import Path
 
+import httpx
 import psycopg2
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -27,6 +29,20 @@ def args(action="preflight"):
         expected_sha256=EXPECTED_SHA,
         expected_project_ref=PROJECT_REF,
     )
+
+
+def cli_args(action):
+    return [
+        action,
+        "--source",
+        "sdv_fpi_weekly",
+        "--season",
+        "2026",
+        "--expected-sha256",
+        EXPECTED_SHA,
+        "--expected-project-ref",
+        PROJECT_REF,
+    ]
 
 
 def source_plan():
@@ -339,6 +355,157 @@ def test_wrong_sha_stops_before_parser_and_publication(monkeypatch):
             1,
         )
     ]
+
+
+@pytest.mark.parametrize("action", ["preflight", "publish"])
+@pytest.mark.parametrize(
+    "http_status,expected",
+    [
+        (
+            404,
+            {
+                "status": "not_published",
+                "outcome": "deferred",
+                "error_category": "http_status",
+                "http_status": 404,
+            },
+        ),
+        (
+            503,
+            {
+                "status": "failed",
+                "outcome": "failed",
+                "error_category": "http_status",
+                "http_status": 503,
+            },
+        ),
+    ],
+)
+def test_http_fetch_failures_are_sanitized_json_before_publication(
+    monkeypatch, capsys, action, http_status, expected
+):
+    calls = []
+    request = httpx.Request("GET", "https://user:secret@example.test/artifact?token=private")
+    response = httpx.Response(http_status, request=request)
+    failure = httpx.HTTPStatusError(
+        f"unsafe request detail token=private status={http_status}",
+        request=request,
+        response=response,
+    )
+    monkeypatch.setattr(canary.publication, "get_db_url", lambda: "dsn")
+    monkeypatch.setattr(
+        canary,
+        "_inspect_target",
+        lambda *values: ({"can_set_role": True, "activation_required": False}, source_plan()),
+    )
+
+    def fetch(url, *, timeout, retries):
+        calls.append((url, timeout, retries))
+        raise failure
+
+    monkeypatch.setattr(canary, "fetch_file", fetch)
+    monkeypatch.setattr(
+        canary,
+        "_publish_pinned",
+        lambda *values: pytest.fail("fetch failure must not start publication or records"),
+    )
+
+    status = canary.main(cli_args(action))
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert status == 1
+    assert payload == {
+        "action": action,
+        "season": 2026,
+        "source": "sdv_fpi_weekly",
+        **expected,
+    }
+    assert "secret" not in output
+    assert "private" not in output
+    assert calls == [
+        (
+            "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/"
+            "cfb_fpi_weekly/cfb_fpi_weekly_2026.parquet",
+            30,
+            1,
+        )
+    ]
+
+
+@pytest.mark.parametrize("action", ["preflight", "publish"])
+@pytest.mark.parametrize(
+    "failure_type,transport_category",
+    [(httpx.ConnectError, "network"), (httpx.ReadTimeout, "timeout")],
+)
+def test_transport_fetch_failures_are_sanitized_json_before_publication(
+    monkeypatch, capsys, action, failure_type, transport_category
+):
+    calls = []
+    request = httpx.Request("GET", "https://user:secret@example.test/artifact?token=private")
+    failure = failure_type("unsafe transport detail token=private", request=request)
+    monkeypatch.setattr(canary.publication, "get_db_url", lambda: "dsn")
+    monkeypatch.setattr(
+        canary,
+        "_inspect_target",
+        lambda *values: ({"can_set_role": True, "activation_required": False}, source_plan()),
+    )
+
+    def fetch(url, *, timeout, retries):
+        calls.append((url, timeout, retries))
+        raise failure
+
+    monkeypatch.setattr(canary, "fetch_file", fetch)
+    monkeypatch.setattr(
+        canary,
+        "_publish_pinned",
+        lambda *values: pytest.fail("fetch failure must not start publication or records"),
+    )
+
+    status = canary.main(cli_args(action))
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert status == 1
+    assert payload == {
+        "action": action,
+        "error_category": "transport",
+        "outcome": "failed",
+        "season": 2026,
+        "source": "sdv_fpi_weekly",
+        "status": "failed",
+        "transport_category": transport_category,
+    }
+    assert "secret" not in output
+    assert "private" not in output
+    assert len(calls) == 1
+    assert calls[0][1:] == (30, 1)
+
+
+def test_main_preserves_unexpected_exception_visibility(monkeypatch):
+    monkeypatch.setattr(
+        canary,
+        "run_canary",
+        lambda selected: (_ for _ in ()).throw(RuntimeError("unexpected implementation bug")),
+    )
+    with pytest.raises(RuntimeError, match="unexpected implementation bug"):
+        canary.main(cli_args("preflight"))
+
+
+def test_main_does_not_misclassify_http_error_outside_artifact_fetch(monkeypatch):
+    request = httpx.Request("GET", "https://example.test/unrelated")
+    failure = httpx.HTTPStatusError(
+        "unexpected later HTTP error",
+        request=request,
+        response=httpx.Response(502, request=request),
+    )
+    monkeypatch.setattr(
+        canary,
+        "run_canary",
+        lambda selected: (_ for _ in ()).throw(failure),
+    )
+    with pytest.raises(httpx.HTTPStatusError, match="unexpected later HTTP error"):
+        canary.main(cli_args("publish"))
 
 
 def _fpi_parquet_bytes() -> bytes:

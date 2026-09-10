@@ -21,6 +21,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import httpx
 import psycopg2
 from psycopg2 import sql
 from psycopg2.extensions import parse_dsn
@@ -50,6 +51,14 @@ PRODUCTION_MANIFEST = ROOT / "src/schemas/production-manifest.json"
 
 class CanaryError(RuntimeError):
     """A known canary validation failure safe to report without a traceback."""
+
+
+class ArtifactFetchError(RuntimeError):
+    """A sanitized failure from the one bounded registered-artifact fetch."""
+
+    def __init__(self, **details: Any):
+        super().__init__("registered artifact fetch failed")
+        self.details = details
 
 
 @dataclass(frozen=True)
@@ -286,7 +295,30 @@ def _download_and_validate(source: str, season: int, expected_sha256: str) -> Ar
     url = resolve_fetch_url(spec, season)
     if url is None:
         raise CanaryError("registered canary source has no URL")
-    fetched: FetchedFile = fetch_file(url, timeout=30, retries=1)
+    try:
+        fetched: FetchedFile = fetch_file(url, timeout=30, retries=1)
+    except httpx.HTTPStatusError as error:
+        http_status = error.response.status_code
+        if http_status == 404:
+            raise ArtifactFetchError(
+                status="not_published",
+                outcome="deferred",
+                error_category="http_status",
+                http_status=http_status,
+            ) from None
+        raise ArtifactFetchError(
+            status="failed",
+            outcome="failed",
+            error_category="http_status",
+            http_status=http_status,
+        ) from None
+    except httpx.RequestError as error:
+        raise ArtifactFetchError(
+            status="failed",
+            outcome="failed",
+            error_category="transport",
+            transport_category=_transport_category(error),
+        ) from None
     computed_sha256 = hashlib.sha256(fetched.content).hexdigest()
     if fetched.sha256 != computed_sha256:
         raise CanaryError("fetcher SHA-256 does not match downloaded bytes")
@@ -371,18 +403,42 @@ def run_canary(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     return payload, 0
 
 
+def _failure_payload(args: argparse.Namespace, **details: Any) -> dict[str, Any]:
+    return {
+        "action": args.action,
+        "source": args.source,
+        "season": args.season,
+        **details,
+    }
+
+
+def _transport_category(error: httpx.RequestError) -> str:
+    if isinstance(error, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(error, httpx.ProxyError):
+        return "proxy"
+    if isinstance(error, httpx.UnsupportedProtocol):
+        return "unsupported_protocol"
+    if isinstance(error, httpx.NetworkError):
+        return "network"
+    if isinstance(error, httpx.TooManyRedirects):
+        return "too_many_redirects"
+    return "request_error"
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         payload, status = run_canary(args)
+    except ArtifactFetchError as error:
+        payload = _failure_payload(args, **error.details)
+        status = 1
     except (CanaryError, publication.SourcePublicationError) as error:
-        payload = {
-            "action": args.action,
-            "source": args.source,
-            "season": args.season,
-            "status": "failed",
-            "error": str(error),
-        }
+        payload = _failure_payload(
+            args,
+            status="failed",
+            error=str(error),
+        )
         status = 1
     print(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str))
     return status

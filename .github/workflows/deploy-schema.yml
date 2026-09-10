@@ -28,6 +28,9 @@ on:
           - apply
           - backfill
           - compute
+          - managed_plan
+          - managed_upgrade
+          - managed_status
         default: presence_check
       mart_release:
         description: "Reviewed dependency-aware mart release manifest (apply only)"
@@ -80,7 +83,6 @@ permissions:
 env:
   PYTHON_VERSION: "3.11"
   SOURCES__CFBD__API_KEY: ${{ secrets.CFBD_API_KEY }}
-  SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
 
 jobs:
   deploy:
@@ -95,13 +97,18 @@ jobs:
           cache: pip
       - run: pip install -e ".[compute]"
       - name: Set dlt destination credentials
+        if: github.event_name == 'push' || ! startsWith(inputs.action, 'managed_')
         # dlt requires the postgres:// scheme (see .dlt/secrets.toml.example)
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
       - name: Deploy via manifest (push)
         if: github.event_name == 'push'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: python scripts/deploy_schema.py --manifest deploy-manifest.json
-      - name: Deploy via CLI flags (workflow_dispatch)
-        if: github.event_name == 'workflow_dispatch'
+      - name: Deploy via legacy CLI flags (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch' && ! startsWith(inputs.action, 'managed_')
         # Hardening (PR #75 review finding C): route every workflow_dispatch
         # input used below through a step-level env: var (probe-endpoints.yml's
         # pattern) rather than interpolating ${{ inputs.* }} directly into the
@@ -119,6 +126,7 @@ jobs:
           SOURCES_INPUT: ${{ inputs.sources }}
           COMPUTE_SCRIPT_INPUT: ${{ inputs.compute_script }}
           COMPUTE_ARGS_INPUT: ${{ inputs.compute_args }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           set -euo pipefail
           ARGS=(--action "$ACTION_INPUT")
@@ -132,6 +140,46 @@ jobs:
           if [ -n "$COMPUTE_SCRIPT_INPUT" ]; then ARGS+=(--compute-script "$COMPUTE_SCRIPT_INPUT"); fi
           if [ -n "$COMPUTE_ARGS_INPUT" ]; then ARGS+=("--compute-args=$COMPUTE_ARGS_INPUT"); fi
           python scripts/deploy_schema.py "${ARGS[@]}"
+
+      - name: Run managed production action
+        id: managed_deploy
+        if: github.event_name == 'workflow_dispatch' && startsWith(inputs.action, 'managed_')
+        env:
+          ACTION_INPUT: ${{ inputs.action }}
+          MART_RELEASE_INPUT: ${{ inputs.mart_release }}
+          PLAN_INPUT: ${{ inputs.plan }}
+          FILES_INPUT: ${{ inputs.files }}
+          REFRESH_INPUT: ${{ inputs.refresh }}
+          BACKFILL_START_INPUT: ${{ inputs.backfill_start }}
+          BACKFILL_END_INPUT: ${{ inputs.backfill_end }}
+          SOURCES_INPUT: ${{ inputs.sources }}
+          COMPUTE_SCRIPT_INPUT: ${{ inputs.compute_script }}
+          COMPUTE_ARGS_INPUT: ${{ inputs.compute_args }}
+          # The managed runner accepts this credential name only. Keep the
+          # production secret scoped to the managed subprocess path.
+          WAREHOUSE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          ARGS=(--action "$ACTION_INPUT")
+          if [ -n "$MART_RELEASE_INPUT" ]; then ARGS+=(--mart-release "$MART_RELEASE_INPUT"); fi
+          if [ "$PLAN_INPUT" = "true" ]; then ARGS+=(--plan); fi
+          if [ -n "$FILES_INPUT" ]; then ARGS+=(--files "$FILES_INPUT"); fi
+          if [ "$REFRESH_INPUT" = "true" ]; then ARGS+=(--refresh); fi
+          if [ -n "$BACKFILL_START_INPUT" ]; then ARGS+=(--backfill-start "$BACKFILL_START_INPUT"); fi
+          if [ -n "$BACKFILL_END_INPUT" ]; then ARGS+=(--backfill-end "$BACKFILL_END_INPUT"); fi
+          if [ -n "$SOURCES_INPUT" ]; then ARGS+=(--sources "$SOURCES_INPUT"); fi
+          if [ -n "$COMPUTE_SCRIPT_INPUT" ]; then ARGS+=(--compute-script "$COMPUTE_SCRIPT_INPUT"); fi
+          if [ -n "$COMPUTE_ARGS_INPUT" ]; then ARGS+=("--compute-args=$COMPUTE_ARGS_INPUT"); fi
+          python scripts/deploy_schema.py "${ARGS[@]}"
+
+      - name: Observe managed status after upgrade attempt
+        # This is a read-only observation, not a retry. The status runner takes
+        # the same advisory lock as upgrade, and this step cannot erase a failed
+        # managed_deploy outcome.
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.action == 'managed_upgrade' && steps.managed_deploy.outcome != 'skipped' }}
+        env:
+          WAREHOUSE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python scripts/deploy_schema.py --action managed_status
 
       - name: Upload schema-only catalog
         if: github.event_name == 'workflow_dispatch' && inputs.compute_script == 'export_warehouse_catalog'

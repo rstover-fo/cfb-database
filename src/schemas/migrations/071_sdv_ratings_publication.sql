@@ -186,15 +186,29 @@ BEGIN
         WHERE rolname = 'warehouse_source_publisher') THEN
         CREATE ROLE warehouse_source_publisher NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB
             NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-    ELSIF EXISTS (
+    END IF;
+
+    -- This prepared migration has not been applied to production.  PostgreSQL
+    -- 17 gives a non-superuser CREATEROLE creator an inbound ADMIN membership
+    -- when CREATE ROLE succeeds.  Its catalog grantor is the bootstrap
+    -- superuser, so admit only the current migration owner as member while
+    -- SET and INHERIT are both false, retaining the authority needed to grant
+    -- a separate SET-only runtime membership after the managed migration.
+    -- Runtime activation and every other membership still fail this guard.
+    IF EXISTS (
         SELECT 1 FROM pg_catalog.pg_roles r
         WHERE r.rolname = 'warehouse_source_publisher'
           AND (r.rolcanlogin OR r.rolinherit OR r.rolsuper OR r.rolcreatedb
             OR r.rolcreaterole OR r.rolreplication OR r.rolbypassrls
             OR EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m
-                WHERE m.member = r.oid OR m.roleid = r.oid))
+                WHERE m.member = r.oid
+                   OR (m.roleid = r.oid AND NOT (
+                        m.member = (SELECT oid FROM pg_catalog.pg_roles
+                            WHERE rolname = current_user)
+                        AND m.admin_option AND NOT m.inherit_option AND NOT m.set_option
+                    ))))
     ) THEN
-        RAISE EXCEPTION 'warehouse_source_publisher must be a bounded membership-free NOLOGIN role';
+        RAISE EXCEPTION 'warehouse_source_publisher must be a bounded NOLOGIN role';
     END IF;
 END
 $role$;

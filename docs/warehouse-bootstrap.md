@@ -184,6 +184,108 @@ recorded in the rollout evidence, not fabricated as managed migration history.
 
 See [production rollout evidence](plans/2026-09-07-f06-production-rollout.md).
 
+## Managed production workflow
+
+The Deploy Schema workflow has three explicit `workflow_dispatch` actions:
+
+| Action | Behavior |
+| --- | --- |
+| `managed_plan` | Read-only comparison of the production manifest and ledger. |
+| `managed_upgrade` | Apply pending production entries in one managed transaction, then observe status in a separate workflow step. |
+| `managed_status` | Read-only inspection of the production ledger and pending entries. |
+
+Select a reviewed commit/ref and one action, leaving the legacy mart, file,
+refresh, backfill and compute inputs empty. Managed actions cannot be mixed
+with those options or dispatched through a pushed `deploy-manifest.json`.
+They always select `src/schemas/production-manifest.json`; there is no manifest
+override or bootstrap action in this workflow path. The workflow maps its
+existing `SUPABASE_DB_URL` secret to `WAREHOUSE_DB_URL` for the managed step.
+The bootstrap CLI's complete-URL and ambient-libpq validation still applies.
+
+On an authorized secure runner with `WAREHOUSE_DB_URL` configured, the same
+deployment driver commands are:
+
+```bash
+python scripts/deploy_schema.py --action managed_plan
+python scripts/deploy_schema.py --action managed_upgrade
+python scripts/deploy_schema.py --action managed_status
+```
+
+These actions invoke `bootstrap_warehouse.py` rather than the per-file SQL
+runner. They do not run ingestion, refresh marts, seed freshness policies or
+grant runtime memberships. Preparing or merging this path does not dispatch it.
+
+Before an upgrade, review the plan/checksums and quiesce target DML and
+administrator DDL. The managed advisory lock coordinates managed runners, not
+all existing warehouse jobs. The current runner sets neither `lock_timeout`
+nor `statement_timeout`, and DDL locks last until the transaction ends. Monitor
+the backend during the window; do not treat workflow cancellation as a normal
+timeout policy.
+
+The workflow runs an observational managed status step after an attempted
+upgrade, including an unsuccessful attempt. Status takes the same advisory lock
+before reading, so it cannot overtake a still-running managed transaction. It
+does not retry the upgrade or turn a failed upgrade step green. If a runner is
+killed or commit acknowledgement is lost, a failed job alone does not prove
+rollback. Wait for the backend/locks to disappear and run `managed_status`
+before deciding whether another upgrade is needed. A completed upgrade should
+have the reviewed checksums recorded and no pending entries. Verify actual
+consumer roles, private ACLs and enabled warehouse event triggers separately.
+
+## PostgreSQL 17 role creation and activation
+
+On PostgreSQL 17, a non-superuser with `CREATEROLE` receives an automatic
+membership in a new role with administration enabled, inheritance disabled
+and role switching disabled. The prepared 070/071 role guards and 072 dependency
+guard accept that narrow migration-owner administration edge, as well as the
+membership-free state produced by the superuser fixtures. They reject outbound
+memberships, unrelated members and activated `SET`/`INHERIT` edges. They do not
+grant runtime access as part of schema deployment.
+
+The correction changes previously prepared migration files because the
+September 10 read-only production ledger check still found only the adopted
+root, with no 066–073 executions. Once these exact bytes are applied, they are
+immutable. Recreate disposable fixtures with older applied bytes; never rewrite
+their ledger checksums to hide drift.
+
+After the complete migration chain commits, resolve each actual connection's
+`session_user` before configuring its bounded role:
+
+| Bounded role | Runtime connection |
+| --- | --- |
+| `warehouse_ingest` | Dedicated `CFBD_QUOTA_DB_URL` connection |
+| `warehouse_publisher` | House Elo compute connection |
+| `warehouse_refresher` | Generation-enforced mart refresh connection |
+| `warehouse_source_publisher` | Receipt-enabled flat-file publication connection |
+
+A distinct runtime login needs `ADMIN=false`, `INHERIT=false`, `SET=true` on
+the granted membership. If the migration-owner login is reused, grant role
+switching with explicit `INHERIT FALSE, SET TRUE` while preserving its automatic
+administration edge. The stock PostgreSQL 17 test produces two membership rows:
+the original bootstrap-superuser grant with `ADMIN=true, INHERIT=false, SET=false`,
+and a self-granted runtime edge with `ADMIN=false, INHERIT=false, SET=true`.
+Inspect all grantor rows on the actual target; do not assume one row per role
+and member. Explicitly disable membership inheritance even when the login has
+`INHERIT` enabled. Do not blindly revoke the creator edge: that may
+remove the non-superuser's ability to administer the bounded role later. A
+reused `postgres` credential still has its underlying broad `BYPASSRLS` rights.
+Exercise `SET LOCAL ROLE` and the allowlisted RPC permissions on each actual
+runtime connection before enabling its job.
+
+After activation, direct reapplication of the guarded SQL intentionally fails
+on those runtime memberships. Normal managed upgrades skip already applied
+immutable entries and do not re-run the guards. Schema deployment, each runtime
+activation, positive freshness intervals and quota capacity remain separate
+rollout decisions; see the
+[production preflight](plans/2026-09-09-production-receipts-preflight.md).
+
+Focused stock PostgreSQL 17 tests execute the non-superuser role creation,
+revalidation/dependency guards and runtime grant/role-switching paths. The full
+chain still runs in the superuser fixture. Stock PostgreSQL does not allow the
+non-superuser to create event triggers; exact full-chain non-superuser execution
+requires Supautils-equivalent privileges and remains part of the authorized
+Supabase deployment verification.
+
 ## Forward correction discovered by executed role checks
 
 The captured `public.team_season_trajectory` wrapper grants consumer access but

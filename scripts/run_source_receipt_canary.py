@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the explicitly selected FPI source-receipt canary.
+"""Run one explicitly selected, checksum-pinned SDV source-receipt canary.
 
 The canary is intentionally limited to one registered source and one explicit
 season.  Both modes inspect the actual publisher connection and validate the
@@ -16,7 +16,9 @@ import json
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -26,7 +28,11 @@ import psycopg2
 from psycopg2 import sql
 from psycopg2.extensions import parse_dsn
 
-from src.pipelines.config.source_publication_assets import SDV_FPI_PUBLICATION
+from src.pipelines.config.source_publication_assets import (
+    SDV_FPI_PUBLICATION,
+    SOURCE_PUBLICATION_ASSETS,
+    SourcePublicationAsset,
+)
 from src.pipelines.sources.flat_files import (
     REGISTRY,
     ParseContext,
@@ -34,8 +40,16 @@ from src.pipelines.sources.flat_files import (
     resolve_parser,
 )
 from src.pipelines.utils import flat_file_publication as publication
+from src.pipelines.utils import sdv_ratings_publication
 from src.pipelines.utils.file_fetcher import FetchedFile, fetch_file
 
+SOURCES = (
+    "sdv_fpi_weekly",
+    "sdv_ratings_weekly",
+    "sdv_team_xwalk",
+    "sdv_game_xwalk",
+)
+# Retained for callers that imported the original single-source constant.
 SOURCE = "sdv_fpi_weekly"
 PUBLISHER_ROLE = "warehouse_source_publisher"
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -61,19 +75,32 @@ class ArtifactFetchError(RuntimeError):
         self.details = details
 
 
+class _StoreOnce(argparse.Action):
+    """Reject repeated security-sensitive selectors instead of taking the last one."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, self.dest, None) is not None:
+            parser.error(f"{option_string} must be provided exactly once")
+        setattr(namespace, self.dest, values)
+
+
 @dataclass(frozen=True)
 class Artifact:
     content: bytes
     sha256: str
     rows: int
-    weeks: tuple[int, ...]
+    weeks: tuple[int, ...] | None = None
+    summary: dict[str, Any] = field(default_factory=dict)
 
     def evidence(self) -> dict[str, Any]:
-        return {
+        evidence = {
             "sha256": self.sha256,
             "rows": self.rows,
-            "weeks": list(self.weeks),
         }
+        if self.weeks is not None:
+            evidence["weeks"] = list(self.weeks)
+        evidence.update(self.summary)
+        return evidence
 
 
 def _sha256(value: str) -> str:
@@ -102,13 +129,15 @@ def _season(value: str) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Validate or publish one checksum-pinned SDV FPI season receipt"
+        description="Validate or publish one checksum-pinned SDV season receipt"
     )
     parser.add_argument("action", choices=("preflight", "publish"))
-    parser.add_argument("--source", choices=(SOURCE,), required=True)
-    parser.add_argument("--season", type=_season, required=True)
-    parser.add_argument("--expected-sha256", type=_sha256, required=True)
-    parser.add_argument("--expected-project-ref", type=_project_ref, required=True)
+    parser.add_argument("--source", choices=SOURCES, required=True, action=_StoreOnce)
+    parser.add_argument("--season", type=_season, required=True, action=_StoreOnce)
+    parser.add_argument("--expected-sha256", type=_sha256, required=True, action=_StoreOnce)
+    parser.add_argument(
+        "--expected-project-ref", type=_project_ref, required=True, action=_StoreOnce
+    )
     return parser
 
 
@@ -179,6 +208,7 @@ def _inspect_target(
     connector=psycopg2.connect,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """Validate target identity and source plan in a read-only transaction."""
+    asset = _asset(source)
     project_evidence = _dsn_project_evidence(dsn, expected_project_ref)
     expected_migrations = _expected_migrations()
     expected_by_id = {row[0]: row for row in expected_migrations}
@@ -245,14 +275,23 @@ def _inspect_target(
                     assumed_role = role_row[0] if role_row else None
                     if assumed_role != PUBLISHER_ROLE:
                         raise CanaryError("database did not assume the bounded publisher role")
-                    cur.execute(
-                        "SELECT warehouse_source_batch.get_source_plan(%s,%s)",
-                        (source, season),
-                    )
+                    if source == "sdv_ratings_weekly":
+                        cur.execute(
+                            "SELECT warehouse_source.get_sdv_ratings_plan(%s)",
+                            (season,),
+                        )
+                    else:
+                        cur.execute(
+                            "SELECT warehouse_source_batch.get_source_plan(%s,%s)",
+                            (source, season),
+                        )
                     plan_row = cur.fetchone()
                     if plan_row is None:
                         raise CanaryError("bounded publisher returned no source plan")
-                    plan = publication._validated_plan(plan_row[0], SDV_FPI_PUBLICATION, season)
+                    if source == "sdv_ratings_weekly":
+                        plan = sdv_ratings_publication._validated_plan(plan_row[0], season)
+                    else:
+                        plan = publication._validated_plan(plan_row[0], asset, season)
             conn.rollback()
         except BaseException:
             try:
@@ -291,6 +330,7 @@ def _inspect_target(
 
 
 def _download_and_validate(source: str, season: int, expected_sha256: str) -> Artifact:
+    asset = _asset(source)
     spec = REGISTRY[source]
     url = resolve_fetch_url(spec, season)
     if url is None:
@@ -334,11 +374,86 @@ def _download_and_validate(source: str, season: int, expected_sha256: str) -> Ar
         source_url=fetched.source_url,
         file_name=os.path.basename(fetched.source_url),
     )
-    raw_count = publication._raw_row_count(fetched.content, SDV_FPI_PUBLICATION, season)
+    if source == "sdv_ratings_weekly":
+        raw_count = sdv_ratings_publication._raw_row_count(fetched.content)
+    else:
+        raw_count = publication._raw_row_count(fetched.content, asset, season)
     rows = list(resolve_parser(spec.parser)(fetched.content, context))
-    publication._validate_parsed_rows(rows, raw_count, SDV_FPI_PUBLICATION, season)
-    weeks = tuple(sorted({row["week"] for row in rows}))
-    return Artifact(fetched.content, computed_sha256, len(rows), weeks)
+    if source == "sdv_ratings_weekly":
+        sdv_ratings_publication._validate_parsed_rows(rows, raw_count, season)
+    else:
+        publication._validate_parsed_rows(rows, raw_count, asset, season)
+    return _artifact(source, season, fetched, computed_sha256, rows)
+
+
+def _asset(source: str) -> SourcePublicationAsset:
+    try:
+        return SOURCE_PUBLICATION_ASSETS[source]
+    except KeyError:
+        raise CanaryError("source is not enrolled in the SDV receipt canary") from None
+
+
+def _artifact(
+    source: str,
+    season: int,
+    fetched: FetchedFile,
+    sha256: str,
+    rows: list[dict[str, Any]],
+) -> Artifact:
+    if source == "sdv_fpi_weekly":
+        return Artifact(
+            fetched.content,
+            sha256,
+            len(rows),
+            tuple(sorted({row["week"] for row in rows})),
+        )
+    if source == "sdv_ratings_weekly":
+        return Artifact(
+            fetched.content,
+            sha256,
+            len(rows),
+            summary={
+                "through_weeks": sorted({row["through_week"] for row in rows}),
+                "teams": len({row["team_id"] for row in rows}),
+            },
+        )
+
+    registered_url = resolve_fetch_url(REGISTRY[source], season)
+    common = {
+        "registered_url": registered_url,
+        "registered_file_name": os.path.basename(registered_url or fetched.source_url),
+        "publication_artifact_origin": "local_file",
+        "season_basis": "caller_declared",
+    }
+    if source == "sdv_team_xwalk":
+        common.update(
+            xwalk_keys=len({row["xwalk_key"] for row in rows}),
+            espn_team_ids=len(
+                {row["espn_team_id"] for row in rows if row["espn_team_id"] is not None}
+            ),
+        )
+    else:
+        common.update(
+            matchup_date_keys=len({(row["matchup_key"], row["yahoo_date"]) for row in rows}),
+            espn_game_ids=len(
+                {row["espn_game_id"] for row in rows if row["espn_game_id"] is not None}
+            ),
+        )
+    return Artifact(fetched.content, sha256, len(rows), summary=common)
+
+
+@contextmanager
+def pinned_publication_connection(dsn: str) -> Iterator[None]:
+    """Pin both publication adapters to the already inspected connection."""
+    original_batch = publication.get_db_url
+    original_ratings = sdv_ratings_publication.get_db_url
+    publication.get_db_url = lambda: dsn
+    sdv_ratings_publication.get_db_url = lambda: dsn
+    try:
+        yield
+    finally:
+        publication.get_db_url = original_batch
+        sdv_ratings_publication.get_db_url = original_ratings
 
 
 def _publish_pinned(
@@ -348,21 +463,37 @@ def _publish_pinned(
     artifact: Artifact,
 ) -> dict[str, Any]:
     """Publish once from a temporary copy of the already verified bytes."""
-    original_get_db_url = publication.get_db_url
-    try:
-        publication.get_db_url = lambda: dsn
-        with tempfile.TemporaryDirectory(prefix="sdv-fpi-receipt-canary-") as directory:
-            path = Path(directory) / f"cfb_fpi_weekly_{season}.parquet"
+    with pinned_publication_connection(dsn):
+        with tempfile.TemporaryDirectory(prefix="sdv-receipt-canary-") as directory:
+            registered_url = resolve_fetch_url(REGISTRY[source], season)
+            file_name = os.path.basename(registered_url or f"{source}_{season}.parquet")
+            path = Path(directory) / file_name
             path.write_bytes(artifact.content)
-            result = publication.run_source_publication(
-                REGISTRY[source], file_path=str(path), season=season
-            )
-    finally:
-        publication.get_db_url = original_get_db_url
+            if source == "sdv_ratings_weekly":
+                result = sdv_ratings_publication.run_sdv_ratings_publication(
+                    REGISTRY[source], file_path=str(path), season=season
+                )
+            else:
+                result = publication.run_source_publication(
+                    REGISTRY[source], file_path=str(path), season=season
+                )
     return result
 
 
+def _append_workflow_outputs(**values: str) -> None:
+    target = os.environ.get("GITHUB_OUTPUT")
+    if not target:
+        return
+    with Path(target).open("a", encoding="utf-8") as output:
+        for name, value in values.items():
+            output.write(f"{name}={value}\n")
+
+
 def run_canary(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    _append_workflow_outputs(
+        publication_attempted="false",
+        publication_source=args.source,
+    )
     dsn = publication.get_db_url()
     identity, plan = _inspect_target(
         dsn,
@@ -386,6 +517,7 @@ def run_canary(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         payload["status"] = "ready" if plan is not None else "activation_required"
         return payload, 0
 
+    _append_workflow_outputs(publication_attempted="true")
     result = _publish_pinned(dsn, args.source, args.season, artifact)
     payload["publication"] = result
     if result.get("status") != "loaded":
@@ -433,7 +565,19 @@ def main(argv: list[str] | None = None) -> int:
     except ArtifactFetchError as error:
         payload = _failure_payload(args, **error.details)
         status = 1
-    except (CanaryError, publication.SourcePublicationError) as error:
+    except publication.SourcePublicationError as error:
+        message = (
+            "SDV ratings source publication validation failed"
+            if args.source == "sdv_ratings_weekly"
+            else str(error)
+        )
+        payload = _failure_payload(
+            args,
+            status="failed",
+            error=message,
+        )
+        status = 1
+    except CanaryError as error:
         payload = _failure_payload(
             args,
             status="failed",

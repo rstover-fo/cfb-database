@@ -25,7 +25,7 @@ def test_flat_file_workflow_is_reusable_and_keeps_manual_backfills():
         assert triggers["workflow_call"]["inputs"][name]["default"] == ""
         assert triggers["workflow_dispatch"]["inputs"][name]["required"] is False
     assert triggers["workflow_call"]["inputs"]["receipt_canary_action"] == {
-        "description": "Explicit FPI receipt canary action; none preserves the legacy loader",
+        "description": "Explicit SDV receipt canary action; none preserves the legacy loader",
         "required": False,
         "type": "string",
         "default": "none",
@@ -207,7 +207,7 @@ def test_canary_is_excluded_from_legacy_refresh_and_failure_issue():
     )
 
 
-def run_steps(tmp_path, sources, seasons, failed_script="", activation=""):
+def run_steps(tmp_path, sources, seasons, failed_script="", activation="", sdv_activations=None):
     """Run completed import and refresh commands while preserving failed status."""
     calls_path = tmp_path / "calls.jsonl"
     fake_python = tmp_path / "python"
@@ -245,8 +245,12 @@ def run_steps(tmp_path, sources, seasons, failed_script="", activation=""):
         "SOURCE_INPUT": sources,
         "SEASONS_INPUT": seasons,
         "SDV_FPI_RECEIPT_SEASON": activation,
+        "SDV_RATINGS_RECEIPT_SEASON": "",
+        "SDV_TEAM_XWALK_RECEIPT_SEASON": "",
+        "SDV_GAME_XWALK_RECEIPT_SEASON": "",
         "TEST_CALLS": str(calls_path),
         "TEST_FAIL_SCRIPT": failed_script,
+        **(sdv_activations or {}),
     }
     status = 0
     for step in selected:

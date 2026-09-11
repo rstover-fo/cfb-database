@@ -28,12 +28,11 @@ Checks:
        season (in-season only; WARNs if migration 041 isn't applied yet)
     9. meta.flat_file_loads has a recent successful 'availability' load
        (in-season only; never FAILs -- external conference sites are flaky)
-    10. no unexpected dlt VARIANT (__v_double) twin has appeared on a
-       charting source table since the mart(s) reading it were authored
-       (KTD7 tripwire; see src/pipelines/utils/variant_twins.py) -- FAILs
-       naming the column, since it means a metric is silently reading NULL
-       downstream; a query failure (e.g. the table doesn't exist yet) WARNs
-       instead of crashing the run
+    10. no unreviewed dlt VARIANT (__v_double) twin has appeared on a tracked
+       source table (KTD7 tripwire; see src/pipelines/utils/variant_twins.py)
+       -- FAILs naming the column so its maintained consumers can be reviewed;
+       a query failure (e.g. the table doesn't exist yet) WARNs instead of
+       crashing the run
 
 Pre-season semantics: with no completed games, checks 3-4 pass vacuously and
 check 2 is the meaningful one (schedules publish in July, so core.games must
@@ -438,21 +437,21 @@ def _safe_execute(cur, sql: str) -> None:
 
 
 def check_variant_twins(cur, report: Report) -> None:
-    """KTD7 tripwire: no unexpected dlt VARIANT (__v_double) twin column.
+    """KTD7 tripwire: no unreviewed dlt VARIANT (__v_double) twin column.
 
     dlt types a metric column bigint on first load and creates a sibling
     `<col>__v_double` twin the first time a later load carries a fractional
     value; every value dlt can't fit in the bigint column from then on lands
-    in the twin instead. The marts tracked in
-    src/pipelines/utils/variant_twins.py's EXPECTED_VARIANT_TWINS COALESCE
-    exactly the twins that existed live when they were authored (the
-    rushing/passing charting allow-list also mirrors
-    src/schemas/api/validation_rushing_views.sql's deploy-time check). A
-    daily load that pushes a previously-clean column into VARIANT territory
-    creates a twin no mart's COALESCE accounts for -- the affected metric
-    goes silently NULL in the mart, its api view, and any RPC reading the
-    mart directly. This check is what catches that between deploys, since
-    the SQL validation file only runs at deploy time.
+    in the twin instead. EXPECTED_VARIANT_TWINS is the existing recognized
+    inventory: it primarily covers twins maintained consumers handle and
+    retains documented legacy exceptions. REVIEWED_RAW_ONLY_VARIANT_TWINS
+    separately records exact passing fields verified to have no maintained
+    curated consumer. A daily load that creates a twin in neither registry
+    needs review: a consumed metric requires correct base/twin handling and
+    supported registration; a verified raw-only field requires an exact
+    classification with rationale. The deploy-time SQL validation mirrors only
+    the two rushing supported-twin arrays, so it is not a general raw-only
+    allow-list.
 
     Query failure (e.g. a tracked table doesn't exist on this database yet)
     WARNs rather than crashing the daily run -- this check is a tripwire,
@@ -495,12 +494,15 @@ def check_variant_twins(cur, report: Report) -> None:
             report.record(
                 FAIL,
                 "variant_twins",
-                f"{table_key}: unexpected __v_double twin(s) {columns} -- add the COALESCE to "
-                "the affected mart, extend EXPECTED_VARIANT_TWINS and the matching "
-                "validation_rushing_views.sql allow-list, then re-apply the mart",
+                f"{table_key}: unreviewed __v_double twin(s) {columns} -- review maintained "
+                "consumers before choosing a remedy; if consumed, add correct base/twin "
+                "handling, register the twin in EXPECTED_VARIANT_TWINS, update any "
+                "applicable deploy-time validation, and redeploy the affected consumer; "
+                "if verified raw-only, add the exact name to "
+                "REVIEWED_RAW_ONLY_VARIANT_TWINS with its rationale",
             )
     else:
-        report.record(PASS, "variant_twins", "no unexpected __v_double twins")
+        report.record(PASS, "variant_twins", "no unreviewed __v_double twins")
 
     if missing:
         for table_key, columns in sorted(missing.items()):
@@ -854,6 +856,7 @@ def verify(season: int, strict: bool) -> int:
 
     conn = psycopg2.connect(get_db_url())
     try:
+        conn.set_session(readonly=True)
         with conn.cursor() as cur:
             check_partition(cur, season, report)
             check_game_counts(cur, season, report)

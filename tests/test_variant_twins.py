@@ -22,6 +22,7 @@ drift guard below (TestAllowListsMatchMarts) and by MART_TABLE_MAP's
 exhaustiveness check against EXPECTED_VARIANT_TWINS.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -29,6 +30,7 @@ import pytest
 
 from src.pipelines.utils.variant_twins import (
     EXPECTED_VARIANT_TWINS,
+    REVIEWED_RAW_ONLY_VARIANT_TWINS,
     find_missing_twins,
     find_unexpected_twins,
 )
@@ -37,6 +39,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 VALIDATION_SQL = (
     PROJECT_ROOT / "src" / "schemas" / "api" / "validation_rushing_views.sql"
 ).read_text()
+PASSING_VARIANT_COLUMN_NAMES = json.loads(
+    (PROJECT_ROOT / "tests" / "fixtures" / "passing_variant_columns.json").read_text()
+)
+PASSING_VARIANT_COLUMNS = set(PASSING_VARIANT_COLUMN_NAMES)
 
 # Rushing/passing charting family -- cross-checked against the deploy-time
 # SQL validation allow-lists (TestAllowListsMatchSql) as well as the
@@ -109,6 +115,31 @@ class TestAllowListsMatchSql:
 
     def test_team_season_count_is_8(self):
         assert len(EXPECTED_VARIANT_TWINS["stats.rushing_team_season"]) == 8
+
+
+class TestReviewedRawOnlyClassification:
+    """The passing exception is exact, independently inventoried, and cannot
+    overlap with supported consumer handling or widen to another table."""
+
+    def test_passing_fixture_is_56_unique_column_names(self):
+        assert len(PASSING_VARIANT_COLUMN_NAMES) == 56
+        assert len(PASSING_VARIANT_COLUMNS) == 56
+        assert all(
+            isinstance(name, str) and name.endswith("__v_double")
+            for name in PASSING_VARIANT_COLUMN_NAMES
+        )
+
+    def test_raw_only_registry_matches_independent_fixture(self):
+        supported = EXPECTED_VARIANT_TWINS["stats.passing_player_season"]
+        assert REVIEWED_RAW_ONLY_VARIANT_TWINS == {
+            "stats.passing_player_season": frozenset(PASSING_VARIANT_COLUMNS - supported)
+        }
+        assert len(REVIEWED_RAW_ONLY_VARIANT_TWINS["stats.passing_player_season"]) == 55
+
+    def test_supported_and_raw_only_scopes_are_disjoint_and_known(self):
+        assert set(REVIEWED_RAW_ONLY_VARIANT_TWINS) <= set(EXPECTED_VARIANT_TWINS)
+        for table_key, raw_only in REVIEWED_RAW_ONLY_VARIANT_TWINS.items():
+            assert raw_only.isdisjoint(EXPECTED_VARIANT_TWINS[table_key])
 
 
 def _v_double_tokens(path: Path) -> set[str]:
@@ -292,6 +323,37 @@ class TestFindUnexpectedTwins:
 
         assert result == {"stats.passing_player_season": ["some_other_metric__v_double"]}
 
+    def test_full_observed_passing_catalog_is_reviewed(self):
+        rows = [
+            row for row in _all_expected_rows() if row[:2] != ("stats", "passing_player_season")
+        ]
+        rows.extend(
+            ("stats", "passing_player_season", column) for column in PASSING_VARIANT_COLUMN_NAMES
+        )
+        cur = _FakeCursor(rows)
+
+        assert find_unexpected_twins(cur) == {}
+        assert find_missing_twins(cur) == {}
+
+    @pytest.mark.parametrize(
+        "column",
+        [
+            "locations__deep_middle__air_yards_per_attempt__v_double",
+            "attempts__v_double",
+        ],
+    )
+    def test_new_passing_variant_still_fails_review(self, column):
+        rows = _all_expected_rows()
+        rows.extend(
+            ("stats", "passing_player_season", reviewed)
+            for reviewed in PASSING_VARIANT_COLUMN_NAMES
+            if reviewed != "average_yards_after_catch__v_double"
+        )
+        rows.append(("stats", "passing_player_season", column))
+        cur = _FakeCursor(rows)
+
+        assert find_unexpected_twins(cur) == {"stats.passing_player_season": [column]}
+
     def test_single_query_issued(self):
         cur = _FakeCursor(_all_expected_rows())
         find_unexpected_twins(cur)
@@ -319,6 +381,11 @@ class TestFindMissingTwins:
         result = find_missing_twins(cur)
 
         assert result == {"stats.passing_player_season": ["average_yards_after_catch__v_double"]}
+
+    def test_absent_raw_only_columns_do_not_warn(self):
+        cur = _FakeCursor(_all_expected_rows())
+
+        assert find_missing_twins(cur) == {}
 
     def test_unexpected_and_missing_are_independent(self):
         """A table can simultaneously have an unexpected twin AND be missing

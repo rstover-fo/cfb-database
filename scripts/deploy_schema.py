@@ -83,6 +83,8 @@ COMPUTE_SCRIPTS = {
     "export_warehouse_catalog",
     # Read-only one-request schedule probe for the September 2026 recovery.
     "probe_projection_schedule",
+    # Read-only post-load checks without replaying ingestion or mart refreshes.
+    "verify_load",
     "recover_season_projections",
     "compute_house_elo",
     "compute_adjusted_epa",
@@ -222,6 +224,8 @@ def validate_plan(plan: Plan) -> None:
                 f"invalid compute script {plan.compute.script!r}; "
                 f"must be one of {sorted(COMPUTE_SCRIPTS)}"
             )
+        if plan.compute.script == "verify_load" and (plan.refresh or plan.refresh_views):
+            raise ValueError("verify_load is read-only and cannot request mart refreshes")
 
     if not isinstance(plan.plan, bool):
         raise ValueError("plan must be a boolean")

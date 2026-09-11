@@ -408,7 +408,7 @@ class TestCheckVariantTwins:
     FAIL on an unexpected __v_double twin, WARN (never FAIL) on a missing
     expected twin, and WARN (never crash) if the finder itself errors."""
 
-    def test_no_unexpected_no_missing_passes(self, monkeypatch):
+    def test_no_unexpected_no_missing_passes(self, monkeypatch, capsys):
         from scripts.verify_load import Report, check_variant_twins
 
         monkeypatch.setattr(
@@ -420,6 +420,7 @@ class TestCheckVariantTwins:
         check_variant_twins(cur=object(), report=report)
 
         assert report.failures == 0
+        assert "[PASS] variant_twins: no unreviewed __v_double twins" in capsys.readouterr().out
 
     def test_unexpected_twin_fails(self, monkeypatch, capsys):
         from scripts.verify_load import Report, check_variant_twins
@@ -438,6 +439,11 @@ class TestCheckVariantTwins:
         assert "[FAIL] variant_twins:" in out
         assert "stats.rushing_player_season" in out
         assert "new_metric__v_double" in out
+        assert "review maintained consumers before choosing a remedy" in out
+        assert "EXPECTED_VARIANT_TWINS" in out
+        assert "applicable deploy-time validation" in out
+        assert "REVIEWED_RAW_ONLY_VARIANT_TWINS" in out
+        assert "with its rationale" in out
 
     def test_missing_twin_warns_not_fails(self, monkeypatch, capsys):
         from scripts.verify_load import Report, check_variant_twins
@@ -1016,7 +1022,7 @@ def test_source_receipt_rpc_error_propagates_instead_of_silent_pass():
 
 
 def test_verify_includes_receipt_check_after_legacy_check(monkeypatch):
-    from unittest.mock import MagicMock
+    from unittest.mock import MagicMock, call
 
     import psycopg2
 
@@ -1044,6 +1050,29 @@ def test_verify_includes_receipt_check_after_legacy_check(monkeypatch):
     monkeypatch.setattr(refresh_marts, "get_db_url", lambda: "unused")
     assert verify_load.verify(2026, strict=False) == 0
     assert seen == checks
+    conn.set_session.assert_called_once_with(readonly=True)
+    assert conn.mock_calls.index(call.set_session(readonly=True)) < conn.mock_calls.index(
+        call.cursor()
+    )
+    conn.close.assert_called_once()
+
+
+def test_verify_closes_connection_if_read_only_session_setup_fails(monkeypatch):
+    from unittest.mock import MagicMock
+
+    import psycopg2
+    import pytest
+
+    from scripts import refresh_marts, verify_load
+
+    conn = MagicMock()
+    conn.set_session.side_effect = RuntimeError("read-only session unavailable")
+    monkeypatch.setattr(psycopg2, "connect", lambda _: conn)
+    monkeypatch.setattr(refresh_marts, "get_db_url", lambda: "unused")
+
+    with pytest.raises(RuntimeError, match="read-only session unavailable"):
+        verify_load.verify(2026, strict=False)
+
     conn.close.assert_called_once()
 
 

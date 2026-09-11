@@ -8,34 +8,30 @@ bigint (i.e. every fractional value, going forward) into the twin instead.
 The base column keeps collecting whole-number values; the twin silently
 becomes the only place a large share of that metric's real values live.
 
-Every mart that reads one of these charting tables must therefore
-`COALESCE(col::double precision, col__v_double)` for each twin that exists
-on its source table at the time the mart is authored (see
-src/schemas/009_variant_columns.sql and marts/032, 045, 050-052 for worked
-examples). That COALESCE set is frozen into the mart's SQL. If a later
-daily load pushes a previously-clean column into VARIANT territory --
-creating a NEW twin the mart's author never saw -- the mart keeps reading
-only the (now partially empty) base column: the affected metric goes
-silently NULL in the mart, the api view built on it, and any RPC
-(get_player_detail) that reads the mart directly. Nothing about this
-produces an error; it just produces wrong numbers that look like missing
-charting coverage.
+Every maintained consumer of a metric on one of these tables must therefore
+read the base and twin correctly, usually with
+`COALESCE(col::double precision, col__v_double)`. A twin for a metric that no
+maintained consumer selects has no such consumer obligation, but it still
+needs an exact, reviewed classification so a later unreviewed twin cannot pass
+silently.
 
-This module holds the one place both the Python daily check
-(scripts/verify_load.py) and the deploy-time SQL validation
-(src/schemas/api/validation_rushing_views.sql, group (e)) should agree on
-which twins are expected, so the two allow-lists cannot drift
-independently of each other -- tests/test_variant_twins.py asserts the SQL
-literal and this dict stay equal.
+EXPECTED_VARIANT_TWINS is the existing recognized inventory. It primarily
+records twins that maintained consumers support and retains the documented
+legacy stats.game_havoc exceptions below. REVIEWED_RAW_ONLY_VARIANT_TWINS
+separately records the exact passing twins whose metrics were verified to have
+no maintained curated consumer. The daily check fails anything in neither
+registry. The deploy-time SQL validation mirrors only the two rushing arrays in
+EXPECTED_VARIANT_TWINS; tests/test_variant_twins.py keeps those arrays aligned.
 
 Remediation when `find_unexpected_twins` reports a new column:
-    1. Add `COALESCE(<col>::double precision, <col>__v_double)` to every
-       mart that reads the affected table and metric.
-    2. Add the new `<col>__v_double` entry to EXPECTED_VARIANT_TWINS below
-       AND to the matching allow-list array in
-       src/schemas/api/validation_rushing_views.sql (group (e)).
-    3. Re-apply the affected mart(s) (python scripts/run_marts.py or the
-       migration workflow -- see the schema-migrations skill).
+    1. Review maintained consumers of the source metric before choosing a
+       classification.
+    2. If the metric is consumed, add correct base/twin handling, register it
+       in EXPECTED_VARIANT_TWINS, update an applicable deploy-time check, and
+       redeploy the affected consumer.
+    3. If the metric is verified raw-only, add its exact twin name to
+       REVIEWED_RAW_ONLY_VARIANT_TWINS with the review rationale. Do not use a
+       wildcard or infer classifications from the live catalog.
 
 Scope: only tables a mart (or, for stats.game_havoc, a features-build
 script with the same COALESCE obligation) actually reads. As of 2026-09-03
@@ -55,8 +51,8 @@ stats.rushing_team_games) carry far more twins (39 and 68 respectively, as
 of 2026-09-03) than the season-grain tables -- new ones appear routinely as
 data lands -- but no mart COALESCEs any of them today, so a new twin there
 hurts nothing and would just be alert noise. They are deliberately left out
-of EXPECTED_VARIANT_TWINS; add them (with their own allow-list) the day a
-mart starts reading game-grain rushing data.
+of both registries; review the tracking scope if a maintained consumer starts
+reading game-grain rushing data.
 """
 
 from __future__ import annotations
@@ -180,6 +176,78 @@ EXPECTED_VARIANT_TWINS: dict[str, frozenset[str]] = {
 }
 
 
+# Exact variants reviewed on 2026-09-11 as raw-only for maintained curated
+# consumers. The production dependency audit found that the only maintained
+# metric consumer of stats.passing_player_season is
+# marts.passing_charting_player_season (and its API projection). It selects the
+# supported average_yards_after_catch base/twin pair above, but none of these 55
+# variants or their base fields. Raw stats callers can still read these fields
+# and must handle dlt variants themselves. Keep this registry exact: a new
+# location field or a variant of a consumed metric must remain a failure until
+# its own consumer review is complete.
+REVIEWED_RAW_ONLY_VARIANT_TWINS: dict[str, frozenset[str]] = {
+    "stats.passing_player_season": frozenset(
+        {
+            "explosiveness__v_double",
+            "locations__deep_left__air_yards_per_attempt__v_double",
+            "locations__deep_left__average_depth_of_target__v_double",
+            "locations__deep_left__average_yards_after_catch__v_double",
+            "locations__deep_left__completion_rate__v_double",
+            "locations__deep_left__explosiveness__v_double",
+            "locations__deep_left__ppa__v_double",
+            "locations__deep_left__success_rate__v_double",
+            "locations__deep_left__total_ppa__v_double",
+            "locations__deep_left__yards_per_attempt__v_double",
+            "locations__deep_middle__completion_rate__v_double",
+            "locations__deep_middle__explosiveness__v_double",
+            "locations__deep_middle__ppa__v_double",
+            "locations__deep_middle__success_rate__v_double",
+            "locations__deep_middle__total_ppa__v_double",
+            "locations__deep_middle__yards_per_attempt__v_double",
+            "locations__deep_right__air_yards_per_attempt__v_double",
+            "locations__deep_right__average_depth_of_target__v_double",
+            "locations__deep_right__average_yards_after_catch__v_double",
+            "locations__deep_right__completion_rate__v_double",
+            "locations__deep_right__explosiveness__v_double",
+            "locations__deep_right__ppa__v_double",
+            "locations__deep_right__success_rate__v_double",
+            "locations__deep_right__total_ppa__v_double",
+            "locations__deep_right__yards_per_attempt__v_double",
+            "locations__short_left__air_yards_per_attempt__v_double",
+            "locations__short_left__average_depth_of_target__v_double",
+            "locations__short_left__average_yards_after_catch__v_double",
+            "locations__short_left__completion_rate__v_double",
+            "locations__short_left__explosiveness__v_double",
+            "locations__short_left__ppa__v_double",
+            "locations__short_left__success_rate__v_double",
+            "locations__short_left__total_ppa__v_double",
+            "locations__short_left__yards_per_attempt__v_double",
+            "locations__short_middle__air_yards_per_attempt__v_double",
+            "locations__short_middle__average_depth_of_target__v_double",
+            "locations__short_middle__completion_rate__v_double",
+            "locations__short_middle__explosiveness__v_double",
+            "locations__short_middle__success_rate__v_double",
+            "locations__short_middle__yards_per_attempt__v_double",
+            "locations__short_right__air_yards_per_attempt__v_double",
+            "locations__short_right__average_depth_of_target__v_double",
+            "locations__short_right__average_yards_after_catch__v_double",
+            "locations__short_right__completion_rate__v_double",
+            "locations__short_right__explosiveness__v_double",
+            "locations__short_right__success_rate__v_double",
+            "locations__short_right__yards_per_attempt__v_double",
+            "locations__unknown__air_yards_per_attempt__v_double",
+            "locations__unknown__average_depth_of_target__v_double",
+            "locations__unknown__explosiveness__v_double",
+            "locations__unknown__ppa__v_double",
+            "locations__unknown__success_rate__v_double",
+            "locations__unknown__total_ppa__v_double",
+            "locations__unknown__yards_per_attempt__v_double",
+            "success_rate__v_double",
+        }
+    ),
+}
+
+
 def _split_table_key(table_key: str) -> tuple[str, str]:
     schema, _, table = table_key.partition(".")
     return schema, table
@@ -216,17 +284,18 @@ def _fetch_actual_twins(cur) -> dict[str, set[str]]:
 
 def find_unexpected_twins(cur) -> dict[str, list[str]]:
     """Return {"schema.table": [unexpected __v_double columns]} for any twin
-    that exists live but is not in EXPECTED_VARIANT_TWINS.
+    that exists live but is neither supported nor reviewed raw-only.
 
-    A non-empty result means a daily load created a NEW variant twin that no
-    mart's COALESCE set accounts for -- see the module docstring for the
-    remediation. Tables with no unexpected columns are omitted from the
-    result entirely (an empty dict means everything is accounted for).
+    A non-empty result means a daily load created a variant that needs consumer
+    review before it can be classified -- see the module docstring for the two
+    possible remedies. Tables with no unexpected columns are omitted from the
+    result entirely (an empty dict means every twin has been reviewed).
     """
     actual = _fetch_actual_twins(cur)
     unexpected: dict[str, list[str]] = {}
     for table_key, expected_cols in EXPECTED_VARIANT_TWINS.items():
-        extra = actual.get(table_key, set()) - expected_cols
+        reviewed_raw_only = REVIEWED_RAW_ONLY_VARIANT_TWINS.get(table_key, frozenset())
+        extra = actual.get(table_key, set()) - expected_cols - reviewed_raw_only
         if extra:
             unexpected[table_key] = sorted(extra)
     return unexpected

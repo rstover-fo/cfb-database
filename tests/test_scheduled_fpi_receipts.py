@@ -583,8 +583,9 @@ def test_every_shared_concurrency_holder_preserves_all_pending_runs():
         "historical-refresh.yml": "daily-season-load",
         "backfill-sources.yml": "daily-season-load",
         "deploy-schema.yml": (
-            "${{ inputs.compute_script == 'recover_season_projections' && "
-            "'daily-season-load' || 'deploy-schema' }}"
+            "${{ (inputs.compute_script == 'recover_season_projections' || "
+            "inputs.compute_script == 'verify_load') && 'daily-season-load' || "
+            "'deploy-schema' }}"
         ),
     }
     for name, expected_group in expected_daily_groups.items():

@@ -36,6 +36,19 @@ class TestValidActions:
         )
         assert plan.compute.args == ["--execute"]
 
+    def test_verification_manifest_rejected_but_dispatch_plan_allowed(self):
+        with pytest.raises(ValueError, match="verify_load requires workflow_dispatch"):
+            plan_from_manifest(
+                {
+                    "action": "compute",
+                    "compute": {"script": "verify_load", "args": ["--season", "2026"]},
+                }
+            )
+        plan = plan_from_cli(
+            action="compute", compute_script="verify_load", compute_args="--season,2026"
+        )
+        assert plan.compute.args == ["--season", "2026"]
+
     def test_expected_actions(self):
         assert MANAGED_ACTION_MODES == {
             "managed_plan": "plan",
@@ -60,6 +73,7 @@ class TestComputeScripts:
             "adopt_warehouse_catalog",
             "export_warehouse_catalog",
             "probe_projection_schedule",
+            "verify_load",
             "recover_season_projections",
             "check_backtest",
             "compute_house_elo",
@@ -178,6 +192,41 @@ class TestPlanFromManifestCompute:
         }
         plan = plan_from_manifest(manifest)
         assert plan.refresh is True
+
+    @pytest.mark.parametrize(
+        "extra", [{"refresh": True}, {"refresh_views": "marts.epa_crossvalidation"}]
+    )
+    def test_verification_cannot_refresh_marts(self, extra):
+        with pytest.raises(ValueError, match="verify_load is read-only"):
+            plan_from_cli(action="compute", compute_script="verify_load", **extra)
+
+    @pytest.mark.parametrize("exit_code", [0, 1])
+    def test_verification_runs_only_verifier_and_preserves_outcome(self, monkeypatch, exit_code):
+        from scripts import deploy_schema
+
+        calls = []
+
+        def run(cmd, label):
+            calls.append((cmd, label))
+            return exit_code
+
+        monkeypatch.setattr(deploy_schema, "run_cmd", run)
+        plan = plan_from_cli(
+            action="compute", compute_script="verify_load", compute_args="--season,2026"
+        )
+
+        assert deploy_schema.run_compute(plan) == exit_code
+        assert calls == [
+            (
+                [
+                    deploy_schema.sys.executable,
+                    str(deploy_schema.SCRIPTS_DIR / "verify_load.py"),
+                    "--season",
+                    "2026",
+                ],
+                "compute verify_load",
+            )
+        ]
 
     def test_compute_missing_block_rejected(self):
         with pytest.raises(ValueError, match="compute block"):

@@ -800,3 +800,80 @@ def test_real_python_adapter_stages_local_parquet_and_publishes_typed_nulls(
         conn,
         "SELECT source_url,status,row_count FROM meta.flat_file_loads",
     ) == [(None, "loaded", 1)]
+
+
+def test_real_python_adapter_preserves_staged_float8_bits_with_rounded_role_default(
+    sdv_db, monkeypatch, tmp_path
+):
+    from src.pipelines.sources.flat_files import REGISTRY
+    from src.pipelines.utils import sdv_ratings_publication as adapter
+
+    conn, target = sdv_db
+    expected_value = -0.030319570074811644
+    expected_hex = "bf9f0c17e799b2d7"
+    schema = pq.read_schema(ROOT / "tests/fixtures/flatfiles/sdv_ratings_weekly_sample.parquet")
+    raw_row = {name: None for name in schema.names}
+    raw_row.update(
+        season=2025,
+        through_week=1,
+        team_id="2",
+        adj_off_epa=expected_value,
+    )
+    local_file = tmp_path / "sdv-ratings-float8-precision.parquet"
+    pq.write_table(pa.Table.from_pylist([raw_row], schema=schema), local_file)
+    dsn = parse_dsn(target)
+    target_url = (
+        f"postgresql://{dsn['user']}:{dsn['password']}@{dsn['host']}:{dsn['port']}/{dsn['dbname']}"
+    )
+    monkeypatch.setattr(adapter, "get_db_url", lambda: target_url)
+
+    original_connect = adapter._connect
+
+    def connect_with_rounded_float_output(selected_dsn):
+        selected = original_connect(selected_dsn)
+        with selected.cursor() as cur:
+            cur.execute("SET extra_float_digits = 0")
+        selected.commit()
+        return selected
+
+    monkeypatch.setattr(adapter, "_connect", connect_with_rounded_float_output)
+    original_read_stage = adapter._read_stage
+    observed = {}
+
+    def read_stage_with_storage_check(selected_dsn, table, expected_rows, artifact_origin):
+        stage_conn = connect_with_rounded_float_output(selected_dsn)
+        try:
+            with stage_conn.cursor() as cur:
+                cur.execute(
+                    sql.SQL(
+                        "SELECT pg_catalog.encode(pg_catalog.float8send(adj_off_epa), 'hex') "
+                        "FROM {}.{}"
+                    ).format(
+                        sql.Identifier(adapter.STAGE_SCHEMA),
+                        sql.Identifier(table),
+                    )
+                )
+                observed["stage_hex"] = cur.fetchone()[0]
+            stage_conn.rollback()
+        finally:
+            stage_conn.close()
+        return original_read_stage(
+            selected_dsn,
+            table,
+            expected_rows,
+            artifact_origin,
+        )
+
+    monkeypatch.setattr(adapter, "_read_stage", read_stage_with_storage_check)
+
+    result = adapter.run_sdv_ratings_publication(
+        REGISTRY["sdv_ratings_weekly"], file_path=str(local_file), season=2025
+    )
+
+    assert result["status"] == "loaded"
+    assert observed["stage_hex"] == expected_hex
+    assert query(
+        conn,
+        "SELECT pg_catalog.encode(pg_catalog.float8send(adj_off_epa), 'hex') "
+        "FROM ratings.sdv_ratings_weekly WHERE season=2025 AND through_week=1 AND team_id=2",
+    ) == [(expected_hex,)]

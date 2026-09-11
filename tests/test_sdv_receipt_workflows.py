@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -112,6 +113,18 @@ def test_canary_refresh_handles_possible_ratings_commit_without_hiding_failure()
 
 def scheduled_workflow():
     return yaml.safe_load((ROOT / ".github/workflows/sdv-source-receipts.yml").read_text())
+
+
+@pytest.mark.parametrize("config", [workflow, scheduled_workflow])
+def test_receipt_workflow_actions_use_immutable_revisions(config):
+    references = [
+        step["uses"]
+        for job in config()["jobs"].values()
+        for step in job.get("steps", [])
+        if "uses" in step
+    ]
+    assert references
+    assert all(re.fullmatch(r"actions/[a-z-]+@[0-9a-f]{40}", ref) for ref in references)
 
 
 def test_schedule_uses_shared_lock_order_and_scopes_credentials_to_operations():

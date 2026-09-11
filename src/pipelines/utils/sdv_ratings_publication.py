@@ -361,6 +361,11 @@ def _read_stage(dsn: str, table: str, expected_rows: int, artifact_origin: str) 
     conn = _connect(dsn)
     try:
         with conn.cursor() as cur:
+            # float8 arrives through psycopg's text protocol. A role/database
+            # default of zero rounds that output to 15 significant digits before
+            # Python builds the JSONB publication payload; positive mode is the
+            # shortest representation that round-trips the stored binary value.
+            cur.execute("SET LOCAL extra_float_digits = 1")
             cur.execute(
                 """
                 SELECT a.attname

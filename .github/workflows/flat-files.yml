@@ -24,7 +24,7 @@ on:
         type: string
         default: ""
       receipt_canary_action:
-        description: "Explicit FPI receipt canary action; none preserves the legacy loader"
+        description: "Explicit SDV receipt canary action; none preserves the legacy loader"
         required: false
         type: string
         default: "none"
@@ -59,7 +59,7 @@ on:
         required: false
         type: string
       receipt_canary_action:
-        description: "Explicit FPI receipt canary action"
+        description: "Explicit SDV receipt canary action"
         required: false
         type: choice
         default: "none"
@@ -117,11 +117,31 @@ jobs:
           SOURCE_INPUT: ${{ inputs.source }}
           SEASONS_INPUT: ${{ inputs.seasons }}
           SDV_FPI_RECEIPT_SEASON: ${{ vars.SDV_FPI_RECEIPT_SEASON }}
+          SDV_RATINGS_RECEIPT_SEASON: ${{ vars.SDV_RATINGS_RECEIPT_SEASON }}
+          SDV_TEAM_XWALK_RECEIPT_SEASON: ${{ vars.SDV_TEAM_XWALK_RECEIPT_SEASON }}
+          SDV_GAME_XWALK_RECEIPT_SEASON: ${{ vars.SDV_GAME_XWALK_RECEIPT_SEASON }}
         run: |
           due_exclusions=()
           if [ "$SDV_FPI_RECEIPT_SEASON" = "2026" ]; then
             due_exclusions+=(--exclude-source-season "sdv_fpi_weekly:2026")
           fi
+          case "$SDV_RATINGS_RECEIPT_SEASON" in
+            2026) due_exclusions+=(--exclude-source-season "sdv_ratings_weekly:2026") ;;
+            "") ;;
+            *) echo "::error::SDV_RATINGS_RECEIPT_SEASON must be empty or 2026"; exit 2 ;;
+          esac
+          # The implicit 2026 fetch can fall back to 2025. Both planned
+          # attempts must yield ownership of the receipted 2025 partition.
+          case "$SDV_TEAM_XWALK_RECEIPT_SEASON" in
+            2025) due_exclusions+=(--exclude-source-season "sdv_team_xwalk:2025" --exclude-source-season "sdv_team_xwalk:2026") ;;
+            "") ;;
+            *) echo "::error::SDV_TEAM_XWALK_RECEIPT_SEASON must be empty or 2025"; exit 2 ;;
+          esac
+          case "$SDV_GAME_XWALK_RECEIPT_SEASON" in
+            2025) due_exclusions+=(--exclude-source-season "sdv_game_xwalk:2025" --exclude-source-season "sdv_game_xwalk:2026") ;;
+            "") ;;
+            *) echo "::error::SDV_GAME_XWALK_RECEIPT_SEASON must be empty or 2025"; exit 2 ;;
+          esac
           if [ -n "$SEASONS_INPUT" ]; then
             # $SEASONS_INPUT is deliberately unquoted -- it is a
             # space-separated list of years and this loop relies on the
@@ -162,6 +182,11 @@ jobs:
             --season "$RECEIPT_CANARY_SEASON" \
             --expected-sha256 "$RECEIPT_EXPECTED_SHA256" \
             --expected-project-ref "$RECEIPT_EXPECTED_PROJECT_REF"
+      - name: Refresh canary rating consumers
+        # Publication may commit before returning a failed verification or an
+        # uncertain result. Refresh those rows without clearing the failure.
+        if: ${{ !cancelled() && steps.receipt_canary.outputs.publication_source == 'sdv_ratings_weekly' && steps.receipt_canary.outputs.publication_attempted == 'true' && (steps.receipt_canary.outcome == 'success' || steps.receipt_canary.outcome == 'failure') }}
+        run: python scripts/refresh_marts.py --views marts.epa_crossvalidation
       - name: Refresh external-rating consumers
         # A failed multi-source load may still have committed new ratings.
         # Refresh those rows, but preserve the failed load/job status. Skip

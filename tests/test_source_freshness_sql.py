@@ -204,6 +204,58 @@ def record_failure(conn, source, *, season=2025, outcome="failed"):
     return generation_id
 
 
+@pytest.mark.parametrize(
+    "source,season",
+    [("sdv_ratings_weekly", 2026), ("sdv_team_xwalk", 2025), ("sdv_game_xwalk", 2025)],
+)
+def test_scheduled_verifier_matches_executed_receipts_and_actual_callers(
+    source_freshness_db, source, season
+):
+    from scripts import run_scheduled_sdv_receipts as scheduled
+
+    conn, target = source_freshness_db
+    activation = next(item for item in scheduled.ACTIVATIONS if item.source == source)
+    first = publish_source(conn, source, season=season)
+    result = {
+        "source": source,
+        "status": "loaded",
+        "run_id": first[0],
+        "generation_id": first[1],
+        "sha": first[2],
+        "rows": len(json.loads(first[3])),
+        "duration_s": 0.0,
+    }
+    scheduled._require_publication_result(source, result)
+    scheduled._verify_private_receipt(target, activation, result)
+    with pytest.raises(scheduled.ScheduledSdvError, match="exactly 8 days"):
+        scheduled._require_policy(target, activation)
+    query(
+        conn,
+        "INSERT INTO meta.asset_freshness_policies "
+        "(asset_key,coverage_key,expected_refresh_interval) VALUES (%s,%s,interval '8 days')",
+        (activation.asset.asset_key, activation.asset.coverage_key(season)),
+    )
+    scheduled._require_policy(target, activation)
+    scheduled._verify_public_freshness(target, activation, result)
+
+    # A replacement makes the previous result invalid even though its receipt
+    # remains successful in history and both artifact row counts are equal.
+    newer = publish_source(conn, source, season=season, suffix="b")
+    with pytest.raises(scheduled.ScheduledSdvError, match="does not match"):
+        scheduled._verify_private_receipt(target, activation, result)
+    with pytest.raises(scheduled.ScheduledSdvError, match="does not match"):
+        scheduled._verify_public_freshness(target, activation, result)
+    result.update(run_id=newer[0], generation_id=newer[1], sha=newer[2])
+    scheduled._verify_private_receipt(target, activation, result)
+    scheduled._verify_public_freshness(target, activation, result)
+
+    # A later failed attempt must not be accepted just because the successful
+    # current pointer, artifact, and policy remain in place.
+    record_failure(conn, source, season=season)
+    with pytest.raises(scheduled.ScheduledSdvError, match="does not match"):
+        scheduled._verify_public_freshness(target, activation, result)
+
+
 def test_rpc_has_exact_typed_four_row_missing_contract(source_freshness_db):
     conn, _ = source_freshness_db
     for role in ("anon", "authenticated"):

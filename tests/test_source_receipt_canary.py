@@ -57,6 +57,17 @@ def source_plan():
     }
 
 
+def ratings_plan():
+    return {
+        "protocol": "sdv-ratings-season-v1",
+        "asset_key": "ratings.sdv_ratings_weekly",
+        "coverage_key": "season:2026",
+        "season": 2026,
+        "expected_generation_id": None,
+        "parser_contract": "sdv-ratings-v1",
+    }
+
+
 class FakeCursor:
     def __init__(self, *, can_set_role, migrations=None):
         self.can_set_role = can_set_role
@@ -81,6 +92,8 @@ class FakeCursor:
             return (canary.PUBLISHER_ROLE,)
         if "get_source_plan" in self.statement:
             return (source_plan(),)
+        if "get_sdv_ratings_plan" in self.statement:
+            return (ratings_plan(),)
         raise AssertionError(f"unexpected fetchone for {self.statement}")
 
     def fetchall(self):
@@ -189,6 +202,29 @@ def test_preflight_accepts_unactivated_login_without_attempting_set_role():
     statements = [statement for statement, _ in connection.cursor_object.calls]
     assert not any("SET LOCAL ROLE" in statement for statement in statements)
     assert not any("get_source_plan" in statement for statement in statements)
+
+
+def test_ratings_inspection_uses_dedicated_plan_rpc_and_validator():
+    dsn = f"postgresql://postgres.{PROJECT_REF}:secret@aws.pooler.supabase.com/postgres"
+    connection = FakeConnection(can_set_role=True)
+
+    _, plan = canary._inspect_target(
+        dsn,
+        PROJECT_REF,
+        "sdv_ratings_weekly",
+        2026,
+        connector=lambda *args, **kwargs: connection,
+    )
+
+    assert plan == ratings_plan()
+    plan_calls = [
+        call for call in connection.cursor_object.calls if "get_sdv_ratings_plan" in call[0]
+    ]
+    assert plan_calls == [("SELECT warehouse_source.get_sdv_ratings_plan(%s)", (2026,))]
+    assert not any(
+        "warehouse_source_batch.get_source_plan" in statement
+        for statement, _ in connection.cursor_object.calls
+    )
 
 
 @pytest.mark.parametrize(
@@ -508,6 +544,26 @@ def test_main_does_not_misclassify_http_error_outside_artifact_fetch(monkeypatch
         canary.main(cli_args("publish"))
 
 
+def test_main_sanitizes_ratings_publication_validation_error(monkeypatch, capsys):
+    monkeypatch.setattr(
+        canary,
+        "run_canary",
+        lambda selected: (_ for _ in ()).throw(
+            canary.sdv_ratings_publication.SourcePublicationError(
+                "postgresql://user:secret@private-host/database"
+            )
+        ),
+    )
+    argv = cli_args("publish")
+    argv[2] = "sdv_ratings_weekly"
+
+    assert canary.main(argv) == 1
+    output = capsys.readouterr().out
+    assert json.loads(output)["error"] == "SDV ratings source publication validation failed"
+    assert "secret" not in output
+    assert "private-host" not in output
+
+
 def _fpi_parquet_bytes() -> bytes:
     fixture = Path(__file__).parent / "fixtures/flatfiles/sdv_fpi_weekly_sample.parquet"
     schema = pq.read_schema(fixture)
@@ -550,6 +606,36 @@ def test_download_uses_canonical_parser_and_reports_rows_and_weeks(monkeypatch):
     assert seen[0][1:] == (30, 1)
 
 
+@pytest.mark.parametrize(
+    "source,summary_keys",
+    [
+        ("sdv_ratings_weekly", {"through_weeks", "teams"}),
+        ("sdv_team_xwalk", {"xwalk_keys", "espn_team_ids"}),
+        ("sdv_game_xwalk", {"matchup_date_keys", "espn_game_ids"}),
+    ],
+)
+def test_download_uses_source_parser_and_source_specific_summary(monkeypatch, source, summary_keys):
+    fixture = Path(__file__).parent / f"fixtures/flatfiles/{source}_sample.parquet"
+    raw = fixture.read_bytes()
+    sha = hashlib.sha256(raw).hexdigest()
+
+    def fetch(url, *, timeout, retries):
+        return FetchedFile(raw, sha, url)
+
+    monkeypatch.setattr(canary, "fetch_file", fetch)
+    artifact = canary._download_and_validate(source, 2025, sha)
+    evidence = artifact.evidence()
+
+    assert artifact.rows == pq.read_metadata(fixture).num_rows
+    assert summary_keys <= evidence.keys()
+    assert "weeks" not in evidence
+    if source.endswith("xwalk"):
+        assert evidence["publication_artifact_origin"] == "local_file"
+        assert evidence["season_basis"] == "caller_declared"
+        assert evidence["registered_url"].endswith("_2025.parquet")
+        assert evidence["registered_file_name"].endswith("_2025.parquet")
+
+
 def test_publish_pins_verified_bytes_uses_same_dsn_and_cleans_up(monkeypatch):
     artifact = canary.Artifact(b"exact reviewed bytes", EXPECTED_SHA, 2, (0, 1))
     observed = {}
@@ -586,6 +672,81 @@ def test_publish_pins_verified_bytes_uses_same_dsn_and_cleans_up(monkeypatch):
     }
     assert observed["path"].exists() is False
     assert canary.publication.get_db_url is original_resolver
+
+
+def test_ratings_publish_pins_both_resolvers_and_restores_after_failure(monkeypatch):
+    artifact = canary.Artifact(b"exact reviewed bytes", EXPECTED_SHA, 2)
+    original_batch = canary.publication.get_db_url
+    original_ratings = canary.sdv_ratings_publication.get_db_url
+    observed = {}
+
+    def publish(spec, *, file_path, season):
+        observed.update(
+            source=spec.name,
+            batch_dsn=canary.publication.get_db_url(),
+            ratings_dsn=canary.sdv_ratings_publication.get_db_url(),
+            bytes=Path(file_path).read_bytes(),
+        )
+        raise canary.sdv_ratings_publication.SourcePublicationError("bounded failure")
+
+    monkeypatch.setattr(
+        canary.sdv_ratings_publication,
+        "get_db_url",
+        lambda: "adversarial-ambient-ratings-dsn",
+    )
+    adversarial_resolver = canary.sdv_ratings_publication.get_db_url
+    monkeypatch.setattr(
+        canary.sdv_ratings_publication,
+        "run_sdv_ratings_publication",
+        publish,
+    )
+
+    with pytest.raises(canary.publication.SourcePublicationError, match="bounded failure"):
+        canary._publish_pinned("inspected-dsn", "sdv_ratings_weekly", 2026, artifact)
+
+    assert observed == {
+        "source": "sdv_ratings_weekly",
+        "batch_dsn": "inspected-dsn",
+        "ratings_dsn": "inspected-dsn",
+        "bytes": b"exact reviewed bytes",
+    }
+    assert canary.publication.get_db_url is original_batch
+    assert canary.sdv_ratings_publication.get_db_url is adversarial_resolver
+    assert original_ratings is not adversarial_resolver
+
+
+def test_publish_output_marks_attempt_immediately_before_publication(monkeypatch, tmp_path):
+    output = tmp_path / "github-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setattr(canary.publication, "get_db_url", lambda: "dsn")
+    monkeypatch.setattr(
+        canary,
+        "_inspect_target",
+        lambda *values: ({"can_set_role": True, "activation_required": False}, source_plan()),
+    )
+    monkeypatch.setattr(
+        canary,
+        "_download_and_validate",
+        lambda *values: canary.Artifact(b"pinned", EXPECTED_SHA, 2, (0, 1)),
+    )
+
+    def publish(*values):
+        assert output.read_text().splitlines() == [
+            "publication_attempted=false",
+            "publication_source=sdv_fpi_weekly",
+            "publication_attempted=true",
+        ]
+        return {
+            "status": "loaded",
+            "sha": EXPECTED_SHA,
+            "rows": 2,
+            "run_id": "run",
+            "generation_id": "generation",
+        }
+
+    monkeypatch.setattr(canary, "_publish_pinned", publish)
+
+    assert canary.main(cli_args("publish")) == 0
 
 
 def test_failed_or_uncertain_publication_is_not_retried(monkeypatch):
@@ -626,6 +787,8 @@ def test_failed_or_uncertain_publication_is_not_retried(monkeypatch):
         [
             "preflight",
             "--source",
+            "sdv_fpi_weekly",
+            "--source",
             "sdv_ratings_weekly",
             "--season",
             "2026",
@@ -661,3 +824,21 @@ def test_failed_or_uncertain_publication_is_not_retried(monkeypatch):
 def test_cli_rejects_any_source_set_season_set_or_unpinned_sha(argv):
     with pytest.raises(SystemExit, match="2"):
         canary.build_parser().parse_args(argv)
+
+
+@pytest.mark.parametrize("source", canary.SOURCES)
+def test_cli_accepts_each_enrolled_source_with_one_explicit_scope(source):
+    parsed = canary.build_parser().parse_args(
+        [
+            "preflight",
+            "--source",
+            source,
+            "--season",
+            "2026",
+            "--expected-sha256",
+            EXPECTED_SHA,
+            "--expected-project-ref",
+            PROJECT_REF,
+        ]
+    )
+    assert parsed.source == source

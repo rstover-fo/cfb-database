@@ -332,9 +332,12 @@ def plan_from_manifest(manifest: dict) -> Plan:
             f"{plan.action} requires workflow_dispatch; managed production actions "
             "cannot run from deploy-manifest.json"
         )
-    if plan.compute and plan.compute.script == "recover_season_projections":
+    if plan.compute and plan.compute.script in {
+        "recover_season_projections",
+        "verify_load",
+    }:
         raise ValueError(
-            "recover_season_projections requires workflow_dispatch with compute_script; "
+            f"{plan.compute.script} requires workflow_dispatch with compute_script; "
             "manifest execution does not share the daily ingestion concurrency group"
         )
     return plan

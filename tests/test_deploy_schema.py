@@ -36,6 +36,19 @@ class TestValidActions:
         )
         assert plan.compute.args == ["--execute"]
 
+    def test_verification_manifest_rejected_but_dispatch_plan_allowed(self):
+        with pytest.raises(ValueError, match="verify_load requires workflow_dispatch"):
+            plan_from_manifest(
+                {
+                    "action": "compute",
+                    "compute": {"script": "verify_load", "args": ["--season", "2026"]},
+                }
+            )
+        plan = plan_from_cli(
+            action="compute", compute_script="verify_load", compute_args="--season,2026"
+        )
+        assert plan.compute.args == ["--season", "2026"]
+
     def test_expected_actions(self):
         assert MANAGED_ACTION_MODES == {
             "managed_plan": "plan",
@@ -181,11 +194,11 @@ class TestPlanFromManifestCompute:
         assert plan.refresh is True
 
     @pytest.mark.parametrize(
-        "extra", [{"refresh": True}, {"refresh_views": ["marts.epa_crossvalidation"]}]
+        "extra", [{"refresh": True}, {"refresh_views": "marts.epa_crossvalidation"}]
     )
     def test_verification_cannot_refresh_marts(self, extra):
         with pytest.raises(ValueError, match="verify_load is read-only"):
-            plan_from_manifest({"action": "compute", "compute": {"script": "verify_load"}, **extra})
+            plan_from_cli(action="compute", compute_script="verify_load", **extra)
 
     @pytest.mark.parametrize("exit_code", [0, 1])
     def test_verification_runs_only_verifier_and_preserves_outcome(self, monkeypatch, exit_code):

@@ -56,6 +56,9 @@ When credentials are available only in GitHub Actions, use the existing
 `Deploy Schema` workflow with `action=compute`, `compute_script=verify_load`,
 and `compute_args=--season,2026`. Keep `refresh=false`; the runner rejects any
 refresh request for this diagnostic. Select the reviewed ref explicitly.
+This dispatch shares the daily ingestion concurrency group and waits for its
+writers to finish before checking the warehouse. Manifest-based verification is
+rejected because a push manifest cannot select that group through workflow inputs.
 
 A passing diagnostic establishes the verifier result at that time. Confirm
 the next automatic Daily Season Load separately before claiming the full

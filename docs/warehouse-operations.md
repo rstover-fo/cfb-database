@@ -43,6 +43,34 @@ Secrets belong in ignored config or the host's credential mechanism, never docs.
 The request budget is configured in `.dlt/config.toml`; historical estimates do
 not establish the cost of today's source/resource selection.
 
+## Materialized view refresh safeguards
+
+`scripts/refresh_marts.py` sets session `statement_timeout` and `lock_timeout`
+after it connects. The defaults are 2700 seconds and 300 seconds. Pass
+`--statement-timeout-seconds` and `--lock-timeout-seconds` to change them.
+The session pooler ignores startup options, so a startup `statement_timeout`
+does not apply on this connection. The script sets both limits on the live
+session with `set_config`. `get_db_url()` still appends `statement_timeout=0`
+because other scripts import it. These session settings override that option
+for this script. A bad plan or a blocked lock ends with a timeout error at
+the configured limit.
+
+Killing the GitHub Actions runner does not cancel the server-side
+`REFRESH MATERIALIZED VIEW`. The statement keeps running until it fails or
+finishes. Postgres then rolls that statement back. `refresh_marts.py` cancels
+its own in-flight statement when it receives SIGTERM or SIGINT. Before
+refreshing, it logs other sessions whose current query matches
+`REFRESH MATERIALIZED VIEW`. The script does not terminate those sessions.
+
+The operator can make the server notice a dead client during a statement:
+
+```sql
+ALTER ROLE postgres SET client_connection_check_interval = '10s';
+```
+
+The operator applies that setting on the database. This repository does not
+apply it, and it has not been applied.
+
 ## Workflow refresh dependencies (F10)
 
 The daily workflow runs load/compute, calls the reusable flat-file workflow,

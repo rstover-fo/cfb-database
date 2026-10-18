@@ -1,5 +1,6 @@
 """Focused tests for the opt-in receipt-required mart refresh path."""
 
+import threading
 from unittest.mock import MagicMock
 
 import psycopg2
@@ -284,4 +285,48 @@ def test_keyboard_interrupt_before_start_reraises_without_failure_receipt(monkey
     assert any("get_house_elo_game_plan" in statement for statement in statements)
     assert not any("start_house_elo_game_refresh" in statement for statement in statements)
     assert not any("fail_house_elo_game_refresh" in statement for statement in statements)
+    assert connection.closed
+
+
+def test_termination_before_start_aborts_without_any_statement():
+    connection = _Connection()
+    cancel_event = threading.Event()
+    cancel_event.set()
+
+    with pytest.raises(runner._TerminationRequested):
+        runner._refresh_house_elo_game_with_receipts(connection, cancel_event)
+
+    assert not any(event[0] == "execute" for event in connection.events)
+
+
+def test_termination_after_start_skips_publication_and_records_failure():
+    connection = _Connection()
+    cancel_event = threading.Event()
+    original_commit = connection.commit
+
+    def commit():
+        original_commit()
+        if connection.commits == 1:
+            cancel_event.set()
+
+    connection.commit = commit
+
+    with pytest.raises(runner._TerminationRequested):
+        runner._refresh_house_elo_game_with_receipts(connection, cancel_event)
+
+    statements = [event[1] for event in connection.events if event[0] == "execute"]
+    assert any("start_house_elo_game_refresh" in statement for statement in statements)
+    assert not any("publish_house_elo_game_refresh" in statement for statement in statements)
+    assert any("fail_house_elo_game_refresh" in statement for statement in statements)
+
+
+def test_refresh_marts_reports_receipt_termination_as_failure(monkeypatch):
+    connection = _Connection()
+
+    def fake_receipts(conn, cancel_event=None):
+        raise runner._TerminationRequested("termination signal received in test")
+
+    monkeypatch.setattr(runner, "_refresh_house_elo_game_with_receipts", fake_receipts)
+
+    assert _run(monkeypatch, connection) == 1
     assert connection.closed

@@ -319,6 +319,48 @@ def test_sigterm_during_refresh_cancels_the_statement_and_stops(monkeypatch, cap
     assert "marts.parent failed" in caplog.text
 
 
+def test_sigterm_during_source_analyze_cancels_and_skips_remaining(monkeypatch, caplog):
+    connection = MagicMock()
+    two_source_graph = RefreshGraph(
+        [RefreshAsset("marts.only", ("core.a", "core.b"), "test")],
+        ["core.a", "core.b"],
+    )
+    monkeypatch.setattr(runner, "REFRESH_GRAPH", two_source_graph)
+    monkeypatch.setattr(runner, "get_db_url", lambda: "postgresql://test")
+    monkeypatch.setattr(psycopg2, "connect", lambda _url: connection)
+    cursor = connection.cursor.return_value.__enter__.return_value
+    cursor.fetchall.return_value = []
+    analyze_sql = []
+
+    def execute(sql, params=None):
+        if isinstance(sql, str) and sql.startswith("ANALYZE"):
+            analyze_sql.append(sql)
+            signal.raise_signal(signal.SIGTERM)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if connection.cancel.called:
+                    raise psycopg2.extensions.QueryCanceledError(
+                        "canceling statement due to user request"
+                    )
+                time.sleep(0.01)
+            raise AssertionError("in-flight source ANALYZE was not cancelled")
+
+    cursor.execute.side_effect = execute
+    monkeypatch.setattr(
+        runner,
+        "refresh_view",
+        lambda *_args, **_kwargs: pytest.fail("must not refresh after termination"),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert runner.refresh_marts() == 1
+
+    assert analyze_sql == ["ANALYZE core.a"]
+    connection.cancel.assert_called()
+    assert "next relation was core.b" in caplog.text
+    assert "not refreshed" in caplog.text
+
+
 def test_dry_run_prints_analyze_and_does_not_connect(monkeypatch, capsys):
     monkeypatch.setattr(runner, "REFRESH_GRAPH", reverse_registered_graph())
 

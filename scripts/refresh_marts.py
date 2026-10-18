@@ -76,7 +76,18 @@ def _receipt_failure_outcome(exc: BaseException) -> str:
     return "blocked" if getattr(exc, "pgcode", None) in {"40001", "55000"} else "failed"
 
 
-def _refresh_house_elo_game_with_receipts(conn) -> bool:
+class _TerminationRequested(BaseException):
+    """A termination signal arrived between receipt protocol statements.
+
+    conn.cancel() only cancels an in-flight query, so a signal landing in the
+    gap between RPC statements would otherwise let the protocol continue and
+    even report success. BaseException on purpose: the receipt path's cleanup
+    treats non-Exception as an interruption, the same way a KeyboardInterrupt
+    behaved before the script installed its own signal handlers.
+    """
+
+
+def _refresh_house_elo_game_with_receipts(conn, cancel_event=None) -> bool:
     """Refresh the supported mart through the atomic generation RPC protocol."""
     from psycopg2.extras import Json
 
@@ -86,7 +97,11 @@ def _refresh_house_elo_game_with_receipts(conn) -> bool:
     start_commit_pending = False
     publication_commit_pending = False
 
-    try:
+    def _raise_if_termination_requested(moment: str) -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise _TerminationRequested(f"termination signal received {moment}")
+
+    def _start_protocol() -> None:
         with conn.cursor() as cur:
             cur.execute("SET LOCAL ROLE warehouse_refresher")
             cur.execute("SELECT warehouse_refresh.get_house_elo_game_plan()")
@@ -96,11 +111,8 @@ def _refresh_house_elo_game_with_receipts(conn) -> bool:
                 (run_id, Json(plan)),
             )
             cur.fetchone()
-        start_commit_pending = True
-        conn.commit()
-        started = True
-        start_commit_pending = False
 
+    def _publish() -> tuple:
         with conn.cursor() as cur:
             cur.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
             cur.execute("SET LOCAL ROLE warehouse_refresher")
@@ -108,7 +120,18 @@ def _refresh_house_elo_game_with_receipts(conn) -> bool:
                 "SELECT * FROM warehouse_refresh.publish_house_elo_game_refresh(%s,%s)",
                 (run_id, generation_id),
             )
-            published_generation, replayed, published_rows = cur.fetchone()
+            return cur.fetchone()
+
+    try:
+        _raise_if_termination_requested("before the receipt plan request")
+        _call_on_worker(_start_protocol)
+        start_commit_pending = True
+        conn.commit()
+        started = True
+        start_commit_pending = False
+
+        _raise_if_termination_requested("after the durable start, before publication")
+        published_generation, replayed, published_rows = _call_on_worker(_publish)
         publication_commit_pending = True
         conn.commit()
         publication_commit_pending = False
@@ -258,12 +281,38 @@ def _apply_session_timeouts(
     conn.commit()
 
 
-def _analyze_relations(conn, relations: tuple[str, ...]) -> None:
+def _call_on_worker(fn):
+    """Run a blocking database call on a worker thread, polling for signals.
+
+    Blocking psycopg2 runs the query in C and delivers Python signal handlers
+    only after that call returns. The main thread polls so SIGTERM can call
+    conn.cancel, which is safe from another thread because it uses its own
+    connection.
+    """
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(fn)
+        while True:
+            try:
+                return future.result(timeout=1.0)
+            except TimeoutError:
+                continue
+
+
+def _analyze_relations(conn, relations: tuple[str, ...], cancel_event=None) -> None:
     for relation in relations:
-        try:
+        if cancel_event is not None and cancel_event.is_set():
+            logger.warning(
+                "Skipping source ANALYZE after termination signal; next relation was %s", relation
+            )
+            return
+
+        def _analyze_one(relation=relation) -> None:
             with conn.cursor() as cur:
                 cur.execute(_analyze_statement(relation))
             conn.commit()
+
+        try:
+            _call_on_worker(_analyze_one)
         except Exception as exc:
             logger.warning(
                 "ANALYZE %s failed; continuing with existing statistics: %s", relation, exc
@@ -348,17 +397,7 @@ def refresh_view(view_name: str, conn, concurrently: bool, dry_run: bool) -> boo
         finally:
             cursor.close()
 
-    # Blocking psycopg2 runs the query in C and delivers Python signal handlers
-    # only after that call returns. The main thread polls so SIGTERM can call
-    # conn.cancel, which is safe from another thread because it uses its own
-    # connection.
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(_run)
-        while True:
-            try:
-                return future.result(timeout=1.0)
-            except TimeoutError:
-                continue
+    return _call_on_worker(_run)
 
 
 def refresh_marts(
@@ -448,11 +487,15 @@ def refresh_marts(
         _apply_session_timeouts(conn, statement_timeout_seconds, lock_timeout_seconds)
 
         if require_receipts:
-            failures = 0 if _refresh_house_elo_game_with_receipts(conn) else 1
+            try:
+                failures = 0 if _refresh_house_elo_game_with_receipts(conn, cancel_event) else 1
+            except _TerminationRequested:
+                logger.error("Receipt refresh aborted by termination signal")
+                failures = 1
         else:
             # The daily job rewrites source tables such as stats.play_stats
             # immediately before this refresh, so their statistics are stale.
-            _analyze_relations(conn, _external_ancestors(views))
+            _analyze_relations(conn, _external_ancestors(views), cancel_event)
             _warn_existing_refreshes(conn)
             unsuccessful: set[str] = set()
             for index, view in enumerate(views):

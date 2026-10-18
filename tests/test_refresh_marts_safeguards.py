@@ -233,6 +233,9 @@ def test_preflight_logs_existing_refresh_sessions(monkeypatch, caplog):
     assert "left(query, 100)" in preflight
     assert "REFRESH MATERIALIZED VIEW%" in preflight
     assert "pg_backend_pid()" in preflight
+    # An idle session's pg_stat_activity.query is its LAST statement; only a
+    # genuinely running REFRESH may be reported.
+    assert "state = 'active'" in preflight
     assert "pg_cancel_backend" not in preflight
     assert "pg_terminate_backend" not in preflight
     assert "4242" in caplog.text

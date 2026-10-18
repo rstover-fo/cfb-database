@@ -279,6 +279,10 @@ def _warn_existing_refreshes(conn) -> None:
         "SELECT pid, state, now() - query_start, left(query, 100) "
         "FROM pg_stat_activity "
         "WHERE query LIKE 'REFRESH MATERIALIZED VIEW%' "
+        # pg_stat_activity.query keeps a session's LAST statement, so without
+        # the state filter an idle session that finished its refresh would be
+        # reported as a running one.
+        "AND state = 'active' "
         "AND pid <> pg_backend_pid()"
     )
     try:

@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "cfbd_2026"
 
@@ -206,6 +207,15 @@ class TestAdvancedGameStatsResourceGameIdsMode:
     calls /game/box/advanced?id=<gameId> per id, mirroring
     play_stats_resource's explicit-ids branch."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_advanced_box_5xx_circuit(self):
+        """The 5xx breaker is process-wide, so one test must not open it for the next."""
+        from src.pipelines.sources.stats import reset_advanced_box_5xx_circuit
+
+        reset_advanced_box_5xx_circuit()
+        yield
+        reset_advanced_box_5xx_circuit()
+
     def test_one_call_per_game_id_with_id_param(self):
         from src.pipelines.sources.stats import advanced_game_stats_resource
 
@@ -306,6 +316,239 @@ class TestAdvancedGameStatsResourceGameIdsMode:
             results = list(advanced_game_stats_resource(game_ids=[1, 2]))
 
             assert results == []
+
+    def test_500_after_retries_appends_to_misses_and_continues(self):
+        from src.pipelines.sources.stats import advanced_game_stats_resource
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [_http_error(500), [{"gameId": 2, "team": "X"}]]
+
+            misses: list[int] = []
+            results = list(advanced_game_stats_resource(game_ids=[1, 2], misses=misses))
+
+            assert results == [{"gameId": 2, "team": "X"}]
+            assert misses == [1]
+
+    def test_500_without_misses_reraises(self):
+        """dlt wraps exceptions raised while iterating a resource, so the
+        re-raised HTTPStatusError surfaces as the cause of
+        ResourceExtractionError."""
+        from dlt.extract.exceptions import ResourceExtractionError
+
+        from src.pipelines.sources.stats import advanced_game_stats_resource
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [_http_error(500), [{"gameId": 2, "team": "X"}]]
+
+            with pytest.raises(ResourceExtractionError) as exc_info:
+                list(advanced_game_stats_resource(game_ids=[1, 2]))
+
+            assert isinstance(exc_info.value.__cause__, httpx.HTTPStatusError)
+            assert exc_info.value.__cause__.response.status_code == 500
+            assert mock_make_request.call_count == 1
+
+    def test_three_consecutive_5xx_opens_circuit(self):
+        from dlt.extract.exceptions import ResourceExtractionError
+
+        from src.pipelines.sources.stats import (
+            AdvancedBoxScoreCircuitOpen,
+            advanced_game_stats_resource,
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [
+                _http_error(500),
+                _http_error(500),
+                _http_error(500),
+                [{"gameId": 55, "team": "X"}],
+            ]
+
+            misses: list[int] = []
+            with pytest.raises(ResourceExtractionError) as exc_info:
+                list(advanced_game_stats_resource(game_ids=[11, 22, 44, 55], misses=misses))
+
+            cause = exc_info.value.__cause__
+            assert isinstance(cause, AdvancedBoxScoreCircuitOpen)
+            assert isinstance(cause.__cause__, httpx.HTTPStatusError)
+            assert cause.__cause__.response.status_code == 500
+            assert "3" in str(cause)
+            assert "44" in str(cause)
+            assert misses == [11, 22, 44]
+            assert mock_make_request.call_count == 3
+
+    def test_success_resets_consecutive_5xx_counter(self):
+        from src.pipelines.sources.stats import advanced_game_stats_resource
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [
+                _http_error(500),
+                [{"gameId": 22, "team": "X"}],
+                _http_error(500),
+                _http_error(500),
+            ]
+
+            misses: list[int] = []
+            results = list(advanced_game_stats_resource(game_ids=[11, 22, 33, 44], misses=misses))
+
+            assert results == [{"gameId": 22, "team": "X"}]
+            assert misses == [11, 33, 44]
+
+    def test_suppressed_400_resets_consecutive_5xx_counter(self):
+        from src.pipelines.sources.stats import advanced_game_stats_resource
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [
+                _http_error(500),
+                _http_error(500),
+                _http_error(400),
+                _http_error(500),
+                _http_error(500),
+                [{"gameId": 66, "team": "X"}],
+            ]
+
+            misses: list[int] = []
+            results = list(
+                advanced_game_stats_resource(game_ids=[11, 22, 33, 44, 55, 66], misses=misses)
+            )
+
+            assert results == [{"gameId": 66, "team": "X"}]
+            assert misses == [11, 22, 33, 44, 55]
+
+    def test_empty_200_resets_consecutive_5xx_counter(self):
+        from src.pipelines.sources.stats import advanced_game_stats_resource
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [
+                _http_error(500),
+                _http_error(500),
+                [],
+                _http_error(500),
+                _http_error(500),
+                [{"gameId": 66, "team": "X"}],
+            ]
+
+            misses: list[int] = []
+            results = list(
+                advanced_game_stats_resource(game_ids=[11, 22, 33, 44, 55, 66], misses=misses)
+            )
+
+            assert results == [{"gameId": 66, "team": "X"}]
+            assert misses == [11, 22, 33, 44, 55]
+
+    def test_503_counts_the_same_as_500(self):
+        from dlt.extract.exceptions import ResourceExtractionError
+
+        from src.pipelines.sources.stats import (
+            AdvancedBoxScoreCircuitOpen,
+            advanced_game_stats_resource,
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [
+                _http_error(500),
+                _http_error(503),
+                _http_error(503),
+                [{"gameId": 55, "team": "X"}],
+            ]
+
+            misses: list[int] = []
+            with pytest.raises(ResourceExtractionError) as exc_info:
+                list(advanced_game_stats_resource(game_ids=[11, 22, 44, 55], misses=misses))
+
+            cause = exc_info.value.__cause__
+            assert isinstance(cause, AdvancedBoxScoreCircuitOpen)
+            assert isinstance(cause.__cause__, httpx.HTTPStatusError)
+            assert cause.__cause__.response.status_code == 503
+            assert misses == [11, 22, 44]
+            assert mock_make_request.call_count == 3
+
+    def test_three_single_game_invocations_of_5xx_open_circuit(self):
+        from dlt.extract.exceptions import ResourceExtractionError
+
+        from src.pipelines.sources.stats import (
+            AdvancedBoxScoreCircuitOpen,
+            advanced_game_stats_resource,
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [
+                _http_error(500),
+                _http_error(500),
+                _http_error(500),
+            ]
+
+            misses: list[int] = []
+            assert list(advanced_game_stats_resource(game_ids=[11], misses=misses)) == []
+            assert list(advanced_game_stats_resource(game_ids=[22], misses=misses)) == []
+            with pytest.raises(ResourceExtractionError) as exc_info:
+                list(advanced_game_stats_resource(game_ids=[44], misses=misses))
+
+            cause = exc_info.value.__cause__
+            assert isinstance(cause, AdvancedBoxScoreCircuitOpen)
+            assert isinstance(cause.__cause__, httpx.HTTPStatusError)
+            assert cause.__cause__.response.status_code == 500
+            assert "3" in str(cause)
+            assert "44" in str(cause)
+            assert misses == [11, 22, 44]
+            assert mock_make_request.call_count == 3
+
+    def test_success_between_single_game_invocations_resets_counter(self):
+        from src.pipelines.sources.stats import advanced_game_stats_resource
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [
+                _http_error(500),
+                [{"gameId": 22, "team": "X"}],
+                _http_error(500),
+                _http_error(500),
+            ]
+
+            misses: list[int] = []
+            assert list(advanced_game_stats_resource(game_ids=[11], misses=misses)) == []
+            assert list(advanced_game_stats_resource(game_ids=[22], misses=misses)) == [
+                {"gameId": 22, "team": "X"}
+            ]
+            assert list(advanced_game_stats_resource(game_ids=[33], misses=misses)) == []
+            assert list(advanced_game_stats_resource(game_ids=[44], misses=misses)) == []
+
+            assert misses == [11, 33, 44]
+            assert mock_make_request.call_count == 4
 
     def test_merge_disposition_and_primary_key_unchanged(self):
         from src.pipelines.sources.stats import advanced_game_stats_resource

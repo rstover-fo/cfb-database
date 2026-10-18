@@ -11,10 +11,49 @@ import httpx
 from dlt.sources import DltSource
 
 from ..config.years import YEAR_RANGES, get_current_season
-from ..utils.api_client import get_client
+from ..utils.api_client import RateLimitBreaker, get_client
 from .base import make_request
 
 logger = logging.getLogger(__name__)
+
+
+class AdvancedBoxScoreCircuitOpen(RuntimeError):
+    """CFBD returned 5xx for several different advanced box-score games in a row.
+
+    A single game that keeps returning 5xx is bad upstream data for that game.
+    The backfill records that game as no-data and continues, so one game cannot
+    stall the historical refresh every day. An unbroken run of 5xx across
+    different games means CFBD itself is down, and the run fails so the
+    workflow alerts. The count is shared across batches in this process.
+    scripts/backfill_refresh.py builds a fresh resource for each batch, so a
+    counter on that resource would restart every batch and miss an outage that
+    spans them. RateLimitCircuitOpen in src.pipelines.utils.api_client owns
+    the 429 case. This exception owns the 5xx case, and only the
+    advanced_game_stats_resource backfill path (misses is not None) raises it.
+    """
+
+
+# Each counted 5xx has already survived the client's full 7-attempt transient
+# budget, so 3 in a row is 21 consecutive 5xx responses over several minutes,
+# which is an outage, not three unlucky games. The count is shared across
+# batches in this process, because each batch builds a new resource.
+CONSECUTIVE_5XX_CIRCUIT_THRESHOLD = 3
+
+# The backfill creates a fresh resource per batch, so an instance-local
+# counter can never trip with --batch-size below the threshold and misses
+# outages spanning batch boundaries (PR #152 review finding). The class is
+# the generic consecutive-failure counter despite its 429-flavored name.
+_ADVANCED_BOX_5XX_BREAKER = RateLimitBreaker(threshold=CONSECUTIVE_5XX_CIRCUIT_THRESHOLD)
+
+
+def reset_advanced_box_5xx_circuit() -> None:
+    """Clear the shared advanced-box 5xx breaker.
+
+    Explicit escape hatch for tests and for an in-process caller that has
+    waited out an outage. The breaker stays open across batches by design. A
+    workflow run is one process, so a fresh run starts closed.
+    """
+    _ADVANCED_BOX_5XX_BREAKER.reset()
 
 
 @dlt.source(name="cfbd_stats")
@@ -204,8 +243,9 @@ def advanced_game_stats_resource(
 
     Args:
         game_ids: Explicit CFBD game ids to load advanced box scores for.
-        misses: When given (not None), a suppressed 400 AND an empty 200
-            (`if not data`) for a game id append that id here -- the caller
+        misses: When given (not None), a suppressed 400, an empty 200
+            (`if not data`), and a 5xx after the client's transient retries
+            were exhausted, for a game id append that id here -- the caller
             (scripts/backfill_refresh.py) uses this to record that game as
             'no_data' rather than 'refreshed' in meta.refresh_progress
             (PR #75 F6: a suppressed per-game 400 was previously getting a
@@ -213,6 +253,10 @@ def advanced_game_stats_resource(
             campaign's backlog). Unlike play_stats_resource, an empty 200
             here IS a miss: every game with a completed box score has
             advanced stats, so nothing back means the call didn't land.
+            When misses is None, only a 400 is suppressed. Three
+            consecutive suppressed 5xx games raise
+            AdvancedBoxScoreCircuitOpen so an upstream outage fails the
+            run instead of being stored as no-data.
     """
     client = get_client()
     try:
@@ -231,6 +275,7 @@ def advanced_game_stats_resource(
                     logger.warning(f"No advanced box score for game {game_id} (empty response)")
                     if misses is not None:
                         misses.append(game_id)
+                _ADVANCED_BOX_5XX_BREAKER.record_success()
                 if (i + 1) % 100 == 0:
                     logger.info(f"  Processed {i + 1}/{len(game_ids)} games, {total} records")
             except httpx.HTTPStatusError as e:
@@ -238,6 +283,23 @@ def advanced_game_stats_resource(
                     logger.warning(f"No advanced box score for game {game_id} (400 response)")
                     if misses is not None:
                         misses.append(game_id)
+                    _ADVANCED_BOX_5XX_BREAKER.record_success()
+                    continue
+                if misses is not None and e.response.status_code >= 500:
+                    logger.warning(
+                        f"No advanced box score for game {game_id} "
+                        f"({e.response.status_code} after the client's transient retries "
+                        "were already exhausted); recording the game as no-data "
+                        "(retryable later via scripts/backfill_refresh.py --requeue-no-data)"
+                    )
+                    misses.append(game_id)
+                    count = _ADVANCED_BOX_5XX_BREAKER.record_rate_limited()
+                    if _ADVANCED_BOX_5XX_BREAKER.is_open():
+                        raise AdvancedBoxScoreCircuitOpen(
+                            f"{count} consecutive games returned HTTP 5xx "
+                            "after transient retries were exhausted; "
+                            f"the count spans batches; last game id {game_id}"
+                        ) from e
                     continue
                 raise
         logger.info(f"Loaded {total} total records from {len(game_ids)} games")

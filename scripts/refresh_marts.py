@@ -10,12 +10,16 @@ Usage:
     python scripts/refresh_marts.py --views marts.house_elo,marts.house_elo_game
     python scripts/refresh_marts.py --changed ratings.sdv_ratings_weekly --dry-run
     python scripts/refresh_marts.py --views marts.house_elo_game --require-receipts
+    python scripts/refresh_marts.py --statement-timeout-seconds 2700 --lock-timeout-seconds 300
 """
 
 import argparse
 import logging
+import signal
 import sys
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import dlt
@@ -207,6 +211,100 @@ def get_db_url() -> str:
     return url
 
 
+def _require_positive_seconds(name: str, value: int) -> None:
+    if type(value) is not int or value <= 0:
+        raise ValueError(f"{name} must be a positive integer number of seconds")
+
+
+def _parse_positive_seconds(value: str) -> int:
+    try:
+        seconds = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer number of seconds") from exc
+    try:
+        _require_positive_seconds("timeout", seconds)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return seconds
+
+
+def _analyze_statement(relation: str) -> str:
+    return f"ANALYZE {relation}"
+
+
+def _external_ancestors(views: list[str]) -> tuple[str, ...]:
+    ancestors: set[str] = set()
+    for view in views:
+        ancestors.update(REFRESH_GRAPH.ancestors(view))
+    return tuple(sorted(ancestors - set(REFRESH_GRAPH.assets)))
+
+
+def _apply_session_timeouts(
+    conn, statement_timeout_seconds: int, lock_timeout_seconds: int
+) -> None:
+    # The session pooler ignores startup options, so get_db_url's
+    # statement_timeout=0 does not apply on this connection. SET rejects bind
+    # parameters, so set_config writes the same session value. From 2026-09-28
+    # a bad plan held REFRESH until the 180-minute job died.
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT set_config('statement_timeout', %s, false)",
+            (str(statement_timeout_seconds * 1000),),
+        )
+        cur.execute(
+            "SELECT set_config('lock_timeout', %s, false)",
+            (str(lock_timeout_seconds * 1000),),
+        )
+    conn.commit()
+
+
+def _analyze_relations(conn, relations: tuple[str, ...]) -> None:
+    for relation in relations:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(_analyze_statement(relation))
+            conn.commit()
+        except Exception as exc:
+            logger.warning(
+                "ANALYZE %s failed; continuing with existing statistics: %s", relation, exc
+            )
+            try:
+                conn.rollback()
+            except Exception:
+                logger.warning("Could not roll back after ANALYZE %s failed", relation)
+
+
+def _warn_existing_refreshes(conn) -> None:
+    sql = (
+        "SELECT pid, state, now() - query_start, left(query, 100) "
+        "FROM pg_stat_activity "
+        "WHERE query LIKE 'REFRESH MATERIALIZED VIEW%' "
+        "AND pid <> pg_backend_pid()"
+    )
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+        # psycopg2 keeps the SELECT's transaction open until commit or rollback.
+        conn.rollback()
+    except Exception as exc:
+        logger.warning("Could not list in-flight REFRESH sessions: %s", exc)
+        try:
+            conn.rollback()
+        except Exception:
+            logger.warning("Could not roll back after the REFRESH session check failed")
+        return
+    for pid, state, runtime, query in rows:
+        logger.warning(
+            "REFRESH already running in another session, likely an orphan from a killed "
+            "runner: pid=%s state=%s runtime=%s query=%s",
+            pid,
+            state,
+            runtime,
+            query,
+        )
+
+
 def refresh_view(view_name: str, conn, concurrently: bool, dry_run: bool) -> bool:
     """Refresh a single materialized view. Returns True if successful."""
     refresh_type = "CONCURRENTLY" if concurrently else ""
@@ -216,22 +314,47 @@ def refresh_view(view_name: str, conn, concurrently: bool, dry_run: bool) -> boo
 
     if dry_run:
         print(f"  {sql};")
+        print(f"  {_analyze_statement(view_name)};")
         return True
 
-    cursor = conn.cursor()
-    try:
-        start = datetime.now()
-        cursor.execute(sql)
-        conn.commit()
-        elapsed = (datetime.now() - start).total_seconds()
-        logger.info(f"  ✓ {view_name} refreshed ({elapsed:.2f}s)")
-        return True
-    except Exception as e:
-        conn.rollback()
-        logger.error(f"  ✗ {view_name} failed: {e}")
-        return False
-    finally:
-        cursor.close()
+    def _run() -> bool:
+        cursor = conn.cursor()
+        try:
+            start = datetime.now()
+            cursor.execute(sql)
+            conn.commit()
+            elapsed = (datetime.now() - start).total_seconds()
+            logger.info(f"  ✓ {view_name} refreshed ({elapsed:.2f}s)")
+            # Autovacuum does not analyze materialized views, so the refresh
+            # leaves stale planner statistics behind.
+            try:
+                cursor.execute(_analyze_statement(view_name))
+                conn.commit()
+            except Exception as exc:
+                logger.warning("ANALYZE %s failed after a successful refresh: %s", view_name, exc)
+                try:
+                    conn.rollback()
+                except Exception:
+                    logger.warning("Could not roll back after ANALYZE %s failed", view_name)
+            return True
+        except Exception as exc:
+            conn.rollback()
+            logger.error(f"  ✗ {view_name} failed: {exc}")
+            return False
+        finally:
+            cursor.close()
+
+    # Blocking psycopg2 runs the query in C and delivers Python signal handlers
+    # only after that call returns. The main thread polls so SIGTERM can call
+    # conn.cancel, which is safe from another thread because it uses its own
+    # connection.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(_run)
+        while True:
+            try:
+                return future.result(timeout=1.0)
+            except TimeoutError:
+                continue
 
 
 def refresh_marts(
@@ -241,6 +364,8 @@ def refresh_marts(
     views: list[str] | None = None,
     changed: list[str] | None = None,
     require_receipts: bool = False,
+    statement_timeout_seconds: int = 2700,
+    lock_timeout_seconds: int = 300,
 ) -> int:
     """Refresh selected SQL descendants; return failed plus blocked count.
 
@@ -248,7 +373,11 @@ def refresh_marts(
     are assumed current, as with the existing targeted refresh contract.
     Changed relations must already be committed; their SQL descendants are
     selected automatically. This does not execute ingestion or compute jobs.
+    statement_timeout_seconds and lock_timeout_seconds bound this session
+    and must be positive.
     """
+    _require_positive_seconds("statement_timeout_seconds", statement_timeout_seconds)
+    _require_positive_seconds("lock_timeout_seconds", lock_timeout_seconds)
     try:
         plan = REFRESH_GRAPH.plan(views=views, changed=changed, schema=schema)
     except ValueError as exc:
@@ -277,6 +406,8 @@ def refresh_marts(
         if require_receipts:
             _print_receipt_refresh_dry_run()
             return 0
+        for relation in _external_ancestors(views):
+            print(f"  {_analyze_statement(relation)};")
         for view in views:
             refresh_view(view, conn=None, concurrently=concurrently, dry_run=True)
         return 0
@@ -285,26 +416,50 @@ def refresh_marts(
 
     db_url = get_db_url()
     conn = psycopg2.connect(db_url)
+    cancel_event = threading.Event()
+    previous_handlers = {}
+
+    def _handle_termination(signum, _frame):
+        logger.warning(
+            "Termination signal %s arrived; cancelling the in-flight statement",
+            signum,
+        )
+        cancel_event.set()
+        try:
+            conn.cancel()
+        except Exception:
+            logger.warning("Could not cancel the in-flight statement")
 
     failures = 0
     try:
-        # get_db_url() appends statement_timeout=0 as an `options=` STARTUP
-        # parameter, but Supabase's session pooler (Supavisor) silently
-        # ignores startup options -- the role-default 2-minute timeout still
-        # applied, and marts.play_epa (the one refresh that exceeds it under
-        # load) was cancelled at exactly ~120s in two runs on 2026-08-30.
-        # Setting it as a real session statement survives the pooler; it
-        # lives inside this try so a setup failure still returns the pooled
-        # connection via the finally below.
-        with conn.cursor() as _cur:
-            _cur.execute("SET statement_timeout = 0")
-        conn.commit()
+        try:
+            for signum in (signal.SIGTERM, signal.SIGINT):
+                previous_handlers[signum] = signal.signal(signum, _handle_termination)
+        except ValueError:
+            logger.warning("Termination handlers were not installed outside the main thread")
+            for signum, previous in previous_handlers.items():
+                signal.signal(signum, previous)
+            previous_handlers.clear()
+
+        _apply_session_timeouts(conn, statement_timeout_seconds, lock_timeout_seconds)
 
         if require_receipts:
             failures = 0 if _refresh_house_elo_game_with_receipts(conn) else 1
         else:
+            # The daily job rewrites source tables such as stats.play_stats
+            # immediately before this refresh, so their statistics are stale.
+            _analyze_relations(conn, _external_ancestors(views))
+            _warn_existing_refreshes(conn)
             unsuccessful: set[str] = set()
-            for view in views:
+            for index, view in enumerate(views):
+                if cancel_event.is_set():
+                    remaining = len(views) - index
+                    logger.error(
+                        "Aborting refresh after termination signal; %s view(s) were not refreshed",
+                        remaining,
+                    )
+                    failures += remaining
+                    break
                 blocked_by = REFRESH_GRAPH.ancestors(view).intersection(unsuccessful)
                 if blocked_by:
                     logger.error("Blocked %s after upstream failure: %s", view, sorted(blocked_by))
@@ -314,6 +469,8 @@ def refresh_marts(
                     unsuccessful.add(view)
                     failures += 1
     finally:
+        for signum, previous in previous_handlers.items():
+            signal.signal(signum, previous)
         conn.close()
 
     if failures:
@@ -357,6 +514,18 @@ def main() -> None:
         action="store_true",
         help="Require atomic generation validation/publication (marts.house_elo_game only)",
     )
+    parser.add_argument(
+        "--statement-timeout-seconds",
+        type=_parse_positive_seconds,
+        default=2700,
+        help="Session statement_timeout in seconds (default 2700)",
+    )
+    parser.add_argument(
+        "--lock-timeout-seconds",
+        type=_parse_positive_seconds,
+        default=300,
+        help="Session lock_timeout in seconds (default 300)",
+    )
     args = parser.parse_args()
     if args.views is not None and args.changed is not None:
         parser.error("--views and --changed cannot be combined")
@@ -374,6 +543,8 @@ def main() -> None:
         if args.changed is not None
         else None,
         require_receipts=args.require_receipts,
+        statement_timeout_seconds=args.statement_timeout_seconds,
+        lock_timeout_seconds=args.lock_timeout_seconds,
     )
     sys.exit(failures)
 

@@ -58,7 +58,7 @@ Mechanics:
     'no_data' rows can be found and requeued with `--requeue-no-data` once
     the underlying cause is fixed. Three consecutive suppressed 5xx games
     raise AdvancedBoxScoreCircuitOpen and that batch is not recorded, so an
-    upstream outage still fails the run.
+    upstream outage still fails the run. The count carries across batches.
     plays_stats' empty-200 is NOT a miss -- zero player-stat associations is
     a legitimate outcome for early-era/lower-division games; see
     play_stats_resource's docstring.

@@ -50,11 +50,15 @@ Mechanics:
     tests/test_backfill_refresh.py::test_pipeline_identity_matches_run_stats_pipeline,
     which asserts this pair against run_stats_pipeline's own source text.
   - Per-game misses are recorded honestly, not silently dropped (PR #75 F6):
-    a suppressed per-game 400, and (advanced_game_stats only) an empty 200,
-    are recorded in meta.refresh_progress with status='no_data' instead of
-    'refreshed'. Both statuses still count as "done" for backlog purposes
-    (excluded by the primary key), but 'no_data' rows can be found and
-    requeued with `--requeue-no-data` once the underlying cause is fixed.
+    a suppressed per-game 400, (advanced_game_stats only) an empty 200, and
+    (advanced_game_stats backfill path only) a 5xx after the client's
+    transient retries are exhausted, are recorded in meta.refresh_progress
+    with status='no_data' instead of 'refreshed'. Both statuses still count
+    as "done" for backlog purposes (excluded by the primary key), but
+    'no_data' rows can be found and requeued with `--requeue-no-data` once
+    the underlying cause is fixed. Three consecutive suppressed 5xx games
+    raise AdvancedBoxScoreCircuitOpen and that batch is not recorded, so an
+    upstream outage still fails the run.
     plays_stats' empty-200 is NOT a miss -- zero player-stat associations is
     a legitimate outcome for early-era/lower-division games; see
     play_stats_resource's docstring.
@@ -95,7 +99,8 @@ Usage:
     # Check progress without spending any calls
     python scripts/backfill_refresh.py --campaign 2026-08-upstream-corrections --status
 
-    # Requeue 'no_data' rows (suppressed 400s / empty box-score responses)
+    # Requeue 'no_data' rows (suppressed 400s, empty box scores, or
+    # advanced-box 5xx after retries)
     # back into the backlog, optionally scoped to specific tasks
     python scripts/backfill_refresh.py --campaign 2026-08-upstream-corrections \\
         --requeue-no-data [--tasks box_advanced]
@@ -337,8 +342,9 @@ def build_ledger_values(
     without a real cursor.
 
     `misses`: game_ids for which the call was spent but returned nothing
-    (a suppressed 400, or -- advanced_game_stats only -- an empty 200; see
-    the resources' docstrings in src/pipelines/sources/stats.py). Those rows
+    (a suppressed 400, or -- advanced_game_stats only -- an empty 200 or a
+    5xx after the client's transient retries were exhausted; see the
+    resources' docstrings in src/pipelines/sources/stats.py). Those rows
     get status='no_data' instead of 'refreshed' (PR #75 F6) -- both still
     count as "done" for backlog purposes (excluded by the primary key
     alone), but 'no_data' can be found and requeued via `--requeue-no-data`
@@ -480,7 +486,8 @@ def fetch_unfinalized(conn, campaign: str) -> tuple[list[int], datetime | None]:
 def fetch_no_data_counts(conn, campaign: str) -> dict[str, int]:
     """Per-task count of status='no_data' ledger rows for `campaign` --
     surfaced by --status so an operator can see how many suppressed
-    400s/empty responses accumulated (and are requeue-able) per task."""
+    400s, empty responses, or advanced-box 5xx-after-retries accumulated
+    (and are requeue-able) per task."""
     with conn.cursor() as cur:
         cur.execute(_NO_DATA_COUNTS_QUERY, (campaign,))
         return {row[0]: row[1] for row in cur.fetchall()}
@@ -547,7 +554,8 @@ def insert_ledger_rows(
     conn, campaign: str, task: str, game_ids: list[int], misses: Iterable[int] = ()
 ) -> None:
     """Record a successfully-run batch, one row per game -- status='no_data'
-    for any game_id in `misses` (a suppressed 400 or empty response; see
+    for any game_id in `misses` (a suppressed 400, an empty response, or a
+    5xx after transient retries on advanced box scores; see
     build_ledger_values), 'refreshed' otherwise.
 
     ON CONFLICT DO NOTHING makes this safe to replay: if a batch's
@@ -579,7 +587,8 @@ def build_stats_pipeline() -> dlt.Pipeline:
 def run_batch(pipeline: dlt.Pipeline, task: str, game_ids: list[int]) -> tuple[object, list[int]]:
     """Run one batch through the task's resource, returning (load_info,
     misses) -- `misses` is the list of game_ids the resource itself flagged
-    as a suppressed 400 or empty response (PR #75 F6), for the caller to
+    as a suppressed 400, an empty response, or (advanced_game_stats only) a
+    5xx after transient retries were exhausted (PR #75 F6), for the caller to
     pass to insert_ledger_rows so those rows land as status='no_data'
     instead of silently 'refreshed'."""
     resource_fn = TASK_RESOURCES[task]
@@ -936,7 +945,8 @@ def run_campaign(
     print(f"\nLoaded {loaded_total} game-task call(s) this run{no_data_suffix}.")
     for t, n in per_task_no_data.items():
         print(
-            f"  {t}: {n} no_data (suppressed 400 or empty response; see --status/--requeue-no-data)"
+            f"  {t}: {n} no_data (suppressed 400, empty response, or 5xx after "
+            "retries; see --status/--requeue-no-data)"
         )
 
     # Finalize whenever this run added new 'refreshed' progress, or a prior

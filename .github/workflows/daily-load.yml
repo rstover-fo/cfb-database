@@ -65,11 +65,15 @@ jobs:
       # Prototype tolerated-timeout streak state (revision 2): restore the most
       # recent prior run's JSON via restore-keys prefix match. Cache eviction
       # (~7 days unused) resets a streak; that limitation is accepted.
+      # run_attempt is part of the key (Greptile P1 on PR #155): cache entries
+      # are immutable per key, so a rerun reusing run_id alone could never save
+      # its updated (e.g. reset) state and the next timeout would read a stale
+      # streak.
       - name: Restore tolerated-timeout streak state
         uses: actions/cache/restore@v4
         with:
           path: .tolerated-streaks.json
-          key: cfbd-tolerated-streaks-${{ github.run_id }}
+          key: cfbd-tolerated-streaks-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             cfbd-tolerated-streaks-
       - name: Load season data (includes mart refresh)
@@ -93,7 +97,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .tolerated-streaks.json
-          key: cfbd-tolerated-streaks-${{ github.run_id }}
+          key: cfbd-tolerated-streaks-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Update house Elo
         run: python scripts/compute_house_elo.py --incremental
       - name: Refit adjusted EPA

@@ -1266,6 +1266,19 @@ class TestWorkflowYaml:
         assert save["if"] == "always()"
         assert save["with"]["key"].startswith("cfbd-tolerated-streaks-")
 
+        # Greptile P1 (PR #155): cache entries are immutable per key and a
+        # rerun reuses run_id, so a run_id-only key could never save a rerun's
+        # updated (reset) state -- the next timeout would read a stale streak.
+        # Both keys must include run_attempt, stay identical to each other,
+        # and still match the shared restore-keys prefix so the newest state
+        # from ANY prior run or attempt is restored.
+        for key in (restore["with"]["key"], save["with"]["key"]):
+            assert "${{ github.run_id }}" in key
+            assert "${{ github.run_attempt }}" in key
+        assert restore["with"]["key"] == save["with"]["key"]
+        prefix = restore["with"]["restore-keys"].strip().splitlines()[0].strip()
+        assert save["with"]["key"].startswith(prefix)
+
         load_step = next(
             s
             for s in load_job["steps"]

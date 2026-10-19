@@ -417,17 +417,22 @@ read budget (PR #155) now outlasts CFBD's own gateway, so the same slow
 endpoint arrives as a 504 response instead of a read timeout (Daily Season
 Load run 39796553707). Other exhausted 5xx stay strict: a 502/503 is an
 outage, not a slow aggregate. The non-critical set is
-`{passing, passing_season, rushing}`; evidence and consumer sweep are in
+`{passing, passing_season, rushing, player_success}`; evidence and consumer
+sweeps are in
 `docs/plans/2026-10-19-tolerate-season-aggregate-timeout-plan.md` (Revision 2
-table and Revision 4). `passing_season` loads only the two season-grain
-passing aggregates (`/passing/players/season`, `/passing/teams/season`) --
-split out of the `passing` source on 2026-10-22 so the chronically slow
-players endpoint cannot discard the ~60-call week-grain extract. Any
-critical-source failure, any non-timeout error, or any mix of tolerable and
-non-tolerable failures still fails the run. A `partial` mart refresh still
-fails the run regardless of tolerated sources. Every failed unit's exception
-type and message now print in the end-of-run summary block and in the GitHub
-step summary, so the real error survives the web UI's log truncation.
+table, Revision 3, and Revision 4). `passing_season` loads only the two
+season-grain passing aggregates (`/passing/players/season`,
+`/passing/teams/season`) -- split out of the `passing` source on 2026-10-22
+so the chronically slow players endpoint cannot discard the ~60-call
+week-grain extract. `player_success` loads only
+`stats.player_success_season` (`/stats/player/success`) -- split out of the
+`stats` source on 2026-10-19 so its timeout cannot discard the critical stats
+extract; `stats` itself stays critical. Any critical-source failure, any
+non-timeout error, or any mix of tolerable and non-tolerable failures still
+fails the run. A `partial` mart refresh still fails the run regardless of
+tolerated sources. Every failed unit's exception type and message now print
+in the end-of-run summary block and in the GitHub step summary, so the real
+error survives the web UI's log truncation.
 
 **Repeat-miss guard:** `--tolerated-streak-limit` defaults to `3` (two
 consecutive tolerated days pass; the third fails). "Consecutive" is literal:
@@ -443,8 +448,9 @@ table or migration).
 timeout needs no action — merge self-heals on the next successful pull. A
 streak-limit **failure** means investigate CFBD health and re-pull the missed
 source, e.g. `python scripts/load_season.py --sources passing_season`,
-`--sources passing`, or `--sources rushing` for the affected season (a full
-passing re-pull is `--sources passing,passing_season`).
+`--sources passing`, `--sources rushing`, or `--sources player_success` for
+the affected season (a full passing re-pull is
+`--sources passing,passing_season`).
 
 ### SQL refresh dependency planning (2026-09-08)
 

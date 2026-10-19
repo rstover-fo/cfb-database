@@ -207,6 +207,35 @@ class CFBDClient:
 
     RATE_LIMIT_CIRCUIT_THRESHOLD = RATE_LIMIT_CIRCUIT_THRESHOLD
 
+    # Season-total endpoints CFBD computes across a whole season at request time.
+    # Daily run 39253582408 (2026-10-19): /passing/players/season for 2026
+    # read-timed-out on all 7 attempts at the global 30s read budget while
+    # /rushing/players/season answered in ~4s -- a slow upstream endpoint, not
+    # a client bug. Only the read timeout is raised here; connect and the
+    # global DEFAULT_TIMEOUT stay at 30s so week-grain and per-game fan-out
+    # are unchanged.
+    SEASON_AGGREGATE_READ_TIMEOUT = 120.0
+    SEASON_AGGREGATE_ENDPOINTS = frozenset(
+        {
+            "/passing/players/season",
+            "/passing/teams/season",
+            "/rushing/players/season",
+            "/rushing/teams/season",
+            "/stats/season",
+            "/stats/player/season",
+            "/stats/season/advanced",
+            "/stats/player/success",
+            "/player/usage",
+            "/player/returning",
+            "/ppa/teams",
+            "/ppa/players/season",
+            "/wepa/team/season",
+            "/wepa/players/passing",
+            "/wepa/players/rushing",
+            "/wepa/players/kicking",
+        }
+    )
+
     # Upper bound on a server-supplied Retry-After. Without it a hostile or
     # mistaken header could park the pipeline for hours inside one sleep.
     MAX_RETRY_AFTER_SECONDS = http_retries.MAX_RETRY_AFTER_SECONDS
@@ -287,6 +316,18 @@ class CFBDClient:
             now=reference,
         )
 
+    @classmethod
+    def _request_timeout(cls, endpoint: str) -> httpx.Timeout | None:
+        if endpoint in cls.SEASON_AGGREGATE_ENDPOINTS:
+            return httpx.Timeout(cls.DEFAULT_TIMEOUT, read=cls.SEASON_AGGREGATE_READ_TIMEOUT)
+        return None
+
+    def _get_with_endpoint_timeout(self, endpoint: str, params: dict | None):
+        timeout = self._request_timeout(endpoint)
+        if timeout is None:
+            return self._client.get(endpoint, params=params)
+        return self._client.get(endpoint, params=params, timeout=timeout)
+
     def _send_attempt(
         self, endpoint: str, params: dict | None, retry: int, expected_empty: bool = False
     ):
@@ -294,14 +335,14 @@ class CFBDClient:
 
         operation = transport_operation()
         if operation is None:
-            return self._client.get(endpoint, params=params)
+            return self._get_with_endpoint_timeout(endpoint, params)
         # Serialize admission through result recording within one invocation.
         # Another extraction thread cannot send after a failed accounting write.
         with operation.transport_lock:
             attempt_id = operation.reserve(endpoint, retry, params)
             operation.dispatch(attempt_id)
             try:
-                response = self._client.get(endpoint, params=params)
+                response = self._get_with_endpoint_timeout(endpoint, params)
             except httpx.RequestError:
                 operation.result(attempt_id, "transport_error", None, "request_error")
                 raise

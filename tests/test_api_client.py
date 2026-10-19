@@ -703,6 +703,56 @@ class TestCircuitIsTerminalButResettable:
         client.close()
 
 
+class TestSeasonAggregateReadTimeout:
+    """Daily run 39253582408 (2026-10-19): /passing/players/season read-timed-out
+    at 30s while sibling season aggregates answered in seconds. Only these
+    endpoints get a longer read timeout; week-grain calls stay byte-identical."""
+
+    def test_season_aggregate_passes_extended_read_timeout(self):
+        client = CFBDClient(api_key="test-key")
+        mock_response = MagicMock()
+        mock_response.json.return_value = []
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(client._client, "get", return_value=mock_response) as mock_get:
+            client.get("/passing/players/season", params={"year": 2026})
+            mock_get.assert_called_once()
+            kwargs = mock_get.call_args.kwargs
+            assert "timeout" in kwargs
+            assert kwargs["timeout"].read == 120.0
+            assert kwargs["timeout"].connect == 30.0
+
+        client.close()
+
+    def test_non_aggregate_endpoint_has_no_timeout_kwarg(self):
+        client = CFBDClient(api_key="test-key")
+        mock_response = MagicMock()
+        mock_response.json.return_value = []
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(client._client, "get", return_value=mock_response) as mock_get:
+            client.get("/games", params={"year": 2024})
+            mock_get.assert_called_once_with("/games", params={"year": 2024})
+
+        client.close()
+
+    def test_membership_spot_checks(self):
+        eps = CFBDClient.SEASON_AGGREGATE_ENDPOINTS
+        for path in (
+            "/passing/players/season",
+            "/passing/teams/season",
+            "/rushing/players/season",
+            "/rushing/teams/season",
+        ):
+            assert path in eps
+        assert "/stats/player/season" in eps
+        for path in ("/passing/plays", "/plays", "/games"):
+            assert path not in eps
+
+    def test_default_timeout_unchanged(self):
+        assert CFBDClient.DEFAULT_TIMEOUT == 30.0
+
+
 class TestResourceHandlersPropagateFailures:
     """Resource wrappers must preserve the client's explicit failure causes."""
 

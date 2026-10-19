@@ -154,11 +154,16 @@ makes it strictly opt-in everywhere else.
   `actions/cache/save` with `if: always()` after it), path handed to the
   script via the `TOLERATED_STREAK_FILE` env var. No database table, no
   migration, no live write -- deliberate prototype per the owner decision.
-  Known limits, accepted: cache eviction (~7 days unused) or manual cache
-  deletion resets a streak; two runs on the same UTC date count once
-  (`last_date` guard). Corrupt or unreadable state degrades to an empty
-  state with a logged warning; an unwritable state file never crashes the
-  run (same best-effort hygiene as the step-summary write).
+  "Consecutive" is literal (adversarial-review finding): a streak continues
+  only when the previous toleration was yesterday (UTC); a same-date rerun
+  counts once, and any older `last_date` -- a gap day, skipped runs, or an
+  entry preserved across unrelated failures -- restarts the count at 1.
+  Entries older than yesterday are pruned on update. Known limits, accepted:
+  cache eviction (~7 days unused) or manual cache deletion resets a streak.
+  Corrupt or unreadable state degrades to an empty state with a logged
+  warning, a malformed nested entry is dropped with a warning
+  (adversarial-review finding), and an unwritable state file never crashes
+  the run (same best-effort hygiene as the step-summary write).
 - Streak counts increment for every tolerable timeout (even on a run that
   ultimately fails), reset for every source that loads OK, and persist
   best-effort whenever the flag is on and `TOLERATED_STREAK_FILE` is set.

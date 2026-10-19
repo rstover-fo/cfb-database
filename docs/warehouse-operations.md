@@ -418,11 +418,14 @@ mix of tolerable and non-tolerable failures still fails the run. A `partial`
 mart refresh still fails the run regardless of tolerated sources.
 
 **Repeat-miss guard:** `--tolerated-streak-limit` defaults to `3` (two
-consecutive tolerated days pass; the third fails). State is a small JSON file
-at the path in `TOLERATED_STREAK_FILE`, carried between runs by
-`actions/cache/restore` / `actions/cache/save` on `.tolerated-streaks.json` in
-`daily-load.yml`. Cache eviction or manual cache deletion resets a streak;
-that is accepted for this prototype (no database table or migration).
+consecutive tolerated days pass; the third fails). "Consecutive" is literal:
+a streak continues only when the previous toleration was yesterday (UTC); a
+same-date rerun counts once, and a gap of a day or more restarts the count at
+1. State is a small JSON file at the path in `TOLERATED_STREAK_FILE`, carried
+between runs by `actions/cache/restore` / `actions/cache/save` on
+`.tolerated-streaks.json` in `daily-load.yml`. Cache eviction or manual cache
+deletion resets a streak; that is accepted for this prototype (no database
+table or migration).
 
 **Operator response:** a run-summary **WARN** for a tolerated non-critical
 timeout needs no action — merge self-heals on the next successful pull. A

@@ -19,7 +19,7 @@ import logging
 import os
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -398,7 +398,14 @@ def _utc_today_str() -> str:
 
 
 def load_tolerated_streak_state(path: str | None) -> dict:
-    """Load streak JSON from path, or an empty in-memory state when path is unset."""
+    """Load streak JSON from path, or an empty in-memory state when path is unset.
+
+    Every nested entry is validated, not just the top-level shape (review
+    finding on revision 2): the file round-trips through the Actions cache
+    and a hand-edited or truncated copy must degrade, never crash the load.
+    A malformed ENTRY drops that entry with a warning; a malformed FILE
+    degrades to the empty state.
+    """
     if not path:
         return _empty_tolerated_streak_state()
     try:
@@ -406,15 +413,28 @@ def load_tolerated_streak_state(path: str | None) -> dict:
             data = json.load(fh)
         if not isinstance(data, dict) or data.get("version") != TOLERATED_STREAK_STATE_VERSION:
             raise ValueError("unsupported tolerated streak state version")
-        streaks = data.get("streaks")
-        if not isinstance(streaks, dict):
+        raw_streaks = data.get("streaks")
+        if not isinstance(raw_streaks, dict):
             raise ValueError("invalid streaks object")
-        return data
     except (OSError, json.JSONDecodeError, ValueError, TypeError) as e:
         logger.warning(
             "Could not load tolerated streak state from %s (%s); starting empty", path, e
         )
         return _empty_tolerated_streak_state()
+
+    streaks: dict = {}
+    for name, entry in raw_streaks.items():
+        if (
+            isinstance(name, str)
+            and isinstance(entry, dict)
+            and isinstance(entry.get("count"), int)
+            and not isinstance(entry.get("count"), bool)
+            and isinstance(entry.get("last_date"), str)
+        ):
+            streaks[name] = {"count": entry["count"], "last_date": entry["last_date"]}
+        else:
+            logger.warning("Dropping malformed tolerated streak entry for %r in %s", name, path)
+    return {"version": TOLERATED_STREAK_STATE_VERSION, "streaks": streaks}
 
 
 def save_tolerated_streak_state(path: str | None, state: dict) -> None:
@@ -429,7 +449,21 @@ def save_tolerated_streak_state(path: str | None, state: dict) -> None:
 
 
 def update_tolerated_streaks(state: dict, results: dict, today: str) -> None:
-    """Increment streaks for tolerable timeouts; clear entries for sources that loaded OK."""
+    """Advance streaks for tolerable timeouts; clear entries for sources that loaded OK.
+
+    "Consecutive" is literal (review finding on revision 2): a streak only
+    continues when the previous toleration was YESTERDAY. A same-day rerun
+    keeps the count unchanged, and anything older -- a gap day, a stretch of
+    skipped runs, a stale entry preserved while a source failed for other
+    reasons -- RESTARTS the count at 1 instead of inheriting it, so a
+    two-month-old count of 2 cannot turn today's first timeout into a veto.
+    Entries whose last_date is older than yesterday are pruned afterward for
+    the same reason: they can never legally continue, so carrying them only
+    invites the stale-veto bug this comment exists to prevent.
+    """
+    yesterday = (datetime.strptime(today, "%Y-%m-%d").date() - timedelta(days=1)).strftime(
+        "%Y-%m-%d"
+    )
     streaks = state.setdefault("streaks", {})
     for name, res in results.items():
         if name.startswith("_"):
@@ -438,9 +472,16 @@ def update_tolerated_streaks(state: dict, results: dict, today: str) -> None:
             streaks.pop(name, None)
         elif res.get("status") == "error" and res.get("tolerable_timeout"):
             entry = streaks.setdefault(name, {"count": 0, "last_date": ""})
-            if entry.get("last_date") != today:
+            if entry.get("last_date") == today:
+                pass  # same-UTC-date rerun: no double increment
+            elif entry.get("last_date") == yesterday:
                 entry["count"] = int(entry.get("count", 0)) + 1
                 entry["last_date"] = today
+            else:
+                entry["count"] = 1
+                entry["last_date"] = today
+    for name in [n for n, e in streaks.items() if e.get("last_date") not in (today, yesterday)]:
+        del streaks[name]
 
 
 def apply_aggregate_timeout_tolerance(

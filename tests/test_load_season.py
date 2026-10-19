@@ -970,6 +970,67 @@ class TestToleratedNonCriticalTimeout:
         saved = json.loads(streak_file.read_text())
         assert "passing" not in saved["streaks"]
 
+    def test_streak_with_a_gap_day_restarts_instead_of_continuing(self, monkeypatch, tmp_path):
+        """Review finding on revision 2: "consecutive" is literal. A count
+        preserved from an older run (gap days, skipped sources, non-timeout
+        failures in between) must restart at 1, not inherit and veto."""
+        streak_file = tmp_path / "streaks.json"
+        three_days_ago = (datetime.now(UTC) - timedelta(days=3)).strftime("%Y-%m-%d")
+        streak_file.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "streaks": {"passing": {"count": 2, "last_date": three_days_ago}},
+                }
+            )
+        )
+        monkeypatch.setenv("TOLERATED_STREAK_FILE", str(streak_file))
+
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_games_pipeline", return_value="ok"),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing", "games"], tolerated_streak_limit=3)
+
+        assert summary["results"]["passing"]["status"] == "tolerated"
+        assert summary["errors"] == 0
+        saved = json.loads(streak_file.read_text())
+        assert saved["streaks"]["passing"]["count"] == 1
+        assert saved["streaks"]["passing"]["last_date"] == _utc_today()
+
+    def test_malformed_streak_entries_are_dropped_not_crashing(self, monkeypatch, tmp_path, caplog):
+        """Review finding on revision 2: valid JSON with malformed nested
+        entries (null entry, non-int count) must degrade per-entry with a
+        warning instead of raising out of the load."""
+        streak_file = tmp_path / "streaks.json"
+        streak_file.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "streaks": {
+                        "passing": None,
+                        "rushing": {"count": "bad", "last_date": "2026-10-18"},
+                        "wepa": {"count": 1, "last_date": _utc_yesterday()},
+                    },
+                }
+            )
+        )
+        monkeypatch.setenv("TOLERATED_STREAK_FILE", str(streak_file))
+
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_games_pipeline", return_value="ok"),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing", "games"])
+
+        assert summary["results"]["passing"]["status"] == "tolerated"
+        assert summary["errors"] == 0
+        assert any("Dropping malformed tolerated streak entry" in r.message for r in caplog.records)
+        saved = json.loads(streak_file.read_text())
+        assert saved["streaks"]["passing"]["count"] == 1
+
     def test_same_utc_day_rerun_does_not_double_increment(self, monkeypatch, tmp_path):
         streak_file = tmp_path / "streaks.json"
         streak_file.write_text(
@@ -1128,6 +1189,27 @@ class TestToleratedNonCriticalTimeout:
         )
         assert "passing" not in state["streaks"]
         assert state["streaks"]["rushing"]["count"] == 1
+
+    def test_update_tolerated_streaks_consecutive_vs_gap(self):
+        state = {
+            "version": 1,
+            "streaks": {
+                "passing": {"count": 2, "last_date": "2026-10-18"},  # yesterday: continues
+                "rushing": {"count": 2, "last_date": "2026-10-01"},  # gap: restarts
+                "wepa": {"count": 4, "last_date": "2026-09-01"},  # stale, untouched: pruned
+            },
+        }
+        update_tolerated_streaks(
+            state,
+            {
+                "passing": {"status": "error", "tolerable_timeout": True},
+                "rushing": {"status": "error", "tolerable_timeout": True},
+            },
+            "2026-10-19",
+        )
+        assert state["streaks"]["passing"]["count"] == 3
+        assert state["streaks"]["rushing"]["count"] == 1
+        assert "wepa" not in state["streaks"]
 
     def test_load_tolerated_streak_state_corrupt_returns_empty(self, tmp_path, caplog):
         path = tmp_path / "bad.json"

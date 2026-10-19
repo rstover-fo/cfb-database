@@ -26,7 +26,7 @@ from .sources.recruiting import recruiting_source
 from .sources.reference import reference_source
 from .sources.rosters import rosters_source
 from .sources.rushing import rushing_source
-from .sources.stats import stats_source
+from .sources.stats import player_success_source, stats_source
 from .sources.wepa import wepa_source
 from .utils.rate_limiter import get_rate_limiter
 from .utils.request_outcomes import request_failure_summary
@@ -79,6 +79,7 @@ Examples:
             "game_stats",
             "plays",
             "stats",
+            "player_success",
             "ratings",
             "recruiting",
             "betting",
@@ -419,6 +420,32 @@ def run_stats_pipeline(
     )
 
     source = stats_source(years=years, mode=mode, only=only)
+    info = pipeline.run(source)
+
+    print(f"\nLoad info: {info}")
+
+    return info
+
+
+def run_player_success_pipeline(years: list[int] | None = None, mode: str = "incremental"):
+    """Run the player season success-rate pipeline (stats.player_success_season).
+
+    Its own load unit since 2026-10-19 -- split out of the stats source so a
+    `/stats/player/success` timeout cannot discard the critical stats extract
+    (Daily Season Load #98); see player_success_source's docstring. Same
+    dataset_name ("stats") as run_stats_pipeline, so the table name, merge
+    disposition, and primary key are unchanged.
+    """
+    years_str = f"years={years}" if years else f"mode={mode}"
+    print(f"\n=== Loading Player Success Data ({years_str}) ===\n")
+
+    pipeline = dlt.pipeline(
+        pipeline_name="cfbd_player_success",
+        destination="postgres",
+        dataset_name="stats",
+    )
+
+    source = player_success_source(years=years, mode=mode)
     info = pipeline.run(source)
 
     print(f"\nLoad info: {info}")
@@ -1715,6 +1742,7 @@ def main() -> NoReturn:
         ),
         "plays": lambda: run_plays_pipeline(args.years, args.mode),
         "stats": lambda: run_stats_pipeline(args.years, args.mode),
+        "player_success": lambda: run_player_success_pipeline(args.years, args.mode),
         "ratings": lambda: run_ratings_pipeline(args.years, args.mode),
         "recruiting": lambda: run_recruiting_pipeline(args.years, args.mode),
         "betting": lambda: run_betting_pipeline(args.years, args.mode),

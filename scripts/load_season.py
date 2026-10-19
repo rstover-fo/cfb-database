@@ -406,12 +406,20 @@ def _append_github_step_summary_warning(source: str) -> None:
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not path:
         return
-    with open(path, "a", encoding="utf-8") as fh:
-        fh.write(
-            f"\n### Warning: non-critical timeout\n\n"
-            f"Source `{source}` timed out after retries. Charting data merges on "
-            f"the next successful run; downstream steps continued.\n"
-        )
+    # Best-effort decoration only (Greptile review on PR #155): the whole point
+    # of a tolerated downgrade is that the run continues, so a broken summary
+    # file must not crash load_season() before the mart refresh runs. The
+    # warning already went to the log above; losing the markdown copy is the
+    # cheaper failure.
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(
+                f"\n### Warning: non-critical timeout\n\n"
+                f"Source `{source}` timed out after retries. Charting data merges on "
+                f"the next successful run; downstream steps continued.\n"
+            )
+    except OSError as e:
+        logger.warning("Could not write GITHUB_STEP_SUMMARY warning (%s); continuing", e)
 
 
 def _count_failures(results: dict) -> int:

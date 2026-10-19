@@ -882,6 +882,26 @@ class TestToleratedNonCriticalTimeout:
         assert "passing" in text
         assert "timeout" in text.lower() or "Warning" in text
 
+    def test_failed_step_summary_write_does_not_crash_the_run(self, monkeypatch, caplog):
+        """Greptile review on PR #155: an unwritable GITHUB_STEP_SUMMARY must
+        not raise out of load_season() -- the downgrade exists precisely so
+        the run continues to the mart refresh and downstream steps. The
+        markdown copy is best-effort; the log warning is the durable record."""
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", "/nonexistent-dir/step_summary.md")
+
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_games_pipeline", return_value="ok"),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = load_season(season=2026, sources=["passing", "games"], skip_refresh=True)
+
+        assert summary["results"]["passing"]["status"] == "tolerated"
+        assert summary["errors"] == 0
+        assert any(
+            "Could not write GITHUB_STEP_SUMMARY" in record.message for record in caplog.records
+        )
+
     def test_count_failures_ignores_tolerated_still_counts_partial(self):
         from scripts.load_season import _count_failures
 

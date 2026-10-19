@@ -59,7 +59,7 @@ Explicit reviewed SQL applications and diagnostics retain their existing path:
 ## In-Season Operations
 
 A GitHub Actions workflow (`.github/workflows/daily-load.yml`) runs every day at
-10:00 UTC from `main`: it loads the current season, refreshes all marts, and runs
+09:23 UTC from `main`: it loads the current season, refreshes all marts, and runs
 `scripts/verify_load.py`. Failures open/update a rolling GitHub issue.
 
 Required repo secrets:

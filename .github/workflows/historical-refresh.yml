@@ -41,7 +41,7 @@ name: Historical Refresh
 
 on:
   schedule:
-    - cron: "0 12 * * *" # 12:00 UTC, after the 10:00 UTC daily season load
+    - cron: "0 12 * * *" # 12:00 UTC, after the 09:23 UTC daily season load
   workflow_dispatch:
     inputs:
       campaign:

@@ -411,11 +411,16 @@ flag, so they keep today's strict failure behavior.
 When the flag is on, failed sources that timed out after retries on a
 **non-critical** season-aggregate extract may be recorded as `tolerated`
 instead of failing the run, so downstream daily steps still run. The
-non-critical set is `{passing, rushing}` only; evidence and consumer sweep
-are in `docs/plans/2026-10-19-tolerate-season-aggregate-timeout-plan.md`
-(Revision 2 table). Any critical-source failure, any non-timeout error, or any
-mix of tolerable and non-tolerable failures still fails the run. A `partial`
-mart refresh still fails the run regardless of tolerated sources.
+non-critical set is `{passing, rushing, player_success}`; evidence and
+consumer sweep are in
+`docs/plans/2026-10-19-tolerate-season-aggregate-timeout-plan.md` (Revision 2
+table and Revision 3). `player_success` loads only
+`stats.player_success_season` (`/stats/player/success`) -- split out of the
+`stats` source on 2026-10-19 so its timeout cannot discard the critical stats
+extract; `stats` itself stays critical. Any critical-source failure, any
+non-timeout error, or any mix of tolerable and non-tolerable failures still
+fails the run. A `partial` mart refresh still fails the run regardless of
+tolerated sources.
 
 **Repeat-miss guard:** `--tolerated-streak-limit` defaults to `3` (two
 consecutive tolerated days pass; the third fails). "Consecutive" is literal:
@@ -430,8 +435,8 @@ table or migration).
 **Operator response:** a run-summary **WARN** for a tolerated non-critical
 timeout needs no action — merge self-heals on the next successful pull. A
 streak-limit **failure** means investigate CFBD health and re-pull the missed
-charting source, e.g. `python scripts/load_season.py --sources passing` or
-`--sources rushing` for the affected season.
+source, e.g. `python scripts/load_season.py --sources passing`,
+`--sources rushing`, or `--sources player_success` for the affected season.
 
 ### SQL refresh dependency planning (2026-09-08)
 

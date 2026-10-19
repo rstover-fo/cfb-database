@@ -190,7 +190,9 @@ class TestExpansionUnitWiring:
         assert ESTIMATED_CALLS["ratings"] == 13
 
     def test_stats_estimate_includes_the_three_new_resources(self):
-        assert ESTIMATED_CALLS["stats"] == 1_675
+        """1,675 until 2026-10-19, when player_success_season (one call per
+        year) moved into its own `player_success` source."""
+        assert ESTIMATED_CALLS["stats"] == 1_674
 
     def test_playoffs_is_immutable_once_final(self):
         """CFP results for a finished season cannot change."""
@@ -229,6 +231,49 @@ class TestExpansionUnitWiring:
         assert "conferences" in out
         assert "coaches" in out
         assert "playoffs" in out
+
+
+class TestPlayerSuccessSourceWiring:
+    """2026-10-19 split: player_success (stats.player_success_season) is its
+    own source/load unit so a /stats/player/success timeout cannot discard
+    the critical stats extract (Daily Season Load #98). It must be wired into
+    every place `stats` is -- SOURCE_ORDER, ESTIMATED_CALLS,
+    IMMUTABLE_ONCE_FINAL, runners, active-by-default -- or the daily path
+    silently stops loading the table."""
+
+    def test_in_source_order_after_stats(self):
+        assert "player_success" in SOURCE_ORDER
+        assert SOURCE_ORDER.index("stats") < SOURCE_ORDER.index("player_success")
+
+    def test_has_an_estimated_call_count(self):
+        """One /stats/player/success call per year."""
+        assert ESTIMATED_CALLS["player_success"] == 1
+
+    def test_is_immutable_once_final(self):
+        """Same policy as stats: a finished season's success-rate splits
+        cannot change; corrections ride explicit --season re-runs."""
+        assert "player_success" in IMMUTABLE_ONCE_FINAL
+
+    def test_is_active_by_default(self):
+        """Only "rosters" is excluded from the default active-source list;
+        the split must not quietly drop the table from the daily load."""
+        default_active = [s for s in SOURCE_ORDER if s != "rosters"]
+        assert "player_success" in default_active
+
+    def test_is_non_critical_while_stats_stays_critical(self):
+        """The point of the split: the flaky endpoint's unit may be
+        tolerated, the shared-extract siblings may not."""
+        from scripts.load_season import NON_CRITICAL_SOURCES
+
+        assert NON_CRITICAL_SOURCES == frozenset({"passing", "rushing", "player_success"})
+        assert "stats" not in NON_CRITICAL_SOURCES
+
+    def test_dry_run_prices_the_split_units_separately(self, capsys):
+        summary = load_season(season=2024, sources=["player_success"], dry_run=True)
+
+        assert summary["dry_run"] is True
+        assert summary["estimated_calls"] == 1
+        assert "player_success" in capsys.readouterr().out
 
 
 class TestFanoutDrainerWiring:
@@ -1217,6 +1262,151 @@ class TestToleratedNonCriticalTimeout:
         state = load_tolerated_streak_state(str(path))
         assert state == {"version": 1, "streaks": {}}
         assert any("Could not load tolerated streak state" in r.message for r in caplog.records)
+
+
+class TestPlayerSuccessTolerance:
+    """Daily Season Load #98 (2026-10-19): /stats/player/success read-timed
+    out after retries and, because the resource shared the stats source, the
+    whole stats extract was discarded and the run went red. After the split,
+    the same timeout may only cost stats.player_success_season itself -- and
+    only on the opt-in daily path."""
+
+    def test_success_timeout_with_flag_leaves_other_stats_loaded_and_tolerated(self):
+        """Proof (a): a /stats/player/success timeout under the flag leaves
+        the stats source (advanced_team_stats, player_returning,
+        player_season_stats, player_usage, ...) loaded OK and downgrades only
+        player_success, so the run stays green for downstream steps."""
+        with (
+            patch("src.pipelines.run.run_stats_pipeline", return_value="ok") as stats_runner,
+            patch("src.pipelines.run.run_player_success_pipeline", side_effect=_raise_dlt_timeout),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["stats", "player_success"])
+
+        assert stats_runner.call_count == 1
+        assert summary["results"]["stats"]["status"] == "ok"
+        assert summary["results"]["player_success"]["status"] == "tolerated"
+        assert summary["errors"] == 0
+        assert summary["tolerated"] == ["player_success"]
+
+    def test_success_timeout_without_flag_fails(self):
+        """Proof (b): backfills and manual runs stay strict -- the identical
+        timeout without --tolerate-aggregate-timeouts is a plain failure."""
+        with (
+            patch("src.pipelines.run.run_stats_pipeline", return_value="ok"),
+            patch("src.pipelines.run.run_player_success_pipeline", side_effect=_raise_dlt_timeout),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = load_season(
+                season=2026, sources=["stats", "player_success"], skip_refresh=True
+            )
+
+        assert summary["results"]["stats"]["status"] == "ok"
+        assert summary["results"]["player_success"]["status"] == "error"
+        assert summary["errors"] == 1
+        assert summary["tolerated"] == []
+
+    def test_timeout_on_a_remaining_stats_endpoint_still_fails_with_flag(self):
+        """Proof (c): `stats` stays critical. A timeout anywhere in its
+        remaining resources fails the run even with the flag on, and even
+        while the split player_success unit loads fine."""
+        with (
+            patch("src.pipelines.run.run_stats_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_player_success_pipeline", return_value="ok"),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["stats", "player_success"])
+
+        assert summary["results"]["stats"]["status"] == "error"
+        assert summary["results"]["player_success"]["status"] == "ok"
+        assert summary["errors"] == 1
+        assert summary["tolerated"] == []
+
+    def test_run_98_shape_success_plus_passing_timeouts_goes_green_with_flag(self):
+        """Proof (d): today's Daily Season Load #98 shape -- the success
+        endpoint AND a passing endpoint both time out -- goes green under the
+        flag, with every critical stats table loaded."""
+        with (
+            patch("src.pipelines.run.run_stats_pipeline", return_value="ok"),
+            patch("src.pipelines.run.run_player_success_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_timeout),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["stats", "player_success", "passing"])
+
+        assert summary["results"]["stats"]["status"] == "ok"
+        assert summary["results"]["player_success"]["status"] == "tolerated"
+        assert summary["results"]["passing"]["status"] == "tolerated"
+        assert summary["errors"] == 0
+        assert summary["tolerated"] == ["player_success", "passing"]
+
+    def test_non_timeout_player_success_failure_stays_error_with_flag(self):
+        """Same httpx-timeout-only rule as passing/rushing: any other
+        exception shape is a real failure."""
+        with (
+            patch("src.pipelines.run.run_player_success_pipeline", side_effect=ValueError("bad")),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["player_success"])
+
+        assert summary["results"]["player_success"]["status"] == "error"
+        assert summary["errors"] == 1
+
+    def test_streak_increments_on_second_consecutive_day(self, monkeypatch, tmp_path):
+        streak_file = tmp_path / "streaks.json"
+        streak_file.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "streaks": {"player_success": {"count": 1, "last_date": _utc_yesterday()}},
+                }
+            )
+        )
+        monkeypatch.setenv("TOLERATED_STREAK_FILE", str(streak_file))
+
+        with (
+            patch("src.pipelines.run.run_stats_pipeline", return_value="ok"),
+            patch("src.pipelines.run.run_player_success_pipeline", side_effect=_raise_dlt_timeout),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(
+                sources=["stats", "player_success"], tolerated_streak_limit=3
+            )
+
+        assert summary["results"]["player_success"]["status"] == "tolerated"
+        assert summary["errors"] == 0
+        saved = json.loads(streak_file.read_text())
+        assert saved["streaks"]["player_success"]["count"] == 2
+        assert saved["streaks"]["player_success"]["last_date"] == _utc_today()
+
+    def test_streak_limit_trips_on_third_consecutive_day(self, monkeypatch, tmp_path):
+        """Proof (e): the consecutive-day guard applies to the new unit --
+        two tolerated days pass, the third fails the run."""
+        streak_file = tmp_path / "streaks.json"
+        streak_file.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "streaks": {"player_success": {"count": 2, "last_date": _utc_yesterday()}},
+                }
+            )
+        )
+        monkeypatch.setenv("TOLERATED_STREAK_FILE", str(streak_file))
+
+        with (
+            patch("src.pipelines.run.run_stats_pipeline", return_value="ok"),
+            patch("src.pipelines.run.run_player_success_pipeline", side_effect=_raise_dlt_timeout),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(
+                sources=["stats", "player_success"], tolerated_streak_limit=3
+            )
+
+        assert summary["results"]["player_success"]["status"] == "error"
+        assert summary["errors"] == 1
+        saved = json.loads(streak_file.read_text())
+        assert saved["streaks"]["player_success"]["count"] == 3
+        assert saved["streaks"]["player_success"]["last_date"] == _utc_today()
 
 
 class TestWorkflowYaml:

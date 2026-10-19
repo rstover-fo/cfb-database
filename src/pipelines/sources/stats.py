@@ -81,6 +81,13 @@ def stats_source(
     dropped the `year` query parameter it depended on, so every year-scoped
     call now 400s. It is retained in this module, game-id-driven, for a
     future historical-refresh campaign; see its docstring.
+
+    Note: `player_success_season_resource` is also NOT in this source's
+    return list -- it ships in its own source, `player_success_source`
+    below, since 2026-10-19. A dlt source failure discards every sibling
+    resource's extract, and Daily Season Load #98 showed a timeout on
+    `/stats/player/success` discarding the critical advanced_team_stats /
+    player_returning / player_season_stats / player_usage extracts with it.
     """
     if years is None:
         if mode == "incremental":
@@ -96,7 +103,6 @@ def stats_source(
         player_returning_resource(years),
         play_stats_resource(years),
         game_havoc_resource(years),
-        player_success_season_resource(years),
         player_success_game_resource(years),
         game_advanced_resource(years),
     ]
@@ -109,6 +115,44 @@ def stats_source(
     if unknown:
         raise ValueError(f"Unknown stats resource(s): {unknown}. Valid: {sorted(by_name)}")
     return [by_name[name] for name in only]
+
+
+@dlt.source(name="cfbd_player_success")
+def player_success_source(
+    years: list[int] | None = None,
+    mode: str = "incremental",
+) -> DltSource:
+    """Season player success-rate splits, isolated from the critical stats source.
+
+    Exactly one resource: player_success_season (`/stats/player/success`,
+    one call per year, table stats.player_success_season). Split out of
+    stats_source on 2026-10-19 after Daily Season Load #98: a dlt source
+    failure discards every sibling resource's extract, so a read timeout on
+    this one endpoint was discarding the whole stats extract --
+    advanced_team_stats, player_returning, player_season_stats and
+    player_usage, all consumed by build_features.py, the API views, and
+    several marts. As its own load unit, its failure costs only its own
+    table, which has no downstream reader (sweep re-verified 2026-10-19:
+    grants and catalog metadata only), so scripts/load_season.py classifies
+    `player_success` non-critical while `stats` stays critical.
+
+    The resource function is shared with the pre-split source, so the table
+    name, columns, merge disposition, and primary key are byte-identical:
+    no DB change, existing rows untouched. The runner
+    (run.py::run_player_success_pipeline) keeps dataset_name="stats" for the
+    same reason.
+
+    Args:
+        years: Specific years to load. If None, uses mode to determine years.
+        mode: "incremental" loads current season, "backfill" loads all historical.
+    """
+    if years is None:
+        if mode == "incremental":
+            years = [get_current_season()]
+        else:  # backfill
+            years = YEAR_RANGES["stats"].to_list()
+
+    return [player_success_season_resource(years)]
 
 
 @dlt.resource(

@@ -1032,6 +1032,16 @@ def run_campaign(
             print(report.outage)
             outage_message = report.outage
             break
+        if report is not None and report.budget_stop:
+            # Local budget guard inside the resource -- same contract as the
+            # month guard above: a pacing stop, never an error. The attempted
+            # prefix was already ledgered just above.
+            print(
+                f"Local budget guard: {report.budget_stop} Stopping after batch "
+                f"{i}/{len(batches)}; resume this campaign in a later run/month."
+            )
+            pacing_stop = True
+            break
 
     no_data_suffix = f" ({no_data_total} no_data)" if no_data_total else ""
     print(f"\nLoaded {loaded_total} game-task call(s) this run{no_data_suffix}.")

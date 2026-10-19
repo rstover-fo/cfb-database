@@ -609,6 +609,97 @@ class TestAdvancedGameStatsHealthAndProbe:
 
         assert report.probe_game_id == ADVANCED_BOX_PROBE_FALLBACK_GAME_ID
 
+    @pytest.mark.parametrize("auth_status", [401, 403])
+    def test_probe_auth_rejection_is_a_failure_not_healthy(self, auth_status):
+        """PR #156 review (Codex): a 401/403 on the probe means CFBD rejected
+        our credentials -- no later call can be trusted -- so it must fail the
+        run like a 5xx, never count as 'the server answered'."""
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [_http_error(500)] * 5 + [
+                _http_error(auth_status),
+                AssertionError("draining must stop after the failed probe"),
+            ]
+
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport(fallback_probe_game_id=999)
+            results = list(
+                advanced_game_stats_resource(
+                    game_ids=list(range(1, 8)), misses=misses, report=report
+                )
+            )
+
+        assert results == []
+        assert report.outage is not None
+        assert str(auth_status) in report.outage
+        assert report.budget_stop is None
+        # The five 5xx games were attempted and recorded before the stop.
+        assert report.attempted == [1, 2, 3, 4, 5]
+        assert misses == [1, 2, 3, 4, 5]
+
+    def test_budget_exhaustion_is_a_pacing_stop_not_an_outage(self):
+        """PR #156 review (PR Lens): RequestBudgetExhausted is the LOCAL
+        monthly budget guard, not a CFBD failure -- it must set budget_stop
+        (caller exits 0) instead of outage (caller exits 1), while still
+        stopping gracefully so yielded rows load and the prefix ledgers."""
+        from src.pipelines.sources.base import RequestBudgetExhausted
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [
+                [{"gameId": 1, "team": "A"}],
+                RequestBudgetExhausted("API budget exhausted"),
+                AssertionError("game 3 must never be requested"),
+            ]
+
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport()
+            results = list(
+                advanced_game_stats_resource(game_ids=[1, 2, 3], misses=misses, report=report)
+            )
+
+        assert results == [{"gameId": 1, "team": "A"}]
+        assert report.budget_stop is not None
+        assert "game 2" in report.budget_stop
+        assert report.outage is None
+        # Game 2's call was refused before it was spent: not attempted, not
+        # a miss, so it stays in the backlog.
+        assert report.attempted == [1]
+        assert misses == []
+
+    def test_budget_exhaustion_without_report_still_raises(self):
+        from dlt.extract.exceptions import ResourceExtractionError
+
+        from src.pipelines.sources.base import RequestBudgetExhausted
+        from src.pipelines.sources.stats import advanced_game_stats_resource
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = RequestBudgetExhausted("API budget exhausted")
+
+            with pytest.raises(ResourceExtractionError) as exc_info:
+                list(advanced_game_stats_resource(game_ids=[1], misses=[]))
+
+            assert isinstance(exc_info.value.__cause__, RequestBudgetExhausted)
+
     def test_probe_400_counts_as_healthy(self):
         from src.pipelines.sources.stats import (
             AdvancedBoxBatchReport,

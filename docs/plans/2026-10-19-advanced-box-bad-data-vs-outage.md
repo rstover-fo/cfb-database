@@ -250,6 +250,28 @@ plus `.venv/bin/ruff check` and `.venv/bin/ruff format --check` on changed
 files, and the full `PATH="$PWD/.venv/bin:$PATH" .venv/bin/python -m pytest
 -q --tb=short` main suite before the PR.
 
+## Post-review amendments (Greptile 4/5 on PR #156, 2026-10-19)
+
+- Both issue lookups in `.github/workflows/historical-refresh.yml` use
+  `github.paginate` (`per_page: 100`): `listForRepo` returns 30 issues per
+  page, so a title on page 2+ would never be found and a duplicate
+  "Historical refresh failing" issue would be created.
+- A probe answered with 401/403 is a FAILURE (rejected credentials mean no
+  call can be trusted), not "the server answered". Only 400/404 count as
+  healthy request-level rejections.
+- `RequestBudgetExhausted` (the local budget guard in
+  `src/pipelines/sources/base.py`) gets its own `report.budget_stop` field
+  and is handled as a pacing stop (exit 0, like the month guard), never as
+  a CFBD outage.
+- New regression test for the actual run-#51/#52 shape: five CONSECUTIVE
+  500s (401838337, 401838336, 401837115, 401837097, 401837096) at the head
+  of the newest-first drain, which — unlike the interleaved replay — trips
+  the windowed rule; proves probe success, continued drain, partial
+  success, and persisted `no_data` ledger rows.
+- The outage-path `run_campaign` test now uses an attempted prefix smaller
+  than the batch and asserts the ledger write happens before
+  `finalize_campaign`, which runs before the outage result returns.
+
 ## Output contract
 
 Changed files: `src/pipelines/sources/stats.py`,

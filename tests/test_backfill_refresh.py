@@ -13,6 +13,7 @@ backs them.
 import inspect
 import math
 from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -708,21 +709,112 @@ class TestReportPartialBadData:
 
 class TestRunCampaignOutageAndBadData:
     def test_outage_mid_batch_ledgers_attempted_prefix(self, monkeypatch):
+        """The outage stop must (1) ledger exactly the attempted PREFIX of a
+        batch that was cut short -- never the full planned batch -- and (2)
+        still run finalize over the newly refreshed rows BEFORE returning the
+        outage result (Greptile finding on PR #156: the original test used an
+        attempted list equal to the batch and never exercised finalize)."""
         from scripts import backfill_refresh
 
-        ledger_calls = []
+        events = []
+        ledgered = {"done": False}
 
         def fake_run_batch(pipeline, task, game_ids, *, fallback_probe_game_id=None):
             from src.pipelines.sources.stats import AdvancedBoxBatchReport
 
-            if task == "box_advanced":
-                report = AdvancedBoxBatchReport(
-                    attempted=game_ids[:2],
-                    server_error_game_ids=[game_ids[1]],
-                    outage="CFBD down",
-                )
-                return {"ok": True}, [game_ids[1]], report
-            return {"ok": True}, [], None
+            # The batch is [3, 2, 1] (batch_size=3) but the outage cut the
+            # resource off after two games: attempted prefix [3, 2] only.
+            report = AdvancedBoxBatchReport(
+                attempted=game_ids[:2],
+                server_error_game_ids=[game_ids[1]],
+                outage="CFBD down",
+            )
+            return {"ok": True}, [game_ids[1]], report
+
+        def fake_insert_ledger_rows(conn, campaign, task, game_ids, misses=()):
+            ledgered["done"] = True
+            events.append(("ledger", task, list(game_ids), list(misses)))
+
+        def fake_fetch_unfinalized(conn, campaign):
+            # Nothing pending before the loop; a pending season appears once
+            # the batch's ledger rows have been written.
+            if not ledgered["done"]:
+                return [], None
+            return [2024], datetime(2026, 10, 19, 12, 0, 0)
+
+        def fake_finalize_campaign(conn, campaign, seasons, watermark):
+            events.append(("finalize", list(seasons)))
+            return True
+
+        monkeypatch.setattr(backfill_refresh, "run_batch", fake_run_batch)
+        monkeypatch.setattr(backfill_refresh, "insert_ledger_rows", fake_insert_ledger_rows)
+        monkeypatch.setattr(backfill_refresh, "get_month_spend", lambda conn: 0)
+        monkeypatch.setattr(backfill_refresh, "fetch_last_refreshed_game_id", lambda *a: None)
+        monkeypatch.setattr(backfill_refresh, "fetch_unfinalized", fake_fetch_unfinalized)
+        monkeypatch.setattr(backfill_refresh, "finalize_campaign", fake_finalize_campaign)
+
+        class Limiter:
+            def check_budget(self, n):
+                return True
+
+        monkeypatch.setattr("src.pipelines.utils.rate_limiter.get_rate_limiter", lambda: Limiter())
+
+        row = {
+            "campaign": "camp-1",
+            "description": None,
+            "seasons": [2024],
+            "tasks": ["box_advanced"],
+            "created_at": None,
+            "completed_at": None,
+            "last_finalized_at": None,
+        }
+        monkeypatch.setattr(backfill_refresh, "get_or_create_campaign", lambda *a, **k: row)
+        monkeypatch.setattr(
+            backfill_refresh,
+            "fetch_candidate_games",
+            lambda conn, seasons: [(1, 2024, 1), (2, 2024, 1), (3, 2024, 1)],
+        )
+        monkeypatch.setattr(backfill_refresh, "fetch_done_ids", lambda conn, campaign, task: set())
+        monkeypatch.setattr(backfill_refresh, "build_stats_pipeline", lambda: object())
+
+        result = backfill_refresh.run_campaign(
+            object(),
+            "camp-1",
+            tasks_spec="box_advanced",
+            seasons_spec="2024",
+            max_calls=10,
+            batch_size=3,
+        )
+
+        assert result["status"] == "outage"
+        assert result["bad_data_game_ids"] == [2]
+        # Exactly one ledger write, with the attempted prefix (not the full
+        # [3, 2, 1] batch), then finalize -- in that order, both before the
+        # outage result was returned.
+        assert events == [
+            ("ledger", "box_advanced", [3, 2], [2]),
+            ("finalize", [2024]),
+        ]
+
+    def test_budget_stop_mid_batch_is_pacing_not_outage(self, monkeypatch):
+        """A RequestBudgetExhausted stop (report.budget_stop) must end the
+        run like the month guard: attempted prefix ledgered, later batches
+        not run, and a non-failing status (PR #156 review finding: the broad
+        except previously converted it into a CFBD outage)."""
+        from scripts import backfill_refresh
+
+        ledger_calls = []
+        batches_run = []
+
+        def fake_run_batch(pipeline, task, game_ids, *, fallback_probe_game_id=None):
+            from src.pipelines.sources.stats import AdvancedBoxBatchReport
+
+            batches_run.append(list(game_ids))
+            report = AdvancedBoxBatchReport(
+                attempted=game_ids[:1],
+                budget_stop="local request budget refused the call for game 2",
+            )
+            return {"ok": True}, [], report
 
         monkeypatch.setattr(backfill_refresh, "run_batch", fake_run_batch)
         monkeypatch.setattr(
@@ -757,7 +849,7 @@ class TestRunCampaignOutageAndBadData:
         monkeypatch.setattr(
             backfill_refresh,
             "fetch_candidate_games",
-            lambda conn, seasons: [(1, 2024, 1), (2, 2024, 1), (3, 2024, 1)],
+            lambda conn, seasons: [(1, 2024, 1), (2, 2024, 1), (3, 2024, 1), (4, 2024, 1)],
         )
         monkeypatch.setattr(backfill_refresh, "fetch_done_ids", lambda conn, campaign, task: set())
         monkeypatch.setattr(backfill_refresh, "build_stats_pipeline", lambda: object())
@@ -771,13 +863,10 @@ class TestRunCampaignOutageAndBadData:
             batch_size=2,
         )
 
-        assert result["status"] == "outage"
-        assert len(ledger_calls) == 1
-        task, attempted, misses = ledger_calls[0]
-        assert task == "box_advanced"
-        assert attempted == [3, 2]
-        assert misses == [2]
-        assert result["bad_data_game_ids"] == [2]
+        assert result["status"] == "ok"
+        assert "outage" not in result
+        assert batches_run == [[4, 3]]  # second batch [2, 1] never ran
+        assert ledger_calls == [("box_advanced", [4], [])]
 
     def test_bad_data_run_populates_ids_and_exits_ok_path(self, monkeypatch):
         from scripts import backfill_refresh
@@ -837,6 +926,137 @@ class TestRunCampaignOutageAndBadData:
         assert result["status"] == "ok"
         assert result["bad_data_game_ids"] == [20, 10]
         assert batches_run == [[20], [10]]
+
+
+class TestOct19IncidentRegression:
+    """Historical Refresh runs #51/#52 (2026-10-19, run 39253607809): the
+    newest-first drain's first batch hit HTTP 500 CONSECUTIVELY for
+    401838337, 401838336, 401837115, 401837097 and 401837096, with 200s for
+    older games such as 401836219. Unlike the interleaved-order replay test
+    in tests/test_sources/test_stats.py (which never trips the windowed
+    rule), five consecutive 5xx at the head of the run DO trip it. This test
+    drives the REAL advanced_game_stats_resource through run_campaign with a
+    mocked HTTP client and mocked DB helpers -- nothing live -- and proves
+    the full chain: trip, successful re-check of a known-good game, drain
+    continues as a partial success, and the five games' no_data ledger rows
+    are persisted."""
+
+    BAD_GAME_IDS = [401838337, 401838336, 401837115, 401837097, 401837096]
+    GOOD_GAME_IDS = [401836219, 401833987, 401833986, 401833985, 401762521]
+
+    @pytest.fixture(autouse=True)
+    def _reset_advanced_box_health(self):
+        from src.pipelines.sources.stats import reset_advanced_box_health
+
+        reset_advanced_box_health()
+        yield
+        reset_advanced_box_health()
+
+    def test_consecutive_5xx_cluster_trips_probe_succeeds_rows_persist(self, monkeypatch):
+        import httpx
+
+        from scripts import backfill_refresh
+        from src.pipelines.sources.stats import ADVANCED_BOX_PROBE_FALLBACK_GAME_ID
+
+        bad = self.BAD_GAME_IDS
+        good = self.GOOD_GAME_IDS
+        # Same season+week for every game, so sort_games_newest_first orders
+        # the backlog by game id descending -- the five bad games first, then
+        # the good ones, exactly like the incident's newest-first batch.
+        candidates = [(gid, 2025, 10) for gid in bad + good]
+
+        requested: list[int] = []
+
+        def fake_make_request(client, endpoint, params=None):
+            assert endpoint == "/game/box/advanced"
+            gid = params["id"]
+            requested.append(gid)
+            if gid in bad:
+                request = httpx.Request("GET", "https://api.collegefootballdata.com" + endpoint)
+                response = httpx.Response(500, request=request)
+                raise httpx.HTTPStatusError("error", request=request, response=response)
+            return [{"gameId": gid, "team": "X"}]
+
+        loaded_rows: list[dict] = []
+
+        class FakePipeline:
+            def run(self, source):
+                loaded_rows.extend(source)
+                return {"ok": True}
+
+        ledger_calls = []
+
+        monkeypatch.setattr("src.pipelines.sources.stats.get_client", lambda: MagicMock())
+        monkeypatch.setattr("src.pipelines.sources.stats.make_request", fake_make_request)
+        monkeypatch.setattr(
+            backfill_refresh,
+            "insert_ledger_rows",
+            lambda conn, campaign, task, game_ids, misses=(): ledger_calls.append(
+                (task, list(game_ids), list(misses))
+            ),
+        )
+        monkeypatch.setattr(backfill_refresh, "get_month_spend", lambda conn: 0)
+        monkeypatch.setattr(backfill_refresh, "fetch_last_refreshed_game_id", lambda *a: None)
+        monkeypatch.setattr(
+            backfill_refresh, "fetch_unfinalized", lambda conn, campaign: ([], None)
+        )
+
+        class Limiter:
+            def check_budget(self, n):
+                return True
+
+        monkeypatch.setattr("src.pipelines.utils.rate_limiter.get_rate_limiter", lambda: Limiter())
+
+        row = {
+            "campaign": "2026-08-upstream-corrections",
+            "description": None,
+            "seasons": [2025],
+            "tasks": ["box_advanced"],
+            "created_at": None,
+            "completed_at": None,
+            "last_finalized_at": None,
+        }
+        monkeypatch.setattr(backfill_refresh, "get_or_create_campaign", lambda *a, **k: row)
+        monkeypatch.setattr(backfill_refresh, "fetch_candidate_games", lambda conn, s: candidates)
+        monkeypatch.setattr(backfill_refresh, "fetch_done_ids", lambda conn, campaign, task: set())
+        monkeypatch.setattr(backfill_refresh, "build_stats_pipeline", lambda: FakePipeline())
+
+        result = backfill_refresh.run_campaign(
+            object(),
+            "2026-08-upstream-corrections",
+            tasks_spec="box_advanced",
+            seasons_spec="2025",
+            max_calls=50,
+            batch_size=50,
+        )
+
+        # The windowed rule tripped at the fifth consecutive 5xx and the
+        # probe re-checked the known-good fallback game -- then the drain
+        # CONTINUED through the remaining backlog instead of failing.
+        assert requested == bad + [ADVANCED_BOX_PROBE_FALLBACK_GAME_ID] + good
+
+        # Partial success, not a failure: status "ok" (exit 0 in main), with
+        # the five bad games surfaced for the ::warning::/issue comment.
+        assert result["status"] == "ok"
+        assert "outage" not in result
+        assert result["bad_data_game_ids"] == bad
+
+        # The five successes' rows reached the destination pipeline; the
+        # probe's payload was discarded, not loaded.
+        assert [r["gameId"] for r in loaded_rows] == good
+
+        # The no_data rows persist: the single ledger write covers the whole
+        # attempted batch, with exactly the five bad games as misses...
+        assert ledger_calls == [("box_advanced", bad + good, bad)]
+        # ...which build_ledger_values (the exact tuples insert_ledger_rows
+        # executes) records as status='no_data', requeueable via
+        # --requeue-no-data, while the successes stay 'refreshed'.
+        values = build_ledger_values(
+            "2026-08-upstream-corrections", "box_advanced", bad + good, misses=bad
+        )
+        statuses = {gid: status for _c, _t, gid, _calls, status in values}
+        assert all(statuses[gid] == "no_data" for gid in bad)
+        assert all(statuses[gid] == "refreshed" for gid in good)
 
 
 def test_main_exit_code_maps_outage(monkeypatch):

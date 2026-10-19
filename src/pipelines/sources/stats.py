@@ -15,7 +15,7 @@ from dlt.sources import DltSource
 
 from ..config.years import YEAR_RANGES, get_current_season
 from ..utils.api_client import get_client
-from .base import make_request
+from .base import RequestBudgetExhausted, make_request
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,12 @@ class AdvancedBoxBatchReport:
     server_error_game_ids: list[int] = field(default_factory=list)
     probe_game_id: int | None = None
     outage: str | None = None
+    # Set instead of `outage` when the LOCAL request budget
+    # (RequestBudgetExhausted from src.pipelines.sources.base.make_request)
+    # refuses another call: that is a pacing condition, not a CFBD failure,
+    # so the caller stops draining and exits 0 -- same contract as the
+    # ledger month guard in scripts/backfill_refresh.py.
+    budget_stop: str | None = None
 
 
 class AdvancedBoxHealth:
@@ -300,13 +306,17 @@ def advanced_game_stats_resource(
             probe-on-trip, and outage signaling are active: a confirmed outage
             sets report.outage and returns normally so dlt keeps rows yielded
             so far. In report mode NO exception is allowed to escape this
-            generator: a transport failure, rate-limit exhaustion, or any
+            generator: a transport failure, 429 rate-limit exhaustion, or any
             other unrecoverable per-game error also sets report.outage and
             returns, because a raise would abort the dlt load and discard the
             whole batch -- the exact bug (run 39253607809) this report
-            contract exists to fix. The failing game is NOT appended to
-            attempted, so it stays in the backlog and no ledger row is
-            written for a call whose outcome is unknown.
+            contract exists to fix. RequestBudgetExhausted (the LOCAL budget
+            guard) is the one exception that is a pacing condition rather
+            than a failure: it sets report.budget_stop instead of
+            report.outage, so the caller stops draining and exits 0. In every
+            early-stop case the failing game is NOT appended to attempted, so
+            it stays in the backlog and no ledger row is written for a call
+            whose outcome is unknown.
     """
     client = get_client()
     health = _ADVANCED_BOX_HEALTH
@@ -332,24 +342,36 @@ def advanced_game_stats_resource(
             health.clear_window()
             return False
         except httpx.HTTPStatusError as probe_err:
-            if probe_err.response.status_code < 500:
+            status_code = probe_err.response.status_code
+            if status_code in (400, 404):
+                # A request-level rejection of this specific probe id: CFBD
+                # answered, so the API is up and the recent 5xx games are bad
+                # data. 401/403 deliberately do NOT land here (Greptile/Codex
+                # finding on PR #156): rejected credentials mean NO call can
+                # be trusted to succeed, so they fail the run like a 5xx.
                 logger.warning(
                     "Advanced box probe for game %s returned HTTP %s; "
                     "treating CFBD as up (bad data for recent 5xx games)",
                     probe_id,
-                    probe_err.response.status_code,
+                    status_code,
                 )
                 health.clear_window()
                 return False
             server_errors, answered = health.window_counts()
             message = (
                 f"CFBD outage confirmed: probe game {probe_id} returned HTTP "
-                f"{probe_err.response.status_code}; last 5xx game {last_5xx_game_id}; "
+                f"{status_code}; last 5xx game {last_5xx_game_id}; "
                 f"health window {server_errors} server-error(s), {answered} answered"
             )
             logger.error(message)
             if report is not None:
                 report.outage = message
+            return True
+        except RequestBudgetExhausted as probe_err:
+            message = f"local request budget refused the probe call: {probe_err}"
+            logger.warning(message)
+            if report is not None:
+                report.budget_stop = message
             return True
         except Exception as probe_err:
             server_errors, answered = health.window_counts()
@@ -419,6 +441,20 @@ def advanced_game_stats_resource(
                     )
                     logger.error(message)
                     report.outage = message
+                    return
+                raise
+            except RequestBudgetExhausted as e:
+                # Local budget guard, not a CFBD failure (PR #156 review
+                # finding): stop draining gracefully so rows yielded so far
+                # load and the attempted prefix is ledgered, and let the
+                # caller treat it as a pacing stop (exit 0), never an outage.
+                if report is not None:
+                    message = (
+                        f"local request budget refused the call for game {game_id}: {e}; "
+                        "stopping this batch (pacing stop, not an error)"
+                    )
+                    logger.warning(message)
+                    report.budget_stop = message
                     return
                 raise
             except Exception as e:

@@ -21,7 +21,7 @@ name: Daily Season Load
 
 on:
   schedule:
-    - cron: "0 10 * * *" # 10:00 UTC ~ 6:00 AM ET, after all games (incl. Hawaii) complete
+    - cron: "23 9 * * *" # 09:23 UTC ~ 5:23 AM ET, after all games (incl. Hawaii) complete; off-:00 minute to dodge GitHub's busiest scheduler slots
   workflow_dispatch:
     inputs:
       season:

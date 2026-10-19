@@ -2,7 +2,10 @@
 
 Date: 2026-10-19. Status: frozen spec. Revision 2 (owner-approved tolerance
 scope, same date) supersedes the "exactly one failure" rule below -- see the
-"Revision 2" section at the end of this file.
+"Revision 2" section at the end of this file. Revision 3 (owner-approved
+source split, same date) supersedes Revision 2's "stats stays critical so a
+Daily-#98-shaped success timeout still fails" conclusion by moving the flaky
+resource OUT of the stats source -- see the "Revision 3" section.
 
 ## Incident
 
@@ -214,3 +217,80 @@ NON_CRITICAL_SOURCES therefore stays `{"passing", "rushing"}`.
 
 Same ruff/pytest commands as revision 1, plus `actionlint` on
 `.github/workflows/daily-load.yml`.
+
+## Revision 3: split player_success out of the stats source (2026-10-19)
+
+Incident: Daily Season Load #98 (2026-10-19, scheduled). The one
+`/stats/player/success` request for 2026 read-timed-out after all retries.
+Because `player_success_season_resource` shared the `stats` dlt source, the
+whole stats extract was discarded -- advanced_team_stats, player_returning,
+player_season_stats, player_usage, play_stats and the rest -- and the run
+went red with every downstream step skipped. Revision 2 had anticipated
+exactly this shape and accepted it ("stats remains critical"); the owner
+approved removing the shared-extract coupling instead, so the flaky endpoint
+stops reddening the daily load without weakening the critical data.
+
+### Rule
+
+- `player_success_season_resource` moves into its own dlt source,
+  `player_success_source` (`@dlt.source(name="cfbd_player_success")`, still
+  in `src/pipelines/sources/stats.py`), with its own runner
+  `run.py::run_player_success_pipeline` (pipeline `cfbd_player_success`,
+  dataset `stats`) and load unit `player_success` in load_season.py's
+  SOURCE_ORDER, directly after `stats`. The resource function is shared, so
+  the table name (stats.player_success_season), columns, merge disposition,
+  and primary key (season, id, team) are byte-identical: no migration, no DB
+  change, existing rows untouched.
+- `player_success` joins NON_CRITICAL_SOURCES alongside passing/rushing,
+  under the identical Revision 2 machinery: httpx-timeout-only, downgrade
+  strictly opt-in via `--tolerate-aggregate-timeouts` (daily-load.yml's
+  unattended branch only -- no workflow change needed), and the same
+  consecutive-day streak guard (`--tolerated-streak-limit`, default 3),
+  keyed by the new source name in the existing cache-carried state file.
+- `stats` stays CRITICAL, and now a timeout anywhere in its remaining
+  resources fails the run while costing nothing it didn't cost before.
+- `player_success` joins IMMUTABLE_ONCE_FINAL (same policy as stats) and
+  ESTIMATED_CALLS at 1 call/year; the stats estimate drops 1,675 -> 1,674.
+- Wiring parity: SOURCE_ORDER, ESTIMATED_CALLS, IMMUTABLE_ONCE_FINAL,
+  load_season runners, `run.py --source player_success`, active-by-default.
+  `--sources stats:player_success_season` now fails validation naming the
+  valid stats resources (the resource is no longer in that source); the
+  replacement is `--sources player_success`.
+
+### Reader sweep for stats.player_success_season (re-run 2026-10-19)
+
+Grep for `player_success_season` / `player_success` over src/schemas/marts,
+src/schemas/api, src/schemas/public, src/schemas/scouting, mcp/, scripts/,
+src/pipelines/config, flat files, and the recaps path. Hits, exhaustively:
+the pipeline itself (stats.py, endpoints.py, load_season.py estimates),
+tests, docs (pipeline-manifest, handoff, plans), migration 050 and the
+baseline dump (grants, index, column comments), the production catalog
+metadata JSON, and comment cross-references in passing/rushing/overview
+modules citing its PK reasoning. No mart, API view, RPC, scouting relation,
+MCP tool, compute script, flat-file loader, or recap generator reads the
+table. Verdict unchanged from Revision 2: no reader, so the table's own
+load unit is safely non-critical.
+
+### Tests (no live DB, no live CFBD)
+
+- (a) /stats/player/success timeout WITH the flag -> stats source still runs
+  and reports ok, player_success `tolerated`, errors == 0.
+- (b) the same timeout WITHOUT the flag -> `error`, errors == 1.
+- (c) a timeout on a remaining stats endpoint WITH the flag -> stats
+  `error`, run fails (player_success itself ok).
+- (d) Daily #98 shape (success + passing timeouts) WITH the flag -> both
+  `tolerated`, errors == 0.
+- (e) streak guard: primed count 2 with limit 3 -> third day fails and the
+  state records count 3; primed count 1 -> tolerated and state shows 2.
+- (f) split preserves the contract: player_success_source contains exactly
+  player_success_season; stats_source no longer carries it; the union across
+  both sources equals the pre-split resource set; table name, merge
+  disposition, and primary key unchanged.
+- Wiring: SOURCE_ORDER position, ESTIMATED_CALLS, IMMUTABLE_ONCE_FINAL,
+  NON_CRITICAL_SOURCES == {passing, rushing, player_success}, dry-run
+  pricing.
+
+### Verification
+
+Same ruff/pytest commands as revision 1, plus `actionlint` on
+`.github/workflows/daily-load.yml` (unchanged by this revision, re-linted).

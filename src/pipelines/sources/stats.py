@@ -26,7 +26,14 @@ ADVANCED_BOX_PROBE_FALLBACK_GAME_ID = 401836219
 
 @dataclass
 class AdvancedBoxBatchReport:
-    """Per-batch mutable report for the historical-refresh backfill path."""
+    """Per-batch mutable report for the historical-refresh backfill path.
+
+    `outage` is set (and the generator returns early, never raises) when the
+    batch cannot safely continue: a probe-confirmed CFBD outage, a transport
+    failure after the client's retries, rate-limit exhaustion, or any other
+    unrecoverable per-game error. The caller ledgers `attempted` and exits
+    nonzero.
+    """
 
     fallback_probe_game_id: int | None = None
     attempted: list[int] = field(default_factory=list)
@@ -292,7 +299,14 @@ def advanced_game_stats_resource(
             report). When report is set (the backfill path), health tracking,
             probe-on-trip, and outage signaling are active: a confirmed outage
             sets report.outage and returns normally so dlt keeps rows yielded
-            so far.
+            so far. In report mode NO exception is allowed to escape this
+            generator: a transport failure, rate-limit exhaustion, or any
+            other unrecoverable per-game error also sets report.outage and
+            returns, because a raise would abort the dlt load and discard the
+            whole batch -- the exact bug (run 39253607809) this report
+            contract exists to fix. The failing game is NOT appended to
+            attempted, so it stays in the backlog and no ledger row is
+            written for a call whose outcome is unknown.
     """
     client = get_client()
     health = _ADVANCED_BOX_HEALTH
@@ -397,6 +411,30 @@ def advanced_game_stats_resource(
                         if health.should_probe() and _run_outage_probe(game_id):
                             return
                     continue
+                if report is not None:
+                    message = (
+                        f"advanced box call for game {game_id} failed unrecoverably "
+                        f"(HTTP {e.response.status_code}); stopping this batch so rows "
+                        "loaded so far are kept and ledgered"
+                    )
+                    logger.error(message)
+                    report.outage = message
+                    return
+                raise
+            except Exception as e:
+                # Report mode only: a transport failure or rate-limit
+                # exhaustion that survived the client's retries means CFBD is
+                # unreachable -- same outage handling as a probe failure, and
+                # raising here would discard the batch's loaded rows.
+                if report is not None:
+                    message = (
+                        f"advanced box call for game {game_id} failed unrecoverably "
+                        f"({e!r}); stopping this batch so rows loaded so far are "
+                        "kept and ledgered"
+                    )
+                    logger.error(message)
+                    report.outage = message
+                    return
                 raise
         logger.info(f"Loaded {total} total records from {len(game_ids)} games")
 

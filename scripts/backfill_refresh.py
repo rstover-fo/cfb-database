@@ -61,8 +61,11 @@ Mechanics:
     bad-data clusters from a real CFBD outage: a confirmed outage stops the
     batch gracefully (rows yielded so far still load and ledger), then the
     run exits 1 so the workflow's failure-issue step fires. Probe calls are
-    not ledgered and are not counted by the month guard (bounded at one per
-    ten drained games worst case).
+    not ledgered and are not counted by the month guard; the window is
+    cleared after a healthy probe, so the worst case (a dense all-bad
+    cluster with zero interleaved successes) is one probe per 5 drained
+    games -- up to 20% on top of --max-calls, spent only while every recent
+    call is failing.
     plays_stats' empty-200 is NOT a miss -- zero player-stat associations is
     a legitimate outcome for early-era/lower-division games; see
     play_stats_resource's docstring.

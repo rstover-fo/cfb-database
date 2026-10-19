@@ -60,7 +60,8 @@ so the trip only decides when to spend ONE extra confirmation call. A window
 with any answered game never trips — the Oct 19 pattern (two 500s, five
 200s, four 500s) drains without even probing, recording the 500 games as
 `no_data`. A dense bad-data cluster with zero interleaved successes probes
-at most once per 10 games. A real outage (every call 5xx) is confirmed
+at most once per 5 games (the window is cleared after a healthy probe and
+must refill to the trip count). A real outage (every call 5xx) is confirmed
 within at most 10 games of the last success — and each counted 5xx already
 survived the client's full 7-attempt transient budget, so that is dozens of
 consecutive failed HTTP exchanges, not bad luck.
@@ -111,6 +112,14 @@ class AdvancedBoxBatchReport:
     counts; log an error; `return` from the generator — do NOT raise.
     Returning normally lets dlt load every row yielded so far, which is
     what fixes bug (a).
+- In report mode, NO exception may escape the generator at all (review
+  finding, 2026-10-19): a transport failure, rate-limit exhaustion, or a
+  non-400 4xx on a REGULAR game call also sets `report.outage` and
+  returns — a raise there would abort the dlt load and lose the batch
+  exactly like bug (a), and a timeout-shaped outage would otherwise never
+  reach the probe. The failing game is not appended to `attempted` (its
+  outcome is unknown), so it stays in the backlog. Plain mode and
+  misses-only mode keep raising.
 
 ### 3. `scripts/backfill_refresh.py`: save on every exit path, partial status
 
@@ -153,7 +162,9 @@ class AdvancedBoxBatchReport:
     not a traceback — observable behavior (red run, failure-issue step)
     unchanged.
 - Probe calls are not ledgered and so not counted by the month guard;
-  bounded at one per 10 drained games worst case — note this in a comment.
+  because a healthy probe clears the window, the worst case is one probe
+  per 5 drained games (a dense all-bad cluster with no interleaved
+  successes) — note this in a comment.
 - Update the module docstring's 5xx paragraph to the new design.
 
 ### 4. `.github/workflows/historical-refresh.yml`

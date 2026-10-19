@@ -408,8 +408,13 @@ class TestAdvancedBoxHealth:
             health.record_server_error(gid)
         health.record_answered(99, has_data=True)
         assert health.should_probe() is False
-        health.record_server_error(5)
-        assert health.should_probe() is False
+        # The answered entry stays in the 5-slot window for the next 4
+        # errors; the 5th slides it out and the window is all-error again.
+        for gid in range(5, 9):
+            health.record_server_error(gid)
+            assert health.should_probe() is False
+        health.record_server_error(9)
+        assert health.should_probe() is True
 
     def test_clear_window_after_probe(self):
         from src.pipelines.sources.stats import AdvancedBoxHealth
@@ -626,6 +631,88 @@ class TestAdvancedGameStatsHealthAndProbe:
             )
 
         assert report.outage is None
+
+    def test_transport_error_in_report_mode_stops_gracefully(self):
+        """Review finding 2026-10-19: a timeout-shaped outage (transport
+        error after the client's retries) must not escape the generator --
+        a raise would abort the dlt load and lose the batch's rows, the
+        original run-39253607809 bug via a different exception type."""
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [
+                [{"gameId": 1, "team": "A"}],
+                httpx.ConnectError("boom"),
+                AssertionError("game 3 must never be requested"),
+            ]
+
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport()
+            results = list(
+                advanced_game_stats_resource(game_ids=[1, 2, 3], misses=misses, report=report)
+            )
+
+        assert results == [{"gameId": 1, "team": "A"}]
+        assert report.outage is not None
+        assert "game 2" in report.outage
+        # The failing game's outcome is unknown: not attempted, not a miss,
+        # so it stays in the backlog with no ledger row.
+        assert report.attempted == [1]
+        assert misses == []
+
+    def test_unhandled_4xx_in_report_mode_stops_gracefully(self):
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [
+                [{"gameId": 1, "team": "A"}],
+                _http_error(401),
+            ]
+
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport()
+            results = list(
+                advanced_game_stats_resource(game_ids=[1, 2], misses=misses, report=report)
+            )
+
+        assert results == [{"gameId": 1, "team": "A"}]
+        assert report.outage is not None
+        assert "401" in report.outage
+        assert report.attempted == [1]
+        assert misses == []
+
+    def test_transport_error_without_report_still_raises(self):
+        """misses-only and plain callers keep the raising contract -- the
+        graceful stop is exclusively the backfill report path's."""
+        from dlt.extract.exceptions import ResourceExtractionError
+
+        from src.pipelines.sources.stats import advanced_game_stats_resource
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = httpx.ConnectError("boom")
+
+            with pytest.raises(ResourceExtractionError) as exc_info:
+                list(advanced_game_stats_resource(game_ids=[1], misses=[]))
+
+            assert isinstance(exc_info.value.__cause__, httpx.ConnectError)
 
     def test_cross_batch_window_shared_across_invocations(self):
         from src.pipelines.sources.stats import (

@@ -400,6 +400,36 @@ repo secret `SUPABASE_DB_URL` only. `.github/workflows/live-scoreboard.yml` sepa
 CFBD's `/scoreboard` every 5 minutes on Saturdays (games-today guard) to feed
 `live.scoreboard_snapshots` and the house live win-probability model.
 
+## Tolerated season-aggregate timeouts (daily load)
+
+The unattended daily load may pass `--tolerate-aggregate-timeouts` to
+`scripts/load_season.py` (strictly opt-in; off by default). Backfills,
+`historical-refresh`, `backfill-sources`, manual CLI runs, and a
+`daily-load.yml` dispatch with an explicit `season` input do **not** pass the
+flag, so they keep today's strict failure behavior.
+
+When the flag is on, failed sources that timed out after retries on a
+**non-critical** season-aggregate extract may be recorded as `tolerated`
+instead of failing the run, so downstream daily steps still run. The
+non-critical set is `{passing, rushing}` only; evidence and consumer sweep
+are in `docs/plans/2026-10-19-tolerate-season-aggregate-timeout-plan.md`
+(Revision 2 table). Any critical-source failure, any non-timeout error, or any
+mix of tolerable and non-tolerable failures still fails the run. A `partial`
+mart refresh still fails the run regardless of tolerated sources.
+
+**Repeat-miss guard:** `--tolerated-streak-limit` defaults to `3` (two
+consecutive tolerated days pass; the third fails). State is a small JSON file
+at the path in `TOLERATED_STREAK_FILE`, carried between runs by
+`actions/cache/restore` / `actions/cache/save` on `.tolerated-streaks.json` in
+`daily-load.yml`. Cache eviction or manual cache deletion resets a streak;
+that is accepted for this prototype (no database table or migration).
+
+**Operator response:** a run-summary **WARN** for a tolerated non-critical
+timeout needs no action — merge self-heals on the next successful pull. A
+streak-limit **failure** means investigate CFBD health and re-pull the missed
+charting source, e.g. `python scripts/load_season.py --sources passing` or
+`--sources rushing` for the affected season.
+
 ### SQL refresh dependency planning (2026-09-08)
 
 The Python refresher now uses the checked SQL registry described in the

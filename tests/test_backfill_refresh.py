@@ -25,11 +25,13 @@ from scripts.backfill_refresh import (
     build_ledger_values,
     compute_task_backlog,
     eta_run_days,
+    fetch_last_refreshed_game_id,
     finalize_campaign,
     is_campaign_complete,
     parse_seasons,
     parse_tasks,
     plan_batches,
+    report_partial_bad_data,
     resolve_task_order,
     run_batch,
     should_mark_complete,
@@ -399,15 +401,16 @@ class TestRunBatch:
     def test_returns_info_and_forwards_misses(self, monkeypatch):
         """run_batch must (1) create a fresh `misses` list, (2) pass it as
         `misses=` to the task's resource function, and (3) return
-        (load_info, misses) so the caller can route it into
+        (load_info, misses, report) so the caller can route it into
         insert_ledger_rows."""
         from scripts import backfill_refresh
 
         captured_kwargs = {}
 
-        def fake_resource(game_ids, *, misses=None):
+        def fake_resource(game_ids, *, misses=None, report=None):
             captured_kwargs["game_ids"] = game_ids
             captured_kwargs["misses"] = misses
+            captured_kwargs["report"] = report
             if misses is not None:
                 misses.append(game_ids[0])  # simulate one suppressed 400
             return iter(["row"])
@@ -419,12 +422,39 @@ class TestRunBatch:
 
         monkeypatch.setattr(backfill_refresh, "TASK_RESOURCES", {"plays_stats": fake_resource})
 
-        info, misses = run_batch(FakePipeline(), "plays_stats", [10, 20])
+        info, misses, report = run_batch(FakePipeline(), "plays_stats", [10, 20])
 
         assert captured_kwargs["game_ids"] == [10, 20]
         assert captured_kwargs["misses"] is misses
+        assert captured_kwargs["report"] is None
+        assert report is None
         assert misses == [10]
         assert info == {"loaded": ["row"]}
+
+    def test_box_advanced_forwards_fallback_probe_game_id(self, monkeypatch):
+        from scripts import backfill_refresh
+        from src.pipelines.sources.stats import AdvancedBoxBatchReport
+
+        captured = {}
+
+        def fake_resource(game_ids, *, misses=None, report=None):
+            captured["report"] = report
+            return iter([])
+
+        class FakePipeline:
+            def run(self, source):
+                list(source)
+                return {"loaded": []}
+
+        monkeypatch.setattr(backfill_refresh, "TASK_RESOURCES", {"box_advanced": fake_resource})
+
+        _info, _misses, report = run_batch(
+            FakePipeline(), "box_advanced", [1, 2], fallback_probe_game_id=401836219
+        )
+
+        assert isinstance(report, AdvancedBoxBatchReport)
+        assert report.fallback_probe_game_id == 401836219
+        assert captured["report"] is report
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +496,9 @@ class _FakeConn:
 
     def commit(self):
         self.commits += 1
+
+    def close(self):
+        return None
 
 
 class TestUnfinalizedSeasonsQueryShape:
@@ -624,3 +657,242 @@ class TestRequeueNoData:
         assert "campaign = %s" in _REQUEUE_NO_DATA_SQL
         assert _REQUEUE_NO_DATA_SQL_WITH_TASKS.startswith(_REQUEUE_NO_DATA_SQL)
         assert "task = ANY(%s)" in _REQUEUE_NO_DATA_SQL_WITH_TASKS
+
+
+class TestFetchLastRefreshedGameId:
+    def test_query_shape_and_returns_int(self):
+        from scripts.backfill_refresh import _LAST_REFRESHED_GAME_QUERY
+
+        assert "status = 'refreshed'" in _LAST_REFRESHED_GAME_QUERY
+        assert "ORDER BY refreshed_at DESC" in _LAST_REFRESHED_GAME_QUERY
+        assert "LIMIT 1" in _LAST_REFRESHED_GAME_QUERY
+
+        conn = _FakeConn(rows=[(401836219,)])
+        gid = fetch_last_refreshed_game_id(conn, "camp-1", "box_advanced")
+        assert gid == 401836219
+        sql, params = conn.cursors[0].executed[0]
+        assert params == ("camp-1", "box_advanced")
+
+    def test_empty_returns_none(self):
+        conn = _FakeConn(rows=[])
+        assert fetch_last_refreshed_game_id(conn, "camp-1", "box_advanced") is None
+
+
+class TestReportPartialBadData:
+    def test_writes_warning_output_and_summary(self, tmp_path, monkeypatch, capsys):
+        out_file = tmp_path / "github_output"
+        summary_file = tmp_path / "summary.md"
+        monkeypatch.setenv("GITHUB_OUTPUT", str(out_file))
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary_file))
+
+        report_partial_bad_data({"status": "ok", "bad_data_game_ids": [10, 20]})
+
+        captured = capsys.readouterr()
+        assert "::warning::" in captured.out
+        assert "10,20" in captured.out
+        assert out_file.read_text(encoding="utf-8") == (
+            "partial_bad_data=true\nbad_data_count=2\nbad_data_game_ids=10,20\n"
+        )
+        assert "Partial bad data" in summary_file.read_text(encoding="utf-8")
+
+    def test_silent_when_ids_empty_or_exit_one(self, tmp_path, monkeypatch, capsys):
+        out_file = tmp_path / "github_output"
+        monkeypatch.setenv("GITHUB_OUTPUT", str(out_file))
+
+        report_partial_bad_data({"status": "ok", "bad_data_game_ids": []})
+        report_partial_bad_data({"status": "outage", "bad_data_game_ids": [1]})
+
+        assert capsys.readouterr().out == ""
+        assert not out_file.exists()
+
+
+class TestRunCampaignOutageAndBadData:
+    def test_outage_mid_batch_ledgers_attempted_prefix(self, monkeypatch):
+        from scripts import backfill_refresh
+
+        ledger_calls = []
+
+        def fake_run_batch(pipeline, task, game_ids, *, fallback_probe_game_id=None):
+            from src.pipelines.sources.stats import AdvancedBoxBatchReport
+
+            if task == "box_advanced":
+                report = AdvancedBoxBatchReport(
+                    attempted=game_ids[:2],
+                    server_error_game_ids=[game_ids[1]],
+                    outage="CFBD down",
+                )
+                return {"ok": True}, [game_ids[1]], report
+            return {"ok": True}, [], None
+
+        monkeypatch.setattr(backfill_refresh, "run_batch", fake_run_batch)
+        monkeypatch.setattr(
+            backfill_refresh,
+            "insert_ledger_rows",
+            lambda conn, campaign, task, game_ids, misses=(): ledger_calls.append(
+                (task, list(game_ids), list(misses))
+            ),
+        )
+        monkeypatch.setattr(backfill_refresh, "get_month_spend", lambda conn: 0)
+        monkeypatch.setattr(backfill_refresh, "fetch_last_refreshed_game_id", lambda *a: None)
+        monkeypatch.setattr(
+            backfill_refresh, "fetch_unfinalized", lambda conn, campaign: ([], None)
+        )
+
+        class Limiter:
+            def check_budget(self, n):
+                return True
+
+        monkeypatch.setattr("src.pipelines.utils.rate_limiter.get_rate_limiter", lambda: Limiter())
+
+        row = {
+            "campaign": "camp-1",
+            "description": None,
+            "seasons": [2024],
+            "tasks": ["box_advanced"],
+            "created_at": None,
+            "completed_at": None,
+            "last_finalized_at": None,
+        }
+        monkeypatch.setattr(backfill_refresh, "get_or_create_campaign", lambda *a, **k: row)
+        monkeypatch.setattr(
+            backfill_refresh,
+            "fetch_candidate_games",
+            lambda conn, seasons: [(1, 2024, 1), (2, 2024, 1), (3, 2024, 1)],
+        )
+        monkeypatch.setattr(backfill_refresh, "fetch_done_ids", lambda conn, campaign, task: set())
+        monkeypatch.setattr(backfill_refresh, "build_stats_pipeline", lambda: object())
+
+        result = backfill_refresh.run_campaign(
+            object(),
+            "camp-1",
+            tasks_spec="box_advanced",
+            seasons_spec="2024",
+            max_calls=10,
+            batch_size=2,
+        )
+
+        assert result["status"] == "outage"
+        assert len(ledger_calls) == 1
+        task, attempted, misses = ledger_calls[0]
+        assert task == "box_advanced"
+        assert attempted == [3, 2]
+        assert misses == [2]
+        assert result["bad_data_game_ids"] == [2]
+
+    def test_bad_data_run_populates_ids_and_exits_ok_path(self, monkeypatch):
+        from scripts import backfill_refresh
+        from src.pipelines.sources.stats import AdvancedBoxBatchReport
+
+        batches_run = []
+
+        def fake_run_batch(pipeline, task, game_ids, *, fallback_probe_game_id=None):
+            batches_run.append(list(game_ids))
+            report = AdvancedBoxBatchReport(
+                attempted=game_ids,
+                server_error_game_ids=[game_ids[0]],
+            )
+            return {"ok": True}, [game_ids[0]], report
+
+        monkeypatch.setattr(backfill_refresh, "run_batch", fake_run_batch)
+        monkeypatch.setattr(backfill_refresh, "insert_ledger_rows", lambda *a, **k: None)
+        monkeypatch.setattr(backfill_refresh, "get_month_spend", lambda conn: 0)
+        monkeypatch.setattr(backfill_refresh, "fetch_last_refreshed_game_id", lambda *a: None)
+        monkeypatch.setattr(
+            backfill_refresh, "fetch_unfinalized", lambda conn, campaign: ([], None)
+        )
+
+        class Limiter:
+            def check_budget(self, n):
+                return True
+
+        monkeypatch.setattr("src.pipelines.utils.rate_limiter.get_rate_limiter", lambda: Limiter())
+
+        row = {
+            "campaign": "camp-1",
+            "description": None,
+            "seasons": [2024],
+            "tasks": ["box_advanced"],
+            "created_at": None,
+            "completed_at": None,
+            "last_finalized_at": None,
+        }
+        monkeypatch.setattr(backfill_refresh, "get_or_create_campaign", lambda *a, **k: row)
+        monkeypatch.setattr(
+            backfill_refresh,
+            "fetch_candidate_games",
+            lambda conn, seasons: [(10, 2024, 1), (20, 2024, 1)],
+        )
+        monkeypatch.setattr(backfill_refresh, "fetch_done_ids", lambda conn, campaign, task: set())
+        monkeypatch.setattr(backfill_refresh, "build_stats_pipeline", lambda: object())
+
+        result = backfill_refresh.run_campaign(
+            object(),
+            "camp-1",
+            tasks_spec="box_advanced",
+            seasons_spec="2024",
+            max_calls=10,
+            batch_size=1,
+        )
+
+        assert result["status"] == "ok"
+        assert result["bad_data_game_ids"] == [20, 10]
+        assert batches_run == [[20], [10]]
+
+
+def test_main_exit_code_maps_outage(monkeypatch):
+    import psycopg2
+
+    from scripts import backfill_refresh
+
+    exits = []
+
+    def fake_exit(code):
+        exits.append(code)
+        raise SystemExit(code)
+
+    monkeypatch.setattr(backfill_refresh.sys, "exit", fake_exit)
+    monkeypatch.setattr(
+        backfill_refresh,
+        "run_campaign",
+        lambda *a, **k: {"status": "outage", "bad_data_game_ids": [1]},
+    )
+    monkeypatch.setattr(backfill_refresh, "get_db_url", lambda: "postgresql://local/test")
+    monkeypatch.setattr(psycopg2, "connect", lambda url: _FakeConn(rows=[]))
+
+    class Op:
+        outcome = None
+
+    class Ctx:
+        def __enter__(self):
+            return Op()
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        "src.pipelines.utils.quota_admission.quota_operation", lambda *a, **k: Ctx()
+    )
+
+    class Args:
+        requeue_no_data = False
+        status = False
+        dry_run = False
+        campaign = "c"
+        create = False
+        seasons = None
+        tasks = "plays_stats,box_advanced"
+        max_calls = 1000
+        monthly_cap = 30000
+        batch_size = 50
+        description = None
+
+    class Parser:
+        def parse_args(self):
+            return Args()
+
+    monkeypatch.setattr(backfill_refresh, "create_parser", lambda: Parser())
+
+    with pytest.raises(SystemExit):
+        backfill_refresh.main()
+
+    assert exits == [1]

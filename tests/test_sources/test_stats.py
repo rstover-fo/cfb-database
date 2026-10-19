@@ -184,7 +184,7 @@ class TestStatsSourceResourceComposition:
         source = stats_source(years=[2024])
 
         names = set(source.resources.keys())
-        assert {"player_success_season", "player_success_game", "game_advanced"} <= names
+        assert {"player_success_game", "game_advanced"} <= names
 
     def test_advanced_game_stats_is_not_in_the_default_return(self):
         """R1: /game/box/advanced dropped its `year` param and always 400s
@@ -200,6 +200,71 @@ class TestStatsSourceResourceComposition:
         from src.pipelines.sources.stats import advanced_game_stats_resource
 
         assert callable(advanced_game_stats_resource)
+
+
+class TestPlayerSuccessSourceSplit:
+    """2026-10-19 (Daily Season Load #98): a timeout on /stats/player/success
+    failed the whole stats source and discarded the already-fetched
+    advanced_team_stats / player_returning / player_season_stats /
+    player_usage extracts -- a dlt source failure discards every sibling
+    resource. The season resource now ships in its own source
+    (player_success_source) so its failure cannot touch the critical stats
+    siblings."""
+
+    def test_player_success_source_contains_only_the_season_resource(self):
+        from src.pipelines.sources.stats import player_success_source
+
+        source = player_success_source(years=[2024])
+
+        assert set(source.resources.keys()) == {"player_success_season"}
+
+    def test_stats_source_no_longer_carries_player_success_season(self):
+        """The isolation guarantee: with the resource outside stats_source,
+        a /stats/player/success failure structurally cannot discard the
+        stats extract."""
+        from src.pipelines.sources.stats import stats_source
+
+        source = stats_source(years=[2024])
+
+        assert "player_success_season" not in set(source.resources.keys())
+
+    def test_split_preserves_the_pre_split_resource_set(self):
+        """The union across both sources is exactly the pre-split
+        stats_source list -- no resource gained, lost, or duplicated, so a
+        caller loading both sources still loads everything."""
+        from src.pipelines.sources.stats import player_success_source, stats_source
+
+        stats_names = set(stats_source(years=[2024]).resources.keys())
+        success_names = set(player_success_source(years=[2024]).resources.keys())
+
+        assert stats_names & success_names == set()
+        assert stats_names | success_names == {
+            "team_season_stats",
+            "player_season_stats",
+            "advanced_team_stats",
+            "player_usage",
+            "player_returning",
+            "play_stats",
+            "game_havoc",
+            "player_success_season",
+            "player_success_game",
+            "game_advanced",
+        }
+
+    def test_table_name_schema_and_pk_are_unchanged(self):
+        """Proof (f): the split reuses the same resource function, so the
+        table name, merge disposition, and primary key are byte-identical to
+        the pre-split load -- no DB change, existing rows untouched."""
+        from src.pipelines.sources.stats import player_success_source
+
+        source = player_success_source(years=[2024])
+        resource = source.resources["player_success_season"]
+
+        assert resource.write_disposition == "merge"
+        schema = resource.compute_table_schema()
+        assert schema["name"] == "player_success_season"
+        pk_columns = {name for name, col in schema["columns"].items() if col.get("primary_key")}
+        assert pk_columns == {"season", "id", "team"}
 
 
 class TestAdvancedGameStatsResourceGameIdsMode:

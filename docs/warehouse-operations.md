@@ -332,7 +332,7 @@ path and current audit findings before relying on a statement below.
 
 ### Daily Automation
 
-`.github/workflows/daily-load.yml` runs daily at 09:23 UTC from `main`: loads the
+`.github/workflows/daily-load.yml` runs daily at 10:00 UTC from `main`: loads the
 current season (`scripts/load_season.py --weekly`, mart refresh included), refits house
 Elo/adjusted EPA (including the as-of weekly EPA build), refits fitted_v1 when it is stale
 (`train_model.py --refit-if-stale`, a no-op on all but one day a year) and writes the

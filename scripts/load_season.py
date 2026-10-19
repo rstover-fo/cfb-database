@@ -14,10 +14,12 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import os
 import sys
 import time
+from datetime import UTC, datetime
 
 import httpx
 
@@ -384,28 +386,124 @@ def _exception_has_timeout(error: BaseException) -> bool:
     return False
 
 
-def downgrade_tolerated_timeout(results: dict) -> str | None:
-    """Downgrade a lone non-critical timeout to status "tolerated", or no-op.
+TOLERATED_STREAK_STATE_VERSION = 1
 
-    Exactly one failed source overall (any results key), that source is in
-    NON_CRITICAL_SOURCES, and failure was a timeout after retries: set
-    status to "tolerated" so the run can exit 0 and downstream steps run.
-    Two or more failures, or any critical failure, leaves results unchanged.
+
+def _empty_tolerated_streak_state() -> dict:
+    return {"version": TOLERATED_STREAK_STATE_VERSION, "streaks": {}}
+
+
+def _utc_today_str() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%d")
+
+
+def load_tolerated_streak_state(path: str | None) -> dict:
+    """Load streak JSON from path, or an empty in-memory state when path is unset."""
+    if not path:
+        return _empty_tolerated_streak_state()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict) or data.get("version") != TOLERATED_STREAK_STATE_VERSION:
+            raise ValueError("unsupported tolerated streak state version")
+        streaks = data.get("streaks")
+        if not isinstance(streaks, dict):
+            raise ValueError("invalid streaks object")
+        return data
+    except (OSError, json.JSONDecodeError, ValueError, TypeError) as e:
+        logger.warning(
+            "Could not load tolerated streak state from %s (%s); starting empty", path, e
+        )
+        return _empty_tolerated_streak_state()
+
+
+def save_tolerated_streak_state(path: str | None, state: dict) -> None:
+    if not path:
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(state, fh, indent=2)
+            fh.write("\n")
+    except OSError as e:
+        logger.warning("Could not persist tolerated streak state to %s (%s); continuing", path, e)
+
+
+def update_tolerated_streaks(state: dict, results: dict, today: str) -> None:
+    """Increment streaks for tolerable timeouts; clear entries for sources that loaded OK."""
+    streaks = state.setdefault("streaks", {})
+    for name, res in results.items():
+        if name.startswith("_"):
+            continue
+        if res.get("status") == "ok":
+            streaks.pop(name, None)
+        elif res.get("status") == "error" and res.get("tolerable_timeout"):
+            entry = streaks.setdefault(name, {"count": 0, "last_date": ""})
+            if entry.get("last_date") != today:
+                entry["count"] = int(entry.get("count", 0)) + 1
+                entry["last_date"] = today
+
+
+def apply_aggregate_timeout_tolerance(
+    results: dict,
+    *,
+    tolerate_aggregate_timeouts: bool,
+    tolerated_streak_limit: int,
+    streak_state: dict,
+    today: str,
+) -> tuple[list[str], list[str]]:
+    """Apply revision-2 opt-in tolerance; mutates results and streak_state.
+
+    Returns (tolerated_source_names, vetoed_source_names). Without
+    tolerate_aggregate_timeouts every list is empty and results are unchanged.
     """
+    if not tolerate_aggregate_timeouts:
+        return [], []
+
+    update_tolerated_streaks(streak_state, results, today)
+
     failures = [(name, res) for name, res in results.items() if res.get("status") == "error"]
-    if len(failures) != 1:
-        return None
-    name, res = failures[0]
-    if name not in NON_CRITICAL_SOURCES or not res.get("tolerable_timeout"):
-        return None
-    res["status"] = "tolerated"
-    return name
+    candidates = [(name, res) for name, res in failures if res.get("tolerable_timeout")]
+    if not candidates or len(candidates) != len(failures):
+        return [], []
+
+    streaks = streak_state.get("streaks", {})
+    vetoed = [
+        name
+        for name, _ in candidates
+        if int(streaks.get(name, {}).get("count", 0)) >= tolerated_streak_limit
+    ]
+    if vetoed:
+        for name in vetoed:
+            entry = streaks[name]
+            logger.error(
+                "Tolerated-timeout streak limit reached for source %s: %s consecutive "
+                "tolerated day(s) (limit %s); failing the run",
+                name,
+                entry.get("count"),
+                tolerated_streak_limit,
+            )
+        _append_github_step_summary_streak_failure(vetoed, streaks, tolerated_streak_limit)
+        return [], vetoed
+
+    for name, res in candidates:
+        res["status"] = "tolerated"
+    return [name for name, _ in candidates], []
 
 
-def _append_github_step_summary_warning(source: str) -> None:
+def _append_github_step_summary_warning(
+    tolerated: list[str], streaks: dict, streak_limit: int
+) -> None:
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not path:
         return
+    lines = [
+        "\n### Warning: non-critical timeout(s)\n",
+        "The following source(s) timed out after retries. Charting data merges on "
+        "the next successful run; downstream steps continued.\n",
+    ]
+    for name in tolerated:
+        count = int(streaks.get(name, {}).get("count", 0))
+        lines.append(f"- `{name}`: consecutive tolerated day {count} of {streak_limit}\n")
     # Best-effort decoration only (Greptile review on PR #155): the whole point
     # of a tolerated downgrade is that the run continues, so a broken summary
     # file must not crash load_season() before the mart refresh runs. The
@@ -413,13 +511,28 @@ def _append_github_step_summary_warning(source: str) -> None:
     # cheaper failure.
     try:
         with open(path, "a", encoding="utf-8") as fh:
-            fh.write(
-                f"\n### Warning: non-critical timeout\n\n"
-                f"Source `{source}` timed out after retries. Charting data merges on "
-                f"the next successful run; downstream steps continued.\n"
-            )
+            fh.write("".join(lines))
     except OSError as e:
         logger.warning("Could not write GITHUB_STEP_SUMMARY warning (%s); continuing", e)
+
+
+def _append_github_step_summary_streak_failure(
+    vetoed: list[str], streaks: dict, streak_limit: int
+) -> None:
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    lines = ["\n### Failure: tolerated-timeout streak limit\n"]
+    for name in vetoed:
+        count = int(streaks.get(name, {}).get("count", 0))
+        lines.append(
+            f"- `{name}` reached {count} consecutive tolerated day(s) (limit {streak_limit})\n"
+        )
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("".join(lines))
+    except OSError as e:
+        logger.warning("Could not write GITHUB_STEP_SUMMARY failure (%s); continuing", e)
 
 
 def _count_failures(results: dict) -> int:
@@ -453,6 +566,8 @@ def load_season(
     weekly: bool = False,
     upcoming_schedule: int | None = None,
     allow_skip_final: bool = False,
+    tolerate_aggregate_timeouts: bool = False,
+    tolerated_streak_limit: int = 3,
 ) -> dict:
     """Load or refresh all data for a given season.
 
@@ -724,14 +839,34 @@ def load_season(
                 results[name] = _failure_result(e, elapsed)
                 logger.error(f"  {name} failed after {elapsed:.1f}s: {e}")
 
-    tolerated_source = downgrade_tolerated_timeout(results)
-    if tolerated_source is not None:
+    # Revision 2 (owner-approved): downgrade is strictly opt-in via
+    # --tolerate-aggregate-timeouts so backfills and manual runs stay strict;
+    # only daily-load.yml passes the flag on its unattended branch. Streak
+    # state is a deliberate prototype in TOLERATED_STREAK_FILE (GitHub Actions
+    # cache) with no DB writes; cache eviction resets a streak and is accepted.
+    streak_path = os.environ.get("TOLERATED_STREAK_FILE")
+    # Manual --tolerate-aggregate-timeouts without TOLERATED_STREAK_FILE has no
+    # durable streak: the guard runs against empty in-memory state.
+    streak_state = load_tolerated_streak_state(streak_path if tolerate_aggregate_timeouts else None)
+    today = _utc_today_str()
+    tolerated_names, _vetoed = apply_aggregate_timeout_tolerance(
+        results,
+        tolerate_aggregate_timeouts=tolerate_aggregate_timeouts,
+        tolerated_streak_limit=tolerated_streak_limit,
+        streak_state=streak_state,
+        today=today,
+    )
+    if tolerate_aggregate_timeouts and streak_path:
+        save_tolerated_streak_state(streak_path, streak_state)
+    if tolerated_names:
         logger.warning(
-            "Tolerating non-critical timeout for source %s: charting data will merge "
-            "on the next successful run; continuing with downstream steps.",
-            tolerated_source,
+            "Tolerating non-critical timeout(s) for source(s) %s: charting data will "
+            "merge on the next successful run; continuing with downstream steps.",
+            ", ".join(tolerated_names),
         )
-        _append_github_step_summary_warning(tolerated_source)
+        _append_github_step_summary_warning(
+            tolerated_names, streak_state.get("streaks", {}), tolerated_streak_limit
+        )
 
     # Refresh marts
     if not skip_refresh:
@@ -820,6 +955,17 @@ def main() -> None:
         action="store_true",
         help="Load game_stats week-by-week (~35K rows per merge) to avoid timeouts",
     )
+    parser.add_argument(
+        "--tolerate-aggregate-timeouts",
+        action="store_true",
+        help="Downgrade non-critical season-aggregate timeouts to tolerated (daily load only)",
+    )
+    parser.add_argument(
+        "--tolerated-streak-limit",
+        type=int,
+        default=3,
+        help="Consecutive tolerated daily runs per source before failing (default: 3)",
+    )
     args = parser.parse_args()
 
     season = args.season
@@ -855,6 +1001,8 @@ def main() -> None:
             weekly=args.weekly,
             upcoming_schedule=upcoming,
             allow_skip_final=allow_skip_final,
+            tolerate_aggregate_timeouts=args.tolerate_aggregate_timeouts,
+            tolerated_streak_limit=args.tolerated_streak_limit,
         )
         if operation and (summary.get("error") or summary.get("errors", 0)):
             operation.outcome = "failed"

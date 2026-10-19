@@ -62,6 +62,16 @@ jobs:
       - name: Set dlt destination credentials
         # dlt requires the postgres:// scheme (see .dlt/secrets.toml.example)
         run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
+      # Prototype tolerated-timeout streak state (revision 2): restore the most
+      # recent prior run's JSON via restore-keys prefix match. Cache eviction
+      # (~7 days unused) resets a streak; that limitation is accepted.
+      - name: Restore tolerated-timeout streak state
+        uses: actions/cache/restore@v4
+        with:
+          path: .tolerated-streaks.json
+          key: cfbd-tolerated-streaks-${{ github.run_id }}
+          restore-keys: |
+            cfbd-tolerated-streaks-
       - name: Load season data (includes mart refresh)
         # Hardening (PR #75 review finding C): route the workflow_dispatch
         # `season` input through a step-level env: var (probe-endpoints.yml's
@@ -71,12 +81,19 @@ jobs:
         # empty on a schedule fire, same as before.
         env:
           SEASON_INPUT: ${{ inputs.season }}
+          TOLERATED_STREAK_FILE: ${{ github.workspace }}/.tolerated-streaks.json
         run: |
           if [ -n "$SEASON_INPUT" ]; then
             python scripts/load_season.py --season "$SEASON_INPUT" --weekly
           else
-            python scripts/load_season.py --weekly
+            python scripts/load_season.py --weekly --tolerate-aggregate-timeouts
           fi
+      - name: Save tolerated-timeout streak state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .tolerated-streaks.json
+          key: cfbd-tolerated-streaks-${{ github.run_id }}
       - name: Update house Elo
         run: python scripts/compute_house_elo.py --incremental
       - name: Refit adjusted EPA

@@ -19,6 +19,8 @@ import os
 import sys
 import time
 
+import httpx
+
 from src.pipelines.season_lifecycle import season_is_final
 from src.pipelines.utils.request_outcomes import request_failure_summary
 
@@ -293,6 +295,14 @@ RESOURCE_FILTERABLE = frozenset({"stats"})
 # asked for exactly the right data under the name the warehouse shows them.
 RESOURCE_ALIASES = {"stats": {"returning_production": "player_returning"}}
 
+# Non-critical for daily-run exit status: stats.passing_* and stats.rushing_* feed
+# only charting marts (marts.passing_charting_*, marts.rushing_charting_*) and
+# cfb-app API views. No daily downstream step (Elo, adjusted EPA, predictions,
+# features, projections, flat files, verify_load) reads them; both sources
+# merge, so a missed day self-heals on the next successful run. Everything
+# else in SOURCE_ORDER stays critical.
+NON_CRITICAL_SOURCES = frozenset({"passing", "rushing"})
+
 
 def resolve_resource_names(source: str, names: list[str]) -> list[str]:
     """Map warehouse-facing aliases onto dlt resource names."""
@@ -356,17 +366,66 @@ def upcoming_schedule_season(season: int, month: int) -> int | None:
     return season + 1 if month < 8 else None
 
 
+def _exception_has_timeout(error: BaseException) -> bool:
+    """True if any exception in the __cause__/__context__ chain is a timeout."""
+    pending: list[BaseException] = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, httpx.TimeoutException):
+            return True
+        if current.__context__ is not None:
+            pending.append(current.__context__)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+    return False
+
+
+def downgrade_tolerated_timeout(results: dict) -> str | None:
+    """Downgrade a lone non-critical timeout to status "tolerated", or no-op.
+
+    Exactly one failed source overall (any results key), that source is in
+    NON_CRITICAL_SOURCES, and failure was a timeout after retries: set
+    status to "tolerated" so the run can exit 0 and downstream steps run.
+    Two or more failures, or any critical failure, leaves results unchanged.
+    """
+    failures = [(name, res) for name, res in results.items() if res.get("status") == "error"]
+    if len(failures) != 1:
+        return None
+    name, res = failures[0]
+    if name not in NON_CRITICAL_SOURCES or not res.get("tolerable_timeout"):
+        return None
+    res["status"] = "tolerated"
+    return name
+
+
+def _append_github_step_summary_warning(source: str) -> None:
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(
+            f"\n### Warning: non-critical timeout\n\n"
+            f"Source `{source}` timed out after retries. Charting data merges on "
+            f"the next successful run; downstream steps continued.\n"
+        )
+
+
 def _count_failures(results: dict) -> int:
     """Count every non-"ok" result as a failure for the summary tally.
 
     Must stay in lockstep with the row icon's predicate (anything but "ok"
-    prints FAIL) and with main()'s exit-code check. _mart_refresh can report
-    status "partial" (some matviews failed to refresh, others didn't) --
-    that is not "ok" and must fail the run, or a stale mart layer behind N
-    failed refreshes prints "0 failed" and exits 0. Counting only
-    status == "error" was exactly that bug.
+    or "tolerated" prints FAIL) and with main()'s exit-code check.
+    _mart_refresh can report status "partial" (some matviews failed to refresh,
+    others didn't) -- that is not "ok" and must fail the run, or a stale mart
+    layer behind N failed refreshes prints "0 failed" and exits 0. Counting only
+    status == "error" was exactly that bug. Status "tolerated" is a loud partial
+    success for a lone non-critical timeout and does not fail the run.
     """
-    return sum(1 for r in results.values() if r["status"] != "ok")
+    return sum(1 for r in results.values() if r["status"] not in ("ok", "tolerated"))
 
 
 def _failure_result(error: Exception, elapsed: float) -> dict:
@@ -612,7 +671,10 @@ def load_season(
             logger.info(f"  {src} completed in {elapsed:.1f}s")
         except Exception as e:
             elapsed = time.time() - src_start
-            results[src] = _failure_result(e, elapsed)
+            result = _failure_result(e, elapsed)
+            if src in NON_CRITICAL_SOURCES and _exception_has_timeout(e):
+                result["tolerable_timeout"] = True
+            results[src] = result
             logger.error(f"  {src} failed after {elapsed:.1f}s: {e}")
 
     # Off-season: keep the upcoming season's published schedule and betting
@@ -654,6 +716,15 @@ def load_season(
                 results[name] = _failure_result(e, elapsed)
                 logger.error(f"  {name} failed after {elapsed:.1f}s: {e}")
 
+    tolerated_source = downgrade_tolerated_timeout(results)
+    if tolerated_source is not None:
+        logger.warning(
+            "Tolerating non-critical timeout for source %s: charting data will merge "
+            "on the next successful run; continuing with downstream steps.",
+            tolerated_source,
+        )
+        _append_github_step_summary_warning(tolerated_source)
+
     # Refresh marts
     if not skip_refresh:
         logger.info("Refreshing materialized views...")
@@ -675,12 +746,27 @@ def load_season(
     print(f"Season {season} Load Summary")
     print(f"{'=' * 60}")
     successes = sum(1 for r in results.values() if r["status"] == "ok")
+    tolerated_names = [name for name, res in results.items() if res["status"] == "tolerated"]
+    tolerated_count = len(tolerated_names)
     errors = _count_failures(results)
     for name, res in results.items():
-        status_icon = "OK" if res["status"] == "ok" else "FAIL"
+        if res["status"] == "ok":
+            status_icon = "OK"
+        elif res["status"] == "tolerated":
+            status_icon = "WARN"
+        else:
+            status_icon = "FAIL"
         print(f"  [{status_icon:4s}] {name:25s} {res['duration_s']:>8.1f}s")
     print(f"{'=' * 60}")
-    print(f"  Total: {total_elapsed:.1f}s | {successes} succeeded, {errors} failed (incl. partial)")
+    # The tolerated segment only appears when it happened: the common all-ok
+    # line stays byte-identical to what operators (and tests) already read.
+    tolerated_text = (
+        f"{tolerated_count} tolerated (non-critical timeout), " if tolerated_count else ""
+    )
+    print(
+        f"  Total: {total_elapsed:.1f}s | {successes} succeeded, "
+        f"{tolerated_text}{errors} failed (incl. partial)"
+    )
 
     return {
         "season": season,
@@ -688,6 +774,7 @@ def load_season(
         "total_duration_s": round(total_elapsed, 1),
         "successes": successes,
         "errors": errors,
+        "tolerated": tolerated_names,
         "results": results,
     }
 

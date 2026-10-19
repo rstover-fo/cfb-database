@@ -3,6 +3,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 import yaml
 
@@ -13,6 +14,7 @@ from scripts.load_season import (
     PRESEASON_INPUT_SOURCES,
     PRESEASON_STATS_RESOURCES,
     SOURCE_ORDER,
+    downgrade_tolerated_timeout,
     load_season,
     parse_source_specs,
     sources_to_skip,
@@ -789,6 +791,125 @@ class TestCountFailures:
         icon_fail_count = sum(1 for r in results.values() if r["status"] != "ok")
 
         assert _count_failures(results) == icon_fail_count == 2
+
+
+def _raise_dlt_timeout(*_args, **_kwargs):
+    try:
+        raise httpx.ReadTimeout("The read operation timed out")
+    except httpx.ReadTimeout as exc:
+        raise RuntimeError("Pipeline execution failed at step=extract") from exc
+
+
+def _mock_rate_limiter():
+    limiter = MagicMock()
+    limiter.get_status.return_value = {"remaining": 10_000}
+    return limiter
+
+
+_GET_RATE_LIMITER = "src.pipelines.utils.rate_limiter.get_rate_limiter"
+
+
+class TestToleratedNonCriticalTimeout:
+    """Daily run 39253582408 (2026-10-19): one slow /passing/players/season
+    must not fail the whole Daily Season Load or skip downstream steps."""
+
+    def test_passing_timeout_with_healthy_games_is_tolerated(self):
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_games_pipeline", return_value="ok"),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = load_season(season=2026, sources=["passing", "games"], skip_refresh=True)
+
+        assert summary["results"]["passing"]["status"] == "tolerated"
+        assert summary["errors"] == 0
+        assert summary["tolerated"] == ["passing"]
+
+    def test_critical_source_timeout_stays_error(self):
+        with (
+            patch("src.pipelines.run.run_games_pipeline", side_effect=_raise_dlt_timeout),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = load_season(season=2026, sources=["games"], skip_refresh=True)
+
+        assert summary["results"]["games"]["status"] == "error"
+        assert summary["errors"] == 1
+
+    def test_plays_timeout_stays_error(self):
+        with (
+            patch("src.pipelines.run.run_plays_pipeline", side_effect=_raise_dlt_timeout),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = load_season(season=2026, sources=["plays"], skip_refresh=True)
+
+        assert summary["results"]["plays"]["status"] == "error"
+        assert summary["errors"] == 1
+
+    def test_two_non_critical_timeouts_are_not_downgraded(self):
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_rushing_pipeline", side_effect=_raise_dlt_timeout),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = load_season(season=2026, sources=["passing", "rushing"], skip_refresh=True)
+
+        assert summary["results"]["passing"]["status"] == "error"
+        assert summary["results"]["rushing"]["status"] == "error"
+        assert summary["errors"] == 2
+
+    def test_non_timeout_passing_failure_stays_error(self):
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=ValueError("bad")),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = load_season(season=2026, sources=["passing"], skip_refresh=True)
+
+        assert summary["results"]["passing"]["status"] == "error"
+        assert summary["errors"] == 1
+
+    def test_github_step_summary_receives_warning(self, monkeypatch, tmp_path):
+        summary_path = tmp_path / "step_summary.md"
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary_path))
+
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_games_pipeline", return_value="ok"),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            load_season(season=2026, sources=["passing", "games"], skip_refresh=True)
+
+        text = summary_path.read_text()
+        assert "passing" in text
+        assert "timeout" in text.lower() or "Warning" in text
+
+    def test_count_failures_ignores_tolerated_still_counts_partial(self):
+        from scripts.load_season import _count_failures
+
+        results = {
+            "passing": {"status": "tolerated"},
+            "games": {"status": "ok"},
+            "_mart_refresh": {"status": "partial", "failures": 1},
+        }
+        assert _count_failures(results) == 1
+
+    def test_downgrade_tolerated_timeout_pure_function(self):
+        lone = {
+            "passing": {"status": "error", "tolerable_timeout": True},
+            "games": {"status": "ok"},
+        }
+        assert downgrade_tolerated_timeout(lone) == "passing"
+        assert lone["passing"]["status"] == "tolerated"
+
+        two = {
+            "passing": {"status": "error", "tolerable_timeout": True},
+            "rushing": {"status": "error", "tolerable_timeout": True},
+        }
+        assert downgrade_tolerated_timeout(dict(two)) is None
+
+        critical = {
+            "games": {"status": "error", "tolerable_timeout": True},
+        }
+        assert downgrade_tolerated_timeout(critical) is None
 
 
 class TestWorkflowYaml:

@@ -233,14 +233,33 @@ stops reddening the daily load without weakening the critical data.
 ### Rule
 
 - `player_success_season_resource` moves into its own dlt source,
-  `player_success_source` (`@dlt.source(name="cfbd_player_success")`, still
-  in `src/pipelines/sources/stats.py`), with its own runner
-  `run.py::run_player_success_pipeline` (pipeline `cfbd_player_success`,
-  dataset `stats`) and load unit `player_success` in load_season.py's
-  SOURCE_ORDER, directly after `stats`. The resource function is shared, so
-  the table name (stats.player_success_season), columns, merge disposition,
-  and primary key (season, id, team) are byte-identical: no migration, no DB
-  change, existing rows untouched.
+  `player_success_source` (still in `src/pipelines/sources/stats.py`), with
+  its own runner `run.py::run_player_success_pipeline` and load unit
+  `player_success` in load_season.py's SOURCE_ORDER, directly after
+  `stats`. The resource function is shared, so the table name
+  (stats.player_success_season), columns, merge disposition, and primary
+  key (season, id, team) are byte-identical: no migration, no DB change,
+  existing rows untouched.
+- The split source and runner DELIBERATELY keep the `cfbd_stats` dlt
+  identity -- `@dlt.source(name="cfbd_stats")` and
+  `pipeline_name="cfbd_stats"` / `dataset_name="stats"` (Codex review on
+  PR #157, P1; first drafted as `cfbd_player_success`). The table's
+  destination layout -- bigint success-rate base columns plus
+  `passing__success_rate__v_double` / `rushing__success_rate__v_double`
+  variant twins (src/schemas/baseline/20260907_pre_f05.sql) -- is a product
+  of the stored `cfbd_stats` schema's history. A new schema/pipeline name
+  starts a fresh dlt schema that infers those fields as double and
+  conflicts with the existing bigint destination columns on its first load:
+  a non-timeout failure (or worse, a silently coerced value) on an
+  otherwise healthy request. Reusing the identity makes dlt restore the
+  stored schema from the destination (keyed by pipeline_name, schemas by
+  name from `_dlt_version`) and normalize byte-identically to the pre-split
+  load. Failure isolation is unaffected: it comes from the separate
+  pipeline.run() call, not the schema name. Accepted coupling: a pending
+  load package left by a stats run that failed at the LOAD stage is retried
+  by whichever `cfbd_stats` run comes next, possibly the player_success
+  unit -- in that scenario the run is already red from the stats failure,
+  so the retry can only recover data, never hide a failure.
 - `player_success` joins NON_CRITICAL_SOURCES alongside passing/rushing,
   under the identical Revision 2 machinery: httpx-timeout-only, downgrade
   strictly opt-in via `--tolerate-aggregate-timeouts` (daily-load.yml's
@@ -285,7 +304,9 @@ load unit is safely non-critical.
 - (f) split preserves the contract: player_success_source contains exactly
   player_success_season; stats_source no longer carries it; the union across
   both sources equals the pre-split resource set; table name, merge
-  disposition, and primary key unchanged.
+  disposition, and primary key unchanged; the dlt schema name
+  (`cfbd_stats`) and the runner's pipeline_name/dataset_name identity are
+  pinned so the stored variant-column layout keeps being reused.
 - Wiring: SOURCE_ORDER position, ESTIMATED_CALLS, IMMUTABLE_ONCE_FINAL,
   NON_CRITICAL_SOURCES == {passing, rushing, player_success}, dry-run
   pricing.

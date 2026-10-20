@@ -159,7 +159,7 @@ def stats_source(
     return [by_name[name] for name in only]
 
 
-@dlt.source(name="cfbd_player_success")
+@dlt.source(name="cfbd_stats")
 def player_success_source(
     years: list[int] | None = None,
     mode: str = "incremental",
@@ -178,11 +178,27 @@ def player_success_source(
     grants and catalog metadata only), so scripts/load_season.py classifies
     `player_success` non-critical while `stats` stays critical.
 
-    The resource function is shared with the pre-split source, so the table
-    name, columns, merge disposition, and primary key are byte-identical:
-    no DB change, existing rows untouched. The runner
-    (run.py::run_player_success_pipeline) keeps dataset_name="stats" for the
-    same reason.
+    DELIBERATELY name="cfbd_stats", the same dlt schema name as
+    stats_source, and the runner (run.py::run_player_success_pipeline)
+    deliberately reuses pipeline_name="cfbd_stats" and dataset_name="stats"
+    (Codex review on PR #157, P1). stats.player_success_season's recorded
+    layout is a product of the stored cfbd_stats schema's history: the
+    success-rate fields were first inferred as bigint, and fractional values
+    live in the variant twins passing__success_rate__v_double /
+    rushing__success_rate__v_double (src/schemas/baseline/
+    20260907_pre_f05.sql). A NEW schema name would start a fresh dlt schema
+    that infers those fields as double and writes them at the bigint base
+    columns -- a type conflict with the existing destination table on the
+    first load, not a clean continuation. Keeping the cfbd_stats identity
+    makes dlt restore the stored schema (variant layout included) from the
+    destination and normalize exactly as before the split. Failure isolation
+    does not come from the schema name; it comes from running as a separate
+    pipeline.run() call: the stats load unit has already committed (or
+    failed) on its own by the time this source extracts.
+
+    The resource function is also shared with the pre-split source, so the
+    table name, columns, merge disposition, and primary key are
+    byte-identical: no DB change, existing rows untouched.
 
     Args:
         years: Specific years to load. If None, uses mode to determine years.

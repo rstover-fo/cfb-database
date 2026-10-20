@@ -433,14 +433,26 @@ def run_player_success_pipeline(years: list[int] | None = None, mode: str = "inc
     Its own load unit since 2026-10-19 -- split out of the stats source so a
     `/stats/player/success` timeout cannot discard the critical stats extract
     (Daily Season Load #98); see player_success_source's docstring. Same
-    dataset_name ("stats") as run_stats_pipeline, so the table name, merge
-    disposition, and primary key are unchanged.
+    pipeline_name AND dataset_name as run_stats_pipeline, deliberately
+    (Codex review on PR #157, P1): the table's bigint-base +
+    `__v_double`-variant column layout lives in the stored `cfbd_stats` dlt
+    schema, and a new pipeline/schema identity would re-infer the
+    success-rate fields as double and conflict with the existing destination
+    columns on first load. Reusing the identity restores the stored schema
+    and keeps normalization byte-identical to the pre-split load. Isolation
+    is per pipeline.run() call, not per pipeline name -- this run extracts
+    only player_success_season, so its failure costs only this table. One
+    accepted coupling: a pending load package left by a stats run that
+    failed at the LOAD stage (extract failures leave none) is retried by
+    whichever run of this pipeline comes next, including this one; in that
+    scenario the stats unit has already failed the run, so the retry can
+    only help.
     """
     years_str = f"years={years}" if years else f"mode={mode}"
     print(f"\n=== Loading Player Success Data ({years_str}) ===\n")
 
     pipeline = dlt.pipeline(
-        pipeline_name="cfbd_player_success",
+        pipeline_name="cfbd_stats",
         destination="postgres",
         dataset_name="stats",
     )

@@ -266,6 +266,39 @@ class TestPlayerSuccessSourceSplit:
         pk_columns = {name for name, col in schema["columns"].items() if col.get("primary_key")}
         assert pk_columns == {"season", "id", "team"}
 
+    def test_split_source_keeps_the_cfbd_stats_schema_identity(self):
+        """Codex review on PR #157 (P1): stats.player_success_season's
+        destination layout -- bigint success-rate base columns with
+        passing/rushing __success_rate__v_double variant twins (see
+        src/schemas/baseline/20260907_pre_f05.sql) -- is a product of the
+        stored `cfbd_stats` dlt schema's history. A new schema name would
+        start a fresh schema, infer those fields as double, and conflict
+        with the existing bigint destination columns on the first load. The
+        split source must therefore keep dlt schema name `cfbd_stats` so the
+        stored schema (variant layout included) is restored and reused."""
+        from src.pipelines.sources.stats import player_success_source, stats_source
+
+        assert player_success_source(years=[2024]).schema.name == "cfbd_stats"
+        assert player_success_source(years=[2024]).schema.name == (
+            stats_source(years=[2024]).schema.name
+        )
+
+    def test_runner_keeps_the_cfbd_stats_pipeline_identity(self):
+        """Companion to the schema-identity test above: dlt restores stored
+        schemas from the destination keyed by pipeline_name, so the runner
+        must reuse pipeline_name="cfbd_stats" (and dataset_name="stats") or
+        a fresh CI runner would still normalize against an empty schema.
+        Same source-text pattern as tests/test_backfill_refresh.py::
+        test_pipeline_identity_matches_run_stats_pipeline (no DB, no
+        dlt.pipeline() call)."""
+        import inspect
+
+        from src.pipelines.run import run_player_success_pipeline
+
+        src = inspect.getsource(run_player_success_pipeline)
+        assert 'pipeline_name="cfbd_stats"' in src
+        assert 'dataset_name="stats"' in src
+
 
 class TestAdvancedGameStatsResourceGameIdsMode:
     """R1 rework: advanced_game_stats_resource takes explicit game_ids and

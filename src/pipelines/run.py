@@ -26,7 +26,7 @@ from .sources.recruiting import recruiting_source
 from .sources.reference import reference_source
 from .sources.rosters import rosters_source
 from .sources.rushing import rushing_source
-from .sources.stats import stats_source
+from .sources.stats import player_success_source, stats_source
 from .sources.wepa import wepa_source
 from .utils.rate_limiter import get_rate_limiter
 from .utils.request_outcomes import request_failure_summary
@@ -79,6 +79,7 @@ Examples:
             "game_stats",
             "plays",
             "stats",
+            "player_success",
             "ratings",
             "recruiting",
             "betting",
@@ -418,6 +419,44 @@ def run_stats_pipeline(
     )
 
     source = stats_source(years=years, mode=mode, only=only)
+    info = pipeline.run(source)
+
+    print(f"\nLoad info: {info}")
+
+    return info
+
+
+def run_player_success_pipeline(years: list[int] | None = None, mode: str = "incremental"):
+    """Run the player season success-rate pipeline (stats.player_success_season).
+
+    Its own load unit since 2026-10-19 -- split out of the stats source so a
+    `/stats/player/success` timeout cannot discard the critical stats extract
+    (Daily Season Load #98); see player_success_source's docstring. Same
+    pipeline_name AND dataset_name as run_stats_pipeline, deliberately
+    (Codex review on PR #157, P1): the table's bigint-base +
+    `__v_double`-variant column layout lives in the stored `cfbd_stats` dlt
+    schema, and a new pipeline/schema identity would re-infer the
+    success-rate fields as double and conflict with the existing destination
+    columns on first load. Reusing the identity restores the stored schema
+    and keeps normalization byte-identical to the pre-split load. Isolation
+    is per pipeline.run() call, not per pipeline name -- this run extracts
+    only player_success_season, so its failure costs only this table. One
+    accepted coupling: a pending load package left by a stats run that
+    failed at the LOAD stage (extract failures leave none) is retried by
+    whichever run of this pipeline comes next, including this one; in that
+    scenario the stats unit has already failed the run, so the retry can
+    only help.
+    """
+    years_str = f"years={years}" if years else f"mode={mode}"
+    print(f"\n=== Loading Player Success Data ({years_str}) ===\n")
+
+    pipeline = dlt.pipeline(
+        pipeline_name="cfbd_stats",
+        destination="postgres",
+        dataset_name="stats",
+    )
+
+    source = player_success_source(years=years, mode=mode)
     info = pipeline.run(source)
 
     print(f"\nLoad info: {info}")
@@ -1673,6 +1712,7 @@ def main() -> NoReturn:
         ),
         "plays": lambda: run_plays_pipeline(args.years, args.mode),
         "stats": lambda: run_stats_pipeline(args.years, args.mode),
+        "player_success": lambda: run_player_success_pipeline(args.years, args.mode),
         "ratings": lambda: run_ratings_pipeline(args.years, args.mode),
         "recruiting": lambda: run_recruiting_pipeline(args.years, args.mode),
         "betting": lambda: run_betting_pipeline(args.years, args.mode),

@@ -805,6 +805,89 @@ class TestAdvancedGameStatsHealthAndProbe:
 
             assert isinstance(exc_info.value.__cause__, httpx.ConnectError)
 
+    def test_per_game_timeout_is_a_miss_and_draining_continues(self):
+        """Run 39637616538 (Historical Refresh #54): a per-game ReadTimeout
+        after the client's retries must be treated like a persistent 5xx --
+        a no_data miss for that game -- not crash the extract."""
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [
+                [{"gameId": 1, "team": "A"}],
+                httpx.ReadTimeout("timed out"),
+                [{"gameId": 3, "team": "B"}],
+            ]
+
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport()
+            results = list(
+                advanced_game_stats_resource(game_ids=[1, 2, 3], misses=misses, report=report)
+            )
+
+        assert [r["gameId"] for r in results] == [1, 3]
+        assert misses == [2]
+        assert report.server_error_game_ids == [2]
+        assert report.attempted == [1, 2, 3]
+        assert report.outage is None
+
+    def test_mass_timeouts_trip_outage_and_stop_gracefully(self):
+        """A widespread run of timeouts must look like an outage: the window
+        fills with server errors, the probe times out too, and the run stops
+        cleanly (rows yielded so far kept) instead of crashing."""
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [httpx.ReadTimeout("timed out")] * 5 + [
+                httpx.ReadTimeout("probe timed out"),
+                AssertionError("draining must stop after the failed probe"),
+            ]
+
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport(fallback_probe_game_id=999)
+            results = list(
+                advanced_game_stats_resource(
+                    game_ids=list(range(1, 8)), misses=misses, report=report
+                )
+            )
+
+        assert results == []
+        assert report.outage is not None
+        assert "ReadTimeout" in report.outage
+        assert report.attempted == [1, 2, 3, 4, 5]
+        assert misses == [1, 2, 3, 4, 5]
+        assert report.server_error_game_ids == [1, 2, 3, 4, 5]
+
+    def test_timeout_without_misses_reraises(self):
+        from dlt.extract.exceptions import ResourceExtractionError
+
+        from src.pipelines.sources.stats import advanced_game_stats_resource
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = httpx.ReadTimeout("timed out")
+
+            with pytest.raises(ResourceExtractionError) as exc_info:
+                list(advanced_game_stats_resource(game_ids=[1]))
+
+            assert isinstance(exc_info.value.__cause__, httpx.ReadTimeout)
+
     def test_cross_batch_window_shared_across_invocations(self):
         from src.pipelines.sources.stats import (
             AdvancedBoxBatchReport,

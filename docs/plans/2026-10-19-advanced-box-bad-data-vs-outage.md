@@ -272,6 +272,20 @@ files, and the full `PATH="$PWD/.venv/bin:$PATH" .venv/bin/python -m pytest
   than the batch and asserts the ledger write happens before
   `finalize_campaign`, which runs before the outage result returns.
 
+## Amendment: per-game timeouts (Historical Refresh #54, run 39637616538, 2026-10-21)
+
+A request to `/game/box/advanced?id=401837096` raised `httpx.ReadTimeout`
+after the client's retries and surfaced through dlt as
+`ResourceExtractionError`/`PipelineStepFailed`, killing the run before the
+bad-data/outage logic saw it. Fix: `httpx.TimeoutException` after retries is
+treated exactly like a persistent 5xx for that game — `no_data` miss,
+server-error mark in the health window, probe-on-trip — so a lone slow game
+drains past and a widespread run of timeouts fills the window, times out the
+probe too, and stops cleanly as an outage. Other transport errors
+(connection refused, DNS) remain endpoint-wide outage stops. Covered by
+`TestOct21TimeoutRegression` (run-level replay of the #54 sequence) and the
+timeout tests in `tests/test_sources/test_stats.py`.
+
 ## Output contract
 
 Changed files: `src/pipelines/sources/stats.py`,

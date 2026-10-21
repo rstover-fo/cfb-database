@@ -56,9 +56,16 @@ Mechanics:
     with status='no_data' instead of 'refreshed'. Both statuses still count
     as "done" for backlog purposes (excluded by the primary key), but
     'no_data' rows can be found and requeued with `--requeue-no-data` once
-    the underlying cause is fixed. Three consecutive suppressed 5xx games
-    raise AdvancedBoxScoreCircuitOpen and that batch is not recorded, so an
-    upstream outage still fails the run. The count carries across batches.
+    the underlying cause is fixed. On the box_advanced backfill path the
+    resource uses a sliding health window and a one-call probe to distinguish
+    bad-data clusters from a real CFBD outage: a confirmed outage stops the
+    batch gracefully (rows yielded so far still load and ledger), then the
+    run exits 1 so the workflow's failure-issue step fires. Probe calls are
+    not ledgered and are not counted by the month guard; the window is
+    cleared after a healthy probe, so the worst case (a dense all-bad
+    cluster with zero interleaved successes) is one probe per 5 drained
+    games -- up to 20% on top of --max-calls, spent only while every recent
+    call is failing.
     plays_stats' empty-200 is NOT a miss -- zero player-stat associations is
     a legitimate outcome for early-era/lower-division games; see
     play_stats_resource's docstring.
@@ -122,7 +129,11 @@ from datetime import datetime
 
 import dlt
 
-from src.pipelines.sources.stats import advanced_game_stats_resource, play_stats_resource
+from src.pipelines.sources.stats import (
+    AdvancedBoxBatchReport,
+    advanced_game_stats_resource,
+    play_stats_resource,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -427,6 +438,13 @@ _REQUEUE_NO_DATA_SQL = """
 
 _REQUEUE_NO_DATA_SQL_WITH_TASKS = _REQUEUE_NO_DATA_SQL + " AND task = ANY(%s)"
 
+_LAST_REFRESHED_GAME_QUERY = """
+    SELECT game_id FROM meta.refresh_progress
+    WHERE campaign = %s AND task = %s AND status = 'refreshed'
+    ORDER BY refreshed_at DESC
+    LIMIT 1
+"""
+
 
 def fetch_candidate_games(conn, seasons: list[int]) -> list[tuple[int, int, int]]:
     with conn.cursor() as cur:
@@ -481,6 +499,15 @@ def fetch_unfinalized(conn, campaign: str) -> tuple[list[int], datetime | None]:
     seasons = [row[0] for row in rows]
     watermark = max(row[1] for row in rows)
     return seasons, watermark
+
+
+def fetch_last_refreshed_game_id(conn, campaign: str, task: str) -> int | None:
+    with conn.cursor() as cur:
+        cur.execute(_LAST_REFRESHED_GAME_QUERY, (campaign, task))
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return int(row[0])
 
 
 def fetch_no_data_counts(conn, campaign: str) -> dict[str, int]:
@@ -584,17 +611,64 @@ def build_stats_pipeline() -> dlt.Pipeline:
     )
 
 
-def run_batch(pipeline: dlt.Pipeline, task: str, game_ids: list[int]) -> tuple[object, list[int]]:
+def run_batch(
+    pipeline: dlt.Pipeline,
+    task: str,
+    game_ids: list[int],
+    *,
+    fallback_probe_game_id: int | None = None,
+) -> tuple[object, list[int], AdvancedBoxBatchReport | None]:
     """Run one batch through the task's resource, returning (load_info,
-    misses) -- `misses` is the list of game_ids the resource itself flagged
-    as a suppressed 400, an empty response, or (advanced_game_stats only) a
-    5xx after transient retries were exhausted (PR #75 F6), for the caller to
-    pass to insert_ledger_rows so those rows land as status='no_data'
-    instead of silently 'refreshed'."""
+    misses, report) -- `misses` is the list of game_ids the resource itself
+    flagged as a suppressed 400, an empty response, or (advanced_game_stats
+    only) a 5xx after transient retries were exhausted (PR #75 F6), for the
+    caller to pass to insert_ledger_rows so those rows land as
+    status='no_data' instead of silently 'refreshed'. For box_advanced,
+    `report` carries health/probe/outage state; None for plays_stats."""
     resource_fn = TASK_RESOURCES[task]
     misses: list[int] = []
-    info = pipeline.run(resource_fn(game_ids=game_ids, misses=misses))
-    return info, misses
+    report: AdvancedBoxBatchReport | None = None
+    if task == "box_advanced":
+        report = AdvancedBoxBatchReport(fallback_probe_game_id=fallback_probe_game_id)
+        info = pipeline.run(
+            resource_fn(game_ids=game_ids, misses=misses, report=report),
+        )
+    else:
+        info = pipeline.run(resource_fn(game_ids=game_ids, misses=misses))
+    return info, misses, report
+
+
+def report_partial_bad_data(result: dict) -> None:
+    """Surface partial bad-data game ids to GitHub Actions when the run exits 0."""
+    import os
+
+    status = result.get("status")
+    bad_ids = result.get("bad_data_game_ids") or []
+    if status in {"finalize_failed", "outage"} or not bad_ids:
+        return
+
+    count = len(bad_ids)
+    ids_csv = ",".join(str(gid) for gid in bad_ids)
+    print(
+        f"::warning::Historical refresh recorded {count} advanced-box game(s) "
+        f"as no_data due to server errors (requeue with --requeue-no-data): {ids_csv}"
+    )
+
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        with open(summary_path, "a", encoding="utf-8") as fh:
+            fh.write(
+                f"\n**Partial bad data:** {count} advanced-box game(s) recorded as "
+                f"`no_data` (server errors; requeue with `--requeue-no-data`): "
+                f"`{ids_csv}`\n"
+            )
+
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if output_path:
+        with open(output_path, "a", encoding="utf-8") as fh:
+            fh.write("partial_bad_data=true\n")
+            fh.write(f"bad_data_count={count}\n")
+            fh.write(f"bad_data_game_ids={ids_csv}\n")
 
 
 def should_mark_complete(backlogs: dict[str, list[int]], unfinalized_seasons: list[int]) -> bool:
@@ -918,10 +992,16 @@ def run_campaign(
     batches = plan_batches(allocation, run_task_order, batch_size)
     pipeline = build_stats_pipeline()
 
+    fallback_probe_game_id: int | None = None
+    if "box_advanced" in run_task_order and any(task == "box_advanced" for task, _batch in batches):
+        fallback_probe_game_id = fetch_last_refreshed_game_id(conn, campaign, "box_advanced")
+
     loaded_total = 0
     no_data_total = 0
     per_task_no_data: dict[str, int] = {}
+    bad_data_game_ids: list[int] = []
     pacing_stop = False
+    outage_message: str | None = None
     for i, (task, batch) in enumerate(batches, 1):
         if would_exceed_monthly_cap(month_spend, len(batch), monthly_cap):
             print(
@@ -933,13 +1013,35 @@ def run_campaign(
             break
 
         print(f"  [{i}/{len(batches)}] {task}: {len(batch)} game(s)")
-        _info, misses = run_batch(pipeline, task, batch)
-        insert_ledger_rows(conn, campaign, task, batch, misses=misses)
-        month_spend += len(batch)
-        loaded_total += len(batch)
+        _info, misses, report = run_batch(
+            pipeline,
+            task,
+            batch,
+            fallback_probe_game_id=fallback_probe_game_id,
+        )
+        attempted = batch if report is None else report.attempted
+        insert_ledger_rows(conn, campaign, task, attempted, misses=misses)
+        month_spend += len(attempted)
+        loaded_total += len(attempted)
+        if report is not None:
+            bad_data_game_ids.extend(report.server_error_game_ids)
         if misses:
             no_data_total += len(misses)
             per_task_no_data[task] = per_task_no_data.get(task, 0) + len(misses)
+        if report is not None and report.outage:
+            print(report.outage)
+            outage_message = report.outage
+            break
+        if report is not None and report.budget_stop:
+            # Local budget guard inside the resource -- same contract as the
+            # month guard above: a pacing stop, never an error. The attempted
+            # prefix was already ledgered just above.
+            print(
+                f"Local budget guard: {report.budget_stop} Stopping after batch "
+                f"{i}/{len(batches)}; resume this campaign in a later run/month."
+            )
+            pacing_stop = True
+            break
 
     no_data_suffix = f" ({no_data_total} no_data)" if no_data_total else ""
     print(f"\nLoaded {loaded_total} game-task call(s) this run{no_data_suffix}.")
@@ -969,11 +1071,23 @@ def run_campaign(
                     "loaded": loaded_total,
                     "no_data": no_data_total,
                     "backlog": full_backlogs,
+                    "bad_data_game_ids": bad_data_game_ids,
                 }
         else:
             print("Nothing new to finalize (this run's loads were all no_data).")
     else:
         print("Nothing loaded this run and no season pending finalize; skipping mart refresh.")
+
+    if outage_message is not None:
+        return {
+            "campaign": campaign,
+            "status": "outage",
+            "outage": outage_message,
+            "loaded": loaded_total,
+            "no_data": no_data_total,
+            "backlog": full_backlogs,
+            "bad_data_game_ids": bad_data_game_ids,
+        }
 
     # End-of-run completion check: only when this run wasn't cut short by
     # the month guard and didn't have to defer any of its requested backlog
@@ -998,6 +1112,7 @@ def run_campaign(
                 "loaded": loaded_total,
                 "no_data": no_data_total,
                 "backlog": final_backlogs,
+                "bad_data_game_ids": bad_data_game_ids,
             }
 
     return {
@@ -1006,6 +1121,7 @@ def run_campaign(
         "loaded": loaded_total,
         "no_data": no_data_total,
         "backlog": final_backlogs,
+        "bad_data_game_ids": bad_data_game_ids,
     }
 
 
@@ -1118,7 +1234,7 @@ def main() -> None:
             )
             if operation:
                 status = result.get("status")
-                if status == "finalize_failed":
+                if status in {"finalize_failed", "outage"}:
                     operation.outcome = "failed"
                 elif status == "not_created":
                     operation.outcome = "blocked"
@@ -1128,11 +1244,10 @@ def main() -> None:
     finally:
         conn.close()
 
-    # A failed finalize (adjusted-EPA refit or mart refresh) must fail the
-    # run -- PR #75 F7: previously main() always exited 0, so a silently
-    # broken finalize was never retried and never surfaced to the workflow's
-    # failure-issue step.
-    sys.exit(1 if result.get("status") == "finalize_failed" else 0)
+    # A failed finalize (adjusted-EPA refit or mart refresh) or a confirmed
+    # CFBD outage must fail the run -- PR #75 F7 / advanced-box health.
+    report_partial_bad_data(result)
+    sys.exit(1 if result.get("status") in {"finalize_failed", "outage"} else 0)
 
 
 if __name__ == "__main__":

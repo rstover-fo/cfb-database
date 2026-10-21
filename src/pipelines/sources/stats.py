@@ -4,56 +4,98 @@ Includes season stats, game stats for teams and players.
 """
 
 import logging
+import threading
+from collections import deque
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 
 import dlt
 import httpx
 from dlt.sources import DltSource
 
 from ..config.years import YEAR_RANGES, get_current_season
-from ..utils.api_client import RateLimitBreaker, get_client
-from .base import make_request
+from ..utils.api_client import get_client
+from .base import RequestBudgetExhausted, make_request
 
 logger = logging.getLogger(__name__)
 
+ADVANCED_BOX_HEALTH_WINDOW = 10
+ADVANCED_BOX_HEALTH_5XX_TRIP = 5
+ADVANCED_BOX_PROBE_FALLBACK_GAME_ID = 401836219
 
-class AdvancedBoxScoreCircuitOpen(RuntimeError):
-    """CFBD returned 5xx for several different advanced box-score games in a row.
 
-    A single game that keeps returning 5xx is bad upstream data for that game.
-    The backfill records that game as no-data and continues, so one game cannot
-    stall the historical refresh every day. An unbroken run of 5xx across
-    different games means CFBD itself is down, and the run fails so the
-    workflow alerts. The count is shared across batches in this process.
-    scripts/backfill_refresh.py builds a fresh resource for each batch, so a
-    counter on that resource would restart every batch and miss an outage that
-    spans them. RateLimitCircuitOpen in src.pipelines.utils.api_client owns
-    the 429 case. This exception owns the 5xx case, and only the
-    advanced_game_stats_resource backfill path (misses is not None) raises it.
+@dataclass
+class AdvancedBoxBatchReport:
+    """Per-batch mutable report for the historical-refresh backfill path.
+
+    `outage` is set (and the generator returns early, never raises) when the
+    batch cannot safely continue: a probe-confirmed CFBD outage, a transport
+    failure after the client's retries, rate-limit exhaustion, or any other
+    unrecoverable per-game error. The caller ledgers `attempted` and exits
+    nonzero.
     """
 
+    fallback_probe_game_id: int | None = None
+    attempted: list[int] = field(default_factory=list)
+    server_error_game_ids: list[int] = field(default_factory=list)
+    probe_game_id: int | None = None
+    outage: str | None = None
+    # Set instead of `outage` when the LOCAL request budget
+    # (RequestBudgetExhausted from src.pipelines.sources.base.make_request)
+    # refuses another call: that is a pacing condition, not a CFBD failure,
+    # so the caller stops draining and exits 0 -- same contract as the
+    # ledger month guard in scripts/backfill_refresh.py.
+    budget_stop: str | None = None
 
-# Each counted 5xx has already survived the client's full 7-attempt transient
-# budget, so 3 in a row is 21 consecutive 5xx responses over several minutes,
-# which is an outage, not three unlucky games. The count is shared across
-# batches in this process, because each batch builds a new resource.
-CONSECUTIVE_5XX_CIRCUIT_THRESHOLD = 3
 
-# The backfill creates a fresh resource per batch, so an instance-local
-# counter can never trip with --batch-size below the threshold and misses
-# outages spanning batch boundaries (PR #152 review finding). The class is
-# the generic consecutive-failure counter despite its 429-flavored name.
-_ADVANCED_BOX_5XX_BREAKER = RateLimitBreaker(threshold=CONSECUTIVE_5XX_CIRCUIT_THRESHOLD)
+class AdvancedBoxHealth:
+    """Sliding-window health tracker for /game/box/advanced backfill calls."""
+
+    def __init__(self, window: int = ADVANCED_BOX_HEALTH_WINDOW) -> None:
+        self._lock = threading.Lock()
+        self._window: deque[tuple[int, str]] = deque(maxlen=window)
+        self.last_success_game_id: int | None = None
+
+    def record_answered(self, game_id: int, *, has_data: bool) -> None:
+        with self._lock:
+            self._window.append((game_id, "answered"))
+            if has_data:
+                self.last_success_game_id = game_id
+
+    def record_server_error(self, game_id: int) -> None:
+        with self._lock:
+            self._window.append((game_id, "server_error"))
+
+    def should_probe(self) -> bool:
+        with self._lock:
+            if len(self._window) < ADVANCED_BOX_HEALTH_5XX_TRIP:
+                return False
+            server_errors = sum(1 for _gid, kind in self._window if kind == "server_error")
+            answered = sum(1 for _gid, kind in self._window if kind == "answered")
+            return server_errors >= ADVANCED_BOX_HEALTH_5XX_TRIP and answered == 0
+
+    def clear_window(self) -> None:
+        with self._lock:
+            self._window.clear()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._window.clear()
+            self.last_success_game_id = None
+
+    def window_counts(self) -> tuple[int, int]:
+        with self._lock:
+            server_errors = sum(1 for _gid, kind in self._window if kind == "server_error")
+            answered = sum(1 for _gid, kind in self._window if kind == "answered")
+            return server_errors, answered
 
 
-def reset_advanced_box_5xx_circuit() -> None:
-    """Clear the shared advanced-box 5xx breaker.
+_ADVANCED_BOX_HEALTH = AdvancedBoxHealth()
 
-    Explicit escape hatch for tests and for an in-process caller that has
-    waited out an outage. The breaker stays open across batches by design. A
-    workflow run is one process, so a fresh run starts closed.
-    """
-    _ADVANCED_BOX_5XX_BREAKER.reset()
+
+def reset_advanced_box_health() -> None:
+    """Clear the shared advanced-box health window (tests and in-process callers)."""
+    _ADVANCED_BOX_HEALTH.reset()
 
 
 @dlt.source(name="cfbd_stats")
@@ -217,7 +259,10 @@ def advanced_team_stats_resource(years: list[int]) -> Iterator[dict]:
     primary_key=["game_id", "team"],
 )
 def advanced_game_stats_resource(
-    game_ids: list[int], *, misses: list[int] | None = None
+    game_ids: list[int],
+    *,
+    misses: list[int] | None = None,
+    report: AdvancedBoxBatchReport | None = None,
 ) -> Iterator[dict]:
     """Load advanced game-level box score stats, one call per explicit game id.
 
@@ -253,12 +298,93 @@ def advanced_game_stats_resource(
             campaign's backlog). Unlike play_stats_resource, an empty 200
             here IS a miss: every game with a completed box score has
             advanced stats, so nothing back means the call didn't land.
-            When misses is None, only a 400 is suppressed. Three
-            consecutive suppressed 5xx games raise
-            AdvancedBoxScoreCircuitOpen so an upstream outage fails the
-            run instead of being stored as no-data.
+            When misses is None, only a 400 is suppressed; a 5xx is re-raised.
+            When misses is set but report is None, a suppressed 5xx is
+            recorded in misses and the resource continues with no probe or
+            outage machinery (only scripts/backfill_refresh.py passes
+            report). When report is set (the backfill path), health tracking,
+            probe-on-trip, and outage signaling are active: a confirmed outage
+            sets report.outage and returns normally so dlt keeps rows yielded
+            so far. In report mode NO exception is allowed to escape this
+            generator: a transport failure, 429 rate-limit exhaustion, or any
+            other unrecoverable per-game error also sets report.outage and
+            returns, because a raise would abort the dlt load and discard the
+            whole batch -- the exact bug (run 39253607809) this report
+            contract exists to fix. RequestBudgetExhausted (the LOCAL budget
+            guard) is the one exception that is a pacing condition rather
+            than a failure: it sets report.budget_stop instead of
+            report.outage, so the caller stops draining and exits 0. In every
+            early-stop case the failing game is NOT appended to attempted, so
+            it stays in the backlog and no ledger row is written for a call
+            whose outcome is unknown.
     """
     client = get_client()
+    health = _ADVANCED_BOX_HEALTH
+
+    def _choose_probe_id() -> int:
+        if health.last_success_game_id is not None:
+            return health.last_success_game_id
+        if report is not None and report.fallback_probe_game_id is not None:
+            return report.fallback_probe_game_id
+        return ADVANCED_BOX_PROBE_FALLBACK_GAME_ID
+
+    def _run_outage_probe(last_5xx_game_id: int) -> bool:
+        """Return True if the probe confirms an outage (caller should stop)."""
+        probe_id = _choose_probe_id()
+        if report is not None:
+            report.probe_game_id = probe_id
+        try:
+            make_request(client, "/game/box/advanced", params={"id": probe_id})
+            logger.warning(
+                "Advanced box probe for game %s succeeded; recent 5xx games are bad data",
+                probe_id,
+            )
+            health.clear_window()
+            return False
+        except httpx.HTTPStatusError as probe_err:
+            status_code = probe_err.response.status_code
+            if status_code in (400, 404):
+                # A request-level rejection of this specific probe id: CFBD
+                # answered, so the API is up and the recent 5xx games are bad
+                # data. 401/403 deliberately do NOT land here (Greptile/Codex
+                # finding on PR #156): rejected credentials mean NO call can
+                # be trusted to succeed, so they fail the run like a 5xx.
+                logger.warning(
+                    "Advanced box probe for game %s returned HTTP %s; "
+                    "treating CFBD as up (bad data for recent 5xx games)",
+                    probe_id,
+                    status_code,
+                )
+                health.clear_window()
+                return False
+            server_errors, answered = health.window_counts()
+            message = (
+                f"CFBD outage confirmed: probe game {probe_id} returned HTTP "
+                f"{status_code}; last 5xx game {last_5xx_game_id}; "
+                f"health window {server_errors} server-error(s), {answered} answered"
+            )
+            logger.error(message)
+            if report is not None:
+                report.outage = message
+            return True
+        except RequestBudgetExhausted as probe_err:
+            message = f"local request budget refused the probe call: {probe_err}"
+            logger.warning(message)
+            if report is not None:
+                report.budget_stop = message
+            return True
+        except Exception as probe_err:
+            server_errors, answered = health.window_counts()
+            message = (
+                f"CFBD outage confirmed: probe game {probe_id} failed ({probe_err!r}); "
+                f"last 5xx game {last_5xx_game_id}; "
+                f"health window {server_errors} server-error(s), {answered} answered"
+            )
+            logger.error(message)
+            if report is not None:
+                report.outage = message
+            return True
+
     try:
         total = 0
         for i, game_id in enumerate(game_ids):
@@ -271,11 +397,16 @@ def advanced_game_stats_resource(
                 if data:
                     total += len(data)
                     yield from data
+                    if report is not None:
+                        report.attempted.append(game_id)
+                        health.record_answered(game_id, has_data=True)
                 else:
                     logger.warning(f"No advanced box score for game {game_id} (empty response)")
                     if misses is not None:
                         misses.append(game_id)
-                _ADVANCED_BOX_5XX_BREAKER.record_success()
+                    if report is not None:
+                        report.attempted.append(game_id)
+                        health.record_answered(game_id, has_data=False)
                 if (i + 1) % 100 == 0:
                     logger.info(f"  Processed {i + 1}/{len(game_ids)} games, {total} records")
             except httpx.HTTPStatusError as e:
@@ -283,7 +414,9 @@ def advanced_game_stats_resource(
                     logger.warning(f"No advanced box score for game {game_id} (400 response)")
                     if misses is not None:
                         misses.append(game_id)
-                    _ADVANCED_BOX_5XX_BREAKER.record_success()
+                    if report is not None:
+                        report.attempted.append(game_id)
+                        health.record_answered(game_id, has_data=False)
                     continue
                 if misses is not None and e.response.status_code >= 500:
                     logger.warning(
@@ -293,14 +426,51 @@ def advanced_game_stats_resource(
                         "(retryable later via scripts/backfill_refresh.py --requeue-no-data)"
                     )
                     misses.append(game_id)
-                    count = _ADVANCED_BOX_5XX_BREAKER.record_rate_limited()
-                    if _ADVANCED_BOX_5XX_BREAKER.is_open():
-                        raise AdvancedBoxScoreCircuitOpen(
-                            f"{count} consecutive games returned HTTP 5xx "
-                            "after transient retries were exhausted; "
-                            f"the count spans batches; last game id {game_id}"
-                        ) from e
+                    if report is not None:
+                        report.attempted.append(game_id)
+                        report.server_error_game_ids.append(game_id)
+                        health.record_server_error(game_id)
+                        if health.should_probe() and _run_outage_probe(game_id):
+                            return
                     continue
+                if report is not None:
+                    message = (
+                        f"advanced box call for game {game_id} failed unrecoverably "
+                        f"(HTTP {e.response.status_code}); stopping this batch so rows "
+                        "loaded so far are kept and ledgered"
+                    )
+                    logger.error(message)
+                    report.outage = message
+                    return
+                raise
+            except RequestBudgetExhausted as e:
+                # Local budget guard, not a CFBD failure (PR #156 review
+                # finding): stop draining gracefully so rows yielded so far
+                # load and the attempted prefix is ledgered, and let the
+                # caller treat it as a pacing stop (exit 0), never an outage.
+                if report is not None:
+                    message = (
+                        f"local request budget refused the call for game {game_id}: {e}; "
+                        "stopping this batch (pacing stop, not an error)"
+                    )
+                    logger.warning(message)
+                    report.budget_stop = message
+                    return
+                raise
+            except Exception as e:
+                # Report mode only: a transport failure or rate-limit
+                # exhaustion that survived the client's retries means CFBD is
+                # unreachable -- same outage handling as a probe failure, and
+                # raising here would discard the batch's loaded rows.
+                if report is not None:
+                    message = (
+                        f"advanced box call for game {game_id} failed unrecoverably "
+                        f"({e!r}); stopping this batch so rows loaded so far are "
+                        "kept and ledgered"
+                    )
+                    logger.error(message)
+                    report.outage = message
+                    return
                 raise
         logger.info(f"Loaded {total} total records from {len(game_ids)} games")
 

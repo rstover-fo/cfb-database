@@ -35,6 +35,12 @@ name: Historical Refresh
 # a one-time manual rerun after the campaign fully drains, per
 # docs/plans/2026-08-29-cfbd-expansion-rollout.md step 7.
 #
+# Advanced box scores (box_advanced): the backfill distinguishes bad-data game
+# clusters from a real CFBD outage via a sliding health window and a one-call
+# probe (not the old three-consecutive-5xx circuit). Confirmed outages exit 1
+# (failure-issue step); partial bad-data game ids exit 0 with a workflow
+# comment when partial_bad_data is set on the drain step.
+#
 # Requires repo secrets:
 #   CFBD_API_KEY    - collegefootballdata.com API key
 #   SUPABASE_DB_URL - Supabase SESSION pooler URL (see daily-load.yml)
@@ -95,6 +101,7 @@ jobs:
         # dlt requires the postgres:// scheme (see .dlt/secrets.toml.example)
         run: echo "DESTINATION__POSTGRES__CREDENTIALS=$(printf '%s' "$SUPABASE_DB_URL" | sed 's/^postgresql:/postgres:/')" >> "$GITHUB_ENV"
       - name: Drain backlog
+        id: drain
         # The scheduled (non-dispatch) run always passes create=false, so a
         # campaign that hasn't been created yet -- or has already fully
         # drained -- is a safe, script-level no-op (exit 0); the workflow
@@ -125,6 +132,44 @@ jobs:
             python scripts/backfill_refresh.py --campaign "$CAMPAIGN" --tasks "$TASKS" \
               --max-calls "$MAX_CALLS"
           fi
+      - name: Comment partial bad-data game ids
+        if: steps.drain.outputs.partial_bad_data == 'true'
+        uses: actions/github-script@v7
+        env:
+          BAD_DATA_GAME_IDS: ${{ steps.drain.outputs.bad_data_game_ids }}
+        with:
+          script: |
+            const title = "Historical refresh failing";
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const gameIds = process.env.BAD_DATA_GAME_IDS || "";
+            // Paginate: listForRepo returns 30 issues per page, so with more
+            // open issues than that the title would never be found and a
+            // duplicate issue would be created (Greptile finding, PR #156).
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              per_page: 100,
+            });
+            const existing = issues.find((i) => i.title === title);
+            const body =
+              `Run recorded advanced-box games as no_data (server errors; requeue with \`--requeue-no-data\`): ${runUrl}\n` +
+              `Game ids: ${gameIds} (${new Date().toISOString()})`;
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+              });
+            }
       - name: Open or update failure issue
         if: failure()
         uses: actions/github-script@v7
@@ -132,12 +177,16 @@ jobs:
           script: |
             const title = "Historical refresh failing";
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const { data } = await github.rest.issues.listForRepo({
+            // Paginate for the same reason as the partial bad-data step
+            // above: both steps target the same issue title, so an unfound
+            // title on page 2+ would mean a duplicate issue.
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: "open",
+              per_page: 100,
             });
-            const existing = data.find((i) => i.title === title);
+            const existing = issues.find((i) => i.title === title);
             const body = `Run failed: ${runUrl} (${new Date().toISOString()})`;
             if (existing) {
               await github.rest.issues.createComment({

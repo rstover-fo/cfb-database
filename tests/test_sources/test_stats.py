@@ -208,13 +208,13 @@ class TestAdvancedGameStatsResourceGameIdsMode:
     play_stats_resource's explicit-ids branch."""
 
     @pytest.fixture(autouse=True)
-    def _reset_advanced_box_5xx_circuit(self):
-        """The 5xx breaker is process-wide, so one test must not open it for the next."""
-        from src.pipelines.sources.stats import reset_advanced_box_5xx_circuit
+    def _reset_advanced_box_health(self):
+        """The health window is process-wide, so one test must not pollute the next."""
+        from src.pipelines.sources.stats import reset_advanced_box_health
 
-        reset_advanced_box_5xx_circuit()
+        reset_advanced_box_health()
         yield
-        reset_advanced_box_5xx_circuit()
+        reset_advanced_box_health()
 
     def test_one_call_per_game_id_with_id_param(self):
         from src.pipelines.sources.stats import advanced_game_stats_resource
@@ -355,40 +355,8 @@ class TestAdvancedGameStatsResourceGameIdsMode:
             assert exc_info.value.__cause__.response.status_code == 500
             assert mock_make_request.call_count == 1
 
-    def test_three_consecutive_5xx_opens_circuit(self):
-        from dlt.extract.exceptions import ResourceExtractionError
-
-        from src.pipelines.sources.stats import (
-            AdvancedBoxScoreCircuitOpen,
-            advanced_game_stats_resource,
-        )
-
-        with (
-            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
-            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
-        ):
-            mock_get_client.return_value = MagicMock()
-            mock_make_request.side_effect = [
-                _http_error(500),
-                _http_error(500),
-                _http_error(500),
-                [{"gameId": 55, "team": "X"}],
-            ]
-
-            misses: list[int] = []
-            with pytest.raises(ResourceExtractionError) as exc_info:
-                list(advanced_game_stats_resource(game_ids=[11, 22, 44, 55], misses=misses))
-
-            cause = exc_info.value.__cause__
-            assert isinstance(cause, AdvancedBoxScoreCircuitOpen)
-            assert isinstance(cause.__cause__, httpx.HTTPStatusError)
-            assert cause.__cause__.response.status_code == 500
-            assert "3" in str(cause)
-            assert "44" in str(cause)
-            assert misses == [11, 22, 44]
-            assert mock_make_request.call_count == 3
-
-    def test_success_resets_consecutive_5xx_counter(self):
+    def test_misses_without_report_suppresses_5xx_without_probe(self):
+        """misses-only callers (no report) never probe or trip health."""
         from src.pipelines.sources.stats import advanced_game_stats_resource
 
         with (
@@ -396,159 +364,16 @@ class TestAdvancedGameStatsResourceGameIdsMode:
             patch("src.pipelines.sources.stats.make_request") as mock_make_request,
         ):
             mock_get_client.return_value = MagicMock()
-            mock_make_request.side_effect = [
-                _http_error(500),
-                [{"gameId": 22, "team": "X"}],
-                _http_error(500),
-                _http_error(500),
-            ]
-
-            misses: list[int] = []
-            results = list(advanced_game_stats_resource(game_ids=[11, 22, 33, 44], misses=misses))
-
-            assert results == [{"gameId": 22, "team": "X"}]
-            assert misses == [11, 33, 44]
-
-    def test_suppressed_400_resets_consecutive_5xx_counter(self):
-        from src.pipelines.sources.stats import advanced_game_stats_resource
-
-        with (
-            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
-            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
-        ):
-            mock_get_client.return_value = MagicMock()
-            mock_make_request.side_effect = [
-                _http_error(500),
-                _http_error(500),
-                _http_error(400),
-                _http_error(500),
-                _http_error(500),
-                [{"gameId": 66, "team": "X"}],
-            ]
+            mock_make_request.side_effect = [_http_error(500)] * 6 + [[{"gameId": 99, "team": "X"}]]
 
             misses: list[int] = []
             results = list(
-                advanced_game_stats_resource(game_ids=[11, 22, 33, 44, 55, 66], misses=misses)
+                advanced_game_stats_resource(game_ids=[1, 2, 3, 4, 5, 6, 7], misses=misses)
             )
 
-            assert results == [{"gameId": 66, "team": "X"}]
-            assert misses == [11, 22, 33, 44, 55]
-
-    def test_empty_200_resets_consecutive_5xx_counter(self):
-        from src.pipelines.sources.stats import advanced_game_stats_resource
-
-        with (
-            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
-            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
-        ):
-            mock_get_client.return_value = MagicMock()
-            mock_make_request.side_effect = [
-                _http_error(500),
-                _http_error(500),
-                [],
-                _http_error(500),
-                _http_error(500),
-                [{"gameId": 66, "team": "X"}],
-            ]
-
-            misses: list[int] = []
-            results = list(
-                advanced_game_stats_resource(game_ids=[11, 22, 33, 44, 55, 66], misses=misses)
-            )
-
-            assert results == [{"gameId": 66, "team": "X"}]
-            assert misses == [11, 22, 33, 44, 55]
-
-    def test_503_counts_the_same_as_500(self):
-        from dlt.extract.exceptions import ResourceExtractionError
-
-        from src.pipelines.sources.stats import (
-            AdvancedBoxScoreCircuitOpen,
-            advanced_game_stats_resource,
-        )
-
-        with (
-            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
-            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
-        ):
-            mock_get_client.return_value = MagicMock()
-            mock_make_request.side_effect = [
-                _http_error(500),
-                _http_error(503),
-                _http_error(503),
-                [{"gameId": 55, "team": "X"}],
-            ]
-
-            misses: list[int] = []
-            with pytest.raises(ResourceExtractionError) as exc_info:
-                list(advanced_game_stats_resource(game_ids=[11, 22, 44, 55], misses=misses))
-
-            cause = exc_info.value.__cause__
-            assert isinstance(cause, AdvancedBoxScoreCircuitOpen)
-            assert isinstance(cause.__cause__, httpx.HTTPStatusError)
-            assert cause.__cause__.response.status_code == 503
-            assert misses == [11, 22, 44]
-            assert mock_make_request.call_count == 3
-
-    def test_three_single_game_invocations_of_5xx_open_circuit(self):
-        from dlt.extract.exceptions import ResourceExtractionError
-
-        from src.pipelines.sources.stats import (
-            AdvancedBoxScoreCircuitOpen,
-            advanced_game_stats_resource,
-        )
-
-        with (
-            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
-            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
-        ):
-            mock_get_client.return_value = MagicMock()
-            mock_make_request.side_effect = [
-                _http_error(500),
-                _http_error(500),
-                _http_error(500),
-            ]
-
-            misses: list[int] = []
-            assert list(advanced_game_stats_resource(game_ids=[11], misses=misses)) == []
-            assert list(advanced_game_stats_resource(game_ids=[22], misses=misses)) == []
-            with pytest.raises(ResourceExtractionError) as exc_info:
-                list(advanced_game_stats_resource(game_ids=[44], misses=misses))
-
-            cause = exc_info.value.__cause__
-            assert isinstance(cause, AdvancedBoxScoreCircuitOpen)
-            assert isinstance(cause.__cause__, httpx.HTTPStatusError)
-            assert cause.__cause__.response.status_code == 500
-            assert "3" in str(cause)
-            assert "44" in str(cause)
-            assert misses == [11, 22, 44]
-            assert mock_make_request.call_count == 3
-
-    def test_success_between_single_game_invocations_resets_counter(self):
-        from src.pipelines.sources.stats import advanced_game_stats_resource
-
-        with (
-            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
-            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
-        ):
-            mock_get_client.return_value = MagicMock()
-            mock_make_request.side_effect = [
-                _http_error(500),
-                [{"gameId": 22, "team": "X"}],
-                _http_error(500),
-                _http_error(500),
-            ]
-
-            misses: list[int] = []
-            assert list(advanced_game_stats_resource(game_ids=[11], misses=misses)) == []
-            assert list(advanced_game_stats_resource(game_ids=[22], misses=misses)) == [
-                {"gameId": 22, "team": "X"}
-            ]
-            assert list(advanced_game_stats_resource(game_ids=[33], misses=misses)) == []
-            assert list(advanced_game_stats_resource(game_ids=[44], misses=misses)) == []
-
-            assert misses == [11, 33, 44]
-            assert mock_make_request.call_count == 4
+            assert results == [{"gameId": 99, "team": "X"}]
+            assert misses == [1, 2, 3, 4, 5, 6]
+            assert mock_make_request.call_count == 7
 
     def test_merge_disposition_and_primary_key_unchanged(self):
         from src.pipelines.sources.stats import advanced_game_stats_resource
@@ -562,6 +387,447 @@ class TestAdvancedGameStatsResourceGameIdsMode:
             schema = resource.compute_table_schema()
             pk_columns = {name for name, col in schema["columns"].items() if col.get("primary_key")}
             assert pk_columns == {"game_id", "team"}
+
+
+class TestAdvancedBoxHealth:
+    def test_trip_requires_five_server_errors_and_zero_answered(self):
+        from src.pipelines.sources.stats import AdvancedBoxHealth
+
+        health = AdvancedBoxHealth(window=10)
+        for gid in range(1, 5):
+            health.record_server_error(gid)
+        assert health.should_probe() is False
+        health.record_server_error(5)
+        assert health.should_probe() is True
+
+    def test_answered_game_blocks_trip_until_it_slides_out(self):
+        from src.pipelines.sources.stats import AdvancedBoxHealth
+
+        health = AdvancedBoxHealth(window=5)
+        for gid in range(1, 5):
+            health.record_server_error(gid)
+        health.record_answered(99, has_data=True)
+        assert health.should_probe() is False
+        # The answered entry stays in the 5-slot window for the next 4
+        # errors; the 5th slides it out and the window is all-error again.
+        for gid in range(5, 9):
+            health.record_server_error(gid)
+            assert health.should_probe() is False
+        health.record_server_error(9)
+        assert health.should_probe() is True
+
+    def test_clear_window_after_probe(self):
+        from src.pipelines.sources.stats import AdvancedBoxHealth
+
+        health = AdvancedBoxHealth(window=10)
+        for gid in range(1, 6):
+            health.record_server_error(gid)
+        assert health.should_probe() is True
+        health.clear_window()
+        assert health.should_probe() is False
+
+    def test_empty_200_and_400_count_as_answered(self):
+        from src.pipelines.sources.stats import AdvancedBoxHealth
+
+        health = AdvancedBoxHealth(window=10)
+        for gid in range(1, 5):
+            health.record_server_error(gid)
+        health.record_answered(50, has_data=False)
+        health.record_server_error(5)
+        assert health.should_probe() is False
+
+
+class TestAdvancedGameStatsHealthAndProbe:
+    @pytest.fixture(autouse=True)
+    def _reset_advanced_box_health(self):
+        from src.pipelines.sources.stats import reset_advanced_box_health
+
+        reset_advanced_box_health()
+        yield
+        reset_advanced_box_health()
+
+    def test_incident_replay_no_probe_all_eleven_attempted(self):
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        game_ids = (
+            [401837096, 401837097]
+            + [401836219, 401833987, 401833986, 401833985, 401762521]
+            + [401837098, 401837099, 401837100, 401837101]
+        )
+        side_effect = (
+            [_http_error(500), _http_error(500)]
+            + [[{"gameId": gid, "team": "A"}] for gid in game_ids[2:7]]
+            + [_http_error(500)] * 4
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = side_effect
+
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport()
+            results = list(
+                advanced_game_stats_resource(game_ids=game_ids, misses=misses, report=report)
+            )
+
+        assert report.outage is None
+        assert report.probe_game_id is None
+        assert len(report.attempted) == 11
+        assert len(results) == 5
+        six_5xx = [401837096, 401837097, 401837098, 401837099, 401837100, 401837101]
+        assert misses == six_5xx
+        assert report.server_error_game_ids == six_5xx
+        assert mock_make_request.call_count == 11
+
+    def test_bad_data_cluster_probes_fallback_then_continues(self):
+        from src.pipelines.sources.stats import (
+            ADVANCED_BOX_PROBE_FALLBACK_GAME_ID,
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        game_ids = list(range(101, 108))
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            probe_response = [{"gameId": ADVANCED_BOX_PROBE_FALLBACK_GAME_ID, "team": "P"}]
+            mock_make_request.side_effect = (
+                [_http_error(500)] * 5
+                + probe_response
+                + [[{"gameId": gid, "team": "X"}] for gid in game_ids[5:]]
+            )
+
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport(fallback_probe_game_id=None)
+            results = list(
+                advanced_game_stats_resource(game_ids=game_ids, misses=misses, report=report)
+            )
+
+        assert report.outage is None
+        assert report.probe_game_id == ADVANCED_BOX_PROBE_FALLBACK_GAME_ID
+        assert len(report.attempted) == len(game_ids)
+        assert len(results) == 2
+        assert misses == game_ids[:5]
+        assert mock_make_request.call_count == len(game_ids) + 1
+
+    def test_outage_stops_gracefully_after_probe_5xx(self):
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        game_ids = [1] + list(range(2, 12))
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = (
+                [[{"gameId": 1, "team": "A"}]] + [_http_error(500)] * 10 + [_http_error(503)]
+            )
+
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport(fallback_probe_game_id=1)
+            results = list(
+                advanced_game_stats_resource(game_ids=game_ids, misses=misses, report=report)
+            )
+
+        assert report.outage is not None
+        assert "probe game 1" in report.outage
+        assert report.attempted == list(range(1, 12))
+        assert results == [{"gameId": 1, "team": "A"}]
+        assert misses == list(range(2, 12))
+
+    def test_probe_uses_last_in_run_success_before_fallback(self):
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        game_ids = [7] + list(range(8, 18))
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = (
+                [[{"gameId": 7, "team": "W"}]]
+                + [_http_error(500)] * 10
+                + [[{"gameId": 7, "team": "W"}]]
+            )
+            report = AdvancedBoxBatchReport(fallback_probe_game_id=50)
+            list(advanced_game_stats_resource(game_ids=game_ids, misses=[], report=report))
+
+        assert report.probe_game_id == 7
+
+    def test_probe_uses_fallback_when_no_in_run_success(self):
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+            reset_advanced_box_health,
+        )
+
+        reset_advanced_box_health()
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [_http_error(500)] * 5 + [[{"gameId": 50, "team": "P"}]]
+            report = AdvancedBoxBatchReport(fallback_probe_game_id=50)
+            list(advanced_game_stats_resource(game_ids=list(range(1, 6)), misses=[], report=report))
+
+        assert report.probe_game_id == 50
+
+    def test_probe_uses_module_constant_when_no_other_candidate(self):
+        from src.pipelines.sources.stats import (
+            ADVANCED_BOX_PROBE_FALLBACK_GAME_ID,
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+            reset_advanced_box_health,
+        )
+
+        reset_advanced_box_health()
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [_http_error(500)] * 5 + [
+                [{"gameId": ADVANCED_BOX_PROBE_FALLBACK_GAME_ID, "team": "P"}]
+            ]
+            report = AdvancedBoxBatchReport(fallback_probe_game_id=None)
+            list(advanced_game_stats_resource(game_ids=list(range(1, 6)), misses=[], report=report))
+
+        assert report.probe_game_id == ADVANCED_BOX_PROBE_FALLBACK_GAME_ID
+
+    @pytest.mark.parametrize("auth_status", [401, 403])
+    def test_probe_auth_rejection_is_a_failure_not_healthy(self, auth_status):
+        """PR #156 review (Codex): a 401/403 on the probe means CFBD rejected
+        our credentials -- no later call can be trusted -- so it must fail the
+        run like a 5xx, never count as 'the server answered'."""
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [_http_error(500)] * 5 + [
+                _http_error(auth_status),
+                AssertionError("draining must stop after the failed probe"),
+            ]
+
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport(fallback_probe_game_id=999)
+            results = list(
+                advanced_game_stats_resource(
+                    game_ids=list(range(1, 8)), misses=misses, report=report
+                )
+            )
+
+        assert results == []
+        assert report.outage is not None
+        assert str(auth_status) in report.outage
+        assert report.budget_stop is None
+        # The five 5xx games were attempted and recorded before the stop.
+        assert report.attempted == [1, 2, 3, 4, 5]
+        assert misses == [1, 2, 3, 4, 5]
+
+    def test_budget_exhaustion_is_a_pacing_stop_not_an_outage(self):
+        """PR #156 review (PR Lens): RequestBudgetExhausted is the LOCAL
+        monthly budget guard, not a CFBD failure -- it must set budget_stop
+        (caller exits 0) instead of outage (caller exits 1), while still
+        stopping gracefully so yielded rows load and the prefix ledgers."""
+        from src.pipelines.sources.base import RequestBudgetExhausted
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [
+                [{"gameId": 1, "team": "A"}],
+                RequestBudgetExhausted("API budget exhausted"),
+                AssertionError("game 3 must never be requested"),
+            ]
+
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport()
+            results = list(
+                advanced_game_stats_resource(game_ids=[1, 2, 3], misses=misses, report=report)
+            )
+
+        assert results == [{"gameId": 1, "team": "A"}]
+        assert report.budget_stop is not None
+        assert "game 2" in report.budget_stop
+        assert report.outage is None
+        # Game 2's call was refused before it was spent: not attempted, not
+        # a miss, so it stays in the backlog.
+        assert report.attempted == [1]
+        assert misses == []
+
+    def test_budget_exhaustion_without_report_still_raises(self):
+        from dlt.extract.exceptions import ResourceExtractionError
+
+        from src.pipelines.sources.base import RequestBudgetExhausted
+        from src.pipelines.sources.stats import advanced_game_stats_resource
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = RequestBudgetExhausted("API budget exhausted")
+
+            with pytest.raises(ResourceExtractionError) as exc_info:
+                list(advanced_game_stats_resource(game_ids=[1], misses=[]))
+
+            assert isinstance(exc_info.value.__cause__, RequestBudgetExhausted)
+
+    def test_probe_400_counts_as_healthy(self):
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [_http_error(500)] * 5 + [_http_error(400)]
+
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport(fallback_probe_game_id=999)
+            list(
+                advanced_game_stats_resource(
+                    game_ids=list(range(1, 6)), misses=misses, report=report
+                )
+            )
+
+        assert report.outage is None
+
+    def test_transport_error_in_report_mode_stops_gracefully(self):
+        """Review finding 2026-10-19: a timeout-shaped outage (transport
+        error after the client's retries) must not escape the generator --
+        a raise would abort the dlt load and lose the batch's rows, the
+        original run-39253607809 bug via a different exception type."""
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [
+                [{"gameId": 1, "team": "A"}],
+                httpx.ConnectError("boom"),
+                AssertionError("game 3 must never be requested"),
+            ]
+
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport()
+            results = list(
+                advanced_game_stats_resource(game_ids=[1, 2, 3], misses=misses, report=report)
+            )
+
+        assert results == [{"gameId": 1, "team": "A"}]
+        assert report.outage is not None
+        assert "game 2" in report.outage
+        # The failing game's outcome is unknown: not attempted, not a miss,
+        # so it stays in the backlog with no ledger row.
+        assert report.attempted == [1]
+        assert misses == []
+
+    def test_unhandled_4xx_in_report_mode_stops_gracefully(self):
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [
+                [{"gameId": 1, "team": "A"}],
+                _http_error(401),
+            ]
+
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport()
+            results = list(
+                advanced_game_stats_resource(game_ids=[1, 2], misses=misses, report=report)
+            )
+
+        assert results == [{"gameId": 1, "team": "A"}]
+        assert report.outage is not None
+        assert "401" in report.outage
+        assert report.attempted == [1]
+        assert misses == []
+
+    def test_transport_error_without_report_still_raises(self):
+        """misses-only and plain callers keep the raising contract -- the
+        graceful stop is exclusively the backfill report path's."""
+        from dlt.extract.exceptions import ResourceExtractionError
+
+        from src.pipelines.sources.stats import advanced_game_stats_resource
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = httpx.ConnectError("boom")
+
+            with pytest.raises(ResourceExtractionError) as exc_info:
+                list(advanced_game_stats_resource(game_ids=[1], misses=[]))
+
+            assert isinstance(exc_info.value.__cause__, httpx.ConnectError)
+
+    def test_cross_batch_window_shared_across_invocations(self):
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [_http_error(500)] * 4
+
+            misses: list[int] = []
+            report1 = AdvancedBoxBatchReport()
+            list(advanced_game_stats_resource(game_ids=[1, 2, 3, 4], misses=misses, report=report1))
+            assert report1.probe_game_id is None
+
+            mock_make_request.side_effect = [_http_error(500)] + [[{"gameId": 99, "team": "P"}]]
+            report2 = AdvancedBoxBatchReport(fallback_probe_game_id=99)
+            list(advanced_game_stats_resource(game_ids=[5], misses=misses, report=report2))
+            assert report2.probe_game_id == 99
+            assert report2.outage is None
 
 
 class TestPlayerSuccessSeasonResource:

@@ -14,10 +14,14 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import os
 import sys
 import time
+from datetime import UTC, datetime, timedelta
+
+import httpx
 
 from src.pipelines.season_lifecycle import season_is_final
 from src.pipelines.utils.request_outcomes import request_failure_summary
@@ -293,6 +297,14 @@ RESOURCE_FILTERABLE = frozenset({"stats"})
 # asked for exactly the right data under the name the warehouse shows them.
 RESOURCE_ALIASES = {"stats": {"returning_production": "player_returning"}}
 
+# Non-critical for daily-run exit status: stats.passing_* and stats.rushing_* feed
+# only charting marts (marts.passing_charting_*, marts.rushing_charting_*) and
+# cfb-app API views. No daily downstream step (Elo, adjusted EPA, predictions,
+# features, projections, flat files, verify_load) reads them; both sources
+# merge, so a missed day self-heals on the next successful run. Everything
+# else in SOURCE_ORDER stays critical.
+NON_CRITICAL_SOURCES = frozenset({"passing", "rushing"})
+
 
 def resolve_resource_names(source: str, names: list[str]) -> list[str]:
     """Map warehouse-facing aliases onto dlt resource names."""
@@ -356,17 +368,226 @@ def upcoming_schedule_season(season: int, month: int) -> int | None:
     return season + 1 if month < 8 else None
 
 
+def _exception_has_timeout(error: BaseException) -> bool:
+    """True if any exception in the __cause__/__context__ chain is a timeout."""
+    pending: list[BaseException] = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, httpx.TimeoutException):
+            return True
+        if current.__context__ is not None:
+            pending.append(current.__context__)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+    return False
+
+
+TOLERATED_STREAK_STATE_VERSION = 1
+
+
+def _empty_tolerated_streak_state() -> dict:
+    return {"version": TOLERATED_STREAK_STATE_VERSION, "streaks": {}}
+
+
+def _utc_today_str() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%d")
+
+
+def load_tolerated_streak_state(path: str | None) -> dict:
+    """Load streak JSON from path, or an empty in-memory state when path is unset.
+
+    Every nested entry is validated, not just the top-level shape (review
+    finding on revision 2): the file round-trips through the Actions cache
+    and a hand-edited or truncated copy must degrade, never crash the load.
+    A malformed ENTRY drops that entry with a warning; a malformed FILE
+    degrades to the empty state.
+    """
+    if not path:
+        return _empty_tolerated_streak_state()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict) or data.get("version") != TOLERATED_STREAK_STATE_VERSION:
+            raise ValueError("unsupported tolerated streak state version")
+        raw_streaks = data.get("streaks")
+        if not isinstance(raw_streaks, dict):
+            raise ValueError("invalid streaks object")
+    except (OSError, json.JSONDecodeError, ValueError, TypeError) as e:
+        logger.warning(
+            "Could not load tolerated streak state from %s (%s); starting empty", path, e
+        )
+        return _empty_tolerated_streak_state()
+
+    streaks: dict = {}
+    for name, entry in raw_streaks.items():
+        if (
+            isinstance(name, str)
+            and isinstance(entry, dict)
+            and isinstance(entry.get("count"), int)
+            and not isinstance(entry.get("count"), bool)
+            and isinstance(entry.get("last_date"), str)
+        ):
+            streaks[name] = {"count": entry["count"], "last_date": entry["last_date"]}
+        else:
+            logger.warning("Dropping malformed tolerated streak entry for %r in %s", name, path)
+    return {"version": TOLERATED_STREAK_STATE_VERSION, "streaks": streaks}
+
+
+def save_tolerated_streak_state(path: str | None, state: dict) -> None:
+    if not path:
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(state, fh, indent=2)
+            fh.write("\n")
+    except OSError as e:
+        logger.warning("Could not persist tolerated streak state to %s (%s); continuing", path, e)
+
+
+def update_tolerated_streaks(state: dict, results: dict, today: str) -> None:
+    """Advance streaks for tolerable timeouts; clear entries for sources that loaded OK.
+
+    "Consecutive" is literal (review finding on revision 2): a streak only
+    continues when the previous toleration was YESTERDAY. A same-day rerun
+    keeps the count unchanged, and anything older -- a gap day, a stretch of
+    skipped runs, a stale entry preserved while a source failed for other
+    reasons -- RESTARTS the count at 1 instead of inheriting it, so a
+    two-month-old count of 2 cannot turn today's first timeout into a veto.
+    Entries whose last_date is older than yesterday are pruned afterward for
+    the same reason: they can never legally continue, so carrying them only
+    invites the stale-veto bug this comment exists to prevent.
+    """
+    yesterday = (datetime.strptime(today, "%Y-%m-%d").date() - timedelta(days=1)).strftime(
+        "%Y-%m-%d"
+    )
+    streaks = state.setdefault("streaks", {})
+    for name, res in results.items():
+        if name.startswith("_"):
+            continue
+        if res.get("status") == "ok":
+            streaks.pop(name, None)
+        elif res.get("status") == "error" and res.get("tolerable_timeout"):
+            entry = streaks.setdefault(name, {"count": 0, "last_date": ""})
+            if entry.get("last_date") == today:
+                pass  # same-UTC-date rerun: no double increment
+            elif entry.get("last_date") == yesterday:
+                entry["count"] = int(entry.get("count", 0)) + 1
+                entry["last_date"] = today
+            else:
+                entry["count"] = 1
+                entry["last_date"] = today
+    for name in [n for n, e in streaks.items() if e.get("last_date") not in (today, yesterday)]:
+        del streaks[name]
+
+
+def apply_aggregate_timeout_tolerance(
+    results: dict,
+    *,
+    tolerate_aggregate_timeouts: bool,
+    tolerated_streak_limit: int,
+    streak_state: dict,
+    today: str,
+) -> tuple[list[str], list[str]]:
+    """Apply revision-2 opt-in tolerance; mutates results and streak_state.
+
+    Returns (tolerated_source_names, vetoed_source_names). Without
+    tolerate_aggregate_timeouts every list is empty and results are unchanged.
+    """
+    if not tolerate_aggregate_timeouts:
+        return [], []
+
+    update_tolerated_streaks(streak_state, results, today)
+
+    failures = [(name, res) for name, res in results.items() if res.get("status") == "error"]
+    candidates = [(name, res) for name, res in failures if res.get("tolerable_timeout")]
+    if not candidates or len(candidates) != len(failures):
+        return [], []
+
+    streaks = streak_state.get("streaks", {})
+    vetoed = [
+        name
+        for name, _ in candidates
+        if int(streaks.get(name, {}).get("count", 0)) >= tolerated_streak_limit
+    ]
+    if vetoed:
+        for name in vetoed:
+            entry = streaks[name]
+            logger.error(
+                "Tolerated-timeout streak limit reached for source %s: %s consecutive "
+                "tolerated day(s) (limit %s); failing the run",
+                name,
+                entry.get("count"),
+                tolerated_streak_limit,
+            )
+        _append_github_step_summary_streak_failure(vetoed, streaks, tolerated_streak_limit)
+        return [], vetoed
+
+    for name, res in candidates:
+        res["status"] = "tolerated"
+    return [name for name, _ in candidates], []
+
+
+def _append_github_step_summary_warning(
+    tolerated: list[str], streaks: dict, streak_limit: int
+) -> None:
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    lines = [
+        "\n### Warning: non-critical timeout(s)\n",
+        "The following source(s) timed out after retries. Charting data merges on "
+        "the next successful run; downstream steps continued.\n",
+    ]
+    for name in tolerated:
+        count = int(streaks.get(name, {}).get("count", 0))
+        lines.append(f"- `{name}`: consecutive tolerated day {count} of {streak_limit}\n")
+    # Best-effort decoration only (Greptile review on PR #155): the whole point
+    # of a tolerated downgrade is that the run continues, so a broken summary
+    # file must not crash load_season() before the mart refresh runs. The
+    # warning already went to the log above; losing the markdown copy is the
+    # cheaper failure.
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("".join(lines))
+    except OSError as e:
+        logger.warning("Could not write GITHUB_STEP_SUMMARY warning (%s); continuing", e)
+
+
+def _append_github_step_summary_streak_failure(
+    vetoed: list[str], streaks: dict, streak_limit: int
+) -> None:
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    lines = ["\n### Failure: tolerated-timeout streak limit\n"]
+    for name in vetoed:
+        count = int(streaks.get(name, {}).get("count", 0))
+        lines.append(
+            f"- `{name}` reached {count} consecutive tolerated day(s) (limit {streak_limit})\n"
+        )
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("".join(lines))
+    except OSError as e:
+        logger.warning("Could not write GITHUB_STEP_SUMMARY failure (%s); continuing", e)
+
+
 def _count_failures(results: dict) -> int:
     """Count every non-"ok" result as a failure for the summary tally.
 
     Must stay in lockstep with the row icon's predicate (anything but "ok"
-    prints FAIL) and with main()'s exit-code check. _mart_refresh can report
-    status "partial" (some matviews failed to refresh, others didn't) --
-    that is not "ok" and must fail the run, or a stale mart layer behind N
-    failed refreshes prints "0 failed" and exits 0. Counting only
-    status == "error" was exactly that bug.
+    or "tolerated" prints FAIL) and with main()'s exit-code check.
+    _mart_refresh can report status "partial" (some matviews failed to refresh,
+    others didn't) -- that is not "ok" and must fail the run, or a stale mart
+    layer behind N failed refreshes prints "0 failed" and exits 0. Counting only
+    status == "error" was exactly that bug. Status "tolerated" is a loud partial
+    success for a lone non-critical timeout and does not fail the run.
     """
-    return sum(1 for r in results.values() if r["status"] != "ok")
+    return sum(1 for r in results.values() if r["status"] not in ("ok", "tolerated"))
 
 
 def _failure_result(error: Exception, elapsed: float) -> dict:
@@ -386,6 +607,8 @@ def load_season(
     weekly: bool = False,
     upcoming_schedule: int | None = None,
     allow_skip_final: bool = False,
+    tolerate_aggregate_timeouts: bool = False,
+    tolerated_streak_limit: int = 3,
 ) -> dict:
     """Load or refresh all data for a given season.
 
@@ -612,7 +835,10 @@ def load_season(
             logger.info(f"  {src} completed in {elapsed:.1f}s")
         except Exception as e:
             elapsed = time.time() - src_start
-            results[src] = _failure_result(e, elapsed)
+            result = _failure_result(e, elapsed)
+            if src in NON_CRITICAL_SOURCES and _exception_has_timeout(e):
+                result["tolerable_timeout"] = True
+            results[src] = result
             logger.error(f"  {src} failed after {elapsed:.1f}s: {e}")
 
     # Off-season: keep the upcoming season's published schedule and betting
@@ -654,6 +880,35 @@ def load_season(
                 results[name] = _failure_result(e, elapsed)
                 logger.error(f"  {name} failed after {elapsed:.1f}s: {e}")
 
+    # Revision 2 (owner-approved): downgrade is strictly opt-in via
+    # --tolerate-aggregate-timeouts so backfills and manual runs stay strict;
+    # only daily-load.yml passes the flag on its unattended branch. Streak
+    # state is a deliberate prototype in TOLERATED_STREAK_FILE (GitHub Actions
+    # cache) with no DB writes; cache eviction resets a streak and is accepted.
+    streak_path = os.environ.get("TOLERATED_STREAK_FILE")
+    # Manual --tolerate-aggregate-timeouts without TOLERATED_STREAK_FILE has no
+    # durable streak: the guard runs against empty in-memory state.
+    streak_state = load_tolerated_streak_state(streak_path if tolerate_aggregate_timeouts else None)
+    today = _utc_today_str()
+    tolerated_names, _vetoed = apply_aggregate_timeout_tolerance(
+        results,
+        tolerate_aggregate_timeouts=tolerate_aggregate_timeouts,
+        tolerated_streak_limit=tolerated_streak_limit,
+        streak_state=streak_state,
+        today=today,
+    )
+    if tolerate_aggregate_timeouts and streak_path:
+        save_tolerated_streak_state(streak_path, streak_state)
+    if tolerated_names:
+        logger.warning(
+            "Tolerating non-critical timeout(s) for source(s) %s: charting data will "
+            "merge on the next successful run; continuing with downstream steps.",
+            ", ".join(tolerated_names),
+        )
+        _append_github_step_summary_warning(
+            tolerated_names, streak_state.get("streaks", {}), tolerated_streak_limit
+        )
+
     # Refresh marts
     if not skip_refresh:
         logger.info("Refreshing materialized views...")
@@ -675,12 +930,27 @@ def load_season(
     print(f"Season {season} Load Summary")
     print(f"{'=' * 60}")
     successes = sum(1 for r in results.values() if r["status"] == "ok")
+    tolerated_names = [name for name, res in results.items() if res["status"] == "tolerated"]
+    tolerated_count = len(tolerated_names)
     errors = _count_failures(results)
     for name, res in results.items():
-        status_icon = "OK" if res["status"] == "ok" else "FAIL"
+        if res["status"] == "ok":
+            status_icon = "OK"
+        elif res["status"] == "tolerated":
+            status_icon = "WARN"
+        else:
+            status_icon = "FAIL"
         print(f"  [{status_icon:4s}] {name:25s} {res['duration_s']:>8.1f}s")
     print(f"{'=' * 60}")
-    print(f"  Total: {total_elapsed:.1f}s | {successes} succeeded, {errors} failed (incl. partial)")
+    # The tolerated segment only appears when it happened: the common all-ok
+    # line stays byte-identical to what operators (and tests) already read.
+    tolerated_text = (
+        f"{tolerated_count} tolerated (non-critical timeout), " if tolerated_count else ""
+    )
+    print(
+        f"  Total: {total_elapsed:.1f}s | {successes} succeeded, "
+        f"{tolerated_text}{errors} failed (incl. partial)"
+    )
 
     return {
         "season": season,
@@ -688,6 +958,7 @@ def load_season(
         "total_duration_s": round(total_elapsed, 1),
         "successes": successes,
         "errors": errors,
+        "tolerated": tolerated_names,
         "results": results,
     }
 
@@ -725,6 +996,17 @@ def main() -> None:
         action="store_true",
         help="Load game_stats week-by-week (~35K rows per merge) to avoid timeouts",
     )
+    parser.add_argument(
+        "--tolerate-aggregate-timeouts",
+        action="store_true",
+        help="Downgrade non-critical season-aggregate timeouts to tolerated (daily load only)",
+    )
+    parser.add_argument(
+        "--tolerated-streak-limit",
+        type=int,
+        default=3,
+        help="Consecutive tolerated daily runs per source before failing (default: 3)",
+    )
     args = parser.parse_args()
 
     season = args.season
@@ -760,6 +1042,8 @@ def main() -> None:
             weekly=args.weekly,
             upcoming_schedule=upcoming,
             allow_skip_final=allow_skip_final,
+            tolerate_aggregate_timeouts=args.tolerate_aggregate_timeouts,
+            tolerated_streak_limit=args.tolerated_streak_limit,
         )
         if operation and (summary.get("error") or summary.get("errors", 0)):
             operation.outcome = "failed"

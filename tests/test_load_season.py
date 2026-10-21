@@ -1,8 +1,11 @@
 """Unit tests for load_season's season-selection helpers (no DB, no API)."""
 
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 import yaml
 
@@ -13,10 +16,13 @@ from scripts.load_season import (
     PRESEASON_INPUT_SOURCES,
     PRESEASON_STATS_RESOURCES,
     SOURCE_ORDER,
+    apply_aggregate_timeout_tolerance,
     load_season,
+    load_tolerated_streak_state,
     parse_source_specs,
     sources_to_skip,
     upcoming_schedule_season,
+    update_tolerated_streaks,
     validate_resource_filters,
 )
 
@@ -791,6 +797,428 @@ class TestCountFailures:
         assert _count_failures(results) == icon_fail_count == 2
 
 
+def _raise_dlt_timeout(*_args, **_kwargs):
+    try:
+        raise httpx.ReadTimeout("The read operation timed out")
+    except httpx.ReadTimeout as exc:
+        raise RuntimeError("Pipeline execution failed at step=extract") from exc
+
+
+def _mock_rate_limiter():
+    limiter = MagicMock()
+    limiter.get_status.return_value = {"remaining": 10_000}
+    return limiter
+
+
+_GET_RATE_LIMITER = "src.pipelines.utils.rate_limiter.get_rate_limiter"
+
+
+def _utc_today() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%d")
+
+
+def _utc_yesterday() -> str:
+    return (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def _load_with_tolerance(**kwargs):
+    kwargs.setdefault("tolerate_aggregate_timeouts", True)
+    kwargs.setdefault("skip_refresh", True)
+    return load_season(season=2026, **kwargs)
+
+
+class TestToleratedNonCriticalTimeout:
+    """Revision 2: opt-in tolerance for non-critical season-aggregate timeouts."""
+
+    def test_both_non_critical_timeouts_tolerated_with_flag(self):
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_rushing_pipeline", side_effect=_raise_dlt_timeout),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing", "rushing"])
+
+        assert summary["results"]["passing"]["status"] == "tolerated"
+        assert summary["results"]["rushing"]["status"] == "tolerated"
+        assert summary["errors"] == 0
+        assert summary["tolerated"] == ["passing", "rushing"]
+
+    def test_both_non_critical_timeouts_strict_without_flag(self):
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_rushing_pipeline", side_effect=_raise_dlt_timeout),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = load_season(season=2026, sources=["passing", "rushing"], skip_refresh=True)
+
+        assert summary["results"]["passing"]["status"] == "error"
+        assert summary["results"]["rushing"]["status"] == "error"
+        assert summary["errors"] == 2
+        assert summary["tolerated"] == []
+
+    def test_games_timeout_stays_error_with_flag(self):
+        with (
+            patch("src.pipelines.run.run_games_pipeline", side_effect=_raise_dlt_timeout),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["games"])
+
+        assert summary["results"]["games"]["status"] == "error"
+        assert summary["errors"] == 1
+
+    def test_stats_timeout_stays_error_with_flag(self):
+        with (
+            patch("src.pipelines.run.run_stats_pipeline", side_effect=_raise_dlt_timeout),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["stats"])
+
+        assert summary["results"]["stats"]["status"] == "error"
+        assert summary["errors"] == 1
+
+    def test_mixed_tolerable_and_critical_timeouts_not_downgraded(self):
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_games_pipeline", side_effect=_raise_dlt_timeout),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing", "games"])
+
+        assert summary["results"]["passing"]["status"] == "error"
+        assert summary["results"]["games"]["status"] == "error"
+        assert summary["errors"] == 2
+
+    def test_non_timeout_passing_failure_stays_error_with_flag(self):
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=ValueError("bad")),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing"])
+
+        assert summary["results"]["passing"]["status"] == "error"
+        assert summary["errors"] == 1
+
+    def test_streak_limit_trips_on_third_consecutive_day(self, monkeypatch, tmp_path):
+        streak_file = tmp_path / "streaks.json"
+        streak_file.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "streaks": {"passing": {"count": 2, "last_date": _utc_yesterday()}},
+                }
+            )
+        )
+        monkeypatch.setenv("TOLERATED_STREAK_FILE", str(streak_file))
+
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_games_pipeline", return_value="ok"),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing", "games"], tolerated_streak_limit=3)
+
+        assert summary["results"]["passing"]["status"] == "error"
+        assert summary["errors"] == 1
+        saved = json.loads(streak_file.read_text())
+        assert saved["streaks"]["passing"]["count"] == 3
+        assert saved["streaks"]["passing"]["last_date"] == _utc_today()
+
+    def test_streak_increments_on_tolerated_run(self, monkeypatch, tmp_path):
+        streak_file = tmp_path / "streaks.json"
+        streak_file.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "streaks": {"passing": {"count": 1, "last_date": _utc_yesterday()}},
+                }
+            )
+        )
+        monkeypatch.setenv("TOLERATED_STREAK_FILE", str(streak_file))
+
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_games_pipeline", return_value="ok"),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing", "games"], tolerated_streak_limit=3)
+
+        assert summary["results"]["passing"]["status"] == "tolerated"
+        assert summary["errors"] == 0
+        saved = json.loads(streak_file.read_text())
+        assert saved["streaks"]["passing"]["count"] == 2
+        assert saved["streaks"]["passing"]["last_date"] == _utc_today()
+
+    def test_streak_cleared_when_source_loads_ok(self, monkeypatch, tmp_path):
+        streak_file = tmp_path / "streaks.json"
+        streak_file.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "streaks": {"passing": {"count": 2, "last_date": _utc_yesterday()}},
+                }
+            )
+        )
+        monkeypatch.setenv("TOLERATED_STREAK_FILE", str(streak_file))
+
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", return_value="ok"),
+            patch("src.pipelines.run.run_games_pipeline", return_value="ok"),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            _load_with_tolerance(sources=["passing", "games"])
+
+        saved = json.loads(streak_file.read_text())
+        assert "passing" not in saved["streaks"]
+
+    def test_streak_with_a_gap_day_restarts_instead_of_continuing(self, monkeypatch, tmp_path):
+        """Review finding on revision 2: "consecutive" is literal. A count
+        preserved from an older run (gap days, skipped sources, non-timeout
+        failures in between) must restart at 1, not inherit and veto."""
+        streak_file = tmp_path / "streaks.json"
+        three_days_ago = (datetime.now(UTC) - timedelta(days=3)).strftime("%Y-%m-%d")
+        streak_file.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "streaks": {"passing": {"count": 2, "last_date": three_days_ago}},
+                }
+            )
+        )
+        monkeypatch.setenv("TOLERATED_STREAK_FILE", str(streak_file))
+
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_games_pipeline", return_value="ok"),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing", "games"], tolerated_streak_limit=3)
+
+        assert summary["results"]["passing"]["status"] == "tolerated"
+        assert summary["errors"] == 0
+        saved = json.loads(streak_file.read_text())
+        assert saved["streaks"]["passing"]["count"] == 1
+        assert saved["streaks"]["passing"]["last_date"] == _utc_today()
+
+    def test_malformed_streak_entries_are_dropped_not_crashing(self, monkeypatch, tmp_path, caplog):
+        """Review finding on revision 2: valid JSON with malformed nested
+        entries (null entry, non-int count) must degrade per-entry with a
+        warning instead of raising out of the load."""
+        streak_file = tmp_path / "streaks.json"
+        streak_file.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "streaks": {
+                        "passing": None,
+                        "rushing": {"count": "bad", "last_date": "2026-10-18"},
+                        "wepa": {"count": 1, "last_date": _utc_yesterday()},
+                    },
+                }
+            )
+        )
+        monkeypatch.setenv("TOLERATED_STREAK_FILE", str(streak_file))
+
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_games_pipeline", return_value="ok"),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing", "games"])
+
+        assert summary["results"]["passing"]["status"] == "tolerated"
+        assert summary["errors"] == 0
+        assert any("Dropping malformed tolerated streak entry" in r.message for r in caplog.records)
+        saved = json.loads(streak_file.read_text())
+        assert saved["streaks"]["passing"]["count"] == 1
+
+    def test_same_utc_day_rerun_does_not_double_increment(self, monkeypatch, tmp_path):
+        streak_file = tmp_path / "streaks.json"
+        streak_file.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "streaks": {"passing": {"count": 1, "last_date": _utc_today()}},
+                }
+            )
+        )
+        monkeypatch.setenv("TOLERATED_STREAK_FILE", str(streak_file))
+
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_games_pipeline", return_value="ok"),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing", "games"])
+
+        assert summary["results"]["passing"]["status"] == "tolerated"
+        saved = json.loads(streak_file.read_text())
+        assert saved["streaks"]["passing"]["count"] == 1
+
+    def test_corrupt_streak_file_degrades_with_warning(self, monkeypatch, tmp_path, caplog):
+        streak_file = tmp_path / "streaks.json"
+        streak_file.write_text("{not json")
+        monkeypatch.setenv("TOLERATED_STREAK_FILE", str(streak_file))
+
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_games_pipeline", return_value="ok"),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing", "games"])
+
+        assert summary["results"]["passing"]["status"] == "tolerated"
+        assert any("Could not load tolerated streak state" in r.message for r in caplog.records)
+
+    def test_unwritable_streak_file_does_not_crash_run(self, monkeypatch, caplog):
+        monkeypatch.setenv("TOLERATED_STREAK_FILE", "/nonexistent-dir/nested/streaks.json")
+
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_games_pipeline", return_value="ok"),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing", "games"])
+
+        assert summary["results"]["passing"]["status"] == "tolerated"
+        assert any("Could not persist tolerated streak state" in r.message for r in caplog.records)
+
+    def test_github_step_summary_lists_every_tolerated_source(self, monkeypatch, tmp_path):
+        summary_path = tmp_path / "step_summary.md"
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary_path))
+
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_rushing_pipeline", side_effect=_raise_dlt_timeout),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            _load_with_tolerance(sources=["passing", "rushing"])
+
+        text = summary_path.read_text()
+        assert "passing" in text
+        assert "rushing" in text
+        assert "Warning" in text
+
+    def test_failed_step_summary_write_does_not_crash_the_run(self, monkeypatch, caplog):
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", "/nonexistent-dir/step_summary.md")
+
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_timeout),
+            patch("src.pipelines.run.run_games_pipeline", return_value="ok"),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing", "games"])
+
+        assert summary["results"]["passing"]["status"] == "tolerated"
+        assert summary["errors"] == 0
+        assert any(
+            "Could not write GITHUB_STEP_SUMMARY" in record.message for record in caplog.records
+        )
+
+    def test_count_failures_ignores_tolerated_still_counts_partial(self):
+        from scripts.load_season import _count_failures
+
+        results = {
+            "passing": {"status": "tolerated"},
+            "games": {"status": "ok"},
+            "_mart_refresh": {"status": "partial", "failures": 1},
+        }
+        assert _count_failures(results) == 1
+
+    def test_apply_aggregate_timeout_tolerance_pure_function(self):
+        state = {"version": 1, "streaks": {}}
+        today = "2026-10-19"
+        both = {
+            "passing": {"status": "error", "tolerable_timeout": True},
+            "rushing": {"status": "error", "tolerable_timeout": True},
+        }
+        tolerated, vetoed = apply_aggregate_timeout_tolerance(
+            both,
+            tolerate_aggregate_timeouts=True,
+            tolerated_streak_limit=3,
+            streak_state=state,
+            today=today,
+        )
+        assert tolerated == ["passing", "rushing"]
+        assert vetoed == []
+        assert both["passing"]["status"] == "tolerated"
+
+        mixed = {
+            "passing": {"status": "error", "tolerable_timeout": True},
+            "games": {"status": "error"},
+        }
+        state2 = {"version": 1, "streaks": {}}
+        tolerated, vetoed = apply_aggregate_timeout_tolerance(
+            mixed,
+            tolerate_aggregate_timeouts=True,
+            tolerated_streak_limit=3,
+            streak_state=state2,
+            today=today,
+        )
+        assert tolerated == []
+        assert mixed["passing"]["status"] == "error"
+        assert state2["streaks"]["passing"]["count"] == 1
+
+        veto_state = {
+            "version": 1,
+            "streaks": {"passing": {"count": 3, "last_date": "2026-10-18"}},
+        }
+        lone = {"passing": {"status": "error", "tolerable_timeout": True}}
+        tolerated, vetoed = apply_aggregate_timeout_tolerance(
+            lone,
+            tolerate_aggregate_timeouts=True,
+            tolerated_streak_limit=3,
+            streak_state=veto_state,
+            today=today,
+        )
+        assert tolerated == []
+        assert vetoed == ["passing"]
+        assert lone["passing"]["status"] == "error"
+
+    def test_update_tolerated_streaks_pure_function(self):
+        state = {
+            "version": 1,
+            "streaks": {"passing": {"count": 2, "last_date": "2026-10-18"}},
+        }
+        update_tolerated_streaks(
+            state,
+            {
+                "passing": {"status": "ok"},
+                "rushing": {"status": "error", "tolerable_timeout": True},
+            },
+            "2026-10-19",
+        )
+        assert "passing" not in state["streaks"]
+        assert state["streaks"]["rushing"]["count"] == 1
+
+    def test_update_tolerated_streaks_consecutive_vs_gap(self):
+        state = {
+            "version": 1,
+            "streaks": {
+                "passing": {"count": 2, "last_date": "2026-10-18"},  # yesterday: continues
+                "rushing": {"count": 2, "last_date": "2026-10-01"},  # gap: restarts
+                "wepa": {"count": 4, "last_date": "2026-09-01"},  # stale, untouched: pruned
+            },
+        }
+        update_tolerated_streaks(
+            state,
+            {
+                "passing": {"status": "error", "tolerable_timeout": True},
+                "rushing": {"status": "error", "tolerable_timeout": True},
+            },
+            "2026-10-19",
+        )
+        assert state["streaks"]["passing"]["count"] == 3
+        assert state["streaks"]["rushing"]["count"] == 1
+        assert "wepa" not in state["streaks"]
+
+    def test_load_tolerated_streak_state_corrupt_returns_empty(self, tmp_path, caplog):
+        path = tmp_path / "bad.json"
+        path.write_text("[]")
+        state = load_tolerated_streak_state(str(path))
+        assert state == {"version": 1, "streaks": {}}
+        assert any("Could not load tolerated streak state" in r.message for r in caplog.records)
+
+
 class TestWorkflowYaml:
     """Sanity checks on the two workflow files touched alongside the
     player_overview cap override -- catches a YAML syntax error (bad
@@ -812,3 +1240,54 @@ class TestWorkflowYaml:
         assert "player_overview_max" in dispatch_inputs
         assert dispatch_inputs["player_overview_max"]["required"] is False
         assert doc["jobs"]["backfill"]["timeout-minutes"] == 300
+
+    def test_daily_load_workflow_tolerate_flag_and_streak_cache(self):
+        text = (WORKFLOWS_DIR / "daily-load.yml").read_text()
+        doc = yaml.safe_load(text)
+        load_job = doc["jobs"]["load"]
+        step_names = [step.get("name", "") for step in load_job["steps"]]
+        assert "Restore tolerated-timeout streak state" in step_names
+        assert "Save tolerated-timeout streak state" in step_names
+
+        restore = next(
+            s
+            for s in load_job["steps"]
+            if s.get("name") == "Restore tolerated-timeout streak state"
+        )
+        assert restore["uses"] == "actions/cache/restore@v4"
+        assert restore["with"]["path"] == ".tolerated-streaks.json"
+        assert restore["with"]["key"].startswith("cfbd-tolerated-streaks-")
+        assert "cfbd-tolerated-streaks-" in restore["with"]["restore-keys"]
+
+        save = next(
+            s for s in load_job["steps"] if s.get("name") == "Save tolerated-timeout streak state"
+        )
+        assert save["uses"] == "actions/cache/save@v4"
+        assert save["if"] == "always()"
+        assert save["with"]["key"].startswith("cfbd-tolerated-streaks-")
+
+        # Greptile P1 (PR #155): cache entries are immutable per key and a
+        # rerun reuses run_id, so a run_id-only key could never save a rerun's
+        # updated (reset) state -- the next timeout would read a stale streak.
+        # Both keys must include run_attempt, stay identical to each other,
+        # and still match the shared restore-keys prefix so the newest state
+        # from ANY prior run or attempt is restored.
+        for key in (restore["with"]["key"], save["with"]["key"]):
+            assert "${{ github.run_id }}" in key
+            assert "${{ github.run_attempt }}" in key
+        assert restore["with"]["key"] == save["with"]["key"]
+        prefix = restore["with"]["restore-keys"].strip().splitlines()[0].strip()
+        assert save["with"]["key"].startswith(prefix)
+
+        load_step = next(
+            s
+            for s in load_job["steps"]
+            if s.get("name") == "Load season data (includes mart refresh)"
+        )
+        assert load_step["env"]["TOLERATED_STREAK_FILE"].endswith("/.tolerated-streaks.json")
+        run_script = load_step["run"]
+        assert run_script.count("--tolerate-aggregate-timeouts") == 1
+        else_branch = run_script.split("else")[1]
+        assert "--tolerate-aggregate-timeouts" in else_branch
+        season_branch = run_script.split("else")[0]
+        assert "--tolerate-aggregate-timeouts" not in season_branch

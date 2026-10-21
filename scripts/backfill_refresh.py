@@ -51,7 +51,7 @@ Mechanics:
     which asserts this pair against run_stats_pipeline's own source text.
   - Per-game misses are recorded honestly, not silently dropped (PR #75 F6):
     a suppressed per-game 400, (advanced_game_stats only) an empty 200, and
-    (advanced_game_stats backfill path only) a 5xx or request timeout after
+    (advanced_game_stats backfill path only) a 5xx or read timeout after
     the client's transient retries are exhausted, are recorded in meta.refresh_progress
     with status='no_data' instead of 'refreshed'. Both statuses still count
     as "done" for backlog purposes (excluded by the primary key), but
@@ -354,7 +354,7 @@ def build_ledger_values(
 
     `misses`: game_ids for which the call was spent but returned nothing
     (a suppressed 400, or -- advanced_game_stats only -- an empty 200 or a
-    5xx or request timeout after the client's transient retries were
+    5xx or read timeout after the client's transient retries were
     exhausted; see the
     resources' docstrings in src/pipelines/sources/stats.py). Those rows
     get status='no_data' instead of 'refreshed' (PR #75 F6) -- both still
@@ -583,7 +583,7 @@ def insert_ledger_rows(
 ) -> None:
     """Record a successfully-run batch, one row per game -- status='no_data'
     for any game_id in `misses` (a suppressed 400, an empty response, or a
-    5xx or timeout after transient retries on advanced box scores; see
+    5xx or read timeout after transient retries on advanced box scores; see
     build_ledger_values), 'refreshed' otherwise.
 
     ON CONFLICT DO NOTHING makes this safe to replay: if a batch's
@@ -622,7 +622,7 @@ def run_batch(
     """Run one batch through the task's resource, returning (load_info,
     misses, report) -- `misses` is the list of game_ids the resource itself
     flagged as a suppressed 400, an empty response, or (advanced_game_stats
-    only) a 5xx or timeout after transient retries were exhausted (PR #75 F6), for the
+    only) a 5xx or read timeout after transient retries were exhausted (PR #75 F6), for the
     caller to pass to insert_ledger_rows so those rows land as
     status='no_data' instead of silently 'refreshed'. For box_advanced,
     `report` carries health/probe/outage state; None for plays_stats."""
@@ -1048,7 +1048,7 @@ def run_campaign(
     print(f"\nLoaded {loaded_total} game-task call(s) this run{no_data_suffix}.")
     for t, n in per_task_no_data.items():
         print(
-            f"  {t}: {n} no_data (suppressed 400, empty response, or 5xx/timeout "
+            f"  {t}: {n} no_data (suppressed 400, empty response, or 5xx/read-timeout "
             "after retries; see --status/--requeue-no-data)"
         )
 

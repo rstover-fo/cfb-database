@@ -871,6 +871,40 @@ class TestAdvancedGameStatsHealthAndProbe:
         assert misses == [1, 2, 3, 4, 5]
         assert report.server_error_game_ids == [1, 2, 3, 4, 5]
 
+    @pytest.mark.parametrize("timeout_cls", [httpx.ConnectTimeout, httpx.PoolTimeout])
+    def test_connection_level_timeouts_stay_on_the_outage_path(self, timeout_cls):
+        """Codex P1 on PR #158: ConnectTimeout and PoolTimeout are
+        connection-level -- CFBD may never have received the request -- so
+        the game must NOT be retired as no_data; the batch stops as an
+        outage with the game left in the backlog."""
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [
+                [{"gameId": 1, "team": "A"}],
+                timeout_cls("connection-level timeout"),
+                AssertionError("game 3 must never be requested"),
+            ]
+
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport()
+            results = list(
+                advanced_game_stats_resource(game_ids=[1, 2, 3], misses=misses, report=report)
+            )
+
+        assert results == [{"gameId": 1, "team": "A"}]
+        assert report.outage is not None
+        assert report.attempted == [1]
+        assert misses == []
+        assert report.server_error_game_ids == []
+
     def test_timeout_without_misses_reraises(self):
         from dlt.extract.exceptions import ResourceExtractionError
 

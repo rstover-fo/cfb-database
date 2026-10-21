@@ -289,7 +289,7 @@ def advanced_game_stats_resource(
     Args:
         game_ids: Explicit CFBD game ids to load advanced box scores for.
         misses: When given (not None), a suppressed 400, an empty 200
-            (`if not data`), and a 5xx or request timeout after the client's
+            (`if not data`), and a 5xx or read timeout after the client's
             transient retries were exhausted, for a game id append that id
             here -- the caller
             (scripts/backfill_refresh.py) uses this to record that game as
@@ -299,18 +299,19 @@ def advanced_game_stats_resource(
             campaign's backlog). Unlike play_stats_resource, an empty 200
             here IS a miss: every game with a completed box score has
             advanced stats, so nothing back means the call didn't land.
-            When misses is None, only a 400 is suppressed; a 5xx or timeout
-            is re-raised. When misses is set but report is None, a
-            suppressed 5xx or timeout is recorded in misses and the resource
+            When misses is None, only a 400 is suppressed; a 5xx or read
+            timeout is re-raised. When misses is set but report is None, a
+            suppressed 5xx or read timeout is recorded in misses and the resource
             continues with no probe or outage machinery (only
             scripts/backfill_refresh.py passes report). When report is set
             (the backfill path), health tracking, probe-on-trip, and outage
             signaling are active: a confirmed outage sets report.outage and
-            returns normally so dlt keeps rows yielded so far. A per-game
-            request timeout after the client's retries counts exactly like a
+            returns normally so dlt keeps rows yielded so far. A per-game READ
+            timeout after the client's retries counts exactly like a
             persistent 5xx (run 39637616538: one ReadTimeout killed the whole
-            run at dlt's extract step); other transport errors are
-            endpoint-wide and stop the batch as an outage. In report mode NO
+            run at dlt's extract step); connect and pool timeouts and other
+            transport errors are endpoint-wide and stop the batch as an
+            outage. In report mode NO
             exception is allowed to escape this generator: a connection
             failure, 429 rate-limit exhaustion, or any other unrecoverable
             per-game error also sets report.outage and returns, because a
@@ -392,7 +393,7 @@ def advanced_game_stats_resource(
             return True
 
     def _note_server_failure(game_id: int, cause: str) -> bool:
-        """Record one game CFBD failed to serve (5xx or a timeout, both after
+        """Record one game CFBD failed to serve (5xx or a read timeout, both after
         the client's transient retries): a no_data miss, plus -- in report
         mode -- a server-error mark in the health window and the
         probe-on-trip check. Returns True when the probe confirmed the batch
@@ -459,19 +460,24 @@ def advanced_game_stats_resource(
                     report.outage = message
                     return
                 raise
-            except httpx.TimeoutException as e:
+            except httpx.ReadTimeout as e:
                 # Run 39637616538 (Historical Refresh #54, 2026-10-21): after
                 # persistent 5xx on five games, one request raised
                 # httpx.ReadTimeout and killed the whole run at dlt's extract
-                # step. A per-game timeout that survived the client's retries
-                # is the same signal as a persistent 5xx -- CFBD could not
-                # serve THIS game -- so it gets the identical treatment:
-                # no_data miss, server-error mark in the health window, and
-                # the probe decides bad data vs outage. A widespread run of
-                # timeouts fills the window, the probe times out too, and the
-                # run stops cleanly as an outage. Other transport errors
-                # (connection refused, DNS) stay on the outage stop below:
-                # they are endpoint-wide, not per-game.
+                # step. A READ timeout that survived the client's retries
+                # means the request reached CFBD and CFBD failed to answer
+                # for THIS game -- the same signal as a persistent 5xx -- so
+                # it gets the identical treatment: no_data miss, server-error
+                # mark in the health window, and the probe decides bad data
+                # vs outage. A widespread run of read timeouts fills the
+                # window, the probe times out too, and the run stops cleanly
+                # as an outage. Deliberately NOT the broader TimeoutException
+                # (Codex P1 on PR #158): ConnectTimeout and PoolTimeout are
+                # connection-level -- CFBD may never have received the
+                # request -- so retiring the game as no_data would silently
+                # drop it from the backlog; they stay on the outage stop
+                # below with the other endpoint-wide transport errors
+                # (connection refused, DNS).
                 if misses is not None:
                     if _note_server_failure(game_id, repr(e)):
                         return

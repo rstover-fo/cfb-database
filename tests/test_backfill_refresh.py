@@ -1059,6 +1059,130 @@ class TestOct19IncidentRegression:
         assert all(statuses[gid] == "refreshed" for gid in good)
 
 
+class TestOct21TimeoutRegression:
+    """Historical Refresh #54 (Actions run 39637616538, 2026-10-21): CFBD
+    returned 500 through every retry for the same five games, and then a
+    request to /game/box/advanced?id=401837096 raised httpx.ReadTimeout,
+    which surfaced through dlt as ResourceExtractionError/PipelineStepFailed
+    and killed the whole run -- bypassing the bad-data/outage logic entirely.
+    This replays that sequence (the first four games 5xx-exhausted, then the
+    ReadTimeout on 401837096) through the REAL resource and run_campaign with
+    mocked HTTP and DB only, and proves the timeout is counted like a
+    persistent 5xx: it fills the health window, the probe succeeds, the run
+    COMPLETES as a partial success, and all five games' no_data rows are
+    written."""
+
+    TIMEOUT_GAME_ID = 401837096
+    FIVE_HUNDRED_GAME_IDS = [401838337, 401838336, 401837115, 401837097]
+    GOOD_GAME_IDS = [401836219, 401833987, 401833986, 401833985, 401762521]
+
+    @pytest.fixture(autouse=True)
+    def _reset_advanced_box_health(self):
+        from src.pipelines.sources.stats import reset_advanced_box_health
+
+        reset_advanced_box_health()
+        yield
+        reset_advanced_box_health()
+
+    def test_run54_replay_timeout_counts_like_5xx_and_run_completes(self, monkeypatch):
+        import httpx
+
+        from scripts import backfill_refresh
+        from src.pipelines.sources.stats import ADVANCED_BOX_PROBE_FALLBACK_GAME_ID
+
+        bad = self.FIVE_HUNDRED_GAME_IDS + [self.TIMEOUT_GAME_ID]
+        good = self.GOOD_GAME_IDS
+        candidates = [(gid, 2025, 10) for gid in bad + good]
+
+        requested: list[int] = []
+
+        def fake_make_request(client, endpoint, params=None):
+            assert endpoint == "/game/box/advanced"
+            gid = params["id"]
+            requested.append(gid)
+            if gid == self.TIMEOUT_GAME_ID:
+                raise httpx.ReadTimeout("timed out after retries")
+            if gid in self.FIVE_HUNDRED_GAME_IDS:
+                request = httpx.Request("GET", "https://api.collegefootballdata.com" + endpoint)
+                response = httpx.Response(500, request=request)
+                raise httpx.HTTPStatusError("error", request=request, response=response)
+            return [{"gameId": gid, "team": "X"}]
+
+        loaded_rows: list[dict] = []
+
+        class FakePipeline:
+            def run(self, source):
+                loaded_rows.extend(source)
+                return {"ok": True}
+
+        ledger_calls = []
+
+        monkeypatch.setattr("src.pipelines.sources.stats.get_client", lambda: MagicMock())
+        monkeypatch.setattr("src.pipelines.sources.stats.make_request", fake_make_request)
+        monkeypatch.setattr(
+            backfill_refresh,
+            "insert_ledger_rows",
+            lambda conn, campaign, task, game_ids, misses=(): ledger_calls.append(
+                (task, list(game_ids), list(misses))
+            ),
+        )
+        monkeypatch.setattr(backfill_refresh, "get_month_spend", lambda conn: 0)
+        monkeypatch.setattr(backfill_refresh, "fetch_last_refreshed_game_id", lambda *a: None)
+        monkeypatch.setattr(
+            backfill_refresh, "fetch_unfinalized", lambda conn, campaign: ([], None)
+        )
+
+        class Limiter:
+            def check_budget(self, n):
+                return True
+
+        monkeypatch.setattr("src.pipelines.utils.rate_limiter.get_rate_limiter", lambda: Limiter())
+
+        row = {
+            "campaign": "2026-08-upstream-corrections",
+            "description": None,
+            "seasons": [2025],
+            "tasks": ["box_advanced"],
+            "created_at": None,
+            "completed_at": None,
+            "last_finalized_at": None,
+        }
+        monkeypatch.setattr(backfill_refresh, "get_or_create_campaign", lambda *a, **k: row)
+        monkeypatch.setattr(backfill_refresh, "fetch_candidate_games", lambda conn, s: candidates)
+        monkeypatch.setattr(backfill_refresh, "fetch_done_ids", lambda conn, campaign, task: set())
+        monkeypatch.setattr(backfill_refresh, "build_stats_pipeline", lambda: FakePipeline())
+
+        result = backfill_refresh.run_campaign(
+            object(),
+            "2026-08-upstream-corrections",
+            tasks_spec="box_advanced",
+            seasons_spec="2025",
+            max_calls=50,
+            batch_size=50,
+        )
+
+        # The ReadTimeout on 401837096 was the FIFTH server failure: it
+        # filled the window and tripped the probe, which re-checked the
+        # known-good fallback game -- then the drain continued. No crash.
+        assert requested == bad + [ADVANCED_BOX_PROBE_FALLBACK_GAME_ID] + good
+
+        # Partial success, not a dead run: run #54's failure mode is gone.
+        assert result["status"] == "ok"
+        assert "outage" not in result
+        assert result["bad_data_game_ids"] == bad
+        assert [r["gameId"] for r in loaded_rows] == good
+
+        # All five games -- the four 5xx-exhausted AND the timed-out one --
+        # are marked no_data in the single ledger write, requeueable later.
+        assert ledger_calls == [("box_advanced", bad + good, bad)]
+        values = build_ledger_values(
+            "2026-08-upstream-corrections", "box_advanced", bad + good, misses=bad
+        )
+        statuses = {gid: status for _c, _t, gid, _calls, status in values}
+        assert all(statuses[gid] == "no_data" for gid in bad)
+        assert all(statuses[gid] == "refreshed" for gid in good)
+
+
 def test_main_exit_code_maps_outage(monkeypatch):
     import psycopg2
 

@@ -410,12 +410,24 @@ flag, so they keep today's strict failure behavior.
 
 When the flag is on, failed sources that timed out after retries on a
 **non-critical** season-aggregate extract may be recorded as `tolerated`
-instead of failing the run, so downstream daily steps still run. The
-non-critical set is `{passing, rushing}` only; evidence and consumer sweep
-are in `docs/plans/2026-10-19-tolerate-season-aggregate-timeout-plan.md`
-(Revision 2 table). Any critical-source failure, any non-timeout error, or any
-mix of tolerable and non-tolerable failures still fails the run. A `partial`
-mart refresh still fails the run regardless of tolerated sources.
+instead of failing the run, so downstream daily steps still run. "Timed out"
+covers two shapes (since 2026-10-22): a client-side httpx timeout, and an
+exhausted HTTP **504 Gateway Timeout** -- the raised 120s season-aggregate
+read budget (PR #155) now outlasts CFBD's own gateway, so the same slow
+endpoint arrives as a 504 response instead of a read timeout (Daily Season
+Load run 39796553707). Other exhausted 5xx stay strict: a 502/503 is an
+outage, not a slow aggregate. The non-critical set is
+`{passing, passing_season, rushing}`; evidence and consumer sweep are in
+`docs/plans/2026-10-19-tolerate-season-aggregate-timeout-plan.md` (Revision 2
+table and Revision 4). `passing_season` loads only the two season-grain
+passing aggregates (`/passing/players/season`, `/passing/teams/season`) --
+split out of the `passing` source on 2026-10-22 so the chronically slow
+players endpoint cannot discard the ~60-call week-grain extract. Any
+critical-source failure, any non-timeout error, or any mix of tolerable and
+non-tolerable failures still fails the run. A `partial` mart refresh still
+fails the run regardless of tolerated sources. Every failed unit's exception
+type and message now print in the end-of-run summary block and in the GitHub
+step summary, so the real error survives the web UI's log truncation.
 
 **Repeat-miss guard:** `--tolerated-streak-limit` defaults to `3` (two
 consecutive tolerated days pass; the third fails). "Consecutive" is literal:
@@ -430,8 +442,9 @@ table or migration).
 **Operator response:** a run-summary **WARN** for a tolerated non-critical
 timeout needs no action — merge self-heals on the next successful pull. A
 streak-limit **failure** means investigate CFBD health and re-pull the missed
-charting source, e.g. `python scripts/load_season.py --sources passing` or
-`--sources rushing` for the affected season.
+source, e.g. `python scripts/load_season.py --sources passing_season`,
+`--sources passing`, or `--sources rushing` for the affected season (a full
+passing re-pull is `--sources passing,passing_season`).
 
 ### SQL refresh dependency planning (2026-09-08)
 

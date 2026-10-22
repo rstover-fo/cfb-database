@@ -922,6 +922,114 @@ class TestAdvancedGameStatsHealthAndProbe:
 
             assert isinstance(exc_info.value.__cause__, httpx.ReadTimeout)
 
+    def test_dict_shaped_200_is_a_miss_and_never_reaches_dlt(self):
+        """Historical Refresh #55 (run 39816658236, 2026-10-22): a 200
+        response carrying a JSON OBJECT instead of a list of row dicts was
+        `yield from`-ed as its KEY STRINGS, which dlt normalized into an
+        all-null row that violated game_id NOT NULL at the load stage and
+        lost the whole 50-game batch. The object response must become a
+        no_data miss, with nothing yielded for that game."""
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [
+                [{"gameId": 1, "team": "A"}],
+                {"gameInfo": None, "teams": [], "players": []},
+                [{"gameId": 3, "team": "B"}],
+            ]
+
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport()
+            results = list(
+                advanced_game_stats_resource(game_ids=[1, 2, 3], misses=misses, report=report)
+            )
+
+        # Only the good games' rows reached dlt -- no key strings, no rows
+        # without a gameId.
+        assert results == [{"gameId": 1, "team": "A"}, {"gameId": 3, "team": "B"}]
+        assert all(isinstance(r, dict) and r.get("gameId") is not None for r in results)
+        # The object-response game is a plain miss (ledger no_data,
+        # requeueable), answered as far as the health window is concerned.
+        assert misses == [2]
+        assert report.attempted == [1, 2, 3]
+        assert report.server_error_game_ids == []
+        assert report.outage is None
+
+    def test_rows_without_game_id_are_dropped_before_dlt(self):
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [
+                # One usable row, plus junk that must never reach dlt.
+                [{"gameId": 1, "team": "A"}, {"team": "orphan"}, None, "gameInfo"],
+                # Nothing usable at all -> a miss.
+                [{"team": "orphan-only"}],
+            ]
+
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport()
+            results = list(
+                advanced_game_stats_resource(game_ids=[1, 2], misses=misses, report=report)
+            )
+
+        assert results == [{"gameId": 1, "team": "A"}]
+        assert misses == [2]
+        assert report.attempted == [1, 2]
+
+    def test_miss_paths_yield_nothing_and_good_games_load(self):
+        """One game exhausting 5xx retries and one per-game read timeout,
+        inside a batch of good games: neither miss may emit anything into
+        the resource (no null-game_id rows), and the good games' rows all
+        come through."""
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [
+                [{"gameId": 1, "team": "A"}],
+                _http_error(500),
+                [{"gameId": 3, "team": "B"}],
+                httpx.ReadTimeout("timed out"),
+                [{"gameId": 5, "team": "C"}],
+            ]
+
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport()
+            results = list(
+                advanced_game_stats_resource(game_ids=[1, 2, 3, 4, 5], misses=misses, report=report)
+            )
+
+        assert results == [
+            {"gameId": 1, "team": "A"},
+            {"gameId": 3, "team": "B"},
+            {"gameId": 5, "team": "C"},
+        ]
+        assert all(isinstance(r, dict) and r.get("gameId") is not None for r in results)
+        assert misses == [2, 4]
+        assert report.server_error_game_ids == [2, 4]
+        assert report.attempted == [1, 2, 3, 4, 5]
+        assert report.outage is None
+
     def test_cross_batch_window_shared_across_invocations(self):
         from src.pipelines.sources.stats import (
             AdvancedBoxBatchReport,

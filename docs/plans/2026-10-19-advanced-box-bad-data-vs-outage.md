@@ -290,6 +290,23 @@ errors (connection refused, DNS). Covered by
 `TestOct21TimeoutRegression` (run-level replay of the #54 sequence) and the
 timeout tests in `tests/test_sources/test_stats.py`.
 
+## Amendment: unusable 200 payloads (Historical Refresh #55, run 39816658236, 2026-10-22)
+
+A 200 response carried a JSON OBJECT instead of the usual list of row
+dicts. `yield from` on a dict emits its KEY STRINGS, which dlt normalized
+into an all-null row (new variant column holding the string `gameInfo`)
+that violated `advanced_game_stats.game_id NOT NULL` at the LOAD stage —
+losing the whole 50-game batch after extraction had already succeeded. The
+miss paths themselves were verified against the run logs to yield nothing;
+the bad row came from the 200 path. Fix: `_usable_advanced_box_rows`
+filters every 200 payload before it reaches dlt — only dict rows with a
+non-null `gameId` (the source of the NOT NULL `game_id` primary-key
+column) are yielded, everything else is dropped with a warning, and a
+response with zero usable rows becomes a `no_data` miss for that game
+(requeueable), answered as far as the health window is concerned. Covered
+by the dict-shaped-200, rows-without-gameId, and mixed-batch miss-path
+tests in `tests/test_sources/test_stats.py`.
+
 ## Output contract
 
 Changed files: `src/pipelines/sources/stats.py`,

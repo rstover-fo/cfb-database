@@ -253,6 +253,37 @@ def advanced_team_stats_resource(years: list[int]) -> Iterator[dict]:
         client.close()
 
 
+def _usable_advanced_box_rows(game_id: int, data: object) -> list[dict]:
+    """The /game/box/advanced rows that may safely reach dlt: dicts carrying
+    a non-null ``gameId`` (the source of the table's NOT NULL ``game_id``
+    primary-key column). Everything else is dropped with a warning.
+
+    Historical Refresh #55 (run 39816658236, 2026-10-22): one 200 response
+    carried a JSON OBJECT instead of the usual list of row dicts. ``yield
+    from`` on a dict emits its KEYS, so dlt normalized the string 'gameInfo'
+    into an all-null row in a brand-new variant column, the insert violated
+    advanced_game_stats' game_id NOT NULL constraint at the LOAD stage, and
+    the whole 50-game batch was lost. A response with zero usable rows is a
+    no_data miss for that game (requeueable), never a yield.
+    """
+    if not data:
+        return []
+    if not isinstance(data, list):
+        logger.warning(
+            f"Advanced box response for game {game_id} is {type(data).__name__}, "
+            "not a list of rows; dropping it before it reaches dlt"
+        )
+        return []
+    rows = [row for row in data if isinstance(row, dict) and row.get("gameId") is not None]
+    dropped = len(data) - len(rows)
+    if dropped:
+        logger.warning(
+            f"Dropped {dropped} advanced box row(s) without a gameId for game {game_id} "
+            "before they reached dlt (game_id is NOT NULL in advanced_game_stats)"
+        )
+    return rows
+
+
 @dlt.resource(
     name="advanced_game_stats",
     write_disposition="merge",
@@ -288,8 +319,9 @@ def advanced_game_stats_resource(
 
     Args:
         game_ids: Explicit CFBD game ids to load advanced box scores for.
-        misses: When given (not None), a suppressed 400, an empty 200
-            (`if not data`), and a 5xx or read timeout after the client's
+        misses: When given (not None), a suppressed 400, an empty or
+            unusable 200 (no rows carrying a non-null gameId; see
+            _usable_advanced_box_rows), and a 5xx or read timeout after the client's
             transient retries were exhausted, for a game id append that id
             here -- the caller
             (scripts/backfill_refresh.py) uses this to record that game as
@@ -422,14 +454,17 @@ def advanced_game_stats_resource(
                     "/game/box/advanced",
                     params={"id": game_id},
                 )
-                if data:
-                    total += len(data)
-                    yield from data
+                rows = _usable_advanced_box_rows(game_id, data)
+                if rows:
+                    total += len(rows)
+                    yield from rows
                     if report is not None:
                         report.attempted.append(game_id)
                         health.record_answered(game_id, has_data=True)
                 else:
-                    logger.warning(f"No advanced box score for game {game_id} (empty response)")
+                    logger.warning(
+                        f"No advanced box score for game {game_id} (empty or unusable response)"
+                    )
                     if misses is not None:
                         misses.append(game_id)
                     if report is not None:

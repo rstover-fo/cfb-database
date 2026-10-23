@@ -307,6 +307,21 @@ response with zero usable rows becomes a `no_data` miss for that game
 by the dict-shaped-200, rows-without-gameId, and mixed-batch miss-path
 tests in `tests/test_sources/test_stats.py`.
 
+## Verification against Historical Refresh #56 (run 39988227198, 2026-10-23)
+
+Run #56 (on main, without this branch) hit the same all-null-row load crash
+via the stop-batch path: game 401836853 answered 500 six times then
+ReadTimeout, the broad handler stopped the batch "so rows loaded so far are
+kept and ledgered" — and the kept rows included the poison row from an
+unusable 200 earlier in the batch. On this branch both halves are already
+closed: the only `yield from` in the resource goes through
+`_usable_advanced_box_rows`, every stop path returns without yielding, and
+the ReadTimeout itself is a per-game miss rather than a stop.
+`test_run56_stop_batch_path_emits_no_null_rows` replays the combination
+(unusable 200, then the 401836853 ReadTimeout, then a connection failure
+that stops the batch) and asserts every row kept before the stop carries a
+non-null `gameId`.
+
 ## Output contract
 
 Changed files: `src/pipelines/sources/stats.py`,

@@ -1030,6 +1030,57 @@ class TestAdvancedGameStatsHealthAndProbe:
         assert report.attempted == [1, 2, 3, 4, 5]
         assert report.outage is None
 
+    def test_run56_stop_batch_path_emits_no_null_rows(self):
+        """Historical Refresh #56 (run 39988227198, 2026-10-23, on main
+        without this PR): game 401836853 hit 500s then a ReadTimeout on the
+        final attempt, the batch stopped via 'rows loaded so far are kept and
+        ledgered' -- and those kept rows included an all-null row from an
+        unusable 200 earlier in the batch, so dlt still died with
+        NotNullViolation on advanced_game_stats.game_id. This replays that
+        combination on this PR's code: the unusable 200 is filtered, the
+        ReadTimeout is a per-game miss (not a stop), and when a
+        connection-level failure later DOES stop the batch, every row kept
+        from before the stop carries a non-null gameId."""
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+
+        game_ids = [101, 102, 401836853, 104, 105, 106]
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request") as mock_make_request,
+        ):
+            mock_get_client.return_value = MagicMock()
+            mock_make_request.side_effect = [
+                [{"gameId": 101, "team": "A"}],
+                {"gameInfo": None, "teams": [], "players": []},  # unusable 200
+                httpx.ReadTimeout("The read operation timed out"),  # 401836853
+                [{"gameId": 104, "team": "B"}],
+                httpx.ConnectError("connection failed"),  # stops the batch
+                AssertionError("game 106 must never be requested"),
+            ]
+
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport()
+            results = list(
+                advanced_game_stats_resource(game_ids=game_ids, misses=misses, report=report)
+            )
+
+        # The rows kept before the stop are exactly the clean ones -- no key
+        # strings, no all-null rows, nothing lacking a gameId.
+        assert results == [{"gameId": 101, "team": "A"}, {"gameId": 104, "team": "B"}]
+        assert all(isinstance(r, dict) and r.get("gameId") is not None for r in results)
+        # The unusable 200 and the read timeout are per-game misses; the
+        # read timeout also counts toward the health window.
+        assert misses == [102, 401836853]
+        assert report.server_error_game_ids == [401836853]
+        # The connection failure stopped the batch: its game is not
+        # attempted (stays in the backlog) and the stop is an outage.
+        assert report.attempted == [101, 102, 401836853, 104]
+        assert report.outage is not None
+        assert report.budget_stop is None
+
     def test_cross_batch_window_shared_across_invocations(self):
         from src.pipelines.sources.stats import (
             AdvancedBoxBatchReport,

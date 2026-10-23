@@ -272,6 +272,56 @@ files, and the full `PATH="$PWD/.venv/bin:$PATH" .venv/bin/python -m pytest
   than the batch and asserts the ledger write happens before
   `finalize_campaign`, which runs before the outage result returns.
 
+## Amendment: per-game timeouts (Historical Refresh #54, run 39637616538, 2026-10-21)
+
+A request to `/game/box/advanced?id=401837096` raised `httpx.ReadTimeout`
+after the client's retries and surfaced through dlt as
+`ResourceExtractionError`/`PipelineStepFailed`, killing the run before the
+bad-data/outage logic saw it. Fix: `httpx.ReadTimeout` after retries is
+treated exactly like a persistent 5xx for that game — `no_data` miss,
+server-error mark in the health window, probe-on-trip — so a lone slow game
+drains past and a widespread run of read timeouts fills the window, times
+out the probe too, and stops cleanly as an outage. Deliberately NOT the
+broader `TimeoutException` (Codex P1 on PR #158): `ConnectTimeout` and
+`PoolTimeout` are connection-level — CFBD may never have received the
+request — so retiring the game as `no_data` would silently drop it from the
+backlog; they remain endpoint-wide outage stops with the other transport
+errors (connection refused, DNS). Covered by
+`TestOct21TimeoutRegression` (run-level replay of the #54 sequence) and the
+timeout tests in `tests/test_sources/test_stats.py`.
+
+## Amendment: unusable 200 payloads (Historical Refresh #55, run 39816658236, 2026-10-22)
+
+A 200 response carried a JSON OBJECT instead of the usual list of row
+dicts. `yield from` on a dict emits its KEY STRINGS, which dlt normalized
+into an all-null row (new variant column holding the string `gameInfo`)
+that violated `advanced_game_stats.game_id NOT NULL` at the LOAD stage —
+losing the whole 50-game batch after extraction had already succeeded. The
+miss paths themselves were verified against the run logs to yield nothing;
+the bad row came from the 200 path. Fix: `_usable_advanced_box_rows`
+filters every 200 payload before it reaches dlt — only dict rows with a
+non-null `gameId` (the source of the NOT NULL `game_id` primary-key
+column) are yielded, everything else is dropped with a warning, and a
+response with zero usable rows becomes a `no_data` miss for that game
+(requeueable), answered as far as the health window is concerned. Covered
+by the dict-shaped-200, rows-without-gameId, and mixed-batch miss-path
+tests in `tests/test_sources/test_stats.py`.
+
+## Verification against Historical Refresh #56 (run 39988227198, 2026-10-23)
+
+Run #56 (on main, without this branch) hit the same all-null-row load crash
+via the stop-batch path: game 401836853 answered 500 six times then
+ReadTimeout, the broad handler stopped the batch "so rows loaded so far are
+kept and ledgered" — and the kept rows included the poison row from an
+unusable 200 earlier in the batch. On this branch both halves are already
+closed: the only `yield from` in the resource goes through
+`_usable_advanced_box_rows`, every stop path returns without yielding, and
+the ReadTimeout itself is a per-game miss rather than a stop.
+`test_run56_stop_batch_path_emits_no_null_rows` replays the combination
+(unusable 200, then the 401836853 ReadTimeout, then a connection failure
+that stops the batch) and asserts every row kept before the stop carries a
+non-null `gameId`.
+
 ## Output contract
 
 Changed files: `src/pipelines/sources/stats.py`,

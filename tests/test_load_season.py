@@ -1378,6 +1378,58 @@ class TestPassingSeasonTimeoutTolerance:
         assert summary["results"]["games"]["status"] == "error"
         assert summary["errors"] == 1
 
+    def test_run_102_sequence_read_timeouts_on_retries_then_final_504_is_tolerated(self):
+        """Daily Season Load #102 (run 39968262511, 2026-10-23), the exact
+        sequence from its log: /passing/players/season burned all six
+        transient retries on read timeouts and server disconnects, and the
+        seventh (final) attempt returned 504 Gateway Timeout -- 972s, run
+        red. Drive the REAL CFBDClient retry loop through that sequence,
+        then feed the exception it actually raises through the tolerance
+        path and assert the unit ends tolerated."""
+        from src.pipelines.utils.api_client import CFBDClient, RateLimitBreaker
+
+        client = CFBDClient(api_key="test-key", breaker=RateLimitBreaker())
+        request = httpx.Request(
+            "GET", "https://api.collegefootballdata.com/passing/players/season?year=2026"
+        )
+        attempts = [
+            httpx.ReadTimeout("The read operation timed out"),
+            httpx.RemoteProtocolError("Server disconnected without sending a response."),
+            httpx.ReadTimeout("The read operation timed out"),
+            httpx.ReadTimeout("The read operation timed out"),
+            httpx.ReadTimeout("The read operation timed out"),
+            httpx.ReadTimeout("The read operation timed out"),
+            httpx.Response(504, request=request),
+        ]
+        try:
+            with (
+                patch.object(client._client, "get", side_effect=attempts) as mock_get,
+                patch("src.pipelines.utils.api_client.time.sleep"),
+            ):
+                with pytest.raises(httpx.HTTPStatusError) as excinfo:
+                    client.get("/passing/players/season", params={"year": 2026})
+        finally:
+            client.close()
+
+        raised = excinfo.value
+        assert mock_get.call_count == 7  # 1 attempt + TRANSIENT_MAX_RETRIES
+        assert raised.response.status_code == 504
+
+        def _dlt_wrapped(*_args, **_kwargs):
+            raise RuntimeError("Pipeline execution failed at step=extract") from raised
+
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", return_value="ok"),
+            patch("src.pipelines.run.run_passing_season_pipeline", side_effect=_dlt_wrapped),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing", "passing_season"])
+
+        assert summary["results"]["passing"]["status"] == "ok"
+        assert summary["results"]["passing_season"]["status"] == "tolerated"
+        assert summary["errors"] == 0
+        assert summary["tolerated"] == ["passing_season"]
+
     def test_504_on_the_whole_passing_unit_is_also_tolerated(self):
         """Belt and suspenders: even if a 504 hits a week-grain passing
         endpoint, the passing unit is non-critical and the downgrade applies."""

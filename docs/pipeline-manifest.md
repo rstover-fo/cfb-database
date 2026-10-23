@@ -234,13 +234,24 @@ bare year. Deliberately its own module/source (`cfbd_passing`), not folded into
 `stats.py` -- see passing.py's module docstring for why (stats.py's sibling-failure
 blast radius must not grow by five more resources).
 
+Rows 74-75 ship in their own source since 2026-10-22 (`passing_season_source` in
+passing.py, load unit `passing_season` in load_season.py's SOURCE_ORDER): a dlt
+source failure discards every sibling resource's extract, and Daily Season Load
+#99-#101 showed `/passing/players/season` timing out after retries (read timeout,
+then 504 Gateway Timeout once PR #155's 120s read budget outlasted CFBD's own
+gateway) and discarding the ~60 already-fetched week-grain calls, three days
+straight. Both sources keep the `cfbd_passing` dlt schema and pipeline identity
+(the PR #157 player_success pattern), so tables, merge dispositions, and primary
+keys are unchanged; only the extract/failure unit moved. A full re-pull is now
+`--sources passing,passing_season`.
+
 | # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
 |---|---|---|---|---|---|---|---|---|---|
 | 71 | `/passing/plays` | stats.passing_plays | passing.py | passing_plays_resource | YES | merge | game_id, play_id | 2025-2026 | WORKING (2025 backfilled 2026-08-30; weekly 2025 re-pull cadence per `docs/handoffs/2026-09-01-charting-convergence-watch.md`) |
 | 72 | `/passing/players/games` | stats.passing_player_games | passing.py | passing_player_games_resource | YES | merge | game_id, player_id | 2025-2026 | WORKING (2025 backfilled 2026-08-30; weekly 2025 re-pull cadence per `docs/handoffs/2026-09-01-charting-convergence-watch.md`) |
 | 73 | `/passing/teams/games` | stats.passing_team_games | passing.py | passing_team_games_resource | YES | merge | game_id, team | 2025-2026 | WORKING (2025 backfilled 2026-08-30; weekly 2025 re-pull cadence per `docs/handoffs/2026-09-01-charting-convergence-watch.md`) |
-| 74 | `/passing/players/season` | stats.passing_player_season | passing.py | passing_player_season_resource | YES | merge | season, player_id, team | 2025-2026 | WORKING (2025 backfilled 2026-08-30; weekly 2025 re-pull cadence per `docs/handoffs/2026-09-01-charting-convergence-watch.md`) |
-| 75 | `/passing/teams/season` | stats.passing_team_season | passing.py | passing_team_season_resource | YES | merge | season, team | 2025-2026 | WORKING (2025 backfilled 2026-08-30; weekly 2025 re-pull cadence per `docs/handoffs/2026-09-01-charting-convergence-watch.md`) |
+| 74 | `/passing/players/season` | stats.passing_player_season | passing.py | passing_player_season_resource | YES (own source `passing_season_source` / load unit `passing_season` since 2026-10-22 -- see note above) | merge | season, player_id, team | 2025-2026 | WORKING (2025 backfilled 2026-08-30; weekly 2025 re-pull cadence per `docs/handoffs/2026-09-01-charting-convergence-watch.md`) |
+| 75 | `/passing/teams/season` | stats.passing_team_season | passing.py | passing_team_season_resource | YES (own source `passing_season_source` / load unit `passing_season` since 2026-10-22 -- see note above) | merge | season, team | 2025-2026 | WORKING (2025 backfilled 2026-08-30; weekly 2025 re-pull cadence per `docs/handoffs/2026-09-01-charting-convergence-watch.md`) |
 
 ### Rushing (spec v5.26.0, 2026-09-03)
 

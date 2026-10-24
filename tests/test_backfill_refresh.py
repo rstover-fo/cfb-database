@@ -1183,6 +1183,155 @@ class TestOct21TimeoutRegression:
         assert all(statuses[gid] == "refreshed" for gid in good)
 
 
+class TestOct24NoDataPathRegression:
+    """Historical Refresh #57 (run 40107329456, 2026-10-24, on main without
+    this PR): ~10 consecutive games were marked no-data on the
+    500-after-retries path (last one 401836039), the batch COMPLETED
+    extraction ('Loaded 87 total records from 50 games'), and dlt still died
+    at load with the all-null NotNullViolation on advanced_game_stats.game_id
+    -- proving the poison row rides along on the 200 path while the no-data
+    warnings themselves yield nothing. This replays a full 50-game batch of
+    that shape through the REAL resource and run_campaign (mocked HTTP and
+    DB only) and asserts no row without a gameId ever reaches the pipeline,
+    on any path."""
+
+    # Consecutive 500-exhausted games, newest-first, from the run #55/#57
+    # logs; 401836039 is run #57's last logged no-data game.
+    BAD_GAME_IDS = [
+        401838337,
+        401838336,
+        401837115,
+        401837097,
+        401837096,
+        401837095,
+        401837075,
+        401837055,
+        401837035,
+        401836039,
+    ]
+    # 40 older games filling the 50-game batch; the first one requested
+    # answers 200 with an unusable OBJECT payload (the run #55/#56/#57
+    # poison) and must be filtered at the choke point.
+    GOOD_GAME_IDS = list(range(401835039, 401834999, -1))
+    DICT_RESPONSE_GAME_ID = 401835039
+
+    @pytest.fixture(autouse=True)
+    def _reset_advanced_box_health(self):
+        from src.pipelines.sources.stats import reset_advanced_box_health
+
+        reset_advanced_box_health()
+        yield
+        reset_advanced_box_health()
+
+    def test_run57_batch_of_50_loads_no_null_game_id_rows(self, monkeypatch):
+        import httpx
+
+        from scripts import backfill_refresh
+        from src.pipelines.sources.stats import ADVANCED_BOX_PROBE_FALLBACK_GAME_ID
+
+        bad = self.BAD_GAME_IDS
+        good = self.GOOD_GAME_IDS
+        candidates = [(gid, 2025, 10) for gid in bad + good]
+
+        requested: list[int] = []
+
+        def fake_make_request(client, endpoint, params=None):
+            assert endpoint == "/game/box/advanced"
+            gid = params["id"]
+            requested.append(gid)
+            if gid in bad:
+                request = httpx.Request("GET", "https://api.collegefootballdata.com" + endpoint)
+                response = httpx.Response(500, request=request)
+                raise httpx.HTTPStatusError("error", request=request, response=response)
+            if gid == self.DICT_RESPONSE_GAME_ID:
+                return {"gameInfo": None, "teams": [], "players": []}
+            return [{"gameId": gid, "team": "X"}]
+
+        loaded_rows: list = []
+
+        class FakePipeline:
+            def run(self, source):
+                loaded_rows.extend(source)
+                return {"ok": True}
+
+        ledger_calls = []
+
+        monkeypatch.setattr("src.pipelines.sources.stats.get_client", lambda: MagicMock())
+        monkeypatch.setattr("src.pipelines.sources.stats.make_request", fake_make_request)
+        monkeypatch.setattr(
+            backfill_refresh,
+            "insert_ledger_rows",
+            lambda conn, campaign, task, game_ids, misses=(): ledger_calls.append(
+                (task, list(game_ids), list(misses))
+            ),
+        )
+        monkeypatch.setattr(backfill_refresh, "get_month_spend", lambda conn: 0)
+        monkeypatch.setattr(backfill_refresh, "fetch_last_refreshed_game_id", lambda *a: None)
+        monkeypatch.setattr(
+            backfill_refresh, "fetch_unfinalized", lambda conn, campaign: ([], None)
+        )
+
+        class Limiter:
+            def check_budget(self, n):
+                return True
+
+        monkeypatch.setattr("src.pipelines.utils.rate_limiter.get_rate_limiter", lambda: Limiter())
+
+        row = {
+            "campaign": "2026-08-upstream-corrections",
+            "description": None,
+            "seasons": [2025],
+            "tasks": ["box_advanced"],
+            "created_at": None,
+            "completed_at": None,
+            "last_finalized_at": None,
+        }
+        monkeypatch.setattr(backfill_refresh, "get_or_create_campaign", lambda *a, **k: row)
+        monkeypatch.setattr(backfill_refresh, "fetch_candidate_games", lambda conn, s: candidates)
+        monkeypatch.setattr(backfill_refresh, "fetch_done_ids", lambda conn, campaign, task: set())
+        monkeypatch.setattr(backfill_refresh, "build_stats_pipeline", lambda: FakePipeline())
+
+        result = backfill_refresh.run_campaign(
+            object(),
+            "2026-08-upstream-corrections",
+            tasks_spec="box_advanced",
+            seasons_spec="2025",
+            max_calls=50,
+            batch_size=50,
+        )
+
+        # THE run #57 assertion: nothing lacking a non-null gameId reached
+        # the pipeline -- not from the ten 500-exhausted games, not from the
+        # unusable 200, not from anywhere else in the 50-game batch.
+        assert loaded_rows, "the good games' rows must load"
+        assert all(isinstance(r, dict) and r.get("gameId") is not None for r in loaded_rows)
+        assert [r["gameId"] for r in loaded_rows] == good[1:]  # all but the dict-200 game
+
+        # The window tripped twice inside the bad cluster (at the 5th and
+        # 10th consecutive 5xx); both probes hit the known-good fallback and
+        # draining continued through the full batch -- no crash, no stop.
+        probe = ADVANCED_BOX_PROBE_FALLBACK_GAME_ID
+        assert requested == bad[:5] + [probe] + bad[5:] + [probe] + good
+
+        assert result["status"] == "ok"
+        assert "outage" not in result
+        assert result["bad_data_game_ids"] == bad
+
+        # One completed 50-game ledger write: the ten 5xx games AND the
+        # unusable-200 game are no_data (requeueable), the rest refreshed.
+        assert ledger_calls == [("box_advanced", bad + good, bad + [self.DICT_RESPONSE_GAME_ID])]
+        values = build_ledger_values(
+            "2026-08-upstream-corrections",
+            "box_advanced",
+            bad + good,
+            misses=bad + [self.DICT_RESPONSE_GAME_ID],
+        )
+        statuses = {gid: status for _c, _t, gid, _calls, status in values}
+        assert all(statuses[gid] == "no_data" for gid in bad)
+        assert statuses[self.DICT_RESPONSE_GAME_ID] == "no_data"
+        assert all(statuses[gid] == "refreshed" for gid in good[1:])
+
+
 def test_main_exit_code_maps_outage(monkeypatch):
     import psycopg2
 

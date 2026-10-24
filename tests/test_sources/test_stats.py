@@ -1081,6 +1081,27 @@ class TestAdvancedGameStatsHealthAndProbe:
         assert report.outage is not None
         assert report.budget_stop is None
 
+    def test_single_choke_point_for_rows_reaching_dlt(self):
+        """Every no-data path (500-retries-exhausted, read timeout, 400,
+        empty/unusable 200) and every stop path must be unable to emit a
+        null-game_id row BY CONSTRUCTION: the resource has exactly one yield
+        statement, and it is fed by _usable_advanced_box_rows. A second
+        yield, or a yield that bypasses the filter, reintroduces the run
+        #55/#56/#57 NotNullViolation class of failure."""
+        import inspect
+        import re
+
+        from src.pipelines.sources import stats as stats_module
+
+        module_src = inspect.getsource(stats_module)
+        fn_src = module_src.split("def advanced_game_stats_resource", 1)[1]
+        fn_src = fn_src.split("\n@dlt.resource", 1)[0]
+
+        yield_statements = re.findall(r"^\s*yield\b.*$", fn_src, re.MULTILINE)
+        assert len(yield_statements) == 1
+        assert yield_statements[0].strip() == "yield from rows"
+        assert "rows = _usable_advanced_box_rows(game_id, data)" in fn_src
+
     def test_cross_batch_window_shared_across_invocations(self):
         from src.pipelines.sources.stats import (
             AdvancedBoxBatchReport,

@@ -322,6 +322,23 @@ the ReadTimeout itself is a per-game miss rather than a stop.
 that stops the batch) and asserts every row kept before the stop carries a
 non-null `gameId`.
 
+## Verification against Historical Refresh #57 (run 40107329456, 2026-10-24)
+
+Run #57 (on main, without this branch) crashed with the same all-null
+NotNullViolation after a batch that COMPLETED extraction ("Loaded 87 total
+records from 50 games") — ~10 consecutive games were marked no-data on the
+500-after-retries path (last one 401836039) and the poison row rode along
+on the 200 path. The null-row defense is a single choke point, not
+per-path patches: the resource has exactly one yield statement, `yield
+from rows`, fed by `_usable_advanced_box_rows`, so no miss, stop, or
+success path can emit a row without a non-null `gameId`. Pinned by
+`test_single_choke_point_for_rows_reaching_dlt` (source-level: exactly one
+yield, through the filter) and
+`TestOct24NoDataPathRegression::test_run57_batch_of_50_loads_no_null_game_id_rows`
+(a full 50-game batch with the ten-game 5xx cluster, two probe trips, and
+an unusable 200, asserting nothing lacking a `gameId` reaches the
+pipeline).
+
 ## Output contract
 
 Changed files: `src/pipelines/sources/stats.py`,

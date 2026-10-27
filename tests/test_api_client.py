@@ -57,6 +57,39 @@ class TestCFBDClient:
 
         client.close()
 
+    def test_204_and_blank_bodies_parse_as_no_data(self):
+        """Run 40552220540 (Historical Refresh #60): /game/box/advanced
+        answered 204 No Content for game 401838337 and response.json()
+        raised JSONDecodeError, crashing the drain on its first game. A 2xx
+        with an empty or whitespace body is the server's no-data answer and
+        must parse as [] -- the shape every caller already treats as
+        expected no-data."""
+        client = CFBDClient(api_key="test-key")
+        request = httpx.Request("GET", "https://fixture")
+        for reply in (
+            httpx.Response(204, request=request),
+            httpx.Response(200, content=b"", request=request),
+            httpx.Response(200, content=b"  \n ", request=request),
+        ):
+            with patch.object(client._client, "get", return_value=reply):
+                assert client.get("/game/box/advanced") == []
+        client.close()
+
+    def test_malformed_nonempty_body_still_raises(self):
+        """The 204/blank-body guard must not swallow real decode failures:
+        a non-empty unparseable body (e.g. a proxy HTML error page) still
+        raises, so it cannot masquerade as expected no-data."""
+        client = CFBDClient(api_key="test-key")
+        reply = httpx.Response(
+            200,
+            content=b"<html>gateway error</html>",
+            request=httpx.Request("GET", "https://fixture"),
+        )
+        with patch.object(client._client, "get", return_value=reply):
+            with pytest.raises(ValueError):
+                client.get("/game/box/advanced")
+        client.close()
+
     def test_get_with_params(self):
         client = CFBDClient(api_key="test-key")
         mock_response = MagicMock()

@@ -339,6 +339,24 @@ yield, through the filter) and
 an unusable 200, asserting nothing lacking a `gameId` reaches the
 pipeline).
 
+## Amendment: 204 / blank bodies (Historical Refresh #60, run 40552220540, 2026-10-27)
+
+`/game/box/advanced` answered `204 No Content` for game 401838337;
+`CFBDClient.get`'s `response.json()` raised `JSONDecodeError`, and the
+batch stopped on its FIRST game — zero backlog progress, repeating every
+run since the 204 is deterministic. Fix at the parse boundary in
+`src/pipelines/utils/api_client.py`: a 2xx with status 204 or an
+empty/whitespace body parses as `[]` (the server's no-data answer), which
+flows through the resource's existing empty/unusable choke point — a
+`no_data` miss, ledgered and requeueable, counted as answered by the
+health window, batch continues. The `expected_empty` admission
+classification treats the same bodies as `expected_no_data`. A malformed
+NON-empty body (proxy HTML) still raises, so a widespread CDN failure
+cannot silently drain the backlog into `no_data`. Covered by the
+client-level 204/blank/malformed tests in `tests/test_api_client.py` and
+an end-to-end replay of game 401838337's 204 through the real client,
+`make_request`, and the resource in `tests/test_sources/test_stats.py`.
+
 ## Output contract
 
 Changed files: `src/pipelines/sources/stats.py`,

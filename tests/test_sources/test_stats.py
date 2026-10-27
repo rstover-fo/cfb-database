@@ -1102,6 +1102,65 @@ class TestAdvancedGameStatsHealthAndProbe:
         assert yield_statements[0].strip() == "yield from rows"
         assert "rows = _usable_advanced_box_rows(game_id, data)" in fn_src
 
+    def test_run60_204_no_content_is_a_no_data_miss_end_to_end(self):
+        """Historical Refresh #60 (run 40552220540, 2026-10-27, on main
+        without this PR): /game/box/advanced answered 204 No Content for
+        game 401838337, the client raised JSONDecodeError parsing the empty
+        body, and the batch stopped on its FIRST game -- zero backlog
+        progress, repeating every run. End-to-end through the REAL
+        CFBDClient and make_request (only the HTTP transport and the local
+        rate limiter are faked): the 204 parses as [], flows through the
+        same choke point as every other no-data path (a miss, ledgerable as
+        no_data), the rest of the batch loads, and no row without a gameId
+        is emitted."""
+        from src.pipelines.sources import base as base_module
+        from src.pipelines.sources.stats import (
+            AdvancedBoxBatchReport,
+            advanced_game_stats_resource,
+        )
+        from src.pipelines.utils.api_client import CFBDClient
+
+        def fake_transport_get(endpoint, params=None, **kwargs):
+            request = httpx.Request("GET", "https://fixture" + endpoint)
+            gid = params["id"]
+            if gid == 401838337:
+                return httpx.Response(204, request=request)
+            return httpx.Response(200, json=[{"gameId": gid, "team": "X"}], request=request)
+
+        class StubLimiter:
+            def check_budget(self, n=1):
+                return True
+
+            def record_call(self):
+                return None
+
+        client = CFBDClient(api_key="test-key")
+        with (
+            patch("src.pipelines.sources.stats.get_client", return_value=client),
+            patch.object(client._client, "get", side_effect=fake_transport_get),
+            patch.object(base_module, "get_rate_limiter", return_value=StubLimiter()),
+        ):
+            misses: list[int] = []
+            report = AdvancedBoxBatchReport()
+            results = list(
+                advanced_game_stats_resource(
+                    game_ids=[401838400, 401838337, 401838300], misses=misses, report=report
+                )
+            )
+
+        assert results == [
+            {"gameId": 401838400, "team": "X"},
+            {"gameId": 401838300, "team": "X"},
+        ]
+        assert all(isinstance(r, dict) and r.get("gameId") is not None for r in results)
+        # The 204 game is a plain no-data miss: ledgerable, requeueable,
+        # answered as far as the health window is concerned, no stop.
+        assert misses == [401838337]
+        assert report.attempted == [401838400, 401838337, 401838300]
+        assert report.server_error_game_ids == []
+        assert report.outage is None
+        assert report.budget_stop is None
+
     def test_cross_batch_window_shared_across_invocations(self):
         from src.pipelines.sources.stats import (
             AdvancedBoxBatchReport,

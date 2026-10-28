@@ -123,6 +123,13 @@ def stats_source(
     dropped the `year` query parameter it depended on, so every year-scoped
     call now 400s. It is retained in this module, game-id-driven, for a
     future historical-refresh campaign; see its docstring.
+
+    Note: `player_success_season_resource` is also NOT in this source's
+    return list -- it ships in its own source, `player_success_source`
+    below, since 2026-10-19. A dlt source failure discards every sibling
+    resource's extract, and Daily Season Load #98 showed a timeout on
+    `/stats/player/success` discarding the critical advanced_team_stats /
+    player_returning / player_season_stats / player_usage extracts with it.
     """
     if years is None:
         if mode == "incremental":
@@ -138,7 +145,6 @@ def stats_source(
         player_returning_resource(years),
         play_stats_resource(years),
         game_havoc_resource(years),
-        player_success_season_resource(years),
         player_success_game_resource(years),
         game_advanced_resource(years),
     ]
@@ -151,6 +157,60 @@ def stats_source(
     if unknown:
         raise ValueError(f"Unknown stats resource(s): {unknown}. Valid: {sorted(by_name)}")
     return [by_name[name] for name in only]
+
+
+@dlt.source(name="cfbd_stats")
+def player_success_source(
+    years: list[int] | None = None,
+    mode: str = "incremental",
+) -> DltSource:
+    """Season player success-rate splits, isolated from the critical stats source.
+
+    Exactly one resource: player_success_season (`/stats/player/success`,
+    one call per year, table stats.player_success_season). Split out of
+    stats_source on 2026-10-19 after Daily Season Load #98: a dlt source
+    failure discards every sibling resource's extract, so a read timeout on
+    this one endpoint was discarding the whole stats extract --
+    advanced_team_stats, player_returning, player_season_stats and
+    player_usage, all consumed by build_features.py, the API views, and
+    several marts. As its own load unit, its failure costs only its own
+    table, which has no downstream reader (sweep re-verified 2026-10-19:
+    grants and catalog metadata only), so scripts/load_season.py classifies
+    `player_success` non-critical while `stats` stays critical.
+
+    DELIBERATELY name="cfbd_stats", the same dlt schema name as
+    stats_source, and the runner (run.py::run_player_success_pipeline)
+    deliberately reuses pipeline_name="cfbd_stats" and dataset_name="stats"
+    (Codex review on PR #157, P1). stats.player_success_season's recorded
+    layout is a product of the stored cfbd_stats schema's history: the
+    success-rate fields were first inferred as bigint, and fractional values
+    live in the variant twins passing__success_rate__v_double /
+    rushing__success_rate__v_double (src/schemas/baseline/
+    20260907_pre_f05.sql). A NEW schema name would start a fresh dlt schema
+    that infers those fields as double and writes them at the bigint base
+    columns -- a type conflict with the existing destination table on the
+    first load, not a clean continuation. Keeping the cfbd_stats identity
+    makes dlt restore the stored schema (variant layout included) from the
+    destination and normalize exactly as before the split. Failure isolation
+    does not come from the schema name; it comes from running as a separate
+    pipeline.run() call: the stats load unit has already committed (or
+    failed) on its own by the time this source extracts.
+
+    The resource function is also shared with the pre-split source, so the
+    table name, columns, merge disposition, and primary key are
+    byte-identical: no DB change, existing rows untouched.
+
+    Args:
+        years: Specific years to load. If None, uses mode to determine years.
+        mode: "incremental" loads current season, "backfill" loads all historical.
+    """
+    if years is None:
+        if mode == "incremental":
+            years = [get_current_season()]
+        else:  # backfill
+            years = YEAR_RANGES["stats"].to_list()
+
+    return [player_success_season_resource(years)]
 
 
 @dlt.resource(

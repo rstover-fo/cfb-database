@@ -208,9 +208,14 @@ note and the summary note below.
 
 See row 30b for `/ratings/srs/expanded` (ratings.srs_expanded) and rows 67-68 below for
 the two `/stats/player/success*` endpoints -- kept with their thematic groups above rather
-than renumbered into this section.
+than renumbered into this section. Row 67 ships in its own source since 2026-10-19
+(`player_success_source` in stats.py, load unit `player_success` in load_season.py's
+SOURCE_ORDER): a dlt source failure discards every sibling resource's extract, and Daily
+Season Load #98 showed a `/stats/player/success` read timeout discarding the whole
+critical `stats` extract. The table, merge disposition, and primary key are unchanged;
+only the extract/failure unit moved.
 
-| 67 | `/stats/player/success` | stats.player_success_season | stats.py | player_success_season_resource | YES | merge | season, id, team | 2014-2026 | WORKING (not yet backfilled) |
+| 67 | `/stats/player/success` | stats.player_success_season | stats.py | player_success_season_resource | YES (own source `player_success_source` / load unit `player_success` since 2026-10-19 -- see note above) | merge | season, id, team | 2014-2026 | WORKING (not yet backfilled) |
 | 68 | `/stats/player/success/game` | stats.player_success_game | stats.py | player_success_game_resource | YES | merge | game_id, id | 2014-2026 | WORKING (not yet backfilled) |
 
 Rows 69-70 (A4 unit, 2026-08-29) are the two per-entity fan-out drainers left PENDING by

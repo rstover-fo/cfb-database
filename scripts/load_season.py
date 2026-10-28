@@ -40,6 +40,7 @@ SOURCE_ORDER = [
     "game_stats",  # Team and player box scores
     "plays",  # Play-by-play (largest dataset)
     "stats",  # Aggregated season stats
+    "player_success",  # /stats/player/success season splits -- own unit, see stats.py
     "passing",  # /passing charting: air yards, aDOT, depth/direction/location, YAC (2025+)
     "passing_season",  # /passing season aggregates -- own unit, see passing.py
     "rushing",  # /rushing charting: rusher attribution, rush direction, TD status (2025+)
@@ -87,8 +88,14 @@ ESTIMATED_CALLS = {
     # and game_advanced makes 2 calls (regular+postseason) -- the source
     # tracks the season's schedule rather than its resource count. The old
     # estimate understated a daily run by ~80x and hid this source behind
-    # "plays" in every budget projection.
-    "stats": 1_675,
+    # "plays" in every budget projection. Was 1,675 until 2026-10-19, when
+    # player_success_season (1 call/year) moved into its own source below.
+    "stats": 1_674,
+    # One /stats/player/success call per year. Its own load unit (split out
+    # of `stats` 2026-10-19, Daily Season Load #98) so a timeout on this one
+    # endpoint cannot discard the critical stats extract -- see stats.py's
+    # player_success_source.
+    "player_success": 1,
     # /passing charting (passing.py): 3 week-iterated resources
     # (passing_plays, passing_player_games, passing_team_games) x ~20 calls
     # each (regular weeks 1-16 + postseason weeks 1-4) = 60. Zero calls for
@@ -212,6 +219,10 @@ IMMUTABLE_ONCE_FINAL = frozenset(
         "game_stats",
         "plays",
         "stats",
+        # player_success: split out of stats (2026-10-19) but keeps stats'
+        # immutable-once-final policy -- a finished season's success-rate
+        # splits cannot change; corrections ride explicit --season re-runs.
+        "player_success",
         # passing (passing.py): same immutable-once-final policy as stats --
         # a finished season's charting is only immutable-ish, since
         # parseStatus="partial" rows may be re-charted by CFBD's upstream
@@ -307,17 +318,24 @@ RESOURCE_FILTERABLE = frozenset({"stats"})
 # asked for exactly the right data under the name the warehouse shows them.
 RESOURCE_ALIASES = {"stats": {"returning_production": "player_returning"}}
 
-# Non-critical for daily-run exit status: stats.passing_* and stats.rushing_*
+# Non-critical for daily-run exit status. stats.passing_* and stats.rushing_*
 # feed only charting marts (marts.passing_charting_*, marts.rushing_charting_*)
-# and cfb-app API views. `passing_season` carries two of those passing tables
+# and cfb-app API views; `passing_season` carries two of those passing tables
 # (passing_player_season, passing_team_season) -- split out of `passing` on
 # 2026-10-22 so a timeout on the chronically slow /passing/players/season
 # cannot discard the week-grain extract -- and inherits the same reasoning.
-# No daily downstream step (Elo, adjusted EPA, predictions, features,
-# projections, flat files, verify_load) reads any of them; all three sources
-# merge, so a missed day self-heals on the next successful run. Everything
-# else in SOURCE_ORDER stays critical.
-NON_CRITICAL_SOURCES = frozenset({"passing", "passing_season", "rushing"})
+# stats.player_success_season -- the player_success source's only table,
+# split out of `stats` on 2026-10-19 for the same shared-extract reason --
+# has NO reader at all (sweep re-verified 2026-10-19 across marts,
+# api/public/scouting SQL, mcp/, scripts, flat files, recaps: grants and
+# catalog metadata only). No daily downstream step (Elo, adjusted EPA,
+# predictions, features, projections, flat files, verify_load) reads any of
+# them; all four sources merge, so a missed day self-heals on the next
+# successful run. `stats` itself stays CRITICAL: its remaining resources
+# (advanced_team_stats, player_returning, player_season_stats, player_usage,
+# play_stats, ...) feed build_features.py, the API views, the scouting mart,
+# and several marts. Everything else in SOURCE_ORDER stays critical.
+NON_CRITICAL_SOURCES = frozenset({"passing", "passing_season", "rushing", "player_success"})
 
 
 def resolve_resource_names(source: str, names: list[str]) -> list[str]:
@@ -763,6 +781,7 @@ def load_season(
         run_passing_pipeline,
         run_passing_season_pipeline,
         run_player_overview_pipeline,
+        run_player_success_pipeline,
         run_playoffs_pipeline,
         run_plays_pipeline,
         run_rankings_pipeline,
@@ -907,6 +926,7 @@ def load_season(
         "game_stats": game_stats_runner,
         "plays": lambda: run_plays_pipeline(years=[season]),
         "stats": lambda: run_stats_pipeline(years=[season], only=resource_filters.get("stats")),
+        "player_success": lambda: run_player_success_pipeline(years=[season]),
         "passing": lambda: run_passing_pipeline(years=[season]),
         "passing_season": lambda: run_passing_season_pipeline(years=[season]),
         "rushing": lambda: run_rushing_pipeline(years=[season]),

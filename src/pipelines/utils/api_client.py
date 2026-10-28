@@ -355,8 +355,10 @@ class CFBDClient:
                 # Only a caller with an explicit empty-response contract may
                 # classify no-data. Invalid JSON is still a received 2xx;
                 # get() will surface its decoding error after recording it.
+                # A 204/blank body counts as no-data here for the same
+                # reason get() parses it as [].
                 try:
-                    if response.json() == []:
+                    if status == 204 or not response.text.strip() or response.json() == []:
                         state = "expected_no_data"
                 except ValueError:
                     pass
@@ -452,6 +454,16 @@ class CFBDClient:
                 # Any success clears the breaker: a transient burst block that
                 # resolves must not accumulate toward the quota threshold.
                 breaker.record_success()
+                if response.status_code == 204 or not response.text.strip():
+                    # HTTP "no content" (run 40552220540, Historical Refresh
+                    # #60): /game/box/advanced answered 204 for game
+                    # 401838337 and response.json() raised JSONDecodeError,
+                    # which crashed the drain on its first game. An empty or
+                    # whitespace body on a 2xx IS the server's no-data
+                    # answer, and every caller already treats [] as expected
+                    # no-data. A malformed NON-empty body still raises the
+                    # decode error below.
+                    return []
                 return response.json()
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:  # Rate limited

@@ -253,6 +253,37 @@ def advanced_team_stats_resource(years: list[int]) -> Iterator[dict]:
         client.close()
 
 
+def _usable_advanced_box_rows(game_id: int, data: object) -> list[dict]:
+    """The /game/box/advanced rows that may safely reach dlt: dicts carrying
+    a non-null ``gameId`` (the source of the table's NOT NULL ``game_id``
+    primary-key column). Everything else is dropped with a warning.
+
+    Historical Refresh #55 (run 39816658236, 2026-10-22): one 200 response
+    carried a JSON OBJECT instead of the usual list of row dicts. ``yield
+    from`` on a dict emits its KEYS, so dlt normalized the string 'gameInfo'
+    into an all-null row in a brand-new variant column, the insert violated
+    advanced_game_stats' game_id NOT NULL constraint at the LOAD stage, and
+    the whole 50-game batch was lost. A response with zero usable rows is a
+    no_data miss for that game (requeueable), never a yield.
+    """
+    if not data:
+        return []
+    if not isinstance(data, list):
+        logger.warning(
+            f"Advanced box response for game {game_id} is {type(data).__name__}, "
+            "not a list of rows; dropping it before it reaches dlt"
+        )
+        return []
+    rows = [row for row in data if isinstance(row, dict) and row.get("gameId") is not None]
+    dropped = len(data) - len(rows)
+    if dropped:
+        logger.warning(
+            f"Dropped {dropped} advanced box row(s) without a gameId for game {game_id} "
+            "before they reached dlt (game_id is NOT NULL in advanced_game_stats)"
+        )
+    return rows
+
+
 @dlt.resource(
     name="advanced_game_stats",
     write_disposition="merge",
@@ -288,9 +319,11 @@ def advanced_game_stats_resource(
 
     Args:
         game_ids: Explicit CFBD game ids to load advanced box scores for.
-        misses: When given (not None), a suppressed 400, an empty 200
-            (`if not data`), and a 5xx after the client's transient retries
-            were exhausted, for a game id append that id here -- the caller
+        misses: When given (not None), a suppressed 400, an empty or
+            unusable 200 (no rows carrying a non-null gameId; see
+            _usable_advanced_box_rows), and a 5xx or read timeout after the client's
+            transient retries were exhausted, for a game id append that id
+            here -- the caller
             (scripts/backfill_refresh.py) uses this to record that game as
             'no_data' rather than 'refreshed' in meta.refresh_progress
             (PR #75 F6: a suppressed per-game 400 was previously getting a
@@ -298,20 +331,26 @@ def advanced_game_stats_resource(
             campaign's backlog). Unlike play_stats_resource, an empty 200
             here IS a miss: every game with a completed box score has
             advanced stats, so nothing back means the call didn't land.
-            When misses is None, only a 400 is suppressed; a 5xx is re-raised.
-            When misses is set but report is None, a suppressed 5xx is
-            recorded in misses and the resource continues with no probe or
-            outage machinery (only scripts/backfill_refresh.py passes
-            report). When report is set (the backfill path), health tracking,
-            probe-on-trip, and outage signaling are active: a confirmed outage
-            sets report.outage and returns normally so dlt keeps rows yielded
-            so far. In report mode NO exception is allowed to escape this
-            generator: a transport failure, 429 rate-limit exhaustion, or any
-            other unrecoverable per-game error also sets report.outage and
-            returns, because a raise would abort the dlt load and discard the
-            whole batch -- the exact bug (run 39253607809) this report
-            contract exists to fix. RequestBudgetExhausted (the LOCAL budget
-            guard) is the one exception that is a pacing condition rather
+            When misses is None, only a 400 is suppressed; a 5xx or read
+            timeout is re-raised. When misses is set but report is None, a
+            suppressed 5xx or read timeout is recorded in misses and the resource
+            continues with no probe or outage machinery (only
+            scripts/backfill_refresh.py passes report). When report is set
+            (the backfill path), health tracking, probe-on-trip, and outage
+            signaling are active: a confirmed outage sets report.outage and
+            returns normally so dlt keeps rows yielded so far. A per-game READ
+            timeout after the client's retries counts exactly like a
+            persistent 5xx (run 39637616538: one ReadTimeout killed the whole
+            run at dlt's extract step); connect and pool timeouts and other
+            transport errors are endpoint-wide and stop the batch as an
+            outage. In report mode NO
+            exception is allowed to escape this generator: a connection
+            failure, 429 rate-limit exhaustion, or any other unrecoverable
+            per-game error also sets report.outage and returns, because a
+            raise would abort the dlt load and discard the whole batch -- the
+            exact bug (run 39253607809) this report contract exists to fix.
+            RequestBudgetExhausted (the LOCAL budget guard) is the one
+            exception that is a pacing condition rather
             than a failure: it sets report.budget_stop instead of
             report.outage, so the caller stops draining and exits 0. In every
             early-stop case the failing game is NOT appended to attempted, so
@@ -385,6 +424,27 @@ def advanced_game_stats_resource(
                 report.outage = message
             return True
 
+    def _note_server_failure(game_id: int, cause: str) -> bool:
+        """Record one game CFBD failed to serve (5xx or a read timeout, both after
+        the client's transient retries): a no_data miss, plus -- in report
+        mode -- a server-error mark in the health window and the
+        probe-on-trip check. Returns True when the probe confirmed the batch
+        must stop. Callers guarantee ``misses is not None``.
+        """
+        logger.warning(
+            f"No advanced box score for game {game_id} ({cause} after the client's "
+            "transient retries were already exhausted); recording the game as no-data "
+            "(retryable later via scripts/backfill_refresh.py --requeue-no-data)"
+        )
+        misses.append(game_id)
+        if report is not None:
+            report.attempted.append(game_id)
+            report.server_error_game_ids.append(game_id)
+            health.record_server_error(game_id)
+            if health.should_probe() and _run_outage_probe(game_id):
+                return True
+        return False
+
     try:
         total = 0
         for i, game_id in enumerate(game_ids):
@@ -394,14 +454,17 @@ def advanced_game_stats_resource(
                     "/game/box/advanced",
                     params={"id": game_id},
                 )
-                if data:
-                    total += len(data)
-                    yield from data
+                rows = _usable_advanced_box_rows(game_id, data)
+                if rows:
+                    total += len(rows)
+                    yield from rows
                     if report is not None:
                         report.attempted.append(game_id)
                         health.record_answered(game_id, has_data=True)
                 else:
-                    logger.warning(f"No advanced box score for game {game_id} (empty response)")
+                    logger.warning(
+                        f"No advanced box score for game {game_id} (empty or unusable response)"
+                    )
                     if misses is not None:
                         misses.append(game_id)
                     if report is not None:
@@ -419,19 +482,8 @@ def advanced_game_stats_resource(
                         health.record_answered(game_id, has_data=False)
                     continue
                 if misses is not None and e.response.status_code >= 500:
-                    logger.warning(
-                        f"No advanced box score for game {game_id} "
-                        f"({e.response.status_code} after the client's transient retries "
-                        "were already exhausted); recording the game as no-data "
-                        "(retryable later via scripts/backfill_refresh.py --requeue-no-data)"
-                    )
-                    misses.append(game_id)
-                    if report is not None:
-                        report.attempted.append(game_id)
-                        report.server_error_game_ids.append(game_id)
-                        health.record_server_error(game_id)
-                        if health.should_probe() and _run_outage_probe(game_id):
-                            return
+                    if _note_server_failure(game_id, f"HTTP {e.response.status_code}"):
+                        return
                     continue
                 if report is not None:
                     message = (
@@ -442,6 +494,29 @@ def advanced_game_stats_resource(
                     logger.error(message)
                     report.outage = message
                     return
+                raise
+            except httpx.ReadTimeout as e:
+                # Run 39637616538 (Historical Refresh #54, 2026-10-21): after
+                # persistent 5xx on five games, one request raised
+                # httpx.ReadTimeout and killed the whole run at dlt's extract
+                # step. A READ timeout that survived the client's retries
+                # means the request reached CFBD and CFBD failed to answer
+                # for THIS game -- the same signal as a persistent 5xx -- so
+                # it gets the identical treatment: no_data miss, server-error
+                # mark in the health window, and the probe decides bad data
+                # vs outage. A widespread run of read timeouts fills the
+                # window, the probe times out too, and the run stops cleanly
+                # as an outage. Deliberately NOT the broader TimeoutException
+                # (Codex P1 on PR #158): ConnectTimeout and PoolTimeout are
+                # connection-level -- CFBD may never have received the
+                # request -- so retiring the game as no_data would silently
+                # drop it from the backlog; they stay on the outage stop
+                # below with the other endpoint-wide transport errors
+                # (connection refused, DNS).
+                if misses is not None:
+                    if _note_server_failure(game_id, repr(e)):
+                        return
+                    continue
                 raise
             except RequestBudgetExhausted as e:
                 # Local budget guard, not a CFBD failure (PR #156 review

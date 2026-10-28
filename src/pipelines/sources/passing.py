@@ -52,6 +52,14 @@ discards every sibling resource's already-fetched extract package (the
 `ratings` and `game_stats` behind it). Five more resources sharing that
 source would only widen the blast radius -- passing gets its own source
 name (`cfbd_passing`) and its own extract package instead.
+
+Since 2026-10-22 the same sibling-failure reasoning applies WITHIN this
+module: the two season-grain aggregates ship in passing_season_source
+(load unit `passing_season`), separate from the three week-grain resources
+in passing_source, after `/passing/players/season` timed out three daily
+runs straight (#99-#101) and discarded the week-grain extract each time.
+Both sources keep the `cfbd_passing` dlt schema identity -- see
+passing_season_source's docstring.
 """
 
 import logging
@@ -90,7 +98,16 @@ def passing_source(
     years: list[int] | None = None,
     mode: str = "incremental",
 ) -> DltSource:
-    """Source for CFBD's five /passing charting endpoints.
+    """Source for CFBD's three week-grain /passing charting endpoints.
+
+    The two season-grain endpoints (`/passing/players/season`,
+    `/passing/teams/season`) ship in their own source, passing_season_source
+    below, since 2026-10-22. A dlt source failure discards every sibling
+    resource's extract, and Daily Season Load runs #99-#101 showed
+    `/passing/players/season` timing out after retries (read timeout, then
+    504 Gateway Timeout once the read budget was raised past CFBD's own
+    gateway) and discarding the ~60 already-fetched week-grain calls with it,
+    every day.
 
     Args:
         years: Specific years to load. If None, uses mode to determine years.
@@ -110,6 +127,63 @@ def passing_source(
         passing_plays_resource(years),
         passing_player_games_resource(years),
         passing_team_games_resource(years),
+    ]
+
+
+@dlt.source(name="cfbd_passing")
+def passing_season_source(
+    years: list[int] | None = None,
+    mode: str = "incremental",
+) -> DltSource:
+    """The two season-grain /passing aggregates, isolated from the week-grain source.
+
+    Exactly two resources: passing_player_season (`/passing/players/season`)
+    and passing_team_season (`/passing/teams/season`), one bare-year call
+    each. Split out of passing_source on 2026-10-22 after Daily Season Load
+    #99-#101: CFBD computes these aggregates across the whole season at
+    request time, and `/passing/players/season` chronically outlasted both
+    the 30s and the raised 120s read budget (reaching us as a client read
+    timeout or an upstream 504). Because a dlt source failure discards every
+    sibling resource's extract, each of those timeouts also threw away the
+    ~60 week-grain calls passing_source had already fetched. As its own load
+    unit (`passing_season` in scripts/load_season.py, NON_CRITICAL_SOURCES),
+    the slow aggregate's failure costs only its own two tables and may be
+    tolerated while the week-grain charting merges normally.
+
+    DELIBERATELY name="cfbd_passing", the same dlt schema name as
+    passing_source, and the runner (run.py::run_passing_season_pipeline)
+    deliberately reuses pipeline_name="cfbd_passing" and dataset_name="stats"
+    -- the pattern PR #157 established for the player_success split (Codex
+    review on PR #157, P1). The live passing_player_season /
+    passing_team_season table layouts are a product of the stored
+    cfbd_passing dlt schema's history; a new pipeline/schema identity would
+    start a fresh dlt schema whose first load re-infers column types against
+    the existing destination tables instead of adopting them. Keeping the
+    identity makes dlt restore the stored schema from the destination and
+    normalize exactly as before the split. Failure isolation does not come
+    from the schema name; it comes from running as a separate pipeline.run()
+    call. Accepted coupling (same as the player_success split): a pending
+    load package left by a passing run that failed at the LOAD stage is
+    retried by whichever cfbd_passing run comes next -- in that scenario the
+    run is already red from the passing failure, so the retry can only
+    recover data, never hide a failure.
+
+    The resource functions are shared with the pre-split source, so table
+    names, columns, merge dispositions, and primary keys are byte-identical:
+    no migration, no DB change, existing rows untouched.
+
+    Args:
+        years: Specific years to load. If None, uses mode to determine years.
+        mode: "incremental" loads current season, "backfill" loads
+            YEAR_RANGES["stats"] -- pre-2025 years skip via the era guard.
+    """
+    if years is None:
+        if mode == "incremental":
+            years = [get_current_season()]
+        else:  # backfill
+            years = YEAR_RANGES["stats"].to_list()
+
+    return [
         passing_player_season_resource(years),
         passing_team_season_resource(years),
     ]

@@ -379,8 +379,10 @@ class TestPassingWiring:
         assert SOURCE_ORDER.index("stats") < SOURCE_ORDER.index("passing")
 
     def test_passing_has_estimated_calls(self):
-        """3 week-iterated resources x ~20 calls + 2 season-grain x 1 call."""
-        assert ESTIMATED_CALLS["passing"] == 62
+        """3 week-iterated resources x ~20 calls. Was 62 until 2026-10-22,
+        when the 2 season-grain aggregates moved into their own
+        `passing_season` unit."""
+        assert ESTIMATED_CALLS["passing"] == 60
 
     def test_passing_is_active_by_default(self):
         """Only "rosters" is excluded from the default active-source list;
@@ -413,6 +415,55 @@ class TestPassingWiring:
         assert summary["estimated_calls"] == ESTIMATED_CALLS["passing"]
         out = capsys.readouterr().out
         assert "passing" in out
+
+
+class TestPassingSeasonWiring:
+    """2026-10-22 split: passing_season (stats.passing_player_season +
+    stats.passing_team_season) is its own source/load unit so a
+    /passing/players/season timeout cannot discard the week-grain passing
+    extract (Daily Season Load #99-#101). It must be wired into every place
+    `passing` is -- SOURCE_ORDER, ESTIMATED_CALLS, IMMUTABLE_ONCE_FINAL,
+    runners, active-by-default -- or the daily path silently stops loading
+    the two season tables."""
+
+    def test_in_source_order_after_passing(self):
+        assert "passing_season" in SOURCE_ORDER
+        assert SOURCE_ORDER.index("passing") < SOURCE_ORDER.index("passing_season")
+
+    def test_has_an_estimated_call_count(self):
+        """Two bare-year season-aggregate calls per season."""
+        assert ESTIMATED_CALLS["passing_season"] == 2
+
+    def test_split_preserves_the_combined_estimate(self):
+        """60 + 2 must equal the pre-split 62 -- the split moved cost, it did
+        not change it."""
+        assert ESTIMATED_CALLS["passing"] + ESTIMATED_CALLS["passing_season"] == 62
+
+    def test_is_immutable_once_final(self):
+        """Same policy as passing: charting for a finished season is
+        immutable-ish; corrections ride explicit --season re-runs."""
+        assert "passing_season" in IMMUTABLE_ONCE_FINAL
+
+    def test_is_active_by_default(self):
+        """Only "rosters" is excluded from the default active-source list;
+        the split must not quietly drop the two season tables from the daily
+        load."""
+        default_active = [s for s in SOURCE_ORDER if s != "rosters"]
+        assert "passing_season" in default_active
+
+    def test_is_non_critical_alongside_passing_and_rushing(self):
+        """The point of the split plus tolerance: the slow aggregate's unit
+        may be tolerated on the opt-in daily path."""
+        from scripts.load_season import NON_CRITICAL_SOURCES
+
+        assert NON_CRITICAL_SOURCES == frozenset({"passing", "passing_season", "rushing"})
+
+    def test_dry_run_prices_the_split_units_separately(self, capsys):
+        summary = load_season(season=2025, sources=["passing_season"], dry_run=True)
+
+        assert summary["dry_run"] is True
+        assert summary["estimated_calls"] == 2
+        assert "passing_season" in capsys.readouterr().out
 
 
 class TestRushingWiring:
@@ -801,6 +852,37 @@ def _raise_dlt_timeout(*_args, **_kwargs):
     try:
         raise httpx.ReadTimeout("The read operation timed out")
     except httpx.ReadTimeout as exc:
+        raise RuntimeError("Pipeline execution failed at step=extract") from exc
+
+
+def _http_status_error(status_code: int, path: str) -> httpx.HTTPStatusError:
+    url = f"https://api.collegefootballdata.com{path}"
+    request = httpx.Request("GET", url)
+    response = httpx.Response(status_code, request=request)
+    reason = response.reason_phrase
+    return httpx.HTTPStatusError(
+        f"Server error '{status_code} {reason}' for url '{url}'",
+        request=request,
+        response=response,
+    )
+
+
+def _raise_dlt_504(*_args, **_kwargs):
+    """Daily Season Load run 39796553707 (2026-10-22): /passing/players/season
+    answered 504 Gateway Timeout on every retry -- PR #155's 120s read budget
+    now outlasts CFBD's own gateway, so the same slow endpoint that used to
+    read-timeout client-side arrives as an exhausted 5xx instead."""
+    try:
+        raise _http_status_error(504, "/passing/players/season?year=2026")
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError("Pipeline execution failed at step=extract") from exc
+
+
+def _raise_dlt_502(*_args, **_kwargs):
+    """A 502 is an outage, not a slow season aggregate -- it must stay strict."""
+    try:
+        raise _http_status_error(502, "/passing/players/season?year=2026")
+    except httpx.HTTPStatusError as exc:
         raise RuntimeError("Pipeline execution failed at step=extract") from exc
 
 
@@ -1217,6 +1299,271 @@ class TestToleratedNonCriticalTimeout:
         state = load_tolerated_streak_state(str(path))
         assert state == {"version": 1, "streaks": {}}
         assert any("Could not load tolerated streak state" in r.message for r in caplog.records)
+
+
+class TestPassingSeasonTimeoutTolerance:
+    """Regression for Daily Season Load #99-#101 (runs 39253582408 ..
+    39796553707): /passing/players/season timed out after retries three daily
+    runs straight and failed the whole job every time. Two failure shapes,
+    both of which must now end tolerated on the opt-in daily path: the
+    original client-side read timeout, and the 504 Gateway Timeout that
+    replaced it once PR #155's 120s read budget outlasted CFBD's own
+    gateway."""
+
+    def test_504_on_passing_season_with_flag_is_tolerated(self):
+        """The 2026-10-22 shape (run 39796553707): an exhausted upstream 504
+        on the season aggregate downgrades to tolerated, and the week-grain
+        passing unit -- now a separate extract -- stays loaded OK."""
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", return_value="ok") as week_runner,
+            patch("src.pipelines.run.run_passing_season_pipeline", side_effect=_raise_dlt_504),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing", "passing_season"])
+
+        assert week_runner.call_count == 1
+        assert summary["results"]["passing"]["status"] == "ok"
+        assert summary["results"]["passing_season"]["status"] == "tolerated"
+        assert summary["errors"] == 0
+        assert summary["tolerated"] == ["passing_season"]
+
+    def test_read_timeout_on_passing_season_with_flag_is_tolerated(self):
+        """The 2026-10-19/20/21 shape (run 39253582408): the original client
+        read timeout, now isolated in the split unit."""
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", return_value="ok"),
+            patch("src.pipelines.run.run_passing_season_pipeline", side_effect=_raise_dlt_timeout),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing", "passing_season"])
+
+        assert summary["results"]["passing"]["status"] == "ok"
+        assert summary["results"]["passing_season"]["status"] == "tolerated"
+        assert summary["errors"] == 0
+
+    def test_504_without_flag_stays_strict(self):
+        """Backfills and manual runs keep today's strict behavior."""
+        with (
+            patch("src.pipelines.run.run_passing_season_pipeline", side_effect=_raise_dlt_504),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = load_season(season=2026, sources=["passing_season"], skip_refresh=True)
+
+        assert summary["results"]["passing_season"]["status"] == "error"
+        assert summary["errors"] == 1
+        assert summary["tolerated"] == []
+
+    def test_502_on_passing_season_stays_error_with_flag(self):
+        """Only 504 is timeout-shaped. A 502 (or any other exhausted 5xx) is
+        an outage and must stay loud even on a non-critical unit."""
+        with (
+            patch("src.pipelines.run.run_passing_season_pipeline", side_effect=_raise_dlt_502),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing_season"])
+
+        assert summary["results"]["passing_season"]["status"] == "error"
+        assert summary["errors"] == 1
+
+    def test_504_on_a_critical_source_stays_error_with_flag(self):
+        """The 504 downgrade rides the same NON_CRITICAL_SOURCES gate as the
+        read-timeout downgrade -- a critical source's 504 still fails the
+        run."""
+        with (
+            patch("src.pipelines.run.run_games_pipeline", side_effect=_raise_dlt_504),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["games"])
+
+        assert summary["results"]["games"]["status"] == "error"
+        assert summary["errors"] == 1
+
+    def test_run_102_sequence_read_timeouts_on_retries_then_final_504_is_tolerated(self):
+        """Daily Season Load #102 (run 39968262511, 2026-10-23), the exact
+        sequence from its log: /passing/players/season burned all six
+        transient retries on read timeouts and server disconnects, and the
+        seventh (final) attempt returned 504 Gateway Timeout -- 972s, run
+        red. Drive the REAL CFBDClient retry loop through that sequence,
+        then feed the exception it actually raises through the tolerance
+        path and assert the unit ends tolerated."""
+        from src.pipelines.utils.api_client import CFBDClient, RateLimitBreaker
+
+        client = CFBDClient(api_key="test-key", breaker=RateLimitBreaker())
+        request = httpx.Request(
+            "GET", "https://api.collegefootballdata.com/passing/players/season?year=2026"
+        )
+        attempts = [
+            httpx.ReadTimeout("The read operation timed out"),
+            httpx.RemoteProtocolError("Server disconnected without sending a response."),
+            httpx.ReadTimeout("The read operation timed out"),
+            httpx.ReadTimeout("The read operation timed out"),
+            httpx.ReadTimeout("The read operation timed out"),
+            httpx.ReadTimeout("The read operation timed out"),
+            httpx.Response(504, request=request),
+        ]
+        try:
+            with (
+                patch.object(client._client, "get", side_effect=attempts) as mock_get,
+                patch("src.pipelines.utils.api_client.time.sleep"),
+            ):
+                with pytest.raises(httpx.HTTPStatusError) as excinfo:
+                    client.get("/passing/players/season", params={"year": 2026})
+        finally:
+            client.close()
+
+        raised = excinfo.value
+        assert mock_get.call_count == 7  # 1 attempt + TRANSIENT_MAX_RETRIES
+        assert raised.response.status_code == 504
+
+        def _dlt_wrapped(*_args, **_kwargs):
+            raise RuntimeError("Pipeline execution failed at step=extract") from raised
+
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", return_value="ok"),
+            patch("src.pipelines.run.run_passing_season_pipeline", side_effect=_dlt_wrapped),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing", "passing_season"])
+
+        assert summary["results"]["passing"]["status"] == "ok"
+        assert summary["results"]["passing_season"]["status"] == "tolerated"
+        assert summary["errors"] == 0
+        assert summary["tolerated"] == ["passing_season"]
+
+    def test_504_on_the_whole_passing_unit_is_also_tolerated(self):
+        """Belt and suspenders: even if a 504 hits a week-grain passing
+        endpoint, the passing unit is non-critical and the downgrade applies."""
+        with (
+            patch("src.pipelines.run.run_passing_pipeline", side_effect=_raise_dlt_504),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing"])
+
+        assert summary["results"]["passing"]["status"] == "tolerated"
+        assert summary["errors"] == 0
+
+    def test_streak_guard_applies_to_the_new_unit(self, monkeypatch, tmp_path):
+        """Two primed tolerated days + a third 504 trips the streak veto, so
+        a chronically dead endpoint cannot be tolerated forever."""
+        streak_file = tmp_path / "streaks.json"
+        streak_file.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "streaks": {"passing_season": {"count": 2, "last_date": _utc_yesterday()}},
+                }
+            )
+        )
+        monkeypatch.setenv("TOLERATED_STREAK_FILE", str(streak_file))
+
+        with (
+            patch("src.pipelines.run.run_passing_season_pipeline", side_effect=_raise_dlt_504),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = _load_with_tolerance(sources=["passing_season"], tolerated_streak_limit=3)
+
+        assert summary["results"]["passing_season"]["status"] == "error"
+        assert summary["errors"] == 1
+        saved = json.loads(streak_file.read_text())
+        assert saved["streaks"]["passing_season"]["count"] == 3
+
+
+class TestFailureDetailInSummary:
+    """Run 39796553707: the mid-run traceback did not survive GitHub's log
+    rendering, leaving only `[FAIL] passing 1017.6s` -- three runs were
+    misdiagnosed from an older failure's shape as a result. Each failed
+    unit's exception type and message must now print in the end-of-run
+    summary block and in the GITHUB_STEP_SUMMARY markdown."""
+
+    def test_failed_unit_prints_error_type_message_and_root_cause(self, capsys):
+        with (
+            patch("src.pipelines.run.run_games_pipeline", side_effect=_raise_dlt_504),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            load_season(season=2026, sources=["games"], skip_refresh=True)
+
+        out = capsys.readouterr().out
+        assert "[FAIL] games" in out
+        assert "RuntimeError: Pipeline execution failed at step=extract" in out
+        assert "cause: HTTPStatusError: Server error '504 Gateway Timeout'" in out
+
+    def test_tolerated_unit_prints_no_failure_detail(self, capsys):
+        with (
+            patch("src.pipelines.run.run_passing_season_pipeline", side_effect=_raise_dlt_504),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            _load_with_tolerance(sources=["passing_season"])
+
+        out = capsys.readouterr().out
+        assert "[WARN] passing_season" in out
+        assert "RuntimeError" not in out
+
+    def test_long_error_messages_are_collapsed_and_truncated(self, capsys):
+        from scripts.load_season import MAX_SUMMARY_ERROR_CHARS
+
+        def _raise_long(*_args, **_kwargs):
+            raise RuntimeError("Pipeline\nexecution\nfailed " + "x" * 2000)
+
+        with (
+            patch("src.pipelines.run.run_games_pipeline", side_effect=_raise_long),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            load_season(season=2026, sources=["games"], skip_refresh=True)
+
+        out = capsys.readouterr().out
+        detail_lines = [ln for ln in out.splitlines() if "RuntimeError" in ln]
+        assert detail_lines, "expected a failure detail line in the summary"
+        assert all(
+            len(ln.strip()) <= MAX_SUMMARY_ERROR_CHARS + len("cause: ") for ln in detail_lines
+        )
+        assert "Pipeline execution failed" in detail_lines[0]  # newlines collapsed
+
+    def test_github_step_summary_gets_failed_unit_detail(self, monkeypatch, tmp_path):
+        summary_path = tmp_path / "step_summary.md"
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary_path))
+
+        with (
+            patch("src.pipelines.run.run_games_pipeline", side_effect=_raise_dlt_504),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            load_season(season=2026, sources=["games"], skip_refresh=True)
+
+        text = summary_path.read_text()
+        assert "Failed load unit(s)" in text
+        assert "`games`" in text
+        assert "RuntimeError" in text
+        assert "504 Gateway Timeout" in text
+
+    def test_github_step_summary_has_no_failure_section_when_all_tolerated(
+        self, monkeypatch, tmp_path
+    ):
+        summary_path = tmp_path / "step_summary.md"
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary_path))
+
+        with (
+            patch("src.pipelines.run.run_passing_season_pipeline", side_effect=_raise_dlt_504),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            _load_with_tolerance(sources=["passing_season"])
+
+        text = summary_path.read_text()
+        assert "Failed load unit(s)" not in text
+        assert "Warning" in text  # the tolerated warning still writes
+
+    def test_unwritable_step_summary_does_not_mask_the_failure(self, monkeypatch, caplog):
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", "/nonexistent-dir/step_summary.md")
+
+        with (
+            patch("src.pipelines.run.run_games_pipeline", side_effect=_raise_dlt_504),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = load_season(season=2026, sources=["games"], skip_refresh=True)
+
+        assert summary["errors"] == 1
+        assert any(
+            "Could not write GITHUB_STEP_SUMMARY failure detail" in record.message
+            for record in caplog.records
+        )
 
 
 class TestWorkflowYaml:

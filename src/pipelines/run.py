@@ -16,7 +16,7 @@ from .sources.draft import draft_source
 from .sources.game_stats import game_stats_source
 from .sources.games import games_source
 from .sources.metrics import metrics_ppa_predicted_source, metrics_source, metrics_wp_source
-from .sources.passing import passing_source
+from .sources.passing import passing_season_source, passing_source
 from .sources.player_overview import player_overview_source
 from .sources.playoffs import playoffs_source
 from .sources.plays import plays_source
@@ -90,6 +90,7 @@ Examples:
             "rosters",
             "wepa",
             "passing",
+            "passing_season",
             "rushing",
             "playoffs",
             "coaches",
@@ -546,9 +547,11 @@ def run_metrics_ppa_predicted_pipeline():
 
 
 def run_passing_pipeline(years: list[int] | None = None, mode: str = "incremental"):
-    """Run the /passing charting pipeline (air yards, aDOT, depth/direction/
-    location, YAC -- see passing.py's module docstring). Data starts 2025;
-    earlier years are skipped per-resource with zero calls.
+    """Run the week-grain /passing charting pipeline (air yards, aDOT,
+    depth/direction/location, YAC -- see passing.py's module docstring).
+    Data starts 2025; earlier years are skipped per-resource with zero
+    calls. The two season-grain aggregates run separately -- see
+    run_passing_season_pipeline.
     """
     years_str = f"years={years}" if years else f"mode={mode}"
     print(f"\n=== Loading Passing Data ({years_str}) ===\n")
@@ -560,6 +563,45 @@ def run_passing_pipeline(years: list[int] | None = None, mode: str = "incrementa
     )
 
     source = passing_source(years=years, mode=mode)
+    info = pipeline.run(source)
+
+    print(f"\nLoad info: {info}")
+
+    return info
+
+
+def run_passing_season_pipeline(years: list[int] | None = None, mode: str = "incremental"):
+    """Run the season-grain /passing aggregates (the passing_player_season
+    and passing_team_season tables in the stats dataset).
+
+    Its own load unit since 2026-10-22 -- split out of the passing source so
+    a `/passing/players/season` timeout (client read timeout or upstream 504)
+    cannot discard the ~60-call week-grain extract (Daily Season Load
+    #99-#101); see passing_season_source's docstring. Same pipeline_name AND
+    dataset_name as run_passing_pipeline, deliberately -- the pattern PR #157
+    established for the player_success split (Codex review on PR #157, P1):
+    the tables' recorded column layouts live in the stored `cfbd_passing` dlt
+    schema, and a new pipeline/schema identity would re-infer types against
+    the existing destination tables on first load instead of adopting them.
+    Reusing the identity restores the stored schema and keeps normalization
+    byte-identical to the pre-split load. Isolation is per pipeline.run()
+    call, not per pipeline name -- this run extracts only the two season
+    aggregates, so its failure costs only those tables. One accepted
+    coupling: a pending load package left by a passing run that failed at the
+    LOAD stage (extract failures leave none) is retried by whichever run of
+    this pipeline comes next, including this one; in that scenario the
+    passing unit has already failed the run, so the retry can only help.
+    """
+    years_str = f"years={years}" if years else f"mode={mode}"
+    print(f"\n=== Loading Passing Season Aggregates ({years_str}) ===\n")
+
+    pipeline = dlt.pipeline(
+        pipeline_name="cfbd_passing",
+        destination="postgres",
+        dataset_name="stats",
+    )
+
+    source = passing_season_source(years=years, mode=mode)
     info = pipeline.run(source)
 
     print(f"\nLoad info: {info}")
@@ -1684,6 +1726,7 @@ def main() -> NoReturn:
         "rosters": lambda: run_rosters_pipeline(args.teams, args.years, args.mode),
         "wepa": lambda: run_wepa_pipeline(args.years, args.mode),
         "passing": lambda: run_passing_pipeline(args.years, args.mode),
+        "passing_season": lambda: run_passing_season_pipeline(args.years, args.mode),
         "rushing": lambda: run_rushing_pipeline(args.years, args.mode),
         "playoffs": lambda: run_playoffs_pipeline(args.years, args.mode),
         "coaches": lambda: run_coaches_pipeline(args.years, args.mode),

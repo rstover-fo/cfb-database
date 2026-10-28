@@ -41,6 +41,7 @@ SOURCE_ORDER = [
     "plays",  # Play-by-play (largest dataset)
     "stats",  # Aggregated season stats
     "passing",  # /passing charting: air yards, aDOT, depth/direction/location, YAC (2025+)
+    "passing_season",  # /passing season aggregates -- own unit, see passing.py
     "rushing",  # /rushing charting: rusher attribution, rush direction, TD status (2025+)
     "ratings",  # SP+, Elo, FPI, SRS, CORE, SRS-expanded
     "rankings",  # AP, Coaches polls
@@ -90,11 +91,17 @@ ESTIMATED_CALLS = {
     "stats": 1_675,
     # /passing charting (passing.py): 3 week-iterated resources
     # (passing_plays, passing_player_games, passing_team_games) x ~20 calls
-    # each (regular weeks 1-16 + postseason weeks 1-4) + 2 season-grain
-    # resources (passing_player_season, passing_team_season) x 1 call each
-    # = 62. Zero calls for a season before PASSING_DATA_START (2025) --
-    # the era guard skips every resource before spending anything.
-    "passing": 62,
+    # each (regular weeks 1-16 + postseason weeks 1-4) = 60. Zero calls for
+    # a season before PASSING_DATA_START (2025) -- the era guard skips every
+    # resource before spending anything. Was 62 until 2026-10-22, when the
+    # 2 season-grain resources moved into their own unit below.
+    "passing": 60,
+    # The 2 season-grain /passing aggregates (passing_player_season,
+    # passing_team_season), 1 bare-year call each. Their own load unit
+    # (split out of `passing` 2026-10-22, Daily Season Load #99-#101) so a
+    # timeout on the chronically slow /passing/players/season cannot discard
+    # the week-grain extract -- see passing.py's passing_season_source.
+    "passing_season": 2,
     # /rushing charting (rushing.py): same shape as passing -- 3 week-iterated
     # resources (rushing_plays, rushing_player_games, rushing_team_games) x
     # ~20 calls each (regular weeks 1-16 + postseason weeks 1-4) + 2
@@ -211,6 +218,9 @@ IMMUTABLE_ONCE_FINAL = frozenset(
         # vendor after the fact. Corrections ride explicit --season
         # re-runs, not a daily re-ingest, same as stats/game_advanced.
         "passing",
+        # passing_season: split out of passing (2026-10-22) but keeps its
+        # immutable-once-final policy for the same re-charting reason.
+        "passing_season",
         # rushing (rushing.py): same immutable-once-final policy as passing --
         # 2025 is partially charted upstream and improves only via explicit
         # --sources rushing re-pulls; the daily path never picks those up.
@@ -297,13 +307,17 @@ RESOURCE_FILTERABLE = frozenset({"stats"})
 # asked for exactly the right data under the name the warehouse shows them.
 RESOURCE_ALIASES = {"stats": {"returning_production": "player_returning"}}
 
-# Non-critical for daily-run exit status: stats.passing_* and stats.rushing_* feed
-# only charting marts (marts.passing_charting_*, marts.rushing_charting_*) and
-# cfb-app API views. No daily downstream step (Elo, adjusted EPA, predictions,
-# features, projections, flat files, verify_load) reads them; both sources
+# Non-critical for daily-run exit status: stats.passing_* and stats.rushing_*
+# feed only charting marts (marts.passing_charting_*, marts.rushing_charting_*)
+# and cfb-app API views. `passing_season` carries two of those passing tables
+# (passing_player_season, passing_team_season) -- split out of `passing` on
+# 2026-10-22 so a timeout on the chronically slow /passing/players/season
+# cannot discard the week-grain extract -- and inherits the same reasoning.
+# No daily downstream step (Elo, adjusted EPA, predictions, features,
+# projections, flat files, verify_load) reads any of them; all three sources
 # merge, so a missed day self-heals on the next successful run. Everything
 # else in SOURCE_ORDER stays critical.
-NON_CRITICAL_SOURCES = frozenset({"passing", "rushing"})
+NON_CRITICAL_SOURCES = frozenset({"passing", "passing_season", "rushing"})
 
 
 def resolve_resource_names(source: str, names: list[str]) -> list[str]:
@@ -368,8 +382,29 @@ def upcoming_schedule_season(season: int, month: int) -> int | None:
     return season + 1 if month < 8 else None
 
 
+def _is_timeout_exception(error: BaseException) -> bool:
+    """True for the two shapes a CFBD endpoint timeout reaches this script in.
+
+    A client-side timeout is an ``httpx.TimeoutException`` (connect/read).
+    An upstream timeout is an HTTP **504 Gateway Timeout** response: once PR
+    #155 raised the season-aggregate read budget to 120s, CFBD's own gateway
+    gives up first, so the same slow endpoint that read-timed-out on
+    2026-10-19 (run 39253582408) arrived as a 504 on every retry on
+    2026-10-22 (run 39796553707) -- and the tolerance missed it. Only 504
+    counts: 500/502/503 are outages, not a slow computation, and must stay
+    loud (the transient retry budget already bridges short ones).
+    """
+    if isinstance(error, httpx.TimeoutException):
+        return True
+    return isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 504
+
+
 def _exception_has_timeout(error: BaseException) -> bool:
-    """True if any exception in the __cause__/__context__ chain is a timeout."""
+    """True if any exception in the __cause__/__context__ chain is a timeout.
+
+    "Timeout" per _is_timeout_exception: a client-side httpx timeout OR an
+    exhausted HTTP 504 Gateway Timeout response.
+    """
     pending: list[BaseException] = [error]
     seen: set[int] = set()
     while pending:
@@ -377,7 +412,7 @@ def _exception_has_timeout(error: BaseException) -> bool:
         if id(current) in seen:
             continue
         seen.add(id(current))
-        if isinstance(current, httpx.TimeoutException):
+        if _is_timeout_exception(current):
             return True
         if current.__context__ is not None:
             pending.append(current.__context__)
@@ -590,13 +625,102 @@ def _count_failures(results: dict) -> int:
     return sum(1 for r in results.values() if r["status"] not in ("ok", "tolerated"))
 
 
+def _root_cause(error: BaseException) -> BaseException:
+    """Innermost exception in the __cause__/__context__ chain (cycle-safe).
+
+    dlt wraps a failed extraction as PipelineStepFailed -> ResourceExtractionError
+    -> the real httpx error; the innermost link is the one an operator needs.
+    """
+    current = error
+    seen = {id(current)}
+    while True:
+        nxt = current.__cause__ if current.__cause__ is not None else current.__context__
+        if nxt is None or id(nxt) in seen:
+            return current
+        seen.add(id(nxt))
+        current = nxt
+
+
 def _failure_result(error: Exception, elapsed: float) -> dict:
     """Keep request context when dlt wraps a failed resource extraction."""
-    result = {"status": "error", "duration_s": round(elapsed, 1), "error": str(error)}
+    result = {
+        "status": "error",
+        "duration_s": round(elapsed, 1),
+        "error": str(error),
+        "error_type": type(error).__name__,
+    }
+    root = _root_cause(error)
+    if root is not error:
+        result["root_cause"] = f"{type(root).__name__}: {root}"
     request_failure = request_failure_summary(error)
     if request_failure is not None:
         result["request_failure"] = request_failure
     return result
+
+
+# Cap per failure line in the end-of-run summary. Long enough for dlt's
+# one-paragraph wrapper plus the failing URL; short enough that the summary
+# block stays a summary. The full traceback is still in the log body.
+MAX_SUMMARY_ERROR_CHARS = 300
+
+
+def _one_line(text: str, limit: int = MAX_SUMMARY_ERROR_CHARS) -> str:
+    """Collapse whitespace/newlines to one bounded line for summary output."""
+    collapsed = " ".join(str(text).split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 3] + "..."
+
+
+def _failure_detail_lines(res: dict) -> list[str]:
+    """Exception type + message (and root cause) for one failed unit.
+
+    Exists because run 39796553707 proved the mid-run traceback does not
+    survive GitHub's log rendering: the web UI truncated the log before the
+    15:18 `passing failed` line, leaving only the bare `[FAIL] passing
+    1017.6s` summary row -- three runs were diagnosed from the wrong (older)
+    failure shape as a result. The summary block prints last and the step
+    summary is markdown, so the real error stays visible in both.
+    """
+    if "error" not in res:
+        return []
+    lines = [_one_line(f"{res.get('error_type', 'Error')}: {res['error']}")]
+    if res.get("root_cause"):
+        lines.append(_one_line(f"cause: {res['root_cause']}"))
+    return lines
+
+
+def _append_github_step_summary_failures(results: dict) -> None:
+    """Write each failed unit's exception type/message to the job summary.
+
+    Same best-effort contract as the warning/streak writers above: losing the
+    markdown copy must not mask the real failure, which is already in the log
+    and the printed summary.
+    """
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    failed = {
+        name: res for name, res in results.items() if res.get("status") not in ("ok", "tolerated")
+    }
+    if not failed:
+        return
+    lines = ["\n### Failed load unit(s)\n"]
+    for name, res in failed.items():
+        detail = _failure_detail_lines(res)
+        if detail:
+            lines.append(f"- `{name}`: {detail[0]}\n")
+            for extra in detail[1:]:
+                lines.append(f"  - {extra}\n")
+        else:
+            # e.g. _mart_refresh "partial": no exception object, but the unit
+            # still failed the run and must appear here.
+            lines.append(f"- `{name}`: status {res.get('status')} ({res})\n")
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("".join(lines))
+    except OSError as e:
+        logger.warning("Could not write GITHUB_STEP_SUMMARY failure detail (%s); continuing", e)
 
 
 def load_season(
@@ -637,6 +761,7 @@ def load_season(
         run_metrics_pipeline,
         run_metrics_wp_pipeline,
         run_passing_pipeline,
+        run_passing_season_pipeline,
         run_player_overview_pipeline,
         run_playoffs_pipeline,
         run_plays_pipeline,
@@ -783,6 +908,7 @@ def load_season(
         "plays": lambda: run_plays_pipeline(years=[season]),
         "stats": lambda: run_stats_pipeline(years=[season], only=resource_filters.get("stats")),
         "passing": lambda: run_passing_pipeline(years=[season]),
+        "passing_season": lambda: run_passing_season_pipeline(years=[season]),
         "rushing": lambda: run_rushing_pipeline(years=[season]),
         "ratings": lambda: run_ratings_pipeline(years=[season]),
         "rankings": lambda: run_rankings_pipeline(years=[season]),
@@ -941,7 +1067,15 @@ def load_season(
         else:
             status_icon = "FAIL"
         print(f"  [{status_icon:4s}] {name:25s} {res['duration_s']:>8.1f}s")
+        if status_icon == "FAIL":
+            # The real error must survive log truncation (run 39796553707:
+            # the web UI dropped the mid-run traceback, leaving only this
+            # block) -- see _failure_detail_lines.
+            for line in _failure_detail_lines(res):
+                print(f"         {line}")
     print(f"{'=' * 60}")
+    if errors:
+        _append_github_step_summary_failures(results)
     # The tolerated segment only appears when it happened: the common all-ok
     # line stays byte-identical to what operators (and tests) already read.
     tolerated_text = (

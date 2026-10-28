@@ -32,7 +32,10 @@ def _http_error(status_code: int, path: str = "/passing/plays") -> httpx.HTTPSta
     return httpx.HTTPStatusError("error", request=request, response=response)
 
 
-def test_passing_source_returns_five_resources():
+def test_passing_source_returns_the_three_week_grain_resources():
+    """Was five until 2026-10-22, when the two season-grain aggregates moved
+    into passing_season_source (Daily Season Load #99-#101 -- see the split
+    tests below)."""
     from src.pipelines.sources.passing import passing_source
 
     source = passing_source(years=[2025])
@@ -41,9 +44,106 @@ def test_passing_source_returns_five_resources():
         "passing_plays",
         "passing_player_games",
         "passing_team_games",
-        "passing_player_season",
-        "passing_team_season",
     }
+
+
+class TestPassingSeasonSourceSplit:
+    """2026-10-22 (Daily Season Load #99-#101): /passing/players/season timed
+    out after retries three daily runs straight -- as a client read timeout,
+    then as an upstream 504 once PR #155's 120s read budget outlasted CFBD's
+    own gateway. A dlt source failure discards every sibling resource's
+    extract, so each timeout also threw away the ~60 week-grain calls the
+    passing source had already fetched. The two season-grain aggregates now
+    ship in their own source (passing_season_source), following the pattern
+    PR #157 established for the player_success split."""
+
+    def test_passing_season_source_contains_only_the_two_season_resources(self):
+        from src.pipelines.sources.passing import passing_season_source
+
+        source = passing_season_source(years=[2025])
+
+        assert set(source.resources.keys()) == {
+            "passing_player_season",
+            "passing_team_season",
+        }
+
+    def test_passing_source_no_longer_carries_the_season_resources(self):
+        """The isolation guarantee: with the season aggregates outside
+        passing_source, a /passing/players/season failure structurally cannot
+        discard the week-grain extract."""
+        from src.pipelines.sources.passing import passing_source
+
+        names = set(passing_source(years=[2025]).resources.keys())
+
+        assert "passing_player_season" not in names
+        assert "passing_team_season" not in names
+
+    def test_split_preserves_the_pre_split_resource_set(self):
+        """The union across both sources is exactly the pre-split five-resource
+        list -- no resource gained, lost, or duplicated, so a caller loading
+        both sources still loads everything."""
+        from src.pipelines.sources.passing import passing_season_source, passing_source
+
+        week_names = set(passing_source(years=[2025]).resources.keys())
+        season_names = set(passing_season_source(years=[2025]).resources.keys())
+
+        assert week_names & season_names == set()
+        assert week_names | season_names == {
+            "passing_plays",
+            "passing_player_games",
+            "passing_team_games",
+            "passing_player_season",
+            "passing_team_season",
+        }
+
+    def test_table_schemas_and_pks_are_unchanged(self):
+        """The split reuses the same resource functions, so table names, merge
+        dispositions, and primary keys are byte-identical to the pre-split
+        load -- no DB change, existing rows untouched."""
+        from src.pipelines.sources.passing import passing_season_source
+
+        source = passing_season_source(years=[2025])
+        expected = {
+            "passing_player_season": {"season", "player_id", "team"},
+            "passing_team_season": {"season", "team"},
+        }
+        for name, pk in expected.items():
+            resource = source.resources[name]
+            assert resource.write_disposition == "merge"
+            schema = resource.compute_table_schema()
+            assert schema["name"] == name
+            pk_columns = {
+                col_name for col_name, col in schema["columns"].items() if col.get("primary_key")
+            }
+            assert pk_columns == pk
+
+    def test_split_source_keeps_the_cfbd_passing_schema_identity(self):
+        """PR #157's P1 finding, applied here: the live tables' column layouts
+        are a product of the stored `cfbd_passing` dlt schema's history. A new
+        schema name would start a fresh schema and re-infer types against the
+        existing destination tables on first load instead of adopting them, so
+        the split source must keep dlt schema name `cfbd_passing`."""
+        from src.pipelines.sources.passing import passing_season_source, passing_source
+
+        assert passing_season_source(years=[2025]).schema.name == "cfbd_passing"
+        assert passing_season_source(years=[2025]).schema.name == (
+            passing_source(years=[2025]).schema.name
+        )
+
+    def test_runner_keeps_the_cfbd_passing_pipeline_identity(self):
+        """Companion to the schema-identity test above: dlt restores stored
+        schemas from the destination keyed by pipeline_name, so the runner
+        must reuse pipeline_name="cfbd_passing" (and dataset_name="stats") or
+        a fresh CI runner would normalize against an empty schema. Same
+        source-text pattern as tests/test_backfill_refresh.py's pipeline
+        identity test (no DB, no dlt.pipeline() call)."""
+        import inspect
+
+        from src.pipelines.run import run_passing_season_pipeline
+
+        src = inspect.getsource(run_passing_season_pipeline)
+        assert 'pipeline_name="cfbd_passing"' in src
+        assert 'dataset_name="stats"' in src
 
 
 class TestResourceCompositionTable:

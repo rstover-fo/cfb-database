@@ -214,3 +214,79 @@ NON_CRITICAL_SOURCES therefore stays `{"passing", "rushing"}`.
 
 Same ruff/pytest commands as revision 1, plus `actionlint` on
 `.github/workflows/daily-load.yml`.
+
+## Revision 4: tolerate 504s; split passing season aggregates (2026-10-22)
+
+Numbering note: Revision 3 (the player_success source split) was written in
+PR #157, which was merged into PR #155's head branch 35 seconds AFTER #155
+itself was squash-merged -- so Revision 3's code and doc text never reached
+main. Its pattern is reused here (and its own re-land is a separate
+decision); this revision keeps the number 4 to match PR #157's history.
+
+### Incident
+
+Daily Season Load #99-#101 (runs 39253582408 .. 39796553707, 2026-10-20..22,
+scheduled): `/passing/players/season` for 2026 timed out after all retries,
+three days straight, failing the whole job (20 of 21 units OK, exit 1) and
+skipping every downstream daily step. Two failure shapes:
+
+- #99-#100 predate PR #155's merge (2026-10-21 19:12 UTC; the cron fires
+  09:23 UTC), so they ran without the tolerance flag or the raised read
+  budget and failed on the plain 30s read timeout.
+- #101 ran WITH `--tolerate-aggregate-timeouts` and the 120s season-aggregate
+  read budget -- and still failed. The raised budget now outlasts CFBD's own
+  gateway, so the same slow endpoint answered **HTTP 504 Gateway Timeout** on
+  every attempt (seven, ~1,018s total). A 504 raises httpx.HTTPStatusError,
+  not httpx.TimeoutException, so `_exception_has_timeout` never marked the
+  failure tolerable and the run stayed strict.
+
+A second cost, same shape as Daily #98's stats incident: the season resource
+shared the `cfbd_passing` source with the three week-grain resources, so each
+timeout also discarded the ~60 week-grain calls already fetched that run.
+
+### Rules
+
+- An exhausted **504** anywhere in a failure's exception chain now counts as
+  a timeout for the tolerance predicate (`_is_timeout_exception`). Only 504:
+  a 500/502/503 is an outage, not a slow season-total computation, and stays
+  strict. The NON_CRITICAL_SOURCES gate, the opt-in flag, and the streak
+  guard all apply unchanged.
+- `passing_player_season_resource` and `passing_team_season_resource` move
+  into their own dlt source, `passing_season_source` (still in passing.py),
+  with runner `run.py::run_passing_season_pipeline` and load unit
+  `passing_season` in SOURCE_ORDER, directly after `passing`. Both sources
+  and the runner DELIBERATELY keep the `cfbd_passing` schema/pipeline
+  identity and `dataset_name="stats"` (Revision 3's P1 finding): a new
+  identity would start a fresh dlt schema and re-infer column types against
+  the live destination tables on first load instead of adopting them. Tables,
+  merge dispositions, and primary keys are byte-identical; no migration.
+- `passing_season` joins NON_CRITICAL_SOURCES (set becomes
+  `{passing, passing_season, rushing}` -- same reader sweep as the Revision 2
+  table's passing row), IMMUTABLE_ONCE_FINAL, and ESTIMATED_CALLS at 2;
+  `passing` drops 62 -> 60. A full passing re-pull becomes
+  `--sources passing,passing_season`.
+- Every failed unit's exception type and message print in the end-of-run
+  summary block (bounded to one line each, root cause included) and in a
+  "Failed load unit(s)" section of GITHUB_STEP_SUMMARY -- run #101's
+  traceback did not survive the web UI's log truncation and the unit was
+  misdiagnosed from an older failure's shape.
+
+### Tests (no live DB, no live CFBD)
+
+- 504 on passing_season WITH the flag -> tolerated, week-grain passing OK,
+  errors == 0; the read-timeout shape likewise.
+- 504 WITHOUT the flag -> error (backfills stay strict).
+- 502 on passing_season WITH the flag -> error (only 504 downgrades).
+- 504 on a critical source (games) WITH the flag -> error.
+- Streak guard applies to the new unit (primed count 2, limit 3 -> third
+  day fails).
+- Split preserves the contract: source resource sets, schemas, PKs, and the
+  cfbd_passing schema/pipeline identity (source-text pin on the runner).
+- Summary detail: failed units print type/message/root-cause; tolerated
+  units do not; long messages collapse and truncate; GITHUB_STEP_SUMMARY
+  gets the failure section; an unwritable summary file cannot mask the
+  failure.
+
+### Verification
+
+Same ruff/pytest commands as revision 1.

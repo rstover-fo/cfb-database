@@ -109,7 +109,7 @@ jobs:
         # deliberate workflow_dispatch.
         #
         # Hardening (PR #75 review finding C): route workflow_dispatch inputs
-        # through step-level env: vars (probe-endpoints.yml's pattern) rather
+        # through step-level env: vars rather
         # than interpolating ${{ inputs.* }} directly into the run: shell --
         # an input string interpolated inline is spliced into the script
         # before the shell ever sees it, so it can inject arbitrary shell

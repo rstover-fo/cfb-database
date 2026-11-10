@@ -68,6 +68,7 @@ Required repo secrets:
 |--------|-------|
 | `CFBD_API_KEY` | collegefootballdata.com API key (exported as `SOURCES__CFBD__API_KEY`) |
 | `SUPABASE_DB_URL` | Supabase **session pooler** connection string (IPv4-capable; the transaction pooler rejects the `statement_timeout` startup option the mart refresh needs) |
+| `ANTHROPIC_API_KEY` | Anthropic API key, used only by the game-recaps job |
 
 The same flow can be run manually:
 

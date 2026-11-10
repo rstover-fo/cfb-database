@@ -145,7 +145,7 @@ class TestWinProbabilityResource:
     def test_merge_write_disposition_and_compound_primary_key(self):
         """(game_id, play_id), not bare play_id -- CFBD's playId uniqueness
         scope (global vs. per-game) is unconfirmed; see the comment above
-        win_probability_resource and scripts/probe_metrics_wp.py."""
+        win_probability_resource."""
         from src.pipelines.sources.metrics import win_probability_resource
 
         with patch("src.pipelines.sources.metrics.get_client") as mock_get_client:

@@ -48,16 +48,6 @@ def normalize_name(name: str) -> str:
     return " ".join(name.strip().split()).casefold()
 
 
-ABBREV_RULES = [
-    # Order matters: check dotted version first, then undotted
-    (" st.", " state"),
-    (" st", " state"),
-    (" univ.", " university"),
-    (" univ", " university"),
-    ("&amp;", "&"),
-]
-
-
 def expand_abbrevs(name: str) -> str:
     """Apply additional abbreviation expansions after normalization.
 

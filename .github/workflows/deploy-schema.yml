@@ -72,9 +72,9 @@ on:
         type: string
 
 concurrency:
-  # Recovery and standalone verification must read completed loads. Serialize
-  # them with ingestion and historical refresh for the whole run, not just dispatch.
-  group: ${{ (inputs.compute_script == 'recover_season_projections' || inputs.compute_script == 'verify_load') && 'daily-season-load' || 'deploy-schema' }}
+  # Standalone verification must read completed loads. Serialize it with
+  # ingestion and historical refresh for the whole run, not just dispatch.
+  group: ${{ inputs.compute_script == 'verify_load' && 'daily-season-load' || 'deploy-schema' }}
   queue: max # preserve pending writers for whichever group this run selects
   cancel-in-progress: false # never kill a mid-deploy run; a queued run waits
 
@@ -111,8 +111,8 @@ jobs:
       - name: Deploy via legacy CLI flags (workflow_dispatch)
         if: github.event_name == 'workflow_dispatch' && ! startsWith(inputs.action, 'managed_')
         # Hardening (PR #75 review finding C): route every workflow_dispatch
-        # input used below through a step-level env: var (probe-endpoints.yml's
-        # pattern) rather than interpolating ${{ inputs.* }} directly into the
+        # input used below through a step-level env: var
+        # rather than interpolating ${{ inputs.* }} directly into the
         # run: shell -- see historical-refresh.yml's Drain backlog step for
         # the rationale. The ARGS+=() accumulation and "$VAR" quoting are
         # unchanged; only where each value comes from moves.

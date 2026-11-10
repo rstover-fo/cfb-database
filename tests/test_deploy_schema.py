@@ -23,19 +23,6 @@ from scripts.deploy_schema import (
 
 
 class TestValidActions:
-    def test_recovery_manifest_rejected_but_dispatch_plan_allowed(self):
-        with pytest.raises(ValueError, match="requires workflow_dispatch"):
-            plan_from_manifest(
-                {
-                    "action": "compute",
-                    "compute": {"script": "recover_season_projections", "args": ["--execute"]},
-                }
-            )
-        plan = plan_from_cli(
-            action="compute", compute_script="recover_season_projections", compute_args="--execute"
-        )
-        assert plan.compute.args == ["--execute"]
-
     def test_verification_manifest_rejected_but_dispatch_plan_allowed(self):
         with pytest.raises(ValueError, match="verify_load requires workflow_dispatch"):
             plan_from_manifest(
@@ -72,15 +59,11 @@ class TestComputeScripts:
         assert COMPUTE_SCRIPTS == {
             "adopt_warehouse_catalog",
             "export_warehouse_catalog",
-            "probe_projection_schedule",
             "verify_load",
-            "recover_season_projections",
             "check_backtest",
             "compute_house_elo",
             "compute_adjusted_epa",
             "compute_predictions",
-            # TEMPORARY (P3.2 Lane B) -- see deploy_schema.py's comment.
-            "probe_metrics_wp",
             "compute_adjusted_epa_week",
             # Drive-chain EP model P1 (2026-08-08 plan).
             "compute_drive_chain",

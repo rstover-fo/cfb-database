@@ -29,11 +29,6 @@ from src.pipelines.utils.refresh_plan import REFRESH_GRAPH
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-# Keep the public lists for existing callers, but derive both from the registry.
-
-MARTS_VIEWS = list(REFRESH_GRAPH.plan(schema="marts").views)
-ANALYTICS_VIEWS = list(REFRESH_GRAPH.plan(schema="analytics").views)
-
 RECEIPT_REFRESH_VIEW = "marts.house_elo_game"
 RECEIPT_REFRESH_INPUT = "analytics.house_elo_game"
 

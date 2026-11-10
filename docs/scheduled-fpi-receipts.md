@@ -49,8 +49,8 @@ current publication. Results include operation and generation IDs for recovery.
 
 The standalone workflow first acquires `daily-season-load`, then its publish
 job acquires `flat-file-load`. This matches the daily parent's order and
-serializes publication and refresh with daily, historical, backfill, recovery,
-and flat-file work. The FPI job can run after an unsuccessful daily workflow;
+serializes publication and refresh with daily, historical, backfill,
+standalone verification, and flat-file work. The FPI job can run after an unsuccessful daily workflow;
 it does not require that workflow to succeed. When activation is off, it uses
 a unique outer group and cannot delay the daily queue.
 

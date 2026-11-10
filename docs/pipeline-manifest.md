@@ -5,8 +5,7 @@
 
 ## Status Legend
 
-- **WORKING**: Configured + implemented + wired in source return + CLI registered
-- **CONFIG_ONLY**: Endpoint config exists, resource function may exist, but NOT returned from source
+- **WORKING**: Implemented + wired in source return + CLI registered
 - **DEFERRED**: Investigated; requires non-standard iteration pattern (per-game or parameter combinations); low priority
 - **PENDING_DEPLOY**: Implemented, unit-tested, and CLI-registered, but not yet loaded against the live
   database (source, migration, and view are authored on a branch awaiting a deploy sequence). See
@@ -62,15 +61,15 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 
 ## Full Endpoint Manifest
 
-### Reference Data (replace disposition)
+### Reference Data (merge disposition)
 
 | # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Status |
 |---|---|---|---|---|---|---|---|---|
-| 1 | `/conferences` | ref.conferences | reference.py | conferences_resource | YES | replace | id | WORKING |
-| 2 | `/teams` | ref.teams | reference.py | teams_resource | YES | replace | id | WORKING |
-| 3 | `/venues` | ref.venues | reference.py | venues_resource | YES | replace | id | WORKING |
+| 1 | `/conferences` | ref.conferences | reference.py | conferences_resource | YES | merge | id | WORKING |
+| 2 | `/teams` | ref.teams | reference.py | teams_resource | YES | merge | id | WORKING |
+| 3 | `/venues` | ref.venues | reference.py | venues_resource | YES | merge | id | WORKING |
 | 4 | `/coaches` | ref.coaches | reference.py | coaches_resource | YES | merge | first_name, last_name | WORKING |
-| 5 | `/plays/types` | ref.play_types | reference.py | play_types_resource | YES | replace | id | WORKING |
+| 5 | `/plays/types` | ref.play_types | reference.py | play_types_resource | YES | merge | id | WORKING |
 
 ### Core Game Data (merge disposition)
 
@@ -83,7 +82,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 10 | `/games/players` | core.game_player_stats | game_stats.py | game_player_stats_resource | YES | merge | id | 2004-2026 | WORKING |
 | 11 | `/games/weather` | core.game_weather | games.py | game_weather_resource | YES | merge | id | 2000-2026 | WORKING |
 | 12 | `/game/box/advanced` | stats.advanced_game_stats | stats.py | advanced_game_stats_resource | NO (game-id backfill only) | merge | game_id, team | 2014-2026 | DEFERRED (see 2026-08-29 note -- CFBD dropped `year`; use `/stats/game/advanced`, row 23, for year-scoped needs) |
-| 13 | `/calendar` | ref.calendar | reference.py | calendar_resource | YES | replace | season, week | current | WORKING |
+| 13 | `/calendar` | ref.calendar | reference.py | calendar_resource | YES | merge | season, week | current | WORKING |
 | 14 | `/records` | core.records | games.py | records_resource | YES | merge | year, team | 2000-2026 | WORKING |
 | 15 | `/scoreboard` | — | — | — | — | — | — | — | UNMAPPED |
 
@@ -105,7 +104,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | 22 | `/stats/season/advanced` | stats.advanced_team_stats | stats.py | advanced_team_stats_resource | YES | merge | season, team | 2004-2026 | WORKING |
 | 23 | `/stats/game/advanced` | stats.game_advanced_team_stats | stats.py | game_advanced_resource | YES | merge | game_id, team | 2014-2026 | WORKING (not yet backfilled) |
 | 24 | `/stats/game/havoc` | stats.game_havoc | stats.py | game_havoc_resource | YES | merge | game_id, team | 2014-2026 | WORKING |
-| 25 | `/stats/categories` | ref.stat_categories | reference.py | stat_categories_resource | YES | replace | name | — | WORKING |
+| 25 | `/stats/categories` | ref.stat_categories | reference.py | stat_categories_resource | YES | merge | name | — | WORKING |
 
 ### Ratings Data (merge disposition)
 
@@ -147,8 +146,8 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 | # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
 |---|---|---|---|---|---|---|---|---|---|
 | 39 | `/draft/picks` | draft.draft_picks | draft.py | draft_picks_resource | YES | merge | year, overall | 2000-2026 | WORKING |
-| 40 | `/draft/positions` | ref.draft_positions | reference.py | draft_positions_resource | YES | replace | name | — | WORKING |
-| 41 | `/draft/teams` | ref.draft_teams | reference.py | draft_teams_resource | YES | replace | location, nickname | — | WORKING |
+| 40 | `/draft/positions` | ref.draft_positions | reference.py | draft_positions_resource | YES | merge | name | — | WORKING |
+| 41 | `/draft/teams` | ref.draft_teams | reference.py | draft_teams_resource | YES | merge | location, nickname | — | WORKING |
 
 ### Metrics Data (merge disposition)
 
@@ -173,7 +172,7 @@ Only 3 actual variant columns in user data tables. dlt internal tables also have
 
 | # | API Path | Table | Source File | Resource Function | Wired? | Disposition | Primary Key | Year Range | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| 51 | `/teams/fbs` | ref.teams_fbs | reference.py | teams_fbs_resource | YES | replace | id | — | WORKING |
+| 51 | `/teams/fbs` | ref.teams_fbs | reference.py | teams_fbs_resource | YES | merge | id | — | WORKING |
 | 52 | `/teams/matchup` | core.team_matchups | — | — | — | DEFERRED | team1, team2, season | — | Computed from games via matchup_history mart |
 | 53 | `/teams/ats` | betting.team_ats | betting.py | team_ats_resource | YES | merge | year, team_id | 2013-2026 | WORKING |
 | 54 | `/roster` | core.roster | rosters.py | rosters_resource | YES | merge | id, team, year | 2004-2026 | WORKING (requires team list) |
@@ -290,7 +289,6 @@ same blast-radius reason as passing.
 |---|---|
 | WORKING | 51 |
 | WORKING (note) | 14 |
-| CONFIG_ONLY | 0 |
 | PENDING_DEPLOY | 0 |
 | DEFERRED | 2 |
 | UNMAPPED | 2 |
@@ -394,11 +392,8 @@ exposed as `api.game_win_probability`
 (`src/schemas/api/033_game_win_probability.sql`). Status is PENDING_DEPLOY,
 not WORKING, because none of this has run against the live database yet --
 see `deploys/p32-backfill-manifests.md` for the exact deploy sequence
-(probe -> three backfill manifests -> apply migration+view) and its "Open
-assumptions" section for what the field-shape probe (`scripts/probe_metrics_wp.py`)
-must still confirm (CFBD's WP model was reportedly rebuilt in 2025, so the
-`playId`/`down`/`distance`/`yardLine` field names this note originally
-recorded on 2026-01-29 are unverified against current live data).
+(probe -> three backfill manifests -> apply migration+view). The field-shape
+probe script that gated the sequence was removed once it completed.
 
 **Resolution (2026-08-29):** `SELECT COUNT(*) FROM metrics.win_probability`
 against the live database returns 1,971,363 -- the deploy sequence above has

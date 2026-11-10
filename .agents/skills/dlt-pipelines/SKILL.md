@@ -15,7 +15,7 @@ requires it.
 - Consult `docs/pipeline-manifest.md` when endpoint wiring, table status, grain,
   or backfill coverage is part of the change.
 - For CFBD request parameters, endpoint semantics, or rate limits, use the
-  `cfbd-api` skill. Generic dlt mechanics live in `docs/dlt-reference.md`.
+  `cfbd-api` skill.
 - For flat files, inspect the `FlatFileSpec` registry, parser, crosswalk, and
   `meta.flat_file_loads` ledger paths relevant to that source. CFBD HTTP rules
   do not automatically apply to flat-file or other-provider ingestion.

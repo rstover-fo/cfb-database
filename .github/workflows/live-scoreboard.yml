@@ -87,8 +87,8 @@ jobs:
       - name: Poll scoreboard
         if: steps.guard.outputs.has_games == 'true'
         # Hardening (PR #75 review finding C): route the workflow_dispatch
-        # `dry_run` input through a step-level env: var (probe-endpoints.yml's
-        # pattern) instead of interpolating ${{ inputs.dry_run }} directly
+        # `dry_run` input through a step-level env: var
+        # instead of interpolating ${{ inputs.dry_run }} directly
         # into the run: shell -- see historical-refresh.yml's Drain backlog
         # step for the rationale.
         env:

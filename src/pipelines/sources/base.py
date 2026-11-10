@@ -1,9 +1,6 @@
 """Base source utilities for CFBD pipelines."""
 
-import dlt
-from dlt.sources import DltResource
-
-from ..utils.api_client import CFBDClient, get_client
+from ..utils.api_client import CFBDClient
 from ..utils.quota_admission import transport_operation
 from ..utils.rate_limiter import get_rate_limiter
 
@@ -42,39 +39,3 @@ def make_request(
     rate_limiter.record_call()
 
     return data
-
-
-def create_resource(
-    name: str,
-    endpoint: str,
-    primary_key: str | list[str],
-    write_disposition: str = "replace",
-    params: dict | None = None,
-) -> DltResource:
-    """Create a dlt resource for a CFBD endpoint.
-
-    Args:
-        name: Resource name
-        endpoint: API endpoint path
-        primary_key: Primary key column(s)
-        write_disposition: "replace" or "merge"
-        params: Static query parameters
-
-    Returns:
-        dlt resource
-    """
-
-    @dlt.resource(
-        name=name,
-        write_disposition=write_disposition,
-        primary_key=primary_key,
-    )
-    def _resource():
-        client = get_client()
-        try:
-            data = make_request(client, endpoint, params)
-            yield from data
-        finally:
-            client.close()
-
-    return _resource()

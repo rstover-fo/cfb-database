@@ -52,8 +52,7 @@ logger = logging.getLogger(__name__)
 
 # (label, endpoint path, target table) for every source that feeds a
 # preseason-known feature and lags the schedule. `year` is the query param for
-# all six -- verified against src/pipelines/config/endpoints.py and the
-# per-endpoint source modules.
+# all six -- verified against the per-endpoint source modules.
 OFFSEASON_ENDPOINTS: list[tuple[str, str, str]] = [
     ("player_returning", "/player/returning", "stats.player_returning"),
     ("sp_ratings", "/ratings/sp", "ratings.sp_ratings"),

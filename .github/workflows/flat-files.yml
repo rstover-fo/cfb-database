@@ -109,8 +109,8 @@ jobs:
         id: load_flat_files
         if: ${{ inputs.receipt_canary_action == 'none' }}
         # Hardening (PR #75 review finding C): route the workflow_dispatch
-        # `source` input through a step-level env: var (probe-endpoints.yml's
-        # pattern) instead of interpolating ${{ inputs.source }} directly
+        # `source` input through a step-level env: var
+        # instead of interpolating ${{ inputs.source }} directly
         # into the run: shell -- see historical-refresh.yml's Drain backlog
         # step for the rationale. Same treatment for `seasons`.
         env:

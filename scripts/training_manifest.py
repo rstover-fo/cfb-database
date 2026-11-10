@@ -20,7 +20,6 @@ from scripts.prediction_provenance import canonical_hash, json_value
 
 MANIFEST_SCHEMA_VERSION = 1
 KNOWN_LINEAGE = "known"
-LEGACY_UNKNOWN_LINEAGE = "legacy_unknown"
 
 
 def source_text_fingerprint(sources: Mapping[str, str]) -> dict[str, str]:

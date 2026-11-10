@@ -228,8 +228,7 @@ def metrics_wp_source(
             each.
         game_seasons: Optional {game_id: season} map used to stamp a
             ``season`` column onto every row (CFBD's per-game response may or
-            may not echo the season back -- confirmed by the W1
-            ``scripts/probe_metrics_wp.py`` probe). If a game_id has no entry,
+            may not echo the season back). If a game_id has no entry,
             ``season`` is left as whatever (if anything) the API returned.
     """
     return [win_probability_resource(game_ids, game_seasons)]
@@ -239,11 +238,9 @@ def metrics_wp_source(
     name="win_probability",
     write_disposition="merge",
     # Compound key, not bare "play_id": CFBD's playId uniqueness scope
-    # (globally unique vs. unique-per-game) is unconfirmed as of this
-    # writing -- see docs/pipeline-manifest.md row 47 investigation note and
-    # scripts/probe_metrics_wp.py, which was written specifically to check
-    # this. (game_id, play_id) is correct either way, so it's the safe
-    # default until the probe confirms play_id alone is sufficient.
+    # (globally unique vs. unique-per-game) is unconfirmed -- see the
+    # docs/pipeline-manifest.md row 47 investigation note. (game_id, play_id)
+    # is correct either way.
     primary_key=["game_id", "play_id"],
 )
 def win_probability_resource(

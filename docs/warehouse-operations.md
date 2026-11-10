@@ -13,7 +13,7 @@ use `_dlt_id`, `_dlt_parent_id`, and `_dlt_list_idx`; preserve their actual grai
 - Consumer behavior and ownership: `docs/SCHEMA_CONTRACT.md`.
 - Endpoint-to-source mappings: `docs/pipeline-manifest.md`.
 - Provider parameters and availability: `docs/cfbd-api-endpoints.md`.
-- Pipeline patterns: `docs/dlt-reference.md` and the shared dlt/CFBD skills.
+- Pipeline patterns: the shared dlt/CFBD skills.
 - As-of feature/model methodology: `docs/modeling-contract.md` and its design doc.
 - Current schedules and command arguments: `.github/workflows/` and each script's
   CLI. Verify changing facts there rather than carrying counts in agent prompts.

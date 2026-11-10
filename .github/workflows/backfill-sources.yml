@@ -96,7 +96,7 @@ jobs:
       - name: Load seasons
         if: ${{ inputs.runner != 'pipeline_run' }}
         # Hardening (PR #75 review finding C): route workflow_dispatch inputs
-        # through step-level env: vars (probe-endpoints.yml's pattern) rather
+        # through step-level env: vars rather
         # than interpolating ${{ inputs.* }} directly into the run: shell --
         # see historical-refresh.yml's Drain backlog step for the rationale.
         env:

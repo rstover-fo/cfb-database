@@ -38,7 +38,6 @@ import sys
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-EDGE_THRESHOLDS = (0, 3, 6, 10)
 BASELINE_THRESHOLD = 0
 GATE_THRESHOLD = 6
 

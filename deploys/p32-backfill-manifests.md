@@ -24,44 +24,14 @@ still-missing game ids for that season (LEFT JOIN against
 calls itself, so re-running any of these manifests after a partial failure
 is safe and cheap -- already-loaded games are skipped, not re-fetched.
 
-## 0. Probe (run first, before trusting anything below)
+## 0. Probe (retired)
 
-`deploys/p32-probe-manifest.json`:
-
-```json
-{
-  "action": "compute",
-  "compute": { "script": "probe_metrics_wp", "args": [] }
-}
-```
-
-Confirms the live `/metrics/wp` field shape (see `scripts/probe_metrics_wp.py`'s
-docstring) before the backfill and view creation below are trusted. Expected
-log output: two `===== gameId=... =====` blocks, one per default probe game,
-each printing the full field list, record count, playId sample values +
-inferred type, and down/distance/clock/homeBall/spread presence flags.
-
-**Open assumptions this must confirm before step 2 below:**
-- Field names still match `playId`, `playText`, `homeWinProbability`, `down`,
-  `distance`, `yardLine` (2026-01-29 investigation note) -- CFBD is reported
-  to have rebuilt its WP model in 2025, which is the whole reason this probe
-  exists rather than trusting the old note.
-- `playId`'s type/scope (int vs string; unique per-game vs globally unique)
-  -- affects nothing about correctness (the merge key is the compound
-  `(game_id, play_id)`, safe either way) but is worth knowing.
-- Whether `down`/`distance`/`clock`/`homeBall`/`spread` are present at all --
-  `api.game_win_probability` (033) only selects `down`/`distance`, which the
-  investigation note already confirmed; if the probe finds a `clock` field
-  directly on the WP payload, the defensive `core.plays` join in 033 could be
-  simplified, but is NOT required to be (it degrades to NULL harmlessly if
-  the join key doesn't line up -- see 033's header).
-- **The default 2015 probe game id (400756843) is UNVERIFIED** -- no 2015-era
-  game id exists anywhere else in this repo to cross-check against, and this
-  authoring environment cannot reach the CFBD API or `core.games` to confirm
-  it. If it 400/404s, that's "wrong id", not "no 2015 WP data" -- rerun with
-  `--game-ids <confirmed pre-rebuild id>` (e.g. via
-  `python scripts/deploy_schema.py --action compute --compute-script probe_metrics_wp --compute-args <id1>,<id2>`
-  or a one-off `workflow_dispatch` run).
+The rollout began with a read-only `/metrics/wp` field-shape probe run through
+the `compute` action. The sequence below completed on 2026-08-29
+(docs/pipeline-manifest.md row 47), so the probe script, its manifest, and its
+`COMPUTE_SCRIPTS` entry were removed. The merge key is the compound
+`(game_id, play_id)`, which is correct whether or not `playId` is globally
+unique.
 
 ## 1-3. Backfill 2014-2025 in three manifests
 

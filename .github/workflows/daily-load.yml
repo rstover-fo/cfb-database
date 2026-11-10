@@ -78,8 +78,8 @@ jobs:
             cfbd-tolerated-streaks-
       - name: Load season data (includes mart refresh)
         # Hardening (PR #75 review finding C): route the workflow_dispatch
-        # `season` input through a step-level env: var (probe-endpoints.yml's
-        # pattern) instead of interpolating ${{ inputs.season }} directly into
+        # `season` input through a step-level env: var
+        # instead of interpolating ${{ inputs.season }} directly into
         # the run: shell -- see historical-refresh.yml's Drain backlog step
         # for the full rationale. Behavior is unchanged: inputs.season is
         # empty on a schedule fire, same as before.

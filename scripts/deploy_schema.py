@@ -11,7 +11,7 @@ production manifest.
 Manifest schema:
     {
       "action": "presence_check" | "apply" | "backfill" | "compute",
-      "mart_release": "src/schemas/mart-releases/example.json",
+      "mart_release": "deploys/mart-releases/trajectory.json",
       "plan": false,
       "files": ["src/schemas/api/019_x.sql", ...],
       "refresh": true,
@@ -28,7 +28,7 @@ Usage:
     python scripts/deploy_schema.py --manifest deploy-manifest.json
     python scripts/deploy_schema.py --action presence_check --strict
     python scripts/deploy_schema.py --action apply \\
-        --mart-release src/schemas/mart-releases/example.json --plan
+        --mart-release deploys/mart-releases/trajectory.json --plan
     python scripts/deploy_schema.py --action apply \\
         --files src/schemas/functions/get_player_game_log.sql --refresh
     python scripts/deploy_schema.py --action backfill \\
@@ -81,21 +81,12 @@ VALID_ACTIONS = {"presence_check", "apply", "backfill", "compute", *MANAGED_ACTI
 COMPUTE_SCRIPTS = {
     "adopt_warehouse_catalog",
     "export_warehouse_catalog",
-    # Read-only one-request schedule probe for the September 2026 recovery.
-    "probe_projection_schedule",
     # Read-only post-load checks without replaying ingestion or mart refreshes.
     "verify_load",
-    "recover_season_projections",
     "compute_house_elo",
     "compute_adjusted_epa",
     "compute_predictions",
     "check_backtest",
-    # TEMPORARY (P3.2 Lane B): read-only field-shape probe for /metrics/wp,
-    # scripts/probe_metrics_wp.py. Remove this entry once the win-probability
-    # deploy sequence (docs/pipeline-manifest.md row 47) is done -- it exists
-    # only so the probe can run through the same deploy/compute mechanism as
-    # everything else instead of a one-off workflow.
-    "probe_metrics_wp",
     "compute_adjusted_epa_week",
     # Drive-chain EP model (docs/plans/2026-08-08-drive-chain-ep-model-plan.md,
     # P1): league transition matrices + Goldner-basis EP per era.
@@ -129,13 +120,6 @@ TIER2_MART_VIEWS = [
     "marts.team_adjusted_epa",
     "marts.scored_matchup_edges",
     "marts.prediction_accuracy",
-]
-
-# Marts refreshed after the Tier 3 feature-building / adjusted-EPA-week
-# computes, when a plan supplies them explicitly via refresh_views.
-TIER3_MART_VIEWS = [
-    "marts.team_week_features",
-    "marts.adjusted_epa_week",
 ]
 
 
@@ -332,12 +316,9 @@ def plan_from_manifest(manifest: dict) -> Plan:
             f"{plan.action} requires workflow_dispatch; managed production actions "
             "cannot run from deploy-manifest.json"
         )
-    if plan.compute and plan.compute.script in {
-        "recover_season_projections",
-        "verify_load",
-    }:
+    if plan.compute and plan.compute.script == "verify_load":
         raise ValueError(
-            f"{plan.compute.script} requires workflow_dispatch with compute_script; "
+            "verify_load requires workflow_dispatch with compute_script; "
             "manifest execution does not share the daily ingestion concurrency group"
         )
     return plan

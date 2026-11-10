@@ -1330,6 +1330,186 @@ class TestPlayerSuccessGameResource:
             pk_columns = {name for name, col in schema["columns"].items() if col.get("primary_key")}
             assert pk_columns == {"game_id", "id"}
 
+    def test_exhausted_rate_limit_warns_and_later_weeks_still_yield(self, caplog):
+        """Daily runs #117 and #118: one week's 429s must not kill the resource.
+
+        Week 3 raises RateLimitExhausted. Week 4 still returns rows, and the
+        warning names the season and week.
+        """
+        from src.pipelines.sources.stats import (
+            player_success_game_resource,
+            reset_player_success_game_skips,
+            take_player_success_game_skips,
+        )
+        from src.pipelines.utils.api_client import RateLimitExhausted
+
+        fixture = _load_fixture("stats_player_success_game.json")
+        reset_player_success_game_skips()
+
+        def side_effect(_client, _endpoint, params=None):
+            if params == {"year": 2026, "seasonType": "regular", "week": 3}:
+                raise RateLimitExhausted(
+                    "Rate limited on all 4 attempt(s) for /stats/player/success/game "
+                    "(params={'year': 2026, 'seasonType': 'regular', 'week': 3}). "
+                    "Consecutive rate-limited responses: 4."
+                )
+            if params == {"year": 2026, "seasonType": "regular", "week": 4}:
+                return list(fixture)
+            return []
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request", side_effect=side_effect),
+            caplog.at_level("WARNING", logger="src.pipelines.sources.stats"),
+        ):
+            mock_get_client.return_value = MagicMock()
+            results = list(player_success_game_resource(years=[2026]))
+
+        assert results == fixture
+        skips = take_player_success_game_skips()
+        assert len(skips) == 1
+        assert "player_success_game 2026 regular week 3" in skips[0]
+        assert "RateLimitExhausted" in skips[0]
+        assert "continuing" in skips[0]
+        assert any("2026 regular week 3" in record.message for record in caplog.records)
+
+    def test_exhausted_read_timeout_warns_and_continues(self):
+        from src.pipelines.sources.stats import (
+            player_success_game_resource,
+            reset_player_success_game_skips,
+            take_player_success_game_skips,
+        )
+
+        fixture = _load_fixture("stats_player_success_game.json")
+        reset_player_success_game_skips()
+
+        def side_effect(_client, _endpoint, params=None):
+            if params["week"] == 1 and params["seasonType"] == "regular":
+                raise httpx.ReadTimeout("The read operation timed out")
+            if params["week"] == 2 and params["seasonType"] == "regular":
+                return list(fixture)
+            return []
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request", side_effect=side_effect),
+        ):
+            mock_get_client.return_value = MagicMock()
+            results = list(player_success_game_resource(years=[2026]))
+
+        assert results == fixture
+        skips = take_player_success_game_skips()
+        assert len(skips) == 1
+        assert "2026 regular week 1" in skips[0]
+        assert "ReadTimeout" in skips[0]
+
+    def test_two_consecutive_exhausted_weeks_stop_the_rest_of_the_resource(self):
+        """A dead endpoint must not walk every remaining week at full retry cost."""
+        from src.pipelines.sources.stats import (
+            player_success_game_resource,
+            reset_player_success_game_skips,
+            take_player_success_game_skips,
+        )
+        from src.pipelines.utils.api_client import RateLimitExhausted
+
+        reset_player_success_game_skips()
+        requested: list[int] = []
+
+        def side_effect(_client, _endpoint, params=None):
+            requested.append(params["week"])
+            raise RateLimitExhausted("spent")
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request", side_effect=side_effect),
+        ):
+            mock_get_client.return_value = MagicMock()
+            assert list(player_success_game_resource(years=[2026])) == []
+
+        assert requested == [1, 2]
+        skips = take_player_success_game_skips()
+        assert len(skips) == 2
+        assert "week 1" in skips[0]
+        assert "continuing" in skips[0]
+        assert "week 2" in skips[1]
+        assert "rest of player_success_game" in skips[1]
+
+    def test_a_successful_week_resets_the_consecutive_skip_count(self):
+        from src.pipelines.sources.stats import (
+            player_success_game_resource,
+            reset_player_success_game_skips,
+            take_player_success_game_skips,
+        )
+        from src.pipelines.utils.api_client import RateLimitExhausted
+
+        reset_player_success_game_skips()
+        requested: list[tuple[str, int]] = []
+
+        def side_effect(_client, _endpoint, params=None):
+            key = (params["seasonType"], params["week"])
+            requested.append(key)
+            if key in {("regular", 1), ("regular", 3)}:
+                raise RateLimitExhausted("spent")
+            return []
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request", side_effect=side_effect),
+        ):
+            mock_get_client.return_value = MagicMock()
+            assert list(player_success_game_resource(years=[2026])) == []
+
+        # Week 2 answered, so week 3's exhaustion does not stop week 4.
+        assert ("regular", 4) in requested
+        assert len(take_player_success_game_skips()) == 2
+
+    def test_rate_limit_circuit_open_still_fails_the_resource(self):
+        from dlt.extract.exceptions import ResourceExtractionError
+
+        from src.pipelines.sources.stats import (
+            player_success_game_resource,
+            reset_player_success_game_skips,
+            take_player_success_game_skips,
+        )
+        from src.pipelines.utils.api_client import RateLimitCircuitOpen
+
+        reset_player_success_game_skips()
+
+        def side_effect(_client, _endpoint, params=None):
+            raise RateLimitCircuitOpen("quota is spent")
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request", side_effect=side_effect),
+        ):
+            mock_get_client.return_value = MagicMock()
+            # dlt wraps a raised resource error; the cause is what fails the
+            # stats unit. A swallowed circuit-open would have yielded [].
+            with pytest.raises(ResourceExtractionError, match="quota is spent") as raised:
+                list(player_success_game_resource(years=[2026]))
+
+        assert isinstance(raised.value.__cause__, RateLimitCircuitOpen)
+        assert take_player_success_game_skips() == []
+
+    def test_other_http_errors_still_fail_the_resource(self):
+        from dlt.extract.exceptions import ResourceExtractionError
+
+        from src.pipelines.sources.stats import player_success_game_resource
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch(
+                "src.pipelines.sources.stats.make_request",
+                side_effect=_http_error(500),
+            ),
+        ):
+            mock_get_client.return_value = MagicMock()
+            with pytest.raises(ResourceExtractionError) as raised:
+                list(player_success_game_resource(years=[2026]))
+
+        assert isinstance(raised.value.__cause__, httpx.HTTPStatusError)
+        assert raised.value.__cause__.response.status_code == 500
+
 
 class TestGameAdvancedResource:
     def test_iterates_regular_and_postseason(self):

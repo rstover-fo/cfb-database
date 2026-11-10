@@ -14,10 +14,51 @@ import httpx
 from dlt.sources import DltSource
 
 from ..config.years import YEAR_RANGES, get_current_season
-from ..utils.api_client import get_client
+from ..utils.api_client import RateLimitCircuitOpen, RateLimitExhausted, get_client
 from .base import RequestBudgetExhausted, make_request
 
 logger = logging.getLogger(__name__)
+
+# One exhausted week is skipped and the walk continues (Daily runs #117 and
+# #118 died on a single /stats/player/success/game week and took the whole
+# stats extract with them). Two consecutive exhausted weeks means the
+# endpoint is not answering; stop this resource so the rest of the stats
+# extract still loads. Merge fills the gap on the next successful run.
+PLAYER_SUCCESS_GAME_CONSECUTIVE_SKIP_LIMIT = 2
+_player_success_game_skips: list[str] = []
+
+
+def reset_player_success_game_skips() -> None:
+    """Drop recorded player_success_game skips (tests and the start of a load)."""
+    _player_success_game_skips.clear()
+
+
+def take_player_success_game_skips() -> list[str]:
+    """Return recorded skips and clear them so a later summary does not repeat them."""
+    found = list(_player_success_game_skips)
+    _player_success_game_skips.clear()
+    return found
+
+
+def _note_player_success_game_skip(
+    year: int,
+    season_type: str,
+    week: int,
+    error: BaseException,
+    *,
+    stop_rest: bool,
+) -> None:
+    message = (
+        f"player_success_game {year} {season_type} week {week} exhausted retries "
+        f"({type(error).__name__}: {error}); skipping this week"
+    )
+    if stop_rest:
+        message += " and the rest of player_success_game for this run"
+    else:
+        message += " and continuing"
+    logger.warning(message)
+    _player_success_game_skips.append(message)
+
 
 ADVANCED_BOX_HEALTH_WINDOW = 10
 ADVANCED_BOX_HEALTH_5XX_TRIP = 5
@@ -850,10 +891,20 @@ def player_success_game_resource(years: list[int]) -> Iterator[dict]:
 
     Note: Data only available from ~2014+.
 
+    A rate-limit exhaustion or a read timeout that survived the client's
+    retries skips that week and continues. Raising would fail the whole
+    stats source (dlt discards every sibling resource) and skip Elo, EPA,
+    predictions, and the rest of the daily load -- Daily runs #117 and #118.
+    The skip is logged and recorded for the load_season summary. A quota
+    circuit open still raises: the API is refusing everything, and continuing
+    this resource cannot help. Two consecutive exhausted weeks stop the rest
+    of this resource only.
+
     Args:
         years: List of years to load success-rate stats for
     """
     client = get_client()
+    consecutive_skips = 0
     try:
         for year in years:
             for season_type in ("regular", "postseason"):
@@ -876,7 +927,19 @@ def player_success_game_resource(years: list[int]) -> Iterator[dict]:
                             )
                             continue
                         raise
+                    except RateLimitCircuitOpen:
+                        raise
+                    except (RateLimitExhausted, httpx.ReadTimeout) as e:
+                        consecutive_skips += 1
+                        stop_rest = consecutive_skips >= PLAYER_SUCCESS_GAME_CONSECUTIVE_SKIP_LIMIT
+                        _note_player_success_game_skip(
+                            year, season_type, week, e, stop_rest=stop_rest
+                        )
+                        if stop_rest:
+                            return
+                        continue
 
+                    consecutive_skips = 0
                     if not data:
                         continue
 

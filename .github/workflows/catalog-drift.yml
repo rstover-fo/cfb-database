@@ -1,0 +1,96 @@
+name: Catalog Drift
+
+# Compares the live warehouse catalog with what this repository builds.
+#
+# A disposable Postgres service is bootstrapped from
+# src/schemas/warehouse-manifest.json, then scripts/check_catalog_drift.py
+# reads both catalogs and reports the differences. Production is only read,
+# in read-only transactions; nothing is written to it.
+#
+# Schedule and manual dispatch only: a pull request cannot trigger it. As with
+# every dispatchable workflow here, dispatching it on a branch runs that
+# branch's code with the database secret.
+#
+# Whether a difference fails the run is decided by "enforce" in
+# src/schemas/drift-accepted.json, a reviewed file, not by a workflow input.
+#
+# This repository is public, and so are this workflow's logs and artifacts.
+# Grant, owner, policy, default-privilege and option differences are therefore
+# only counted per schema, and production's function and view text is withheld,
+# unless a dispatch explicitly asks for the details.
+#
+# Requires repo secret:
+#   SUPABASE_DB_URL - Supabase SESSION pooler URL
+
+on:
+  schedule:
+    - cron: "47 14 * * *" # after the daily load, receipts and historical refresh
+  workflow_dispatch:
+    inputs:
+      include_sensitive_details:
+        description: "Name objects and roles in access differences and print production function/view text (published in this public repo's logs)"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: catalog-drift
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  # Loopback-only credential for the throwaway service container below.
+  WAREHOUSE_DB_URL: postgresql://postgres:catalog-drift-disposable@127.0.0.1:5432/postgres
+
+jobs:
+  compare:
+    name: Compare catalogs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f
+        env:
+          POSTGRES_PASSWORD: catalog-drift-disposable
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e .
+      - name: Build the managed warehouse
+        run: python scripts/bootstrap_warehouse.py bootstrap > bootstrap-plan.json
+      - name: Compare with production (read-only)
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          INCLUDE_SENSITIVE_DETAILS: ${{ inputs.include_sensitive_details }}
+        run: |
+          mkdir -p catalog-drift
+          ARGS=(
+            --report catalog-drift/report.json
+            --propose-accepted catalog-drift/proposed-accepted.json
+            --summary "$GITHUB_STEP_SUMMARY"
+          )
+          if [ "$INCLUDE_SENSITIVE_DETAILS" = "true" ]; then
+            ARGS+=(--include-sensitive-details)
+          fi
+          python scripts/check_catalog_drift.py "${ARGS[@]}"
+      - name: Upload drift report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: catalog-drift
+          path: catalog-drift/
+          retention-days: 14
+          if-no-files-found: warn

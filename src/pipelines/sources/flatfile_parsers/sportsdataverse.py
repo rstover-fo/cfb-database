@@ -341,10 +341,34 @@ def parse_fpi_weekly(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
         logger.info(f"sdv_fpi_weekly: dropped {dropped_count} row(s) with null PK column(s)")
 
 
+# Publication contract for ratings.sdv_ratings_weekly. Keep this tuple aligned
+# with SDV_RATINGS_PUBLICATION.columns. Upstream may add columns; the parser
+# projects this set so a new field cannot fail the 16-column receipt check or
+# widen the table.
+RATINGS_WEEKLY_COLUMNS = (
+    "season",
+    "through_week",
+    "team_id",
+    "adj_off_epa",
+    "adj_def_epa",
+    "adj_st_epa",
+    "adj_net",
+    "fei_off",
+    "fei_def",
+    "fei_net",
+    "off_pace",
+    "net_z",
+    "games",
+    "off_rank",
+    "def_rank",
+    "net_rank",
+)
+
+
 def parse_ratings_weekly(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
     """Parse cfb_ratings_weekly_{season}.parquet into ratings.sdv_ratings_weekly rows.
 
-    Real columns (16; season/through_week/team_id all present in-file --
+    Contract columns (16; season/through_week/team_id all present in-file --
     ``ctx.season`` is NOT consulted): season (int64), team_id (large_string
     holding a plain integer, e.g. "333" -- coerced to int here so it lines up
     with fpi_weekly's int64 team_id and ref.teams.id), adj_off_epa,
@@ -354,6 +378,11 @@ def parse_ratings_weekly(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
     system's (adjusted-EPA + FEI) wide-format weekly snapshot, not a
     long-format multi-system table; a second external system would need
     either a new table or a reshape, not a bolt-on column here.
+
+    The 2026 release also carries fei_off_rank, fei_def_rank, and
+    fei_net_rank (int64). Those ranks are outside the publication table, so
+    this parser drops them and any other non-contract column. A missing
+    contract column is left absent and still fails publication validation.
 
     PK: (season, through_week, team_id) -- verified 0 duplicate keys, 0 null
     values in any column, across 2124 rows in the 2025 file.
@@ -365,6 +394,13 @@ def parse_ratings_weekly(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
     missing = required - schema_names
     if missing:
         raise ParserStructureError(f"sdv_ratings_weekly: missing column(s): {sorted(missing)}")
+
+    extra = sorted(schema_names - set(RATINGS_WEEKLY_COLUMNS))
+    if extra:
+        logger.info(
+            "sdv_ratings_weekly: ignoring column(s) outside the publication contract: "
+            + ", ".join(extra)
+        )
 
     double_cols = [
         "adj_off_epa",
@@ -402,7 +438,7 @@ def parse_ratings_weekly(raw: bytes, ctx: ParseContext) -> Iterator[dict]:
             if row.get(col) is not None:
                 row[col] = float(row[col])
 
-        yield row
+        yield {column: row[column] for column in RATINGS_WEEKLY_COLUMNS if column in row}
 
     if dropped_count > 0:
         logger.info(f"sdv_ratings_weekly: dropped {dropped_count} row(s) with null PK column(s)")

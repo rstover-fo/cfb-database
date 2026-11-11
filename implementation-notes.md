@@ -54,8 +54,49 @@ took the more conservative option.
   to a table that exists only in production.
 - Per-schema counts of access differences are published and can hint at how
   many roles reach a lone new relation.
-- The expected side does not include definitions applied outside the managed
-  manifest, so the first production report will list those as drift. That list
-  is the input for moving them into the ledger.
-- Nothing here has run against production. The first run is report-only for
-  that reason.
+- A definition file outside the managed manifest that differs from what
+  production runs is invisible to the check; see the first run below.
+
+## First production run (2026-11-11)
+
+Run 42955589462, report-only: 19 differences in about 13,000 catalog facts,
+none in `api` or `public`, and no grant or owner difference outside one
+staging schema.
+
+- **A prediction above was wrong.** These notes expected the first report to
+  list definitions deployed outside the manifest. It listed none, because the
+  baseline was dumped from production and already carries them.
+- **Seven view definitions differ only by the pg_dump round trip.** A restored
+  dump deparses `IN (...)` on a varchar column as
+  `ARRAY['a'::character varying::text]` where the original deparses as
+  `ARRAY['a'::character varying]::text[]`, and it names unaliased constant
+  columns. Applying those two rewrites to the managed build's text reproduces
+  production's published sha256 for all seven. Accepted.
+- **Three dlt state tables in `warehouse_source_stage`**, created by the
+  source-publication pipelines, with owner-only access. The classifier does
+  not treat them as dlt's because the managed build has no dlt table in that
+  schema to compare their access with. Accepted, with their nine access facts.
+- **Deviation: the nine access entries were derived without a details
+  dispatch**, which would have published them in a run log. Production's
+  catalog was read privately and the tables were reproduced on a local managed
+  build; the three relation fingerprints and dependent-fact digests matched
+  the published report. The access entries are confirmed only when a
+  production run reports no drift and no stale entry, so `enforce` stays
+  `false` until then.
+
+### Found while tracing the differences, not fixed here
+
+- `src/schemas/marts/015_team_style_profile.sql` does not build what
+  production serves. Production runs the definition added a day later as
+  `marts/010_team_style_profile.sql` (b204249), which 09ecf46 deleted as dead
+  code. Applying the surviving file would drop the view's dependents (it uses
+  `DROP ... CASCADE`) and change the mart's numbers. The refresh registry
+  declares the file's inputs, not production's.
+- `marts.team_returning_production` is in production and the baseline with
+  three indexes, but has no source file, no refresh-registry entry, no
+  dependent and no recorded read. `api.team_returning_production` reads
+  `marts.returning_production`.
+- `stats.passing_team_season` and `stats.passing_team_games` are about 460
+  columns wide since the provider added per-location passing metrics. The set
+  follows the payload's shape and does not grow per load; Postgres allows
+  1,600.

@@ -94,8 +94,9 @@ separate. The digest is part of the fingerprint, so an accepted extra table
 that later gains a column is drift again.
 
 Enforcement is the `"enforce"` field of `src/schemas/drift-accepted.json`; the
-file must exist and must state it. It ships `false`: the check reports and exits 0 until the
-first production report has been reviewed. An enforced run fails on drift and
+file must exist and must state it. It is `false`: the check reports and exits
+0 until a production run confirms the accepted list with no drift and no stale
+entry. An enforced run fails on drift and
 on any accepted entry that no longer applies, so stale entries have to be
 removed. To accept differences, take `proposed-accepted.json` from the run's
 artifact, replace each `TODO` reason with why the difference is acceptable
@@ -116,8 +117,11 @@ The repository is public, so the run log and artifact are too. By default:
   repository has never contained, such as a token in a trigger argument.
 
 Seeing either, or accepting an access difference, takes a dispatch with
-`include_sensitive_details`, which publishes them for that run. An accepted
-access entry is public in the accepted file from then on.
+`include_sensitive_details`, which publishes them for that run. The private
+alternative is to read production's catalog directly, reproduce the objects on
+a local managed build, and run the check with details there; the fingerprints
+are the same when the facts are. Either way, an accepted access entry is
+public in the accepted file from then on.
 
 Limits:
 
@@ -125,6 +129,10 @@ Limits:
   production with `run_migrations.py --file` or a mart release shows as drift
   until the manifest reproduces it. A definition file outside the manifest that
   is edited here but never deployed is not detected at all.
+- A view restored from the baseline can deparse differently from the same
+  view created from its original SQL: pg_dump's output casts each element of
+  an `IN` list on a varchar column and names unaliased constant columns. These
+  are accepted with a reason; they are not differences in behavior.
 - Not compared: `*_staging` schemas, comments, sequence settings, column
   collation and storage, extension versions, domains and composite types,
   event triggers that call a function outside these schemas, Supabase platform

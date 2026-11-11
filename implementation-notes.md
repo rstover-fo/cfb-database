@@ -97,7 +97,12 @@ staging schema.
   for a `core.games` change now includes the view, one for `marts.play_epa`
   alone no longer does, and the full plan's order is unchanged. Whether the
   mart should move to the `marts.play_epa` version (garbage time excluded,
-  four more columns) is a product decision this does not make.
+  four more columns) is a product decision this does not make. Review of this
+  change raised one consequence of the current definition to weigh in it:
+  `total_plays` counts every play that carries a `ppa`, whatever its type,
+  where `marts.play_epa` also drops kickoffs and clock events. `run_rate`,
+  `pass_rate`, `plays_per_game` and `tempo_category` inherit that. This is
+  what production serves today, and it has not been measured against data.
 - Not fixed: `marts.team_returning_production` is in production and the
   baseline with three indexes, but has no source file, no refresh-registry
   entry, no dependent and no recorded read. `api.team_returning_production`

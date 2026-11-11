@@ -1,5 +1,139 @@
 {
   "version": 1,
   "enforce": false,
-  "accepted": []
+  "accepted": [
+    {
+      "fingerprint": "975b66227983adb1",
+      "kind": "definition",
+      "key": "analytics.data_quality_dashboard",
+      "status": "changed",
+      "reason": "pg_dump round trip, not a different view. The baseline's restored copy names seven UNION-branch constants explicitly ('plays'::text AS text); production's copy, created from the original SQL, deparses them without the alias. Removing those seven aliases from the managed build's text reproduces production's sha256 exactly. Checked 2026-11-11 against Catalog Drift run 42955589462."
+    },
+    {
+      "fingerprint": "138ea9f8a5f6e2f2",
+      "kind": "definition",
+      "key": "marts.play_epa",
+      "status": "changed",
+      "reason": "pg_dump round trip, not a different view. The baseline's restored copy deparses IN-lists on varchar columns as ARRAY['a'::character varying::text, ...]; production's copy, created from the original SQL, deparses them as ARRAY['a'::character varying, ...]::text[]. Rewriting the managed build's text that way reproduces production's sha256 exactly. Checked 2026-11-11 against Catalog Drift run 42955589462."
+    },
+    {
+      "fingerprint": "4ac4ec76315b0fb6",
+      "kind": "definition",
+      "key": "marts.recruiting_class",
+      "status": "changed",
+      "reason": "pg_dump round trip, not a different view. The baseline's restored copy deparses IN-lists on varchar columns as ARRAY['a'::character varying::text, ...]; production's copy, created from the original SQL, deparses them as ARRAY['a'::character varying, ...]::text[]. Rewriting the managed build's text that way reproduces production's sha256 exactly. Checked 2026-11-11 against Catalog Drift run 42955589462."
+    },
+    {
+      "fingerprint": "7c30af049c4dc449",
+      "kind": "definition",
+      "key": "marts.scoring_opportunities",
+      "status": "changed",
+      "reason": "pg_dump round trip, not a different view. The baseline's restored copy deparses IN-lists on varchar columns as ARRAY['a'::character varying::text, ...]; production's copy, created from the original SQL, deparses them as ARRAY['a'::character varying, ...]::text[]. Rewriting the managed build's text that way reproduces production's sha256 exactly. Checked 2026-11-11 against Catalog Drift run 42955589462."
+    },
+    {
+      "fingerprint": "e013dfdf821c363d",
+      "kind": "definition",
+      "key": "marts.team_returning_production",
+      "status": "changed",
+      "reason": "pg_dump round trip, not a different view. The baseline's restored copy deparses IN-lists on varchar columns as ARRAY['a'::character varying::text, ...]; production's copy, created from the original SQL, deparses them as ARRAY['a'::character varying, ...]::text[]. Rewriting the managed build's text that way reproduces production's sha256 exactly. Checked 2026-11-11 against Catalog Drift run 42955589462. The view itself has no source file and no reader in this repository; see implementation-notes.md."
+    },
+    {
+      "fingerprint": "bef7776dcb8f1ecf",
+      "kind": "definition",
+      "key": "marts.team_style_profile",
+      "status": "changed",
+      "reason": "pg_dump round trip, not a different view. The baseline's restored copy deparses IN-lists on varchar columns as ARRAY['a'::character varying::text, ...]; production's copy, created from the original SQL, deparses them as ARRAY['a'::character varying, ...]::text[]. Rewriting the managed build's text that way reproduces production's sha256 exactly. Checked 2026-11-11 against Catalog Drift run 42955589462."
+    },
+    {
+      "fingerprint": "b0e72a9b7c59aef6",
+      "kind": "definition",
+      "key": "marts.team_tempo_metrics",
+      "status": "changed",
+      "reason": "pg_dump round trip, not a different view. The baseline's restored copy deparses IN-lists on varchar columns as ARRAY['a'::character varying::text, ...]; production's copy, created from the original SQL, deparses them as ARRAY['a'::character varying, ...]::text[]. Rewriting the managed build's text that way reproduces production's sha256 exactly. Checked 2026-11-11 against Catalog Drift run 42955589462."
+    },
+    {
+      "fingerprint": "b6a3bff0227780ed",
+      "kind": "relation",
+      "key": "warehouse_source_stage._dlt_loads",
+      "status": "unexpected_in_production",
+      "reason": "dlt state table. The source-publication pipelines (flat files, SDV ratings) load through this schema with dlt, which creates its three state tables here on first run; a managed build has never run them. Columns, index and constraint are dlt's standard ones: a local build with the same DDL reproduces this fingerprint. Checked 2026-11-11 against Catalog Drift run 42955589462."
+    },
+    {
+      "fingerprint": "6a0bf30b21b2c956",
+      "kind": "relation",
+      "key": "warehouse_source_stage._dlt_pipeline_state",
+      "status": "unexpected_in_production",
+      "reason": "dlt state table. The source-publication pipelines (flat files, SDV ratings) load through this schema with dlt, which creates its three state tables here on first run; a managed build has never run them. Columns, index and constraint are dlt's standard ones: a local build with the same DDL reproduces this fingerprint. Checked 2026-11-11 against Catalog Drift run 42955589462."
+    },
+    {
+      "fingerprint": "d6d232348e75b437",
+      "kind": "relation",
+      "key": "warehouse_source_stage._dlt_version",
+      "status": "unexpected_in_production",
+      "reason": "dlt state table. The source-publication pipelines (flat files, SDV ratings) load through this schema with dlt, which creates its three state tables here on first run; a managed build has never run them. Columns, index and constraint are dlt's standard ones: a local build with the same DDL reproduces this fingerprint. Checked 2026-11-11 against Catalog Drift run 42955589462."
+    },
+    {
+      "fingerprint": "2286ba6ce17a0361",
+      "kind": "grant",
+      "key": "relation warehouse_source_stage._dlt_loads -> postgres",
+      "status": "unexpected_in_production",
+      "reason": "Access of an accepted dlt state table, at its most restrictive: owned by the schema's owner, no grant beyond the owner's own, no row security, no storage options. Read from production's catalog and reproduced on a local build, 2026-11-11."
+    },
+    {
+      "fingerprint": "1b561df751ed8216",
+      "kind": "grant",
+      "key": "relation warehouse_source_stage._dlt_pipeline_state -> postgres",
+      "status": "unexpected_in_production",
+      "reason": "Access of an accepted dlt state table, at its most restrictive: owned by the schema's owner, no grant beyond the owner's own, no row security, no storage options. Read from production's catalog and reproduced on a local build, 2026-11-11."
+    },
+    {
+      "fingerprint": "67ab7e607f729735",
+      "kind": "grant",
+      "key": "relation warehouse_source_stage._dlt_version -> postgres",
+      "status": "unexpected_in_production",
+      "reason": "Access of an accepted dlt state table, at its most restrictive: owned by the schema's owner, no grant beyond the owner's own, no row security, no storage options. Read from production's catalog and reproduced on a local build, 2026-11-11."
+    },
+    {
+      "fingerprint": "1fb2cfb75347dabe",
+      "kind": "owner",
+      "key": "relation warehouse_source_stage._dlt_loads",
+      "status": "unexpected_in_production",
+      "reason": "Access of an accepted dlt state table, at its most restrictive: owned by the schema's owner, no grant beyond the owner's own, no row security, no storage options. Read from production's catalog and reproduced on a local build, 2026-11-11."
+    },
+    {
+      "fingerprint": "5ae2f00bd8de1436",
+      "kind": "owner",
+      "key": "relation warehouse_source_stage._dlt_pipeline_state",
+      "status": "unexpected_in_production",
+      "reason": "Access of an accepted dlt state table, at its most restrictive: owned by the schema's owner, no grant beyond the owner's own, no row security, no storage options. Read from production's catalog and reproduced on a local build, 2026-11-11."
+    },
+    {
+      "fingerprint": "4f8b2d30cccc8348",
+      "kind": "owner",
+      "key": "relation warehouse_source_stage._dlt_version",
+      "status": "unexpected_in_production",
+      "reason": "Access of an accepted dlt state table, at its most restrictive: owned by the schema's owner, no grant beyond the owner's own, no row security, no storage options. Read from production's catalog and reproduced on a local build, 2026-11-11."
+    },
+    {
+      "fingerprint": "1af9135620c05b1c",
+      "kind": "relation_options",
+      "key": "warehouse_source_stage._dlt_loads",
+      "status": "unexpected_in_production",
+      "reason": "Access of an accepted dlt state table, at its most restrictive: owned by the schema's owner, no grant beyond the owner's own, no row security, no storage options. Read from production's catalog and reproduced on a local build, 2026-11-11."
+    },
+    {
+      "fingerprint": "5f7c397160cd7747",
+      "kind": "relation_options",
+      "key": "warehouse_source_stage._dlt_pipeline_state",
+      "status": "unexpected_in_production",
+      "reason": "Access of an accepted dlt state table, at its most restrictive: owned by the schema's owner, no grant beyond the owner's own, no row security, no storage options. Read from production's catalog and reproduced on a local build, 2026-11-11."
+    },
+    {
+      "fingerprint": "1fafb75da6090975",
+      "kind": "relation_options",
+      "key": "warehouse_source_stage._dlt_version",
+      "status": "unexpected_in_production",
+      "reason": "Access of an accepted dlt state table, at its most restrictive: owned by the schema's owner, no grant beyond the owner's own, no row security, no storage options. Read from production's catalog and reproduced on a local build, 2026-11-11."
+    }
+  ]
 }

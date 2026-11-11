@@ -54,8 +54,61 @@ took the more conservative option.
   to a table that exists only in production.
 - Per-schema counts of access differences are published and can hint at how
   many roles reach a lone new relation.
-- The expected side does not include definitions applied outside the managed
-  manifest, so the first production report will list those as drift. That list
-  is the input for moving them into the ledger.
-- Nothing here has run against production. The first run is report-only for
-  that reason.
+- A definition file outside the managed manifest that differs from what
+  production runs is invisible to the check; see the first run below.
+
+## First production run (2026-11-11)
+
+Run 42955589462, report-only: 19 differences in about 13,000 catalog facts,
+none in `api` or `public`, and no grant or owner difference outside one
+staging schema.
+
+- **A prediction above was wrong.** These notes expected the first report to
+  list definitions deployed outside the manifest. It listed none, because the
+  baseline was dumped from production and already carries them.
+- **Seven view definitions differ only by the pg_dump round trip.** A restored
+  dump deparses `IN (...)` on a varchar column as
+  `ARRAY['a'::character varying::text]` where the original deparses as
+  `ARRAY['a'::character varying]::text[]`, and it names unaliased constant
+  columns. Applying those two rewrites to the managed build's text reproduces
+  production's published sha256 for all seven. Accepted.
+- **Three dlt state tables in `warehouse_source_stage`**, created by the
+  source-publication pipelines, with owner-only access. The classifier does
+  not treat them as dlt's because the managed build has no dlt table in that
+  schema to compare their access with. Accepted, with their nine access facts.
+- **Deviation: the nine access entries were derived without a details
+  dispatch**, which would have published them in a run log. Production's
+  catalog was read privately and the tables were reproduced on a local managed
+  build; the three relation fingerprints and dependent-fact digests matched
+  the published report. The access entries are confirmed only when a
+  production run reports no drift and no stale entry, so `enforce` stays
+  `false` until then.
+
+### Found while tracing the differences
+
+- **Fixed: `src/schemas/marts/015_team_style_profile.sql` did not build what
+  production serves.** Production runs the definition added as
+  `marts/010_team_style_profile.sql` (b204249). 09ecf46 deleted that file as
+  dead code and kept an older one that was never deployed; a release naming
+  it would have changed the mart's numbers. The file holds b204249's text
+  again. Applied to a managed build, it deparses to production's sha256 with
+  the same columns and indexes. The refresh registry now declares what the
+  view reads (`core.games`, `core.plays`) instead of `marts.play_epa`: a plan
+  for a `core.games` change now includes the view, one for `marts.play_epa`
+  alone no longer does, and the full plan's order is unchanged. Whether the
+  mart should move to the `marts.play_epa` version (garbage time excluded,
+  four more columns) is a product decision this does not make. Review of this
+  change raised one consequence of the current definition to weigh in it:
+  `total_plays` counts every play that carries a `ppa`, whatever its type,
+  where `marts.play_epa` also drops kickoffs and clock events. `run_rate`,
+  `pass_rate`, `plays_per_game` and `tempo_category` inherit that. This is
+  what production serves today, and it has not been measured against data.
+- Not fixed: `marts.team_returning_production` is in production and the
+  baseline with three indexes, but has no source file, no refresh-registry
+  entry, no dependent and no recorded read. `api.team_returning_production`
+  reads `marts.returning_production`. Removing it needs a ledger migration
+  and a production deploy.
+- No action needed: `stats.passing_team_season` and
+  `stats.passing_team_games` are about 460 columns wide since the provider
+  added per-location passing metrics. The set follows the payload's shape and
+  does not grow per load; Postgres allows 1,600.

@@ -51,9 +51,10 @@ a disposable Postgres from `src/schemas/warehouse-manifest.json`, then
 `scripts/check_catalog_drift.py` reads that catalog and production's and
 reports where they differ. Production is read in read-only transactions.
 
-Compared, for the project schemas and the `warehouse_*` schemas: relations and
-their columns, view and materialized-view definitions, functions, indexes,
-constraints, triggers, enums, extensions installed in those schemas, row-level
+Compared, for the project schemas and the `warehouse_*` schemas: relations,
+their columns and column order, view and materialized-view definitions,
+functions, indexes, constraints, triggers, event triggers that call a function
+in those schemas, enums, extensions installed in those schemas, row-level
 security, policies, owners, grants, and default privileges (schema-scoped and
 global).
 
@@ -93,7 +94,7 @@ separate. The digest is part of the fingerprint, so an accepted extra table
 that later gains a column is drift again.
 
 Enforcement is the `"enforce"` field of `src/schemas/drift-accepted.json`; the
-file must exist. It ships `false`: the check reports and exits 0 until the
+file must exist and must state it. It ships `false`: the check reports and exits 0 until the
 first production report has been reviewed. An enforced run fails on drift and
 on any accepted entry that no longer applies, so stale entries have to be
 removed. To accept differences, take `proposed-accepted.json` from the run's
@@ -109,8 +110,10 @@ The repository is public, so the run log and artifact are too. By default:
   fingerprint is published, and they are left out of `proposed-accepted.json`.
   They still fail an enforced run. The counts themselves can hint at how many
   roles reach a lone new relation.
-- Production's function and view text is replaced by its length and digest,
-  because it could embed a literal this repository has never contained.
+- Production's deparsed SQL (function bodies, view definitions, index,
+  constraint and trigger definitions, and any column with a default) is
+  replaced by its length and digest, because it could embed a literal this
+  repository has never contained, such as a token in a trigger argument.
 
 Seeing either, or accepting an access difference, takes a dispatch with
 `include_sensitive_details`, which publishes them for that run. An accepted
@@ -124,7 +127,10 @@ Limits:
   is edited here but never deployed is not detected at all.
 - Not compared: `*_staging` schemas, comments, sequence settings, column
   collation and storage, extension versions, domains and composite types,
-  Supabase platform schemas, and other applications' schemas.
+  event triggers that call a function outside these schemas, Supabase platform
+  schemas, and other applications' schemas.
+- Appended or missing columns are reported individually and are not a change
+  of column order; only reordering the columns both sides share is.
 - The catalog is read from one snapshot that takes no lock on any user
   relation. View definitions are read afterwards in one statement that briefly
   share-locks each view and the relations it reads. It waits up to five

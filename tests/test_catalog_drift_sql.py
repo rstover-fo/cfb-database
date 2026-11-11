@@ -55,6 +55,10 @@ CREATE TABLE core._dlt_games_backup AS SELECT * FROM core.games;
 CREATE TABLE core.games__defaulted (_dlt_id varchar NOT NULL UNIQUE, v text DEFAULT 'x');
 CREATE TABLE core.plays_rest PARTITION OF core.plays DEFAULT;
 CREATE SEQUENCE core.by_hand_seq;
+ALTER EVENT TRIGGER warehouse_source_invalidate_ddl DISABLE;
+DROP EVENT TRIGGER warehouse_source_invalidate_drop;
+CREATE TYPE core.ambiguous_one AS ENUM ('a, b', 'c');
+CREATE TYPE core.ambiguous_two AS ENUM ('a', 'b, c');
 """
 
 
@@ -139,6 +143,13 @@ def test_two_managed_builds_have_identical_catalogs(warehouse_db):  # noqa: F811
     index = expected[("index", "marts.team_season_summary_wins_idx")]
     assert " ON marts.team_season_summary " in index.value
     assert ("definition", "api.team_detail") in expected
+    # The safeguards the ledger installs as event triggers are part of the catalog.
+    event_triggers = {key for kind, key in expected if kind == "event_trigger"}
+    assert {"warehouse_source_invalidate_ddl", "warehouse_publication_invalidate_drop"} <= (
+        event_triggers
+    )
+    order = json.loads(expected[("column_order", "core.plays")].value)
+    assert order.index("id") < order.index("_dlt_id") and len(order) > 10
 
 
 def test_capture_cannot_write_and_leaves_no_transaction_open(warehouse_db):  # noqa: F811
@@ -239,6 +250,10 @@ def test_dlt_evolution_is_separated_from_manual_changes(warehouse_db):  # noqa: 
         ("relation", "core.games__defaulted"): drift.UNEXPECTED,
         ("relation", "core.plays_rest"): drift.UNEXPECTED,
         ("relation", "core.by_hand_seq"): drift.UNEXPECTED,
+        ("event_trigger", "warehouse_source_invalidate_ddl"): drift.CHANGED,
+        ("event_trigger", "warehouse_source_invalidate_drop"): drift.MISSING,
+        ("enum", "core.ambiguous_one"): drift.UNEXPECTED,
+        ("enum", "core.ambiguous_two"): drift.UNEXPECTED,
         ("function", "ref.get_era(p_year integer)"): drift.CHANGED,
         ("index", "marts.team_season_summary_wins_idx"): drift.MISSING,
     }
@@ -254,6 +269,9 @@ def test_dlt_evolution_is_separated_from_manual_changes(warehouse_db):  # noqa: 
     assert after_edits[("relation", "core.plays_y2027")].value == (
         "table; partition of core.plays; bound FOR VALUES IN ('2027')"
     )
+    # Enum labels keep their boundaries, so these two differ.
+    assert after_edits[("enum", "core.ambiguous_one")].value == '["a, b", "c"]'
+    assert after_edits[("enum", "core.ambiguous_two")].value == '["a", "b, c"]'
 
     hidden = report(expected, after_edits, details=False)
     assert hidden["summary"]["drift"] == edited["summary"]["drift"]

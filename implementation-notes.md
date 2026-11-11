@@ -28,14 +28,20 @@ took the more conservative option.
   about an access difference is published except a count per schema and kind.
   The cost: seeing or accepting one needs a dispatch with
   `include_sensitive_details`, which publishes it for that run.
-- **Production's function and view text is withheld by default.** It was
-  printed in full; a production-only function body can hold a token.
+- **Production's deparsed SQL is withheld by default.** Function bodies and
+  view definitions were printed in full. PR review extended this to index,
+  constraint and trigger definitions and to columns with a default: Supabase
+  database webhooks, for one, put request headers in trigger arguments.
 - **View definitions are read separately, last.** Measured: `pg_get_viewdef`
   is the only statement that locks user relations (the views and every
   relation they read). It moved out of the snapshot into its own short
   transaction with a five-second lock timeout and a bounded retry.
-- **A missing accepted file is an error**, and an accepted entry whose label
-  does not match the difference its fingerprint identifies fails the run.
+- **A missing accepted file is an error**, as is one that does not state
+  `enforce`, and an accepted entry whose label does not match the difference
+  its fingerprint identifies fails the run.
+- **Added from PR review:** event triggers (the ledger installs six as
+  safeguards), column order (appending is not a reorder), and enum labels
+  stored as a list rather than joined text.
 - **Default privileges:** global ones and emptied ones are included; an inner
   join dropped them in the first version. Sequence ACL defaults used the
   foreign-server type letter and now use the sequence one.

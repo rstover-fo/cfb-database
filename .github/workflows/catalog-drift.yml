@@ -16,8 +16,8 @@ name: Catalog Drift
 #
 # This repository is public, and so are this workflow's logs and artifacts.
 # Grant, owner, policy, default-privilege and option differences are therefore
-# only counted per schema, and production's function and view text is withheld,
-# unless a dispatch explicitly asks for the details.
+# only counted per schema, and production's deparsed SQL is withheld, unless a
+# dispatch explicitly asks for the details.
 #
 # Requires repo secret:
 #   SUPABASE_DB_URL - Supabase SESSION pooler URL
@@ -28,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       include_sensitive_details:
-        description: "Name objects and roles in access differences and print production function/view text (published in this public repo's logs)"
+        description: "Name objects and roles in access differences and print production's deparsed SQL (published in this public repo's logs)"
         required: false
         type: boolean
         default: false

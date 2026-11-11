@@ -370,12 +370,15 @@ def test_a_missing_accepted_file_is_an_error_not_an_empty_list(tmp_path):
     ("document", "message"),
     [
         ([], "'accepted' list"),
-        ({"accepted": {}}, "'accepted' list"),
-        ({"accepted": [], "enforce": "yes"}, "'enforce' must be true or false"),
-        ({"accepted": [entry(reason="  ")]}, "nonempty strings"),
-        ({"accepted": [entry(reason="TODO")]}, "placeholder reason"),
-        ({"accepted": [entry(reason="  todo: explain")]}, "placeholder reason"),
-        ({"accepted": [entry(), entry()]}, "repeats fingerprint"),
+        ({"accepted": {}, "enforce": False}, "'accepted' list"),
+        ({"accepted": [], "enforce": "yes"}, "must state 'enforce' as true or false"),
+        # A dropped or misspelled key must not read as "do not enforce".
+        ({"accepted": []}, "must state 'enforce' as true or false"),
+        ({"accepted": [], "enforced": True}, "must state 'enforce' as true or false"),
+        ({"accepted": [entry(reason="  ")], "enforce": False}, "nonempty strings"),
+        ({"accepted": [entry(reason="TODO")], "enforce": False}, "placeholder reason"),
+        ({"accepted": [entry(reason="  todo: explain")], "enforce": False}, "placeholder reason"),
+        ({"accepted": [entry(), entry()], "enforce": False}, "repeats fingerprint"),
     ],
 )
 def test_malformed_accepted_files_are_rejected(tmp_path, document, message):
@@ -418,7 +421,7 @@ def canned(monkeypatch, tmp_path):
     monkeypatch.setattr(
         drift, "capture_inventory", lambda conn: (catalogs[conn.side], FACTS | {"side": conn.side})
     )
-    catalogs["accepted"] = write_accepted(tmp_path, {"accepted": []})
+    catalogs["accepted"] = write_accepted(tmp_path, {"enforce": False, "accepted": []})
     return catalogs
 
 
@@ -652,3 +655,93 @@ def test_an_accepted_entry_must_describe_the_difference_it_matches():
 
     with pytest.raises(drift.DriftCheckError, match="not what its fingerprint identifies"):
         report_for({}, production, disguised)
+
+
+@pytest.mark.parametrize(
+    ("kind", "key", "relation_name"),
+    [
+        ("trigger", "core.games.notify", "core.games"),
+        ("index", "core.games_partial_idx", "core.games"),
+        ("constraint", "core.games.token_check", "core.games"),
+        ("definition", "api.games", "api.games"),
+        ("function", "public.notify()", None),
+    ],
+)
+def test_production_sql_of_every_deparsed_kind_is_withheld_by_default(kind, key, relation_name):
+    secret = "EXECUTE FUNCTION net.http_request('Bearer live-token')"
+    expected = inventory(fact(kind, key, "the reviewed definition", relation_name))
+    production = inventory(fact(kind, key, secret, relation_name))
+
+    hidden = report_for(expected, production, details=False)
+    (changed,) = hidden["drift"]
+
+    assert "live-token" not in json.dumps(hidden) + drift.render_summary(hidden)
+    assert changed["expected"] == "the reviewed definition"
+    assert changed["production"].startswith(f"[withheld: {len(secret)} characters, sha256 ")
+    assert "live-token" in json.dumps(report_for(expected, production, details=True))
+
+
+def test_a_column_default_is_withheld_but_a_bare_column_is_shown():
+    expected = inventory(*relation("meta.jobs", "id"))
+    production = inventory(
+        *relation("meta.jobs", "id"),
+        fact("column", "meta.jobs.token", "text; default 'live-token'::text", "meta.jobs"),
+        fact("column", "meta.jobs.attempts", "integer; not null", "meta.jobs"),
+    )
+
+    hidden = report_for(expected, production, details=False)
+    values = {entry["key"]: entry["production"] for entry in hidden["drift"]}
+
+    assert "live-token" not in json.dumps(hidden)
+    assert values["meta.jobs.token"].startswith("[withheld: ")
+    assert values["meta.jobs.attempts"] == "integer; not null"
+
+
+def order(name: str, *columns: str) -> Item:
+    return fact("column_order", name, json.dumps(columns), name)
+
+
+def test_reordered_columns_are_drift_but_appended_ones_are_not_a_reorder():
+    expected = inventory(*relation("meta.jobs", "id", "name"), order("meta.jobs", "id", "name"))
+    appended = inventory(
+        *relation("meta.jobs", "id", "name", "extra"), order("meta.jobs", "id", "name", "extra")
+    )
+    swapped = inventory(*relation("meta.jobs", "id", "name"), order("meta.jobs", "name", "id"))
+    swapped_and_trimmed = inventory(
+        *relation("meta.jobs", "id", "name", "extra"), order("meta.jobs", "extra", "name", "id")
+    )
+
+    assert keys(report_for(expected, appended)["drift"]) == {("column", "meta.jobs.extra")}
+    assert keys(report_for(expected, swapped)["drift"]) == {("column_order", "meta.jobs")}
+    assert ("column_order", "meta.jobs") in keys(report_for(expected, swapped_and_trimmed)["drift"])
+
+
+def test_a_dlt_column_does_not_make_its_table_look_reordered():
+    expected = inventory(*dlt_table("core.games", "id"), order("core.games", "id", "_dlt_id"))
+    production = inventory(
+        *dlt_table("core.games", "id", "new_field"),
+        order("core.games", "id", "_dlt_id", "new_field"),
+        *dlt_table("core.games__notes", "v"),
+        order("core.games__notes", "v", "_dlt_id"),
+    )
+
+    report = report_for(expected, production)
+
+    assert report["summary"]["drift"] == 0
+    assert ("relation", "core.games__notes") in keys(report["ingest_evolved"])
+
+
+def test_a_disabled_or_missing_event_trigger_is_drift():
+    def trigger(name, enabled="O"):
+        value = f"on ddl_command_end when tag in () execute meta.invalidate() [enabled={enabled}]"
+        return Item("event_trigger", name, value, "meta")
+
+    expected = inventory(trigger("invalidate_ddl"), trigger("invalidate_drop"))
+    production = inventory(trigger("invalidate_ddl", enabled="D"))
+
+    report = report_for(expected, production)
+
+    assert {entry["key"]: entry["status"] for entry in report["drift"]} == {
+        "invalidate_ddl": CHANGED,
+        "invalidate_drop": MISSING,
+    }

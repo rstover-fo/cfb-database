@@ -27,7 +27,8 @@ Run logs and artifacts of this repository are public. Unless
 ``--include-sensitive-details`` is passed, differences in grants, owners,
 policies, default privileges and relation options are reported as counts per
 schema only, with no object, role, privilege or fingerprint, and production's
-function and view text is replaced by its length and digest.
+deparsed SQL (functions, views, indexes, constraints, triggers, column
+defaults) is replaced by its length and digest.
 """
 
 from __future__ import annotations
@@ -69,12 +70,14 @@ RETRY_SECONDS = 20
 ACCESS_KINDS = frozenset({"grant", "owner", "policy", "default_acl", "relation_options"})
 # What dlt itself creates along with a table. Anything else found on a new
 # table (a trigger, a policy) was put there by hand.
-DLT_BUILT_KINDS = frozenset({"column", "index", "constraint"})
+DLT_BUILT_KINDS = frozenset({"column", "column_order", "index", "constraint"})
 TABLE_SHAPES = frozenset({"table", "partitioned table"})
 DLT_STATE_TABLES = frozenset({"_dlt_loads", "_dlt_version", "_dlt_pipeline_state"})
-# Kinds whose value is source text that may embed a literal this repository
-# has never contained.
-CODE_KINDS = frozenset({"function", "definition"})
+# Kinds whose value is SQL text deparsed from the catalog. Production's copy
+# may embed a literal this repository has never contained: a token in a
+# trigger argument, a column default, a function body.
+DEPARSED_KINDS = frozenset({"function", "definition", "index", "constraint", "trigger"})
+COLUMN_DEFAULT = "; default "
 SUMMARY_KEY_LIMIT = 100
 UNREVIEWED_REASON = "TODO"
 
@@ -154,7 +157,8 @@ WHERE n.nspname = ANY(%s) AND c.relkind IN ('v', 'm')
 
 _COLUMNS_SQL = f"""
 SELECT n.nspname, c.relname, a.attname, format_type(a.atttypid, a.atttypmod),
-       a.attnotnull, pg_get_expr(d.adbin, d.adrelid), a.attidentity, a.attgenerated
+       a.attnotnull, pg_get_expr(d.adbin, d.adrelid), a.attidentity, a.attgenerated,
+       a.attnum
 FROM pg_attribute a
 JOIN pg_class c ON c.oid = a.attrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -187,6 +191,18 @@ FROM pg_trigger t
 JOIN pg_class c ON c.oid = t.tgrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = ANY(%s) AND NOT t.tgisinternal
+"""
+
+# Event triggers belong to the database, not a schema. Ours are the ones that
+# call a function in a project schema; the platform's own are out of scope.
+_EVENT_TRIGGERS_SQL = """
+SELECT e.evtname, e.evtevent, e.evtenabled, n.nspname,
+       format('%%s.%%s(%%s)', n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)),
+       COALESCE(array_to_string(e.evttags, ', '), ''), pg_get_userbyid(e.evtowner)
+FROM pg_event_trigger e
+JOIN pg_proc p ON p.oid = e.evtfoid
+JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname = ANY(%(schemas)s)
 """
 
 _FUNCTIONS_SQL = f"""
@@ -335,9 +351,11 @@ def _read_catalog(cur, items: Inventory) -> dict[str, object]:
         )
         add("owner", f"relation {relation}", row[9], schema, relation)
 
+    positions: dict[tuple[str, str], list[tuple[int, str]]] = {}
     for row in _fetch(cur, _COLUMNS_SQL, (scope,)):
-        schema, name, column, type_name, not_null, default, identity, generated = row
+        schema, name, column, type_name, not_null, default, identity, generated, position = row
         relation = f"{schema}.{name}"
+        positions.setdefault((schema, relation), []).append((position, column))
         parts = [type_name]
         if not_null:
             parts.append("not null")
@@ -349,6 +367,9 @@ def _read_catalog(cur, items: Inventory) -> dict[str, object]:
             parts.append(f"generated={generated}")
         # A bare type means nullable with no default: the only column dlt adds.
         add("column", f"{relation}.{column}", "; ".join(parts), schema, relation)
+    for (schema, relation), columns in positions.items():
+        ordered = [column for _, column in sorted(columns)]
+        add("column_order", relation, json.dumps(ordered), schema, relation)
 
     for schema, table, index, definition, valid in _fetch(cur, _INDEXES_SQL, (scope,)):
         value = definition if valid else f"{definition} [INVALID]"
@@ -363,6 +384,12 @@ def _read_catalog(cur, items: Inventory) -> dict[str, object]:
         value = f"{definition} [enabled={enabled}]"
         add("trigger", f"{relation}.{name}", value, schema, relation)
 
+    for row in _fetch(cur, _EVENT_TRIGGERS_SQL, {"schemas": scope}):
+        name, event, enabled, schema, function, tags, owner = row
+        value = f"on {event} when tag in ({tags}) execute {function} [enabled={enabled}]"
+        add("event_trigger", name, value, schema)
+        add("owner", f"event trigger {name}", owner, schema)
+
     for row in _fetch(cur, _FUNCTIONS_SQL, (scope,)):
         schema, name, arguments, prokind, definition, result, owner = row
         signature = f"{schema}.{name}({arguments})"
@@ -376,7 +403,7 @@ def _read_catalog(cur, items: Inventory) -> dict[str, object]:
         add("policy", f"{relation}.{name}", value, schema, relation)
 
     for schema, name, labels in _fetch(cur, _ENUMS_SQL, (scope,)):
-        add("enum", f"{schema}.{name}", ", ".join(labels), schema)
+        add("enum", f"{schema}.{name}", json.dumps(labels), schema)
 
     for name, schema in _fetch(cur, _EXTENSIONS_SQL, (scope,)):
         add("extension", name, f"schema {schema}", schema)
@@ -493,6 +520,8 @@ def diff_inventories(expected: Inventory, production: Inventory) -> list[Differe
             continue
         status = MISSING if have is None else UNEXPECTED if want is None else CHANGED
         kind, key = identity
+        if kind == "column_order" and status == CHANGED and _same_order(want.value, have.value):
+            continue
         want_value = want.value if want else None
         have_value = have.value if have else None
         differences.append(
@@ -508,6 +537,18 @@ def diff_inventories(expected: Inventory, production: Inventory) -> list[Differe
             )
         )
     return _fold_whole_relations(differences)
+
+
+def _same_order(expected: str, production: str) -> bool:
+    """Whether the columns both sides have appear in the same order.
+
+    Added and missing columns are reported on their own; only a reordering of
+    the shared ones is a difference in order.
+    """
+    want, have = json.loads(expected), json.loads(production)
+    return [name for name in want if name in set(have)] == [
+        name for name in have if name in set(want)
+    ]
 
 
 def _fold_whole_relations(differences: list[Difference]) -> list[Difference]:
@@ -663,8 +704,9 @@ def classify(
 def load_accepted(path: Path) -> tuple[bool, dict[str, dict[str, str]]]:
     """Return (enforce, accepted differences by fingerprint).
 
-    The file must exist: a renamed or deleted list would otherwise switch
-    enforcement off without anyone deciding to.
+    The file must exist and must state ``enforce``: a renamed list or a
+    dropped key would otherwise switch enforcement off without anyone
+    deciding to.
     """
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -673,9 +715,10 @@ def load_accepted(path: Path) -> tuple[bool, dict[str, dict[str, str]]]:
     entries = document.get("accepted") if isinstance(document, dict) else None
     if not isinstance(entries, list):
         raise DriftCheckError(f"{path.name} must be an object with an 'accepted' list")
-    enforce = document.get("enforce", False)
+    # No default: a deleted or misspelled key must not switch enforcement off.
+    enforce = document.get("enforce")
     if not isinstance(enforce, bool):
-        raise DriftCheckError(f"{path.name} 'enforce' must be true or false")
+        raise DriftCheckError(f"{path.name} must state 'enforce' as true or false")
     accepted: dict[str, dict[str, str]] = {}
     for index, entry in enumerate(entries):
         required = ("fingerprint", "kind", "key", "status", "reason")
@@ -728,12 +771,19 @@ def propose_accepted(
     return proposal
 
 
+def _is_deparsed(item: Difference) -> bool:
+    """Whether production's value is SQL text rather than names, types and flags."""
+    return item.kind in DEPARSED_KINDS or (
+        item.kind == "column" and COLUMN_DEFAULT in item.production
+    )
+
+
 def _render(items: list[Difference], *, include_details: bool) -> list[dict[str, object]]:
     """Entries safe to publish unless details were asked for.
 
-    Access differences are reduced to counts. Production's function and view
-    text is replaced by its length and digest: it can embed a literal that has
-    never been in this repository.
+    Access differences are reduced to counts. Production's deparsed SQL (see
+    ``DEPARSED_KINDS``, and any column with a default) is replaced by its
+    length and digest.
     """
     rendered: list[dict[str, object]] = []
     hidden: dict[tuple[str, str, str], int] = {}
@@ -743,7 +793,7 @@ def _render(items: list[Difference], *, include_details: bool) -> list[dict[str,
             hidden[identity] = hidden.get(identity, 0) + 1
             continue
         production = item.production
-        if item.kind in CODE_KINDS and production is not None and not include_details:
+        if production is not None and not include_details and _is_deparsed(item):
             digest = hashlib.sha256(production.encode("utf-8")).hexdigest()
             production = f"[withheld: {len(production)} characters, sha256 {digest}]"
         rendered.append(
@@ -842,8 +892,7 @@ def render_summary(report: dict[str, object]) -> str:
     if not report["details_included"]:
         lines += [
             "",
-            "Access differences are counted per schema, and production's function and view "
-            "text is withheld.",
+            "Access differences are counted per schema, and production's deparsed SQL is withheld.",
         ]
     for title, section in (
         ("Drift", "drift"),
@@ -986,8 +1035,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--include-sensitive-details",
         action="store_true",
-        help="Name objects and roles in access differences, and print production's "
-        "function and view text",
+        help="Name objects and roles in access differences, and print production's deparsed SQL",
     )
     return parser
 

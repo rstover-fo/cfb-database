@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "enforce": false,
+  "enforce": true,
   "accepted": [
     {
       "fingerprint": "975b66227983adb1",

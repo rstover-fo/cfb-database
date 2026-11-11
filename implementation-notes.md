@@ -80,9 +80,9 @@ staging schema.
   dispatch**, which would have published them in a run log. Production's
   catalog was read privately and the tables were reproduced on a local managed
   build; the three relation fingerprints and dependent-fact digests matched
-  the published report. The access entries are confirmed only when a
-  production run reports no drift and no stale entry, so `enforce` stays
-  `false` until then.
+  the published report. Run 43115388480 on the merged list then reported 0
+  drift, 19 accepted and 0 stale, which confirmed the access entries, and
+  `enforce` was switched on after it.
 
 ### Found while tracing the differences
 

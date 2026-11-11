@@ -272,7 +272,7 @@ REFRESH_ASSETS = (
     ),
     RefreshAsset(
         "marts.team_style_profile",
-        ("marts.play_epa",),
+        ("core.games", "core.plays"),
         "src/schemas/marts/015_team_style_profile.sql",
     ),
     RefreshAsset(

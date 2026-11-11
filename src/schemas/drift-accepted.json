@@ -42,7 +42,7 @@
       "kind": "definition",
       "key": "marts.team_style_profile",
       "status": "changed",
-      "reason": "pg_dump round trip, not a different view. The baseline's restored copy deparses IN-lists on varchar columns as ARRAY['a'::character varying::text, ...]; production's copy, created from the original SQL, deparses them as ARRAY['a'::character varying, ...]::text[]. Rewriting the managed build's text that way reproduces production's sha256 exactly. Checked 2026-11-11 against Catalog Drift run 42955589462. Separately, src/schemas/marts/015_team_style_profile.sql does not build this definition; see implementation-notes.md."
+      "reason": "pg_dump round trip, not a different view. The baseline's restored copy deparses IN-lists on varchar columns as ARRAY['a'::character varying::text, ...]; production's copy, created from the original SQL, deparses them as ARRAY['a'::character varying, ...]::text[]. Rewriting the managed build's text that way reproduces production's sha256 exactly. Checked 2026-11-11 against Catalog Drift run 42955589462."
     },
     {
       "fingerprint": "b0e72a9b7c59aef6",

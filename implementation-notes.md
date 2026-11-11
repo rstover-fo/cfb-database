@@ -84,19 +84,26 @@ staging schema.
   production run reports no drift and no stale entry, so `enforce` stays
   `false` until then.
 
-### Found while tracing the differences, not fixed here
+### Found while tracing the differences
 
-- `src/schemas/marts/015_team_style_profile.sql` does not build what
-  production serves. Production runs the definition added a day later as
-  `marts/010_team_style_profile.sql` (b204249), which 09ecf46 deleted as dead
-  code. Applying the surviving file would drop the view's dependents (it uses
-  `DROP ... CASCADE`) and change the mart's numbers. The refresh registry
-  declares the file's inputs, not production's.
-- `marts.team_returning_production` is in production and the baseline with
-  three indexes, but has no source file, no refresh-registry entry, no
-  dependent and no recorded read. `api.team_returning_production` reads
-  `marts.returning_production`.
-- `stats.passing_team_season` and `stats.passing_team_games` are about 460
-  columns wide since the provider added per-location passing metrics. The set
-  follows the payload's shape and does not grow per load; Postgres allows
-  1,600.
+- **Fixed: `src/schemas/marts/015_team_style_profile.sql` did not build what
+  production serves.** Production runs the definition added as
+  `marts/010_team_style_profile.sql` (b204249). 09ecf46 deleted that file as
+  dead code and kept an older one that was never deployed; a release naming
+  it would have changed the mart's numbers. The file holds b204249's text
+  again. Applied to a managed build, it deparses to production's sha256 with
+  the same columns and indexes. The refresh registry now declares what the
+  view reads (`core.games`, `core.plays`) instead of `marts.play_epa`: a plan
+  for a `core.games` change now includes the view, one for `marts.play_epa`
+  alone no longer does, and the full plan's order is unchanged. Whether the
+  mart should move to the `marts.play_epa` version (garbage time excluded,
+  four more columns) is a product decision this does not make.
+- Not fixed: `marts.team_returning_production` is in production and the
+  baseline with three indexes, but has no source file, no refresh-registry
+  entry, no dependent and no recorded read. `api.team_returning_production`
+  reads `marts.returning_production`. Removing it needs a ledger migration
+  and a production deploy.
+- No action needed: `stats.passing_team_season` and
+  `stats.passing_team_games` are about 460 columns wide since the provider
+  added per-location passing metrics. The set follows the payload's shape and
+  does not grow per load; Postgres allows 1,600.

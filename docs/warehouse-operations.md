@@ -35,6 +35,7 @@ These commands operate on an explicitly selected, authorized warehouse; use
 | One-off SQL application | `scripts/run_migrations.py --file <path>`; follow that file's application contract |
 | Flat-file ingestion | `scripts/load_flat_files.py --due` |
 | Check upstream preseason availability | `scripts/probe_offseason_availability.py` |
+| Compare production with the managed build | `.github/workflows/catalog-drift.yml` (read-only; see [Catalog drift check](#catalog-drift-check)) |
 
 Read relevant workflow/CLI options before execution. Direct application is a
 separate action from preparing SQL. The session pooler is used by warehouse jobs;
@@ -42,6 +43,100 @@ transaction pooling does not accept all startup/session options these jobs use.
 Secrets belong in ignored config or the host's credential mechanism, never docs.
 The request budget is configured in `.dlt/config.toml`; historical estimates do
 not establish the cost of today's source/resource selection.
+
+## Catalog drift check
+
+`.github/workflows/catalog-drift.yml` runs daily and on dispatch. It bootstraps
+a disposable Postgres from `src/schemas/warehouse-manifest.json`, then
+`scripts/check_catalog_drift.py` reads that catalog and production's and
+reports where they differ. Production is read in read-only transactions.
+
+Compared, for the project schemas and the `warehouse_*` schemas: relations,
+their columns and column order, view and materialized-view definitions,
+functions, indexes, constraints, triggers, event triggers that call a function
+in those schemas, enums, extensions installed in those schemas, row-level
+security, policies, owners, grants, and default privileges (schema-scoped and
+global).
+
+Each difference lands in one class:
+
+| Class | Meaning | Fails an enforced run |
+|---|---|---|
+| Added by dlt | See below | No |
+| Accepted | Listed in `src/schemas/drift-accepted.json` with a reason | No |
+| Drift | Anything else | Yes |
+
+"Added by dlt" is deliberately narrow. A table is dlt's when it has a NOT NULL
+`_dlt_id`, or is one of dlt's three state tables (`_dlt_loads`, `_dlt_version`,
+`_dlt_pipeline_state`), in a schema where the managed build already has such
+tables. Two additions qualify:
+
+- On a dlt table both sides have: a nullable column without a default, of a
+  type dlt already uses somewhere in the managed build.
+- A new dlt table that is a plain table or a list partition of a dlt table,
+  carries only columns, indexes and constraints, has columns of those types
+  with no modifier but NOT NULL (a partition may also repeat its parent's
+  columns exactly), and whose owner, grants and options equal those of a dlt
+  table in the same schema of the managed build.
+
+A view over a raw table, a `CREATE TABLE AS` copy, a column with a default or
+of a new type, an unlogged table, a default partition, and a dlt-made table
+later granted to another role are all drift. Three manual changes cannot be
+told apart from dlt's and are not detected: a nullable default-less column of
+a known type added to a dlt table; a table that imitates a dlt table in every
+respect above; and an index or constraint added to a table that exists only in
+production.
+
+A relation missing from production is one line with all its facts folded into
+a digest. A relation found only in production is one line with its columns,
+indexes, constraints, triggers and definition folded in; its access facts stay
+separate. The digest is part of the fingerprint, so an accepted extra table
+that later gains a column is drift again.
+
+Enforcement is the `"enforce"` field of `src/schemas/drift-accepted.json`; the
+file must exist and must state it. It ships `false`: the check reports and exits 0 until the
+first production report has been reviewed. An enforced run fails on drift and
+on any accepted entry that no longer applies, so stale entries have to be
+removed. To accept differences, take `proposed-accepted.json` from the run's
+artifact, replace each `TODO` reason with why the difference is acceptable
+(the file is rejected while any remain), and commit it as
+`src/schemas/drift-accepted.json`. Entries match by fingerprint, and a run
+fails if an entry's kind, key or status is not what its fingerprint identifies.
+
+The repository is public, so the run log and artifact are too. By default:
+
+- Differences in grants, owners, policies, default privileges and relation
+  options are only counted per schema and kind. No object, role, privilege or
+  fingerprint is published, and they are left out of `proposed-accepted.json`.
+  They still fail an enforced run. The counts themselves can hint at how many
+  roles reach a lone new relation.
+- Production's deparsed SQL (function bodies, view definitions, index,
+  constraint and trigger definitions, and any column with a default) is
+  replaced by its length and digest, because it could embed a literal this
+  repository has never contained, such as a token in a trigger argument.
+
+Seeing either, or accepting an access difference, takes a dispatch with
+`include_sensitive_details`, which publishes them for that run. An accepted
+access entry is public in the accepted file from then on.
+
+Limits:
+
+- The expected side is the baseline plus the ledger. A definition applied to
+  production with `run_migrations.py --file` or a mart release shows as drift
+  until the manifest reproduces it. A definition file outside the manifest that
+  is edited here but never deployed is not detected at all.
+- Not compared: `*_staging` schemas, comments, sequence settings, column
+  collation and storage, extension versions, domains and composite types,
+  event triggers that call a function outside these schemas, Supabase platform
+  schemas, and other applications' schemas.
+- Appended or missing columns are reported individually and are not a change
+  of column order; only reordering the columns both sides share is.
+- The catalog is read from one snapshot that takes no lock on any user
+  relation. View definitions are read afterwards in one statement that briefly
+  share-locks each view and the relations it reads. It waits up to five
+  seconds for each lock, and the run retries twice before failing.
+- A run that overlaps a deploy can report a half-applied state, or fail if a
+  view is dropped mid-read; rerun it.
 
 ## Materialized view refresh safeguards
 

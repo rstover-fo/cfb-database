@@ -1,6 +1,7 @@
 """HTTP client for CFBD API with retry and rate limiting."""
 
 import logging
+import random
 import threading
 import time
 from datetime import UTC, datetime
@@ -186,6 +187,19 @@ class CFBDClient:
     # transient budget.
     MAX_RETRIES = 3
 
+    # Waits between those 429 attempts when the server did not send a usable
+    # Retry-After, and the floor after a read timeout (Daily runs #117 and
+    # #118). One client serves every endpoint: /metrics/wp recovered because
+    # CFBD sent Retry-After: 10, while /stats/player/success/game sent
+    # Retry-After: 1 right after two read timeouts and the 1s waits never
+    # cleared the limit. Geometric ×3; the next step would be 90s, which is
+    # not a fourth sleep -- a fourth retry would make the attempt count a
+    # divisor of RATE_LIMIT_CIRCUIT_THRESHOLD and the mid-request abort above
+    # could never fire. Jitter stays near the base so the schedule is still
+    # recognizable in the log.
+    RATE_LIMIT_BACKOFF_SECONDS = (5.0, 15.0, 45.0)
+    RATE_LIMIT_JITTER = (0.8, 1.2)
+
     # Transient-fault budget: 5xx responses and connect/read timeouts.
     # Exponential backoff summing to ~120s plus request time, sized to bridge
     # a minute-plus CFBD-wide outage. Two incidents sized it: daily run
@@ -317,6 +331,59 @@ class CFBDClient:
         )
 
     @classmethod
+    def _explicit_retry_after(cls, raw: str | None, now: datetime | None = None) -> int | None:
+        """Seconds from a usable ``Retry-After``, or None if the server gave none.
+
+        Missing, blank, malformed, and negative values are not a delay the
+        server asked for -- callers use ``_rate_limit_delay``'s backoff then,
+        not the 60s parser default. A numeric delay or an HTTP-date is
+        clamped the same way as ``_parse_retry_after``.
+        """
+        if raw is None:
+            return None
+        text = str(raw).strip()
+        if not text:
+            return None
+        try:
+            seconds = int(text)
+        except (TypeError, ValueError):
+            seconds = cls._http_date_delay(text, now=now)
+            if seconds is None:
+                return None
+        else:
+            if seconds < 0:
+                return None
+        return min(seconds, cls.MAX_RETRY_AFTER_SECONDS)
+
+    @classmethod
+    def _rate_limit_delay(
+        cls,
+        attempt: int,
+        retry_after_header: str | None,
+        *,
+        after_read_timeout: bool,
+        now: datetime | None = None,
+    ) -> float:
+        """Seconds to wait before the next 429 attempt.
+
+        A usable Retry-After is the wait, unless this same request already
+        read-timed-out: a 1s header right after those timeouts just hammers
+        the endpoint, so the wait is at least the backoff step and still at
+        least the header (a 90s header is not shortened). No usable header
+        means the backoff step alone, with jitter.
+        """
+        explicit = cls._explicit_retry_after(retry_after_header, now=now)
+        if explicit is not None and not after_read_timeout:
+            return float(explicit)
+        index = min(max(attempt, 0), len(cls.RATE_LIMIT_BACKOFF_SECONDS) - 1)
+        base = cls.RATE_LIMIT_BACKOFF_SECONDS[index]
+        low, high = cls.RATE_LIMIT_JITTER
+        delay = base * random.uniform(low, high)
+        if explicit is not None:
+            return max(float(explicit), delay)
+        return delay
+
+    @classmethod
     def _request_timeout(cls, endpoint: str) -> httpx.Timeout | None:
         if endpoint in cls.SEASON_AGGREGATE_ENDPOINTS:
             return httpx.Timeout(cls.DEFAULT_TIMEOUT, read=cls.SEASON_AGGREGATE_READ_TIMEOUT)
@@ -382,9 +449,13 @@ class CFBDClient:
 
         Two retry budgets, deliberately separate:
 
-        - **429 rate limits**: ``retries`` + 1 attempts, sleeping the parsed
-          ``Retry-After`` between them and feeding the circuit breaker. Kept
-          small -- against a spent quota, extra attempts are pure waste.
+        - **429 rate limits**: ``retries`` + 1 attempts, sleeping between
+          them and feeding the circuit breaker. The sleep is the server's
+          ``Retry-After`` when that header is usable. Otherwise, and whenever
+          this request has already read-timed-out, it is
+          ``RATE_LIMIT_BACKOFF_SECONDS`` with jitter (5/15/45s), never shorter
+          than a usable header. Kept small -- against a spent quota, extra
+          attempts are pure waste.
         - **Transient faults** (5xx responses, connect/read timeouts):
           ``TRANSIENT_MAX_RETRIES`` retries with ``TRANSIENT_BACKOFF_SECONDS``
           exponential backoff (2/4/8/16/30/60s, ~120s total plus request
@@ -445,6 +516,10 @@ class CFBDClient:
         # be reintroduced by a stray `continue`.
         attempt = 0  # 429 responses retried so far
         transient_failures = 0  # 5xx / network failures retried so far
+        # Daily runs #117/#118: two read timeouts, then Retry-After: 1. The
+        # flag stays set for the rest of this call so the 429 waits that
+        # follow use the backoff floor instead of hammering at 1s.
+        saw_read_timeout = False
         while True:
             try:
                 response = self._send_attempt(
@@ -467,7 +542,11 @@ class CFBDClient:
                 return response.json()
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:  # Rate limited
-                    retry_after = self._parse_retry_after(e.response.headers.get("Retry-After"))
+                    delay = self._rate_limit_delay(
+                        attempt,
+                        e.response.headers.get("Retry-After"),
+                        after_read_timeout=saw_read_timeout,
+                    )
                     # Every 429 counts, including the ones we are about to
                     # retry. See RateLimitBreaker.record_rate_limited.
                     consecutive = breaker.record_rate_limited()
@@ -495,14 +574,14 @@ class CFBDClient:
                             f"{consecutive} consecutive HTTP 429 response(s), most recently "
                             f"{endpoint}. The API is refusing everything -- most likely the "
                             "monthly quota is spent. Stopping instead of sleeping "
-                            f"{retry_after}s for a retry that cannot succeed."
+                            f"{delay:.0f}s for a retry that cannot succeed."
                         ) from e
                     logger.warning(
-                        f"Rate limited on {endpoint}. Waiting {retry_after}s "
+                        f"Rate limited on {endpoint}. Waiting {delay:.0f}s "
                         f"(attempt {attempt + 1}/{retries + 1})..."
                     )
                     attempt += 1
-                    time.sleep(retry_after)
+                    time.sleep(delay)
                     continue
                 elif (
                     e.response.status_code >= 500
@@ -527,6 +606,8 @@ class CFBDClient:
                 # final attempt fails HERE, inside the guarded loop.
                 raise
             except httpx.RequestError as e:
+                if isinstance(e, httpx.ReadTimeout):
+                    saw_read_timeout = True
                 if transient_failures < self.TRANSIENT_MAX_RETRIES:
                     delay = self.TRANSIENT_BACKOFF_SECONDS[transient_failures]
                     transient_failures += 1

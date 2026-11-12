@@ -289,8 +289,10 @@ class TestTransientRetries:
                 with pytest.raises(RateLimitExhausted, match="all 4 attempt"):
                     client.get("/plays/stats", params={"gameId": 401767542})
         assert mock_get.call_count == CFBDClient.MAX_RETRIES + 1  # 4, not 6
-        # Retry-After ("1") governs every sleep -- no exponential schedule.
-        assert [c.args[0] for c in mock_sleep.call_args_list] == [1, 1, 1]
+        # A usable Retry-After with no preceding read timeout is the wait.
+        # The 5/15/45s backoff applies only when the header is missing or
+        # this request already read-timed-out (see TestRateLimitBackoff).
+        assert [c.args[0] for c in mock_sleep.call_args_list] == [1.0, 1.0, 1.0]
         assert client._consecutive_rate_limited == CFBDClient.MAX_RETRIES + 1
         client.close()
 
@@ -558,9 +560,14 @@ class TestRetryAfterParsing:
         ok.json.return_value = [{"ok": True}]
         ok.raise_for_status = MagicMock()
         with patch.object(client._client, "get", side_effect=[err, ok]):
-            with patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep:
+            with (
+                patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep,
+                patch("src.pipelines.utils.api_client.random.uniform", return_value=1.0),
+            ):
                 assert client.get("/teams") == [{"ok": True}]
-                mock_sleep.assert_called_with(60)
+                # Unusable header is not the 60s parser default. The first
+                # backoff step (5s) is the wait; jitter is pinned here.
+                mock_sleep.assert_called_with(5.0)
         client.close()
 
 
@@ -606,6 +613,113 @@ class TestRetryAfterHttpDate:
                     client.get("/teams")
                 slept = mock_sleep.call_args[0][0]
                 assert 85 <= slept <= 95, f"expected ~90s from the header, slept {slept}"
+        client.close()
+
+
+class TestRateLimitBackoff:
+    """Daily runs #117 and #118: one CFBDClient, two waits.
+
+    /metrics/wp logged "Waiting 10s" and recovered. /stats/player/success/game
+    logged "Waiting 1s" three times, right after two read timeouts, and
+    RateLimitExhausted failed the stats unit. The 1s and the 10s were the
+    server's Retry-After, not two retry implementations. A usable header is
+    still the wait. A missing header, or any 429 after a read timeout on
+    this same call, uses 5/15/45s with jitter -- and a short header cannot
+    undercut that floor after a read timeout.
+    """
+
+    @staticmethod
+    def _ok():
+        response = MagicMock()
+        response.json.return_value = [{"id": 1}]
+        response.raise_for_status = MagicMock()
+        response.status_code = 200
+        response.text = "[{}]"
+        return response
+
+    def test_schedule_is_five_fifteen_forty_five(self):
+        assert CFBDClient.RATE_LIMIT_BACKOFF_SECONDS == (5.0, 15.0, 45.0)
+        assert CFBDClient.MAX_RETRIES == 3
+
+    def test_jitter_stays_near_the_base_step(self):
+        delays = [
+            CFBDClient._rate_limit_delay(0, None, after_read_timeout=False) for _ in range(40)
+        ]
+        assert all(4.0 <= delay <= 6.0 for delay in delays)
+
+    def test_retry_after_ten_is_honored(self):
+        """The /metrics/wp shape: Retry-After 10, no prior read timeout."""
+        client = CFBDClient(api_key="test-key", breaker=RateLimitBreaker())
+        limited = _rate_limited_response("10")
+        err = httpx.HTTPStatusError("429", request=MagicMock(), response=limited)
+        with patch.object(client._client, "get", side_effect=[err, self._ok()]):
+            with patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep:
+                assert client.get("/metrics/wp", params={"gameId": 1}) == [{"id": 1}]
+        assert [c.args[0] for c in mock_sleep.call_args_list] == [10.0]
+        client.close()
+
+    def test_missing_retry_after_uses_the_backoff_schedule(self):
+        client = CFBDClient(api_key="test-key", breaker=RateLimitBreaker())
+        limited = MagicMock()
+        limited.status_code = 429
+        limited.headers = {}
+        err = httpx.HTTPStatusError("429", request=MagicMock(), response=limited)
+        with patch.object(client._client, "get", side_effect=err):
+            with (
+                patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep,
+                patch("src.pipelines.utils.api_client.random.uniform", return_value=1.0),
+            ):
+                with pytest.raises(RateLimitExhausted, match="all 4 attempt"):
+                    client.get("/stats/player/success/game", params={"year": 2026, "week": 3})
+        assert [c.args[0] for c in mock_sleep.call_args_list] == [5.0, 15.0, 45.0]
+        client.close()
+
+    def test_read_timeout_then_short_retry_after_uses_backoff_not_one_second(self):
+        """Run #118's sequence: two read timeouts, then Retry-After: 1.
+
+        The transient waits stay 2s then 4s. The 429 waits must not be 1s.
+        """
+        client = CFBDClient(api_key="test-key", breaker=RateLimitBreaker())
+        limited = _rate_limited_response("1")
+        rate_error = httpx.HTTPStatusError("429", request=MagicMock(), response=limited)
+        with patch.object(
+            client._client,
+            "get",
+            side_effect=[
+                httpx.ReadTimeout("The read operation timed out"),
+                httpx.ReadTimeout("The read operation timed out"),
+                rate_error,
+                rate_error,
+                self._ok(),
+            ],
+        ):
+            with (
+                patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep,
+                patch("src.pipelines.utils.api_client.random.uniform", return_value=1.0),
+            ):
+                assert client.get(
+                    "/stats/player/success/game",
+                    params={"year": 2026, "seasonType": "regular", "week": 3},
+                ) == [{"id": 1}]
+        assert [c.args[0] for c in mock_sleep.call_args_list] == [2.0, 4.0, 5.0, 15.0]
+        client.close()
+
+    def test_read_timeout_still_honors_a_longer_retry_after(self):
+        """A 90s header after a read timeout is not shortened to the 5s step."""
+        client = CFBDClient(api_key="test-key", breaker=RateLimitBreaker())
+        limited = _rate_limited_response("90")
+        rate_error = httpx.HTTPStatusError("429", request=MagicMock(), response=limited)
+        with patch.object(
+            client._client,
+            "get",
+            side_effect=[httpx.ReadTimeout("The read operation timed out"), rate_error, self._ok()],
+        ):
+            with (
+                patch("src.pipelines.utils.api_client.time.sleep") as mock_sleep,
+                patch("src.pipelines.utils.api_client.random.uniform", return_value=1.0),
+            ):
+                client.get("/stats/player/success/game")
+        assert [c.args[0] for c in mock_sleep.call_args_list] == [2.0, 90.0]
         client.close()
 
 

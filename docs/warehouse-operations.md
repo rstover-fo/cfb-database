@@ -96,8 +96,9 @@ that later gains a column is drift again.
 Enforcement is the `"enforce"` field of `src/schemas/drift-accepted.json`; the
 file must exist and must state it. It has been `true` since a production run
 confirmed the accepted list with no drift and no stale entry (2026-11-11);
-with `false` the check only reports and exits 0. An enforced run fails on
-drift and
+with `false` the check only reports and exits 0. A passing run looks the same
+either way, so each run's summary and report (`"enforced"`) state the mode it
+ran in. An enforced run fails on drift and
 on any accepted entry that no longer applies, so stale entries have to be
 removed. To accept differences, take `proposed-accepted.json` from the run's
 artifact, replace each `TODO` reason with why the difference is acceptable

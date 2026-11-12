@@ -115,6 +115,7 @@ def report(expected, production, *, details=True):
         expected_facts=FACTS,
         production_facts=FACTS,
         include_details=details,
+        enforced=False,
     )
 
 

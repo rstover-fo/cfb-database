@@ -422,6 +422,40 @@ class TestCheckVariantTwins:
         assert report.failures == 0
         assert "[PASS] variant_twins: no unreviewed __v_double twins" in capsys.readouterr().out
 
+    def test_reviewed_2026_passing_twins_pass(self, capsys):
+        from scripts.verify_load import Report, check_variant_twins
+        from src.pipelines.utils.variant_twins import (
+            EXPECTED_VARIANT_TWINS,
+            REVIEWED_RAW_ONLY_VARIANT_TWINS,
+        )
+
+        reviewed = {
+            "cpoe__v_double",
+            "locations__unknown__average_yards_after_catch__v_double",
+        }
+        rows = []
+        for table_key, columns in EXPECTED_VARIANT_TWINS.items():
+            schema, table = table_key.split(".")
+            rows.extend((schema, table, column) for column in columns)
+        schema, table = "stats.passing_player_season".split(".")
+        rows.extend((schema, table, column) for column in reviewed)
+        assert reviewed <= REVIEWED_RAW_ONLY_VARIANT_TWINS["stats.passing_player_season"]
+
+        class _CatalogCursor:
+            connection = _FakeConnection(autocommit=True)
+
+            def execute(self, sql, params=None):
+                return None
+
+            def fetchall(self):
+                return rows
+
+        report = Report()
+        check_variant_twins(_CatalogCursor(), report)
+
+        assert report.failures == 0
+        assert "[PASS] variant_twins: no unreviewed __v_double twins" in capsys.readouterr().out
+
     def test_unexpected_twin_fails(self, monkeypatch, capsys):
         from scripts.verify_load import Report, check_variant_twins
 

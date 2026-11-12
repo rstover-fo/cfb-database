@@ -18,8 +18,10 @@ pytest.importorskip("pyarrow", reason="flatfiles extra not installed")
 import pyarrow as pa
 import pyarrow.parquet
 
+from src.pipelines.config.source_publication_assets import SDV_RATINGS_PUBLICATION
 from src.pipelines.sources.flat_files import ParseContext, ParserStructureError
 from src.pipelines.sources.flatfile_parsers import sportsdataverse
+from src.pipelines.utils.sdv_ratings_publication import _validate_parsed_rows
 
 FIXTURE_DIR = "tests/fixtures/flatfiles"
 
@@ -306,6 +308,82 @@ class TestParseRatingsWeekly:
         assert isinstance(row["team_id"], int)
         assert isinstance(row["adj_off_epa"], float)
         assert isinstance(row["games"], int)
+        assert set(row) == set(sportsdataverse.RATINGS_WEEKLY_COLUMNS)
+
+    def test_ratings_columns_match_publication_contract(self):
+        assert sportsdataverse.RATINGS_WEEKLY_COLUMNS == SDV_RATINGS_PUBLICATION.columns
+
+    def test_current_upstream_rank_columns_stay_outside_the_contract(self, caplog):
+        """2026-11-10 cfb_ratings_weekly_2026.parquet adds three FEI rank columns.
+
+        The receipt rejects any row that is not the 16-column contract. The
+        parser must drop the extra ranks and still validate.
+        """
+        schema = pa.schema(
+            [
+                ("season", pa.int64()),
+                ("team_id", pa.large_string()),
+                ("adj_off_epa", pa.float64()),
+                ("adj_def_epa", pa.float64()),
+                ("adj_st_epa", pa.float64()),
+                ("adj_net", pa.float64()),
+                ("fei_off", pa.float64()),
+                ("fei_def", pa.float64()),
+                ("fei_net", pa.float64()),
+                ("games", pa.int64()),
+                ("off_pace", pa.float64()),
+                ("off_rank", pa.int64()),
+                ("def_rank", pa.int64()),
+                ("net_rank", pa.int64()),
+                ("net_z", pa.float64()),
+                ("fei_off_rank", pa.int64()),
+                ("fei_def_rank", pa.int64()),
+                ("fei_net_rank", pa.int64()),
+                ("through_week", pa.int32()),
+            ]
+        )
+        data = {
+            "season": [2026],
+            "team_id": ["333"],
+            "adj_off_epa": [0.42],
+            "adj_def_epa": [-0.11],
+            "adj_st_epa": [None],
+            "adj_net": [0.31],
+            "fei_off": [1.2],
+            "fei_def": [0.4],
+            "fei_net": [0.8],
+            "games": [10],
+            "off_pace": [2.5],
+            "off_rank": [4],
+            "def_rank": [12],
+            "net_rank": [7],
+            "net_z": [1.1],
+            "fei_off_rank": [5],
+            "fei_def_rank": [9],
+            "fei_net_rank": [6],
+            "through_week": [10],
+        }
+        buf = io.BytesIO()
+        pyarrow.parquet.write_table(pa.table(data, schema=schema), buf)
+
+        ctx = ParseContext(
+            source="sdv_ratings_weekly",
+            snapshot_date=date(2026, 11, 10),
+            season=2026,
+        )
+        with caplog.at_level(logging.INFO):
+            rows = list(sportsdataverse.parse_ratings_weekly(buf.getvalue(), ctx))
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert set(row) == set(SDV_RATINGS_PUBLICATION.columns)
+        assert "fei_off_rank" not in row
+        assert row["team_id"] == 333
+        assert row["through_week"] == 10
+        assert row["season"] == 2026
+        assert row["adj_net"] == 0.31
+        assert "fei_off_rank" in caplog.text
+        _validate_parsed_rows(rows, 1, 2026)
 
     def test_team_id_coerced_from_string(self):
         """Source ships team_id as a string; parser must cast to int."""

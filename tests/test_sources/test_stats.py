@@ -1404,7 +1404,10 @@ class TestPlayerSuccessGameResource:
         assert "ReadTimeout" in skips[0]
 
     def test_two_consecutive_exhausted_weeks_stop_the_rest_of_the_resource(self):
-        """A dead endpoint must not walk every remaining week at full retry cost."""
+        """Two exhausted weeks with nothing accepted between them stop the resource.
+
+        A dead endpoint must not walk every remaining week at full retry cost.
+        """
         from src.pipelines.sources.stats import (
             player_success_game_resource,
             reset_player_success_game_skips,
@@ -1462,6 +1465,54 @@ class TestPlayerSuccessGameResource:
         # Week 2 answered, so week 3's exhaustion does not stop week 4.
         assert ("regular", 4) in requested
         assert len(take_player_success_game_skips()) == 2
+
+    def test_accepted_400_between_exhausted_weeks_does_not_stop_the_resource(self):
+        """Week 1 exhausts, week 2 is an accepted 400, week 3 exhausts.
+
+        Those exhausted weeks are not back to back. The resource must keep
+        going: the next healthy week is fetched, and a later year is fetched.
+        """
+        from src.pipelines.sources.stats import (
+            player_success_game_resource,
+            reset_player_success_game_skips,
+            take_player_success_game_skips,
+        )
+        from src.pipelines.utils.api_client import RateLimitExhausted
+
+        fixture = _load_fixture("stats_player_success_game.json")
+        reset_player_success_game_skips()
+        requested: list[tuple[int, str, int]] = []
+
+        def side_effect(_client, _endpoint, params=None):
+            key = (params["year"], params["seasonType"], params["week"])
+            requested.append(key)
+            if key == (2026, "regular", 1):
+                raise RateLimitExhausted("spent")
+            if key == (2026, "regular", 2):
+                raise _http_error(400)
+            if key == (2026, "regular", 3):
+                raise RateLimitExhausted("spent")
+            if key == (2026, "regular", 4):
+                return list(fixture)
+            return []
+
+        with (
+            patch("src.pipelines.sources.stats.get_client") as mock_get_client,
+            patch("src.pipelines.sources.stats.make_request", side_effect=side_effect),
+        ):
+            mock_get_client.return_value = MagicMock()
+            results = list(player_success_game_resource(years=[2026, 2027]))
+
+        assert results == fixture
+        assert (2026, "regular", 4) in requested
+        assert (2027, "regular", 1) in requested
+        assert (2027, "postseason", 4) in requested
+        skips = take_player_success_game_skips()
+        assert len(skips) == 2
+        assert "2026 regular week 1" in skips[0]
+        assert "2026 regular week 3" in skips[1]
+        assert all("continuing" in skip for skip in skips)
+        assert all("rest of player_success_game" not in skip for skip in skips)
 
     def test_rate_limit_circuit_open_still_fails_the_resource(self):
         from dlt.extract.exceptions import ResourceExtractionError

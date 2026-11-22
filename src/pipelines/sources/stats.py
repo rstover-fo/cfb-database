@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 
 # One exhausted week is skipped and the walk continues (Daily runs #117 and
 # #118 died on a single /stats/player/success/game week and took the whole
-# stats extract with them). Two consecutive exhausted weeks means the
-# endpoint is not answering; stop this resource so the rest of the stats
-# extract still loads. Merge fills the gap on the next successful run.
+# stats extract with them). Two exhausted weeks stop this resource only when
+# they are back to back. An accepted 400, an empty week, or a week that
+# returns rows resets the count. Merge fills the gap on the next successful run.
 PLAYER_SUCCESS_GAME_CONSECUTIVE_SKIP_LIMIT = 2
 _player_success_game_skips: list[str] = []
 
@@ -897,8 +897,9 @@ def player_success_game_resource(years: list[int]) -> Iterator[dict]:
     predictions, and the rest of the daily load -- Daily runs #117 and #118.
     The skip is logged and recorded for the load_season summary. A quota
     circuit open still raises: the API is refusing everything, and continuing
-    this resource cannot help. Two consecutive exhausted weeks stop the rest
-    of this resource only.
+    this resource cannot help. Two exhausted weeks stop the rest of this
+    resource only when they are back to back. An accepted 400, an empty
+    week, or a week that returns rows resets that count.
 
     Args:
         years: List of years to load success-rate stats for
@@ -921,10 +922,16 @@ def player_success_game_resource(years: list[int]) -> Iterator[dict]:
                         )
                     except httpx.HTTPStatusError as e:
                         if e.response.status_code == 400:
+                            # An accepted 400 is a normal empty week, same as a
+                            # successful fetch: it breaks a run of exhausted
+                            # weeks. Leaving the count set made week 1 exhaust,
+                            # week 2 400, week 3 exhaust look consecutive, and
+                            # the resource stopped before later weeks and years.
                             logger.warning(
                                 f"No player game success data for {year} {season_type} "
                                 f"week {week} (400 response), skipping"
                             )
+                            consecutive_skips = 0
                             continue
                         raise
                     except RateLimitCircuitOpen:

@@ -566,6 +566,36 @@ def apply_aggregate_timeout_tolerance(
     return [name for name, _ in candidates], []
 
 
+def _append_github_step_summary_player_success_game(skips: list[str]) -> None:
+    """Surface skipped player_success_game weeks where the log truncation hides them.
+
+    Same best-effort contract as the other step-summary writers: the warning
+    is already in the log and the printed summary, so a broken summary file
+    must not crash the load before the mart refresh's result is reported.
+    """
+    if not skips:
+        return
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    lines = [
+        "\n### Warning: player_success_game week(s) skipped\n",
+        "Retries were exhausted (rate limit or read timeout) for the week(s) "
+        "below. The stats load continued, and downstream steps were not "
+        "skipped. Merge fills the gap on the next successful run.\n",
+    ]
+    for skip in skips:
+        lines.append(f"- {skip}\n")
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("".join(lines))
+    except OSError as e:
+        logger.warning(
+            "Could not write GITHUB_STEP_SUMMARY player_success_game warning (%s); continuing",
+            e,
+        )
+
+
 def _append_github_step_summary_warning(
     tolerated: list[str], streaks: dict, streak_limit: int
 ) -> None:
@@ -774,6 +804,10 @@ def load_season(
         run_stats_pipeline,
         run_wepa_pipeline,
     )
+    from src.pipelines.sources.stats import (
+        reset_player_success_game_skips,
+        take_player_success_game_skips,
+    )
     from src.pipelines.utils.rate_limiter import get_rate_limiter
 
     # Determine which sources to run. A source may be narrowed to specific
@@ -881,6 +915,10 @@ def load_season(
         if not skip_refresh:
             print("  + Refresh all materialized views after loading")
         return {"dry_run": True, "estimated_calls": total_est}
+
+    # A previous in-process call (or a test) must not leak week skips into
+    # this run's summary. The resource appends during the stats extract.
+    reset_player_success_game_skips()
 
     # Map source names to runner functions
     game_stats_runner = (
@@ -1073,6 +1111,13 @@ def load_season(
             # block) -- see _failure_detail_lines.
             for line in _failure_detail_lines(res):
                 print(f"         {line}")
+    # Taken here, after the stats extract, so a skipped player_success_game
+    # week is visible even though the stats unit itself stayed "ok".
+    player_success_game_skips = take_player_success_game_skips()
+    for skip in player_success_game_skips:
+        print(f"  [WARN] {skip}")
+    if player_success_game_skips:
+        _append_github_step_summary_player_success_game(player_success_game_skips)
     print(f"{'=' * 60}")
     if errors:
         _append_github_step_summary_failures(results)
@@ -1093,6 +1138,7 @@ def load_season(
         "successes": successes,
         "errors": errors,
         "tolerated": tolerated_names,
+        "player_success_game_skips": player_success_game_skips,
         "results": results,
     }
 

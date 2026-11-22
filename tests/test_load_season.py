@@ -1638,3 +1638,72 @@ class TestWorkflowYaml:
         assert "--tolerate-aggregate-timeouts" in else_branch
         season_branch = run_script.split("else")[0]
         assert "--tolerate-aggregate-timeouts" not in season_branch
+
+
+class TestPlayerSuccessGameSkipSurfacesInTheRunSummary:
+    """An exhausted player_success_game week stays inside the stats unit.
+
+    The resource warns and continues, so stats stays ok, the next source
+    still runs, and the printed summary plus the GitHub step summary name
+    the season and week. Downstream steps are not skipped.
+    """
+
+    def test_exhausted_week_keeps_stats_ok_and_prints_a_warning(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        from src.pipelines.sources.stats import player_success_game_resource
+        from src.pipelines.utils.api_client import RateLimitExhausted
+
+        summary_path = tmp_path / "step_summary.md"
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary_path))
+
+        def stats_runner(*_args, **_kwargs):
+            rows = list(player_success_game_resource(years=[2026]))
+            # A sibling resource in the same source still extracts. Raising
+            # from the game resource would have discarded it with the rest
+            # of the stats unit.
+            from src.pipelines.sources.stats import team_season_stats_resource
+
+            sibling = list(team_season_stats_resource(years=[2026]))
+            return f"game_rows={len(rows)} sibling_rows={len(sibling)}"
+
+        def make_request(_client, endpoint, params=None):
+            if endpoint == "/stats/player/success/game" and params == {
+                "year": 2026,
+                "seasonType": "regular",
+                "week": 3,
+            }:
+                raise RateLimitExhausted(
+                    "Rate limited on all 4 attempt(s) for /stats/player/success/game "
+                    "(params={'year': 2026, 'seasonType': 'regular', 'week': 3})."
+                )
+            if endpoint == "/stats/season":
+                return [{"team": "Alabama", "statName": "points", "statValue": 30}]
+            return []
+
+        with (
+            patch("src.pipelines.run.run_stats_pipeline", side_effect=stats_runner),
+            patch("src.pipelines.run.run_ratings_pipeline", return_value="ratings ok") as ratings,
+            patch("src.pipelines.sources.stats.get_client", return_value=MagicMock()),
+            patch("src.pipelines.sources.stats.make_request", side_effect=make_request),
+            patch(_GET_RATE_LIMITER, return_value=_mock_rate_limiter()),
+        ):
+            summary = load_season(season=2026, sources=["stats", "ratings"], skip_refresh=True)
+
+        assert summary["results"]["stats"]["status"] == "ok"
+        assert summary["results"]["ratings"]["status"] == "ok"
+        assert summary["errors"] == 0
+        assert ratings.call_count == 1
+        assert summary["player_success_game_skips"] == [
+            skip for skip in summary["player_success_game_skips"] if "2026 regular week 3" in skip
+        ]
+        assert len(summary["player_success_game_skips"]) == 1
+        assert "RateLimitExhausted" in summary["player_success_game_skips"][0]
+        assert "sibling_rows=1" in summary["results"]["stats"]["info"]
+        output = capsys.readouterr().out
+        assert "[WARN] player_success_game 2026 regular week 3" in output
+        assert "[OK  ] stats" in output
+        assert "[OK  ] ratings" in output
+        step_summary = summary_path.read_text()
+        assert "player_success_game week(s) skipped" in step_summary
+        assert "2026 regular week 3" in step_summary

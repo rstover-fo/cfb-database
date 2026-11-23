@@ -41,7 +41,7 @@ def dlt_table(name: str, *columns: str, **options):
     ]
 
 
-def report_for(expected, production, accepted=None, *, details=True):
+def report_for(expected, production, accepted=None, *, details=True, enforced=False):
     return drift.build_report(
         expected,
         production,
@@ -49,6 +49,7 @@ def report_for(expected, production, accepted=None, *, details=True):
         expected_facts=FACTS,
         production_facts=FACTS,
         include_details=details,
+        enforced=enforced,
     )
 
 
@@ -440,8 +441,11 @@ def test_report_only_run_exits_zero_and_writes_outputs(canned, tmp_path, capsys)
     )
 
     assert code == 0
-    assert json.loads(report.read_text())["summary"]["drift"] == 1
+    written = json.loads(report.read_text())
+    assert written["summary"]["drift"] == 1
+    assert written["enforced"] is False
     assert summary.read_text().startswith("earlier step\n### Warehouse catalog drift")
+    assert "Report only:" in summary.read_text() and "Enforced:" not in summary.read_text()
     assert json.loads(proposal.read_text())["accepted"][0]["reason"] == "TODO"
     assert "core.extra" in capsys.readouterr().out
 
@@ -460,6 +464,20 @@ def test_enforcement_fails_on_drift_and_on_stale_acceptances(canned, tmp_path, s
     canned["production"] = {}
     assert run([entry()]) == 1
     assert run([]) == 0
+
+
+@pytest.mark.parametrize("switch", ["flag", "file"])
+def test_an_enforced_run_says_so_even_when_it_passes(canned, tmp_path, capsys, switch):
+    path = write_accepted(tmp_path, {"enforce": switch == "file", "accepted": []})
+    report = tmp_path / "report.json"
+    flags = ["--enforce"] if switch == "flag" else []
+
+    code = drift.main(["--accepted", str(path), "--report", str(report), *flags])
+
+    assert code == 0
+    assert json.loads(report.read_text())["enforced"] is True
+    printed = capsys.readouterr().out
+    assert "Enforced:" in printed and "Report only:" not in printed
 
 
 def test_redacted_access_drift_still_fails_an_enforced_run(canned):

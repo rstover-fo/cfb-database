@@ -821,6 +821,7 @@ def build_report(
     expected_facts: dict[str, object],
     production_facts: dict[str, object],
     include_details: bool,
+    enforced: bool,
 ) -> dict[str, object]:
     drift, evolved = classify(diff_inventories(expected, production), expected, production)
     unaccepted = [item for item in drift if item.fingerprint not in accepted]
@@ -841,6 +842,8 @@ def build_report(
         "expected": expected_facts,
         "production": production_facts,
         "details_included": include_details,
+        # A passing run looks the same either way, so the report says which it was.
+        "enforced": enforced,
         "summary": {
             "drift": len(unaccepted),
             "accepted": len(known),
@@ -874,8 +877,15 @@ def _count_by_kind(items: list[Difference]) -> dict[str, int]:
 
 def render_summary(report: dict[str, object]) -> str:
     summary = report["summary"]
+    mode = (
+        "Enforced: drift, or an accepted entry that no longer applies, fails this run."
+        if report["enforced"]
+        else "Report only: enforcement is off, so this run passes whatever it finds."
+    )
     lines = [
         "### Warehouse catalog drift",
+        "",
+        mode,
         "",
         "| Class | Count |",
         "|---|---|",
@@ -994,6 +1004,7 @@ def run(args: argparse.Namespace) -> int:
         expected_facts=expected_facts,
         production_facts=production_facts,
         include_details=args.include_sensitive_details,
+        enforced=enforce,
     )
     if args.report:
         args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")

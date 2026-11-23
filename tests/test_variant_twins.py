@@ -121,9 +121,9 @@ class TestReviewedRawOnlyClassification:
     """The passing exception is exact, independently inventoried, and cannot
     overlap with supported consumer handling or widen to another table."""
 
-    def test_passing_fixture_is_56_unique_column_names(self):
-        assert len(PASSING_VARIANT_COLUMN_NAMES) == 56
-        assert len(PASSING_VARIANT_COLUMNS) == 56
+    def test_passing_fixture_is_58_unique_column_names(self):
+        assert len(PASSING_VARIANT_COLUMN_NAMES) == 58
+        assert len(PASSING_VARIANT_COLUMNS) == 58
         assert all(
             isinstance(name, str) and name.endswith("__v_double")
             for name in PASSING_VARIANT_COLUMN_NAMES
@@ -134,7 +134,17 @@ class TestReviewedRawOnlyClassification:
         assert REVIEWED_RAW_ONLY_VARIANT_TWINS == {
             "stats.passing_player_season": frozenset(PASSING_VARIANT_COLUMNS - supported)
         }
-        assert len(REVIEWED_RAW_ONLY_VARIANT_TWINS["stats.passing_player_season"]) == 55
+        assert len(REVIEWED_RAW_ONLY_VARIANT_TWINS["stats.passing_player_season"]) == 57
+
+    def test_november_2026_passing_twins_are_raw_only(self):
+        raw_only = REVIEWED_RAW_ONLY_VARIANT_TWINS["stats.passing_player_season"]
+        supported = EXPECTED_VARIANT_TWINS["stats.passing_player_season"]
+        reviewed = {
+            "cpoe__v_double",
+            "locations__unknown__average_yards_after_catch__v_double",
+        }
+        assert reviewed <= raw_only
+        assert reviewed.isdisjoint(supported)
 
     def test_supported_and_raw_only_scopes_are_disjoint_and_known(self):
         assert set(REVIEWED_RAW_ONLY_VARIANT_TWINS) <= set(EXPECTED_VARIANT_TWINS)

@@ -180,14 +180,17 @@ EXPECTED_VARIANT_TWINS: dict[str, frozenset[str]] = {
 # consumers. The production dependency audit found that the only maintained
 # metric consumer of stats.passing_player_season is
 # marts.passing_charting_player_season (and its API projection). It selects the
-# supported average_yards_after_catch base/twin pair above, but none of these 55
+# supported average_yards_after_catch base/twin pair above, but none of these 57
 # variants or their base fields. Raw stats callers can still read these fields
 # and must handle dlt variants themselves. Keep this registry exact: a new
 # location field or a variant of a consumed metric must remain a failure until
 # its own consumer review is complete.
+# 2026-11-10: cpoe and locations__unknown__average_yards_after_catch have no
+# maintained reader in marts, API views, exports, or cfb-app.
 REVIEWED_RAW_ONLY_VARIANT_TWINS: dict[str, frozenset[str]] = {
     "stats.passing_player_season": frozenset(
         {
+            "cpoe__v_double",
             "explosiveness__v_double",
             "locations__deep_left__air_yards_per_attempt__v_double",
             "locations__deep_left__average_depth_of_target__v_double",
@@ -237,6 +240,7 @@ REVIEWED_RAW_ONLY_VARIANT_TWINS: dict[str, frozenset[str]] = {
             "locations__short_right__yards_per_attempt__v_double",
             "locations__unknown__air_yards_per_attempt__v_double",
             "locations__unknown__average_depth_of_target__v_double",
+            "locations__unknown__average_yards_after_catch__v_double",
             "locations__unknown__explosiveness__v_double",
             "locations__unknown__ppa__v_double",
             "locations__unknown__success_rate__v_double",

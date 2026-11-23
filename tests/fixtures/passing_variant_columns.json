@@ -1,5 +1,6 @@
 [
   "average_yards_after_catch__v_double",
+  "cpoe__v_double",
   "explosiveness__v_double",
   "locations__deep_left__air_yards_per_attempt__v_double",
   "locations__deep_left__average_depth_of_target__v_double",
@@ -49,6 +50,7 @@
   "locations__short_right__yards_per_attempt__v_double",
   "locations__unknown__air_yards_per_attempt__v_double",
   "locations__unknown__average_depth_of_target__v_double",
+  "locations__unknown__average_yards_after_catch__v_double",
   "locations__unknown__explosiveness__v_double",
   "locations__unknown__ppa__v_double",
   "locations__unknown__success_rate__v_double",
